@@ -17,21 +17,46 @@
  *   §4 the seals — what is not registrable, and the shipped pack
  *   §5 retired names still answer as writes, so no receipt is lost
  *   §6 STALENESS: the row moved while the card was open
+ *
+ * §4d is DELETION BY PARITY (the owner's 2026-09-23 call): whatever a screen
+ * deletes, the Coach may delete through that screen's own function, behind a
+ * card that names the row's day and figures — and whatever no screen deletes
+ * is refused, naming where the row lives.
  */
 import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
+import { clockFromISO, shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import {
   completeExperiment,
   createExperiment,
   getExperiment,
 } from '../src/lib/db/repositories/experiments.ts';
 import { createReminder } from '../src/lib/db/repositories/reminders.ts';
-import { getMeal, logMeal } from '../src/lib/db/repositories/nutrition.ts';
+import {
+  deleteMeal,
+  getMeal,
+  insertMealPhoto,
+  logMeal,
+  logMealWithItems,
+  updateMealMeta,
+} from '../src/lib/db/repositories/nutrition.ts';
 import { getWorkoutDetail, logWorkout } from '../src/lib/db/repositories/exercise.ts';
-import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
+import {
+  addVersion,
+  createProtocolWithVersion,
+  getProtocolBySlug,
+} from '../src/lib/db/repositories/protocols.ts';
+import { listWaterEntries, logWater } from '../src/lib/db/repositories/water.ts';
+import { setUnitPreference } from '../src/lib/db/repositories/user.ts';
+import { createFood } from '../src/lib/db/repositories/foods.ts';
+import { createTemplate } from '../src/lib/db/repositories/meal-templates.ts';
+import { createRoutine } from '../src/lib/db/repositories/routines.ts';
+import { createRecipe } from '../src/lib/db/repositories/recipes.ts';
+import { addGroceryItems } from '../src/lib/db/repositories/grocery.ts';
+import { addAppointment, addScreening } from '../src/lib/db/repositories/screenings.ts';
+import { setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
 import { rememberFact } from '../src/lib/db/repositories/coach-memory.ts';
 import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
 import { insertKnowledgeChunk } from '../src/lib/db/repositories/rag.ts';
@@ -158,13 +183,14 @@ console.log('0. registry shape, and the three enums derived from it');
     : bad('domain shape');
   // `resolve` and `summarize` travel with the ABILITY TO WRITE, not with being
   // a domain — a read-only domain has no id to resolve anything FOR and no
-  // card to draw. That is the invariant `edit_record` relies on.
-  COACH_DOMAIN_REGISTRY.filter((d) => d.edit || d.create || d.remove).every(
+  // card to draw. That is the invariant `edit_record` relies on. A `refuse`
+  // removal is not a write: it answers before any id is looked up.
+  COACH_DOMAIN_REGISTRY.filter((d) => d.edit || d.create || d.remove?.mode === 'hard').every(
     (d) => typeof d.resolve === 'function' && typeof d.summarize === 'function'
   )
     ? ok('every WRITABLE domain resolves an id to a named row and draws a card')
     : bad('a writable domain cannot resolve or summarize');
-  COACH_DOMAIN_REGISTRY.filter((d) => !d.edit && !d.create && !d.remove).every(
+  COACH_DOMAIN_REGISTRY.filter((d) => !d.edit && !d.create && d.remove?.mode !== 'hard').every(
     (d) => d.resolve === undefined && d.summarize === undefined
   )
     ? ok('…and the read-only domains carry neither, so there is nothing to be wrong')
@@ -204,10 +230,8 @@ console.log('0. registry shape, and the three enums derived from it');
   )
     ? ok('domains with a bespoke read are excluded from query_records, and that tool exists')
     : bad('bespoke read excluded wrongly', QUERY_DOMAIN_KEYS.join(','));
-  REMOVABLE_DOMAIN_KEYS.every(
-    (k) => domainByKey(k).remove && domainByKey(k).remove.mode !== 'refuse'
-  )
-    ? ok(`the removable set is the smaller one (${REMOVABLE_DOMAIN_KEYS.length} today)`)
+  REMOVABLE_DOMAIN_KEYS.every((k) => domainByKey(k).remove?.mode === 'hard')
+    ? ok(`the removable set is the \`hard\` one (${REMOVABLE_DOMAIN_KEYS.length} today)`)
     : bad('removable set', REMOVABLE_DOMAIN_KEYS.join(','));
 
   // The open schema is ONE property, deliberately, and the outer object is
@@ -451,9 +475,9 @@ console.log('4b. query_records: list, compute, windows and the discovery call');
     : bad('read-only marking wrong', JSON.stringify(bare.fields));
   (() => {
     const readOnly = query({ domain: 'lab_reports' });
-    return readOnly.editable === false && readOnly.removable === 'no';
+    return readOnly.editable === false && readOnly.removable === 'refuse';
   })()
-    ? ok('…and a wholly read-only domain says it cannot be written or removed from')
+    ? ok('…and a wholly read-only domain says it cannot be written, and that removal refuses')
     : bad('lab_reports looks writable');
   query({ domain: 'saved_workouts', query: 'nothing' }).fields === undefined
     ? ok('a FILTERED call omits the vocabulary — it is discovery, not a header')
@@ -592,99 +616,394 @@ console.log('4c. READ-MODIFY-WRITE: a patch never erases what it did not mention
     : bad('protocol policy not editable');
 }
 
-console.log('4d. removal: refuse, hard, and undo-only');
+console.log('4d. removal: parity with the screens, behind a card that names what goes');
 {
-  const { db } = freshDb();
+  const { db, raw } = freshDb();
   const deleteRecord = toolByName('delete_record');
-  const del = (domain, id, conversationId) =>
-    deleteRecord.confirmSummary({ domain, id }, db, { now: NOW, conversationId });
+  /** The card alone, on a fresh context — no conversation anywhere. */
+  const del = (domain, id) => deleteRecord.confirmSummary({ domain, id }, db, { now: NOW });
+  /** Card, then execute, on ONE context: the service's own sequence. */
+  const approve = (domain, id) => {
+    const context = { now: NOW };
+    const line = deleteRecord.confirmSummary({ domain, id }, db, context);
+    return { line, result: JSON.parse(deleteRecord.execute(db, { domain, id }, context)) };
+  };
+  const count = (sql, params) => db.get(sql, params).n;
 
-  // The three policies, as the registry declares them.
+  // --- THE POLICY, as the registry declares it ------------------------------
   const byMode = (mode) =>
     COACH_DOMAIN_REGISTRY.filter((d) => d.remove?.mode === mode).map((d) => d.key);
-  JSON.stringify(byMode('own')) === JSON.stringify(['meals', 'workouts'])
-    ? ok('only a meal and a workout are UNDO-deletable — the two the Coach logs and owns')
-    : bad('own set', byMode('own').join(','));
-  byMode('refuse').includes('protocols')
-    ? ok('a protocol refuses removal — its versions are what past days were lived under')
-    : bad('protocols removable');
-  // `refuse` domains are absent from delete_record's enum entirely, so the
-  // schema turns them down at zero round trips.
-  deleteRecord.inputSchema.properties.domain.enum.includes('protocols') === false
-    ? ok('…and it is not in the enum at all, so the schema refuses it for free')
-    : bad('a refuse domain is in the delete enum');
-  // …and asking anyway gets the SCREEN, not just a no. A refusal that only
-  // says "you cannot" leaves the user with nowhere to go.
-  const refused = throwText(() => del('protocols', 'x'));
-  refused && /Pause it with/.test(refused) && /delete it on Protocols/.test(refused)
-    ? ok('asking anyway names the affordance and the screen, not just a refusal')
-    : bad('refusal text', String(refused));
+  const HARD = [
+    'meals',
+    'food_catalog',
+    'meal_templates',
+    'water',
+    'saved_workouts',
+    'workouts',
+    'recipes',
+    'grocery',
+    'screenings',
+    'appointments',
+    'muscle_anchors',
+    'protocols',
+  ];
+  JSON.stringify([...byMode('hard')].sort()) === JSON.stringify([...HARD].sort())
+    ? ok(`${HARD.length} domains are removable — a meal, a session and a protocol among them`)
+    : bad('hard set', byMode('hard').join(','));
+  COACH_DOMAIN_REGISTRY.every((d) => !d.remove || ['hard', 'refuse'].includes(d.remove.mode))
+    ? ok('there is no third mode: the undo-only `own` rule is gone, not dormant')
+    : bad('a domain still declares another removal mode');
+  JSON.stringify(deleteRecord.inputSchema.properties.domain.enum) ===
+  JSON.stringify(REMOVABLE_DOMAIN_KEYS)
+    ? ok('delete_record’s enum IS the hard set, so everything else is refused at zero round trips')
+    : bad('delete enum drift', JSON.stringify(deleteRecord.inputSchema.properties.domain.enum));
+  // Every domain that HOLDS ROWS says what happens to them — so a domain added
+  // later cannot be refused by omission, with no word about where its rows
+  // live. Compute domains hold none, and Settings is one row with nothing to
+  // remove.
+  const silent = COACH_DOMAIN_REGISTRY.filter(
+    (d) => d.read.kind !== 'compute' && d.key !== 'settings' && d.remove === undefined
+  ).map((d) => d.key);
+  silent.length === 0
+    ? ok('every domain that holds rows declares whether they can be removed')
+    : bad('a domain holding rows says nothing about removal', silent.join(', '));
+
+  // --- WHAT NO SCREEN DELETES IS REFUSED, NAMING WHERE THE ROW LIVES ---------
+  // An invented id is used on purpose: the refusal must come BEFORE any lookup,
+  // so the answer is about the domain and never "no such row".
+  const REFUSED = {
+    captures: /Log tab/,
+    protocol_versions: /Protocols › the protocol › Versions/,
+    lab_reports: /Data › Labs/,
+    reminders: /status: "dismissed"/,
+    experiments: /edit_record \{ status \}/,
+    exercise_catalog: /status: "archived"/,
+    memories: /status: "archived"[\s\S]*Data › Knowledge base/,
+    knowledge: /status: "archived"[\s\S]*Data › Knowledge base/,
+    progress_photos: /Data › Progress photos/,
+    reports: /Data › Reports/,
+  };
+  const misnamed = Object.entries(REFUSED)
+    .filter(([key, where]) => {
+      const text = throwText(() => del(key, 'no-such-id'));
+      return !(text && where.test(text)) || REMOVABLE_DOMAIN_KEYS.includes(key);
+    })
+    .map(([key]) => key);
+  misnamed.length === 0
+    ? ok(
+        `a row no screen deletes is refused, naming where it lives and what to do instead (${Object.keys(REFUSED).length} domains)`
+      )
+    : bad('refusal missing or unnamed', misnamed.join(', '));
   const unknown = throwText(() => del('nope', 'x'));
-  unknown && /must be one of/.test(unknown)
+  unknown && /must be one of/.test(unknown) && /protocols/.test(unknown)
     ? ok('an unregistered domain names the removable set')
     : bad('unknown delete domain', String(unknown));
 
-  // HARD, and it must not strand history: `PRAGMA foreign_key_list` on every
-  // table pointing at a `hard` domain's table must be SET NULL, never CASCADE,
-  // from anything that is a log.
-  const HARD_TABLES = {
+  // --- HISTORY CANNOT BE STRANDED --------------------------------------------
+  // Every CASCADE into a removable domain's table must be that row's OWN PART
+  // — its items, its sets, its versions — which is what the card counts. Any
+  // other reference is SET NULL (CLAUDE.md §9), so a meal cooked from a deleted
+  // recipe keeps its macros and a day lived under a deleted protocol keeps its
+  // entries. Walked over EVERY table, so a future CASCADE fails here.
+  const TABLE = {
+    meals: 'meals',
     food_catalog: 'foods',
     meal_templates: 'meal_templates',
+    water: 'wearable_data',
     saved_workouts: 'routines',
+    workouts: 'workouts',
     recipes: 'recipes',
+    grocery: 'grocery_items',
     screenings: 'screenings',
+    appointments: 'appointments',
+    muscle_anchors: 'muscle_freshness_anchors',
+    protocols: 'protocols',
   };
+  const OWN_PARTS = {
+    // the items and photos (both counted on the card) and its pending estimate
+    meals: ['meal_items', 'meal_photos', 'pending_estimates'],
+    // the sets (counted) and the pairing link — the watch's session itself stays
+    workouts: ['workout_sets', 'workout_ingest_links'],
+    meal_templates: ['meal_template_items'],
+    saved_workouts: ['routine_exercises', 'program_days'],
+    recipes: ['recipe_ingredients'],
+    protocols: ['protocol_versions'],
+    // a link only ever hangs off a WATCH workout's wearable row, never water
+    water: ['workout_ingest_links'],
+  };
+  const tables = db
+    .all(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
+    .map((r) => r.name);
   const strands = [];
-  for (const [key, table] of Object.entries(HARD_TABLES)) {
-    for (const child of ['meals', 'meal_items', 'workouts', 'grocery_items', 'appointments']) {
+  for (const key of REMOVABLE_DOMAIN_KEYS) {
+    if (!TABLE[key]) {
+      strands.push(`${key} has no table mapped here`);
+      continue;
+    }
+    for (const child of tables) {
       for (const fk of db.all(`PRAGMA foreign_key_list(${child})`)) {
-        if (fk.table === table && fk.on_delete === 'CASCADE') strands.push(`${key}: ${child}`);
+        if (
+          fk.table === TABLE[key] &&
+          fk.on_delete === 'CASCADE' &&
+          !(OWN_PARTS[key] ?? []).includes(child)
+        ) {
+          strands.push(`${key} → ${child}.${fk.from}`);
+        }
       }
     }
   }
   strands.length === 0
-    ? ok('no `hard` domain cascades into a log table — history cannot be stranded')
-    : bad('a hard delete would strand history', strands.join(', '));
+    ? ok('a removal CASCADES only into the row’s own parts — every other reference is SET NULL')
+    : bad('a removal would strand history', strands.join(', '));
 
-  // THE UNDO. A meal the Coach did not log is refused AT CARD TIME, so the
-  // user never answers a gate for it.
-  const mealId = logMeal(db, { date: TODAY, time: '12:30', name: 'Salmon bowl', kcal: 700 });
+  // --- A MEAL THE USER LOGGED BY HAND ----------------------------------------
+  // No conversation exists anywhere in this block: that is the owner's case,
+  // "something you logged yourself", which the 2026-09-19 rule refused.
+  setUnitPreference(db, 'volume', 'ml');
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '12:30',
+    name: 'Salmon bowl',
+    items: [
+      { name: 'Salmon', kcal: 400, protein_g: 35, carbs_g: 0, fat_g: 20 },
+      { name: 'Rice', kcal: 300, protein_g: 10, carbs_g: 60, fat_g: 0 },
+    ],
+  });
+  insertMealPhoto(db, { meal_id: mealId, file_name: 'bowl.jpg', source: 'camera' });
+  const mealCard = del('meals', mealId);
+  mealCard ===
+  `Delete meal "Salmon bowl" — ${TODAY} 12:30 · 700 kcal · P 45g · C 60g · F 20g · 2 items · 1 photo`
+    ? ok(
+        `a meal the user logged draws a card naming its day, figures, items and photo ("${mealCard}")`
+      )
+    : bad('meal card', mealCard);
+  const mealMeta = deleteRecord.confirmMeta({ domain: 'meals', id: mealId }, db, { now: NOW });
+  mealMeta.kind === 'delete' && mealMeta.selfEvident === false
+    ? ok('…on the LONG card, told it is a removal — a deletion is never the brief card')
+    : bad('delete meta', JSON.stringify(mealMeta));
+  const meal = approve('meals', mealId);
+  meal.result.deleted === true &&
+  getMeal(db, mealId) === undefined &&
+  count('SELECT count(*) n FROM meal_items WHERE meal_id = ?', [mealId]) === 0 &&
+  count('SELECT count(*) n FROM meal_photos WHERE meal_id = ?', [mealId]) === 0
+    ? ok('…and approving it removes the meal, its items and its photo — exactly what the card said')
+    : bad('meal not removed', JSON.stringify(meal.result));
+
+  // --- A SESSION THE USER LOGGED BY HAND -------------------------------------
+  const workoutId = logWorkout(
+    db,
+    { date: TODAY, kind: 'strength', durationMin: 45, notes: null },
+    [
+      { exercise: 'Bench Press', reps: 8, weightKg: 80, setType: 'normal' },
+      { exercise: 'Bench Press', reps: 8, weightKg: 80, setType: 'normal' },
+      { exercise: 'Back Squat', reps: 5, weightKg: 120, setType: 'normal' },
+    ]
+  );
+  const movements = [...new Set(getWorkoutDetail(db, workoutId).sets.map((s) => s.exercise))];
+  const workoutCard = del('workouts', workoutId);
+  workoutCard === `Delete workout "strength on ${TODAY}" — 45 min · 3 sets: ${movements.join(', ')}`
+    ? ok(
+        `a session the user logged draws a card naming its day, length and sets ("${workoutCard}")`
+      )
+    : bad('workout card', workoutCard);
+  approve('workouts', workoutId);
+  getWorkoutDetail(db, workoutId) === undefined &&
+  count('SELECT count(*) n FROM workout_sets WHERE workout_id = ?', [workoutId]) === 0
+    ? ok('…and approving it removes the session and every set, through the session screen’s delete')
+    : bad('workout not removed');
+
+  // --- A WATER ENTRY THE USER LOGGED BY HAND ---------------------------------
+  const waterId = logWater(db, TODAY, 500);
+  const at = listWaterEntries(db, TODAY).find((e) => e.id === waterId).at;
+  const waterCard = del('water', waterId);
+  waterCard === `Delete water entry "500 ml on ${TODAY}" — logged at ${clockFromISO(at)}`
+    ? ok(`a water entry draws a card naming its day, amount and clock ("${waterCard}")`)
+    : bad('water card', waterCard);
+  setUnitPreference(db, 'volume', 'oz');
+  /— 16\.9 oz, logged at /.test(del('water', waterId))
+    ? ok('…and an oz user sees the amount as they entered it')
+    : bad('oz water card', del('water', waterId));
+  approve('water', waterId);
+  listWaterEntries(db, TODAY).some((e) => e.id === waterId) === false
+    ? ok('…and approving it removes the entry, through the water screen’s delete')
+    : bad('water not removed');
+
+  // --- THE UNDO STILL WORKS: a row the Coach wrote a moment ago --------------
+  // Through the real `log_meal` tool and a recorded turn, as the service would.
+  // The card is the SAME card a hand-logged meal gets: nothing about removal
+  // depends on who wrote the row any more.
   const conversationId = createConversation(db);
-  const notMine = throwText(() => del('meals', mealId, conversationId));
-  notMine && /not one you logged in this conversation/.test(notMine)
-    ? ok('deleting a meal the Coach did not log is refused before the gate')
-    : bad('undo check', String(notMine));
-  // …and with no thread at all, nothing counts as the Coach's own write.
-  throws(() => del('meals', mealId, undefined))
-    ? ok('…and with no conversation, nothing counts as its own write (fail closed)')
-    : bad('no-conversation delete allowed');
-
-  // Now record a turn in which the Coach logged one, exactly as the service
-  // layer would: the tool RESULT carries the new id.
-  const mineId = logMeal(db, { date: TODAY, time: '19:00', name: 'Chicken and rice', kcal: 800 });
+  const logged = JSON.parse(
+    toolByName('log_meal').execute(
+      db,
+      { name: 'Chicken and rice', time: '19:00', kcal: 800, protein_g: 60 },
+      { now: NOW }
+    )
+  );
   appendMessage(db, conversationId, 'assistant', 'Logged it.', [
     {
       id: 'toolu_1',
       name: 'log_meal',
       input: {},
-      result: JSON.stringify({ logged: true, id: mineId }),
-      receipt: 'Log meal "Chicken and rice" · 800 kcal',
+      result: JSON.stringify(logged),
+      receipt: 'Log meal "Chicken and rice" · 800 kcal, 60 g protein',
     },
   ]);
-  del('meals', mineId, conversationId) === 'Delete meal "Chicken and rice"'
-    ? ok('a meal THIS thread’s Coach logged can be undone, and the card says Delete')
-    : bad('undo card', del('meals', mineId, conversationId));
-  toolByName('delete_record').confirmMeta({}, db, { now: NOW }).kind === 'delete'
-    ? ok('…and the card is told it is a removal, so its lanes can word one')
-    : bad('delete kind');
-  JSON.parse(
-    deleteRecord.execute(db, { domain: 'meals', id: mineId }, { now: NOW, conversationId })
-  ).deleted === true && getMeal(db, mineId) === undefined
-    ? ok('…and the row is gone')
-    : bad('undo did not delete');
-  getMeal(db, mealId) !== undefined
-    ? ok('…while the meal it did not log is still there')
-    : bad('the wrong meal was deleted');
+  const undo = approve('meals', logged.id);
+  undo.line === `Delete meal "Chicken and rice" — ${TODAY} 19:00 · 800 kcal · P 60g` &&
+  undo.result.deleted === true &&
+  getMeal(db, logged.id) === undefined
+    ? ok('the undo still works: a meal the Coach just logged goes through the same card')
+    : bad('undo', JSON.stringify(undo));
+
+  // --- STALENESS: the row moved while the card was open ----------------------
+  // A FIGURE the card printed — the pending-estimate drain landing mid-gate.
+  const pastaId = logMeal(db, { date: TODAY, time: '20:00', name: 'Pasta', kcal: 700 });
+  const figureCtx = { now: NOW };
+  deleteRecord.confirmSummary({ domain: 'meals', id: pastaId }, db, figureCtx);
+  db.run('UPDATE meals SET kcal = 640 WHERE id = ?', [pastaId]);
+  const figureMoved = throwText(() =>
+    deleteRecord.execute(db, { domain: 'meals', id: pastaId }, figureCtx)
+  );
+  figureMoved &&
+  /changed while the card was open/.test(figureMoved) &&
+  figureMoved.includes('700 kcal') &&
+  figureMoved.includes('640 kcal') &&
+  /Nothing deleted/.test(figureMoved) &&
+  getMeal(db, pastaId) !== undefined
+    ? ok('a figure that moved inside the gate refuses the delete, quoting both lines')
+    : bad('figure staleness', String(figureMoved));
+  // A FIELD — the user renamed it on its own screen while the card was up.
+  const fieldCtx = { now: NOW };
+  deleteRecord.confirmSummary({ domain: 'meals', id: pastaId }, db, fieldCtx);
+  updateMealMeta(db, pastaId, { name: 'Pasta, large', time: '20:00', notes: null });
+  const fieldMoved = throwText(() =>
+    deleteRecord.execute(db, { domain: 'meals', id: pastaId }, fieldCtx)
+  );
+  fieldMoved ===
+    'name changed while the card was open (was Pasta, now Pasta, large). ' +
+      'Nothing deleted. Read it again and propose once more.' && getMeal(db, pastaId) !== undefined
+    ? ok('…and so does a field, in the exact words edit_record uses')
+    : bad('field staleness', String(fieldMoved));
+  // GONE — deleted on its own screen while the card was up. The Coach must not
+  // mint a receipt for a deletion the user made by hand.
+  const goneCtx = { now: NOW };
+  deleteRecord.confirmSummary({ domain: 'meals', id: pastaId }, db, goneCtx);
+  deleteMeal(db, pastaId);
+  const alreadyGone = throwText(() =>
+    deleteRecord.execute(db, { domain: 'meals', id: pastaId }, goneCtx)
+  );
+  alreadyGone && /No meal with id/.test(alreadyGone)
+    ? ok('…and a row already deleted on its screen refuses rather than claiming the removal')
+    : bad('gone staleness', String(alreadyGone));
+
+  // --- A PROTOCOL: the card says what goes AND what stays ---------------------
+  createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack' },
+    { items: [{ title: 'Magnesium', scheduled_time: '21:00', dose: '400 mg', notes: null }] },
+    'seed'
+  );
+  const protocol = getProtocolBySlug(db, 'evening_stack');
+  addVersion(
+    db,
+    protocol.id,
+    { items: [{ title: 'Magnesium', scheduled_time: '21:30', dose: '400 mg', notes: null }] },
+    'later'
+  );
+  // Yesterday was lived under it: a logged entry the deletion must not take.
+  raw.prepare(`INSERT INTO daily_logs (id, date) VALUES ('dl-p', ?)`).run(shiftISODate(TODAY, -1));
+  raw
+    .prepare(
+      `INSERT INTO log_entries (id, daily_log_id, type, protocol_id, title)
+       VALUES ('le-p', 'dl-p', 'supplement', ?, 'Magnesium')`
+    )
+    .run(protocol.id);
+  const protocolCard = del('protocols', 'evening_stack');
+  protocolCard ===
+  'Delete protocol "Evening Stack" — active, 1 item; its 2 versions go with it, ' +
+    'and logged days keep their entries, unlinked'
+    ? ok(`a protocol is deletable now, on a card that names its versions ("${protocolCard}")`)
+    : bad('protocol card', protocolCard);
+  approve('protocols', 'evening_stack');
+  const entry = raw.prepare(`SELECT protocol_id FROM log_entries WHERE id = 'le-p'`).get();
+  getProtocolBySlug(db, 'evening_stack') === undefined &&
+  count('SELECT count(*) n FROM protocol_versions WHERE protocol_id = ?', [protocol.id]) === 0 &&
+  entry !== undefined &&
+  entry.protocol_id === null
+    ? ok(
+        '…and approving it takes the protocol and its versions while yesterday’s entry stays, unlinked'
+      )
+    : bad('protocol delete', JSON.stringify(entry));
+
+  // --- EVERY REMOVABLE DOMAIN DRAWS A REAL CARD AND REALLY REMOVES -----------
+  // One seeded row per remaining domain: the card names something after the
+  // row's name, approving it runs the screen's own delete, and the card cannot
+  // be drawn a second time because the row is gone.
+  const bench = raw.prepare(`SELECT id FROM exercises WHERE name = 'Barbell Bench Press'`).get();
+  const seeded = {
+    food_catalog: createFood(db, { name: 'Oats', kcal_100g: 379, protein_g_100g: 13 }),
+    meal_templates: createTemplate(db, {
+      name: 'Protein Oats',
+      items: [{ name: 'Oats', kcal: 190, protein_g: 7 }],
+    }),
+    saved_workouts: createRoutine(db, {
+      name: 'Upper A',
+      notes: null,
+      exercises: [{ exerciseId: bench.id, targetSets: 4, repLow: 5, repHigh: 8, restSec: 180 }],
+    }),
+    recipes: createRecipe(db, {
+      title: 'Adobo',
+      servings: 4,
+      ingredients: [{ raw_text: '1 kg chicken thighs' }, { raw_text: 'salt to taste' }],
+    }),
+    grocery: addGroceryItems(db, [{ name: 'Milk', qty_text: '2 L' }])[0],
+    screenings: addScreening(db, {
+      name: 'Colonoscopy',
+      category: 'imaging',
+      intervalMonths: 120,
+      lastCompleted: '2016-01-01',
+    }),
+    appointments: addAppointment(db, {
+      title: 'Annual physical',
+      provider: 'Dr Reyes',
+      scheduledAt: '2026-10-01T16:00:00.000Z',
+    }),
+    muscle_anchors: (setMuscleAnchor(db, 'chest', 70), 'chest'),
+  };
+  const EXPECT = {
+    food_catalog: 'Delete catalog food "Oats" — per 100 g: 379 kcal · P 13g',
+    meal_templates: 'Delete meal template "Protein Oats" — 1 item · 190 kcal · P 7g',
+    saved_workouts: 'Delete saved workout "Upper A" — 4 sets of 1 exercise: Barbell Bench Press',
+    recipes: 'Delete recipe "Adobo" — serves 4 · 2 ingredients',
+    grocery: 'Delete grocery item "Milk" — 2 L · on the list',
+    screenings:
+      'Delete screening "Colonoscopy" — every 120 months · next due 2026-01-01 · ' +
+      'last done 2016-01-01 · its appointments stay',
+    appointments:
+      `Delete appointment "Annual physical" — 2026-10-01 ${clockFromISO('2026-10-01T16:00:00.000Z')}` +
+      ' · with Dr Reyes · scheduled',
+    muscle_anchors: 'Delete muscle anchor "chest" — freshness 70; the engine’s own reading returns',
+  };
+  const smoke = Object.entries(seeded).filter(([key, id]) => {
+    const { line, result } = approve(key, id);
+    return line !== EXPECT[key] || result.deleted !== true || !throws(() => del(key, id));
+  });
+  smoke.length === 0
+    ? ok(
+        `the other ${Object.keys(seeded).length} removable domains each draw their card and really remove`
+      )
+    : bad(
+        'a removable domain drew the wrong card or did not remove',
+        smoke
+          .map(([key, id]) => `${key}: ${String(throwText(() => del(key, id)) ?? del(key, id))}`)
+          .join(' | ')
+      );
+  // A clear of nothing is a knowable no-op, refused before the gate.
+  const nothing = throwText(() => del('muscle_anchors', 'chest'));
+  nothing && /nothing to clear/.test(nothing)
+    ? ok('clearing an anchor that is not set is refused at card time')
+    : bad('anchor no-op', String(nothing));
 }
 
 console.log('5. retired names still answer as writes, so no receipt is lost');
@@ -860,6 +1179,57 @@ export async function resolve(specifier, context, next) {
   getExperiment(db, expId).conclusion === 'the verdict he typed himself'
     ? ok('the user’s own verdict stands — the Coach’s never reached the row')
     : bad('the stale write landed anyway', getExperiment(db, expId).conclusion);
+
+  // THE SAME GUARD ON A DELETE, through the same real seam. The meal was
+  // logged by hand — the owner's case — and a figure the card printed moves
+  // while the gate is up.
+  const lunchId = logMeal(db, { date: TODAY, time: '12:30', name: 'Salmon bowl', kcal: 700 });
+  const deleteTurn = () => [
+    toolUseReply('delete_record', { domain: 'meals', id: lunchId }),
+    textReply('Understood.'),
+  ];
+  let deleteReplies = deleteTurn();
+  globalThis.__ARC_TEST_FETCH__ = async () => responseOf(deleteReplies.shift());
+  await apiKeyStore.setKey('test-key');
+  let deleteRequest = null;
+  const staleDelete = await streamCoachReply(
+    [{ id: 'u2', role: 'user', content: 'delete that lunch', createdAt: 0 }],
+    {
+      onToken: () => {},
+      now: () => NOW,
+      confirmWrite: async (request) => {
+        deleteRequest = request;
+        // The pending-estimate drain lands while the card is open.
+        db.run('UPDATE meals SET kcal = 640 WHERE id = ?', [lunchId]);
+        return true;
+      },
+    }
+  );
+  deleteRequest?.summary === `Delete meal "Salmon bowl" — ${TODAY} 12:30 · 700 kcal` &&
+  deleteRequest.kind === 'delete' &&
+  deleteRequest.selfEvident === false
+    ? ok('a delete reaches the real gate naming the day and the figure, on the long card')
+    : bad('delete gate request', JSON.stringify(deleteRequest));
+  const staleCall = staleDelete.toolCalls[0];
+  staleCall.isError === true &&
+  /changed while the card was open/.test(staleCall.result) &&
+  /Nothing deleted/.test(staleCall.result) &&
+  staleCall.receipt === undefined &&
+  getMeal(db, lunchId)?.kcal === 640
+    ? ok('…and the figure moving inside the gate refused it: no receipt, the meal still there')
+    : bad('stale delete', JSON.stringify(staleCall));
+
+  // NEVER AUTO-APPROVED. A seam with no gate declines every write, deletes
+  // included — there is no path where a removal runs unanswered.
+  deleteReplies = deleteTurn();
+  const ungated = await streamCoachReply(
+    [{ id: 'u3', role: 'user', content: 'delete that lunch', createdAt: 0 }],
+    { onToken: () => {}, now: () => NOW }
+  );
+  await apiKeyStore.clearKey();
+  ungated.toolCalls[0]?.declined === true && getMeal(db, lunchId) !== undefined
+    ? ok('with no gate to answer it, a delete is declined and the meal stays')
+    : bad('an ungated delete ran', JSON.stringify(ungated.toolCalls[0]));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

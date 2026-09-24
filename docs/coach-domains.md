@@ -1,6 +1,7 @@
 # The Coach domain registry
 
 **Built 2026-09-19.** Implements Phases 0–2 of `docs/spikes/coach-whole-app-access.md`.
+**Deletion widened 2026-09-23** to follow the screens (§10a; ADR in `docs/decisions.md`).
 Spec of record for `src/lib/ai/domains/*` and `src/lib/ai/tools/record-tools.ts`.
 Read this before adding a domain, a field, or a removal policy.
 
@@ -26,8 +27,11 @@ against real SQLite (`db/coach-domains.test.mjs`).
 
 > **Parity with the screens, through the repositories, never past them.**
 > A domain the user can read on a screen is readable; a change the user can make on a screen is
-> proposable; a deletion the user can make on a screen is the Coach's only where it is undo, not
-> history.
+> proposable; a deletion the user can make on a screen is proposable too, behind a card that names
+> what goes.
+
+The last clause read *"…is the Coach's only where it is undo, not history"* until 2026-09-23, when
+the owner reversed it (§10a). Deletion now obeys the same rule as every other act.
 
 Every `read`, `edit`, `create` and `remove` in the registry calls the same repository function the
 matching screen calls. **No entry writes SQL**, and there is no `run_query` tool — the audit rejected
@@ -50,7 +54,7 @@ boundary (`src/lib/db/date.ts`), unit conversion, tombstones, provenance columns
 | `create?` / `createVia?` | a create path, or the bespoke tool that owns it |
 | `summarize(args)` | the one human line the confirmation card shows |
 | `selfEvident?(args)` | short card vs long. **Absent means long** |
-| `remove?` | `refuse` \| `hard` \| `own` |
+| `remove?` | `hard` (with `gone`, the card's date-and-figures line, and `run`, the screen's own delete) \| `refuse` (with `because`, naming where the row lives). Every domain that holds rows declares one |
 | `retires?` | the `UNCOVERED_DOMAINS` lines this entry makes false |
 
 A `DomainRow` is `{ id, name, values, raw }`. `values` is load-bearing twice over: it is the "was X"
@@ -62,9 +66,9 @@ half of the card, and it is what the staleness guard re-reads.
   reads is *absent from the enum*, so the schema itself steers the model to `get_protocols` rather
   than leaving two paths to one answer and a rule in the prompt about which to prefer.
 - **`edit_record`** takes domains that can be patched or created.
-- **`delete_record`** takes the smaller removable set, so the schema refuses the rest at zero round
-  trips. Deletion is a separate tool on purpose: **a removal must never be a *value* the model can
-  set in passing.**
+- **`delete_record`** takes the `hard` set — the domains whose screen offers a delete — so the
+  schema refuses the rest at zero round trips. Deletion is a separate tool on purpose: **a removal
+  must never be a *value* the model can set in passing.**
 
 ## 4. The rails a generic write passes through
 
@@ -86,6 +90,15 @@ half of the card, and it is what the staleness guard re-reads.
 
    A throw means no receipt is minted (receipts live past `execute`), the thread shows the chip with
    no receipt, and the model re-proposes once against a fresh card.
+
+   `delete_record` re-reads the same values **and the whole line the card printed**, because a
+   removal card prints figures that are not fields — a meal's kcal, a session's sets, a protocol's
+   version count. A line that no longer matches refuses, quoting both:
+
+   > `That meal changed while the card was open (the card said "Delete meal "Pasta" — 2026-09-23 20:00 · 700 kcal", it now reads "… 640 kcal"). Nothing deleted. Read it again and propose once more.`
+
+   A row deleted on its own screen while the card was open refuses too (`No meal with id …`), so the
+   Coach never mints a receipt for a removal the user made by hand.
 5. **The receipt** is the card line the user approved, recorded in `ai_messages.tool_calls`. It is
    unforgeable by prose, and it survives a tool being retired.
 
@@ -122,6 +135,12 @@ not a row this registry can address at all, because it lives in `knowledge_chunk
 'arc-longevity-v1' AND entry_id IS NULL` and the knowledge domain reads `knowledge_entries`, so a
 pack chunk's id is simply an unknown id; hard deletion of memories and knowledge; workout drafts,
 the pending-estimate queue, the timezone observer's rows, the conversation store; and any URL fetch.
+
+**Hard deletion of memories and knowledge survived the 2026-09-23 widening on purpose** (§10a),
+and is now a `refuse` whose text names the archive and the screen — asserted in
+`db/coach-domains.test.mjs` §4d. Both screens do delete permanently; the Coach's removal is the
+ARCHIVE (`edit_record { status: "archived" }`), which the user can restore, and a hard delete as
+well would be two tools for "forget that", the overlap the fold exists to remove.
 
 **Day modes are not a domain.** They were retired in 0061 and their repository is a read-only shim
 over frozen history. Mission rows are not a domain either — they are `adjust_today`'s.
@@ -199,36 +218,97 @@ clear of Haiku's 4,096-token cache floor, which the pass's whole economics depen
 
 ## 10. The writes (Commit C, 2026-09-19) — twenty-six domains
 
-`edit_record` reaches **18**; `delete_record` reaches **11**. The two sets are different on
-purpose.
+`edit_record` reaches **18**; `delete_record` reaches **12** (11 until 2026-09-23, when `protocols`
+joined it). The two sets are different on purpose.
 
 | Domain | Editable | Removable | Why |
 | --- | --- | --- | --- |
-| `meals` | name, date, time, notes | **own** | macros are read-only: an itemized total is the sum of its items and must not disagree with them |
-| `workouts` | kind, date, duration, notes, `away` | **own** | `sets` is not a field — `replaceWorkout` deletes and re-inserts them |
+| `meals` | name, date, time, notes | hard (was **own**) | macros are read-only: an itemized total is the sum of its items and must not disagree with them |
+| `workouts` | kind, date, duration, notes, `away` | hard (was **own**) | `sets` is not a field — `replaceWorkout` deletes and re-inserts them |
 | `water` | ml | hard | manual rows only; a device row refuses at resolve |
 | `food_catalog` | name, brand, per-100 macros, basis, favourite | hard | `meal_items.food_id` is SET NULL and every item carries its own snapshot |
 | `meal_templates` | name, notes | hard | a stamp, never a record of a day |
 | `saved_workouts` | name | hard | `workouts.routine_id` is SET NULL |
-| `exercise_catalog` | `status: archived` | — | `routine_exercises` CASCADES, so archive is the only safe retirement |
+| `exercise_catalog` | `status: archived` | refuse | `routine_exercises` CASCADES, so archive is the only safe retirement |
 | `recipes` | title, servings, notes, favourite | hard | `meals.recipe_id` and `grocery_items.recipe_id` are SET NULL |
 | `grocery` | name, qty, `status` (incl. **uncheck**), staple | hard | a working list |
 | `screenings` | name, category, notes, next_due · **create** | hard (= untrack) | `interval_months` stays off the Coach — a clinical decision |
 | `appointments` | title, provider, when, location, notes, status · **create** | hard | a booking that never happened is not a day |
 | `muscle_anchors` | freshness | hard (= clear) | an override of a derived figure |
-| `protocols` | name, type, description, active, carry-over, check-off mode, start date | **refuse** | `content` is not a field: `update_protocol` takes the complete set |
+| `protocols` | name, type, description, active, carry-over, check-off mode, start date | hard (was **refuse**) | `content` is not a field: `update_protocol` takes the complete set |
 | `settings` | date of birth, sex, five units, day boundary, goal direction, water target | — | Q3(a). The API key, app lock, Health sync and backups are **not here** |
-| reminders · experiments · memories · knowledge | `status` | — | the Commit A fold |
+| reminders · experiments · memories · knowledge | `status` | refuse | the Commit A fold; the status IS the removal |
 
-**`own` is the undo, and it derives.** Every write tool returns its new row's id; the service
-records the result in `ai_messages.tool_calls`; `idsWrittenInConversation` reads that back for THIS
-thread. No migration, no new column. With no conversation it is empty, which is the fail-closed
-answer. It is scoped to the thread rather than to "the Coach, ever", because the latter is a licence
-over every row it ever logged — history, not undo.
+**`own` WAS the undo, and it is gone** (2026-09-23, §10a). It derived "did this thread's Coach write
+it?" from `ai_messages.tool_calls` (`idsWrittenInConversation`, with `conversationId` threaded into
+every tool's context for it). Both are deleted rather than left dormant: nothing reads them, and a
+revert of the 2026-09-23 commit restores them whole.
 
-**Q2(b) supersedes a shipped rule**, and the ADR in `docs/decisions.md` records exactly how far:
-correction is not rewriting, deletion is undo. Mission rows are still `adjust_today`'s alone, and a
-logged metric or capture is still untouchable — by *parity*, since no repository function edits one.
+**Q2(b) superseded a shipped rule**, and its ADR in `docs/decisions.md` records how far: correction
+is not rewriting. Its other half — *deletion is undo* — is itself superseded by the 2026-09-23 ADR.
+Mission rows are still `adjust_today`'s alone, and a logged metric or capture is still untouchable —
+by *parity*, since no repository function edits or deletes one.
+
+## 10a. Deletion by parity (2026-09-23)
+
+The owner, on a device check that asked the Coach to delete something it had just written and then
+something he had logged himself (*the first should work, the second must be refused*):
+
+> *"coach should actually be able to delete both. guardrails of needing approval should be in place
+> but the coach should just be intelligent enough to only delete the right things when it is
+> supposed to"*
+
+So deletion follows the principle every other act follows: **what a screen can delete, the Coach may
+delete, through the function that screen calls, behind the card.** There is no rule about which
+rows or when — that is the model's judgment, and the user's Approve. The card is the whole
+guardrail, so it is held to four things, each asserted in `db/coach-domains.test.mjs` §4d and §6:
+
+1. **It says exactly what goes** — the row's name, its day, and its figures, from the domain's
+   `gone` (`Delete meal "Salmon bowl" — 2026-09-23 12:30 · 700 kcal · P 45g · C 60g · F 20g ·
+   2 items · 1 photo`). Its consequence lane says the row is deleted *for good* and that there is no
+   undo.
+2. **It is re-read past the gate** — values and printed line both (§4). A moved row refuses.
+3. **It is never the brief card and never approved on anyone's behalf.** `confirmMeta` is
+   `{ kind: 'delete', selfEvident: false }` for every call; with no gate present the service
+   declines. One call removes one row — nothing batches a removal into another write's card.
+4. **It CASCADES only into the row's own parts** — items, sets, photos, versions — which the card
+   counts. Every other reference is SET NULL, walked over every table (so a future CASCADE fails the
+   suite).
+
+### The walk — every domain, and every screen delete in `app/`
+
+| Domain | The screen that deletes it | Function | Now | Why |
+| --- | --- | --- | --- | --- |
+| `meals` | Eat › meal, *Delete this meal* (`meal-detail.tsx`) | `deleteMealWithPhotos` | **allowed** (was own) | the screen's function, not bare `deleteMeal`: the CASCADE takes photo rows and leaves the files |
+| `workouts` | Train › session, *Delete session* (`workout-live.tsx`) | `deleteWorkout` | **allowed** (was own) | sets are its own parts; the watch's paired session stays |
+| `water` | Water, *Remove* (`water.tsx`); the Log tab's quick-add undo | `deleteWaterEntry` | allowed | manual rows only — a device row refuses at resolve |
+| `protocols` | Protocols › settings, *Delete protocol* (`protocol-settings.tsx`) | `deleteProtocol`, then `rederiveMissionFromToday` | **allowed** (was refuse) | its refusal asked for a screen "that shows what it would take with it"; the card now shows it — versions go, logged days keep their entries, unlinked |
+| `meal_templates` | Eat › templates (`meal-templates.tsx`) | `deleteTemplate` | allowed | a stamp, never a day |
+| `saved_workouts` | Train › saved workout (`routine-edit.tsx`) | `deleteRoutine` | allowed | sessions keep their sets (SET NULL) |
+| `recipes` | Eat › recipe (`recipe-detail.tsx`) | `deleteRecipe` | allowed | cooked meals keep their macros (SET NULL) |
+| `grocery` | Grocery, swipe (`grocery.tsx`) | `removeGroceryItem` | allowed | a working list |
+| `screenings` | Data › Screenings (`screening-form.tsx`) | `deleteScreening` | allowed | appointments stay (SET NULL) |
+| `appointments` | the appointment form (`appointment-form.tsx`) | `deleteAppointment` | allowed | — |
+| `muscle_anchors` | Train › muscle freshness (`muscle-freshness.tsx`) | `clearMuscleAnchor` | allowed | a clear of nothing refuses at card time |
+| `food_catalog` | **none** — `deleteFood` has no caller in `app/` | `deleteFood` | allowed, **ahead of the screens** | set 2026-09-19, before deletion followed the screens; strands nothing. The owner's call: a screen gains the delete, or the Coach loses it |
+| `memories` | Data › Knowledge base › a memory, *Delete* (`coach-memory.tsx`) | `deleteMemory` | **refused — held below parity** | §7: the Coach's removal is the restorable archive; the hard delete stays the owner's |
+| `knowledge` | Data › Knowledge base › Archived, *Delete* (`knowledge.tsx`) | `deleteKnowledgeEntry` | **refused — held below parity** | as memories; the screen deletes an archived entry only |
+| `progress_photos` | Data › Progress photos › a photo (`progress-photo-detail.tsx`) | `deleteProgressPhotoWithFiles` | **refused — held below parity** | Q4(a) opened these read-only, "no pixels, no writes" |
+| `reports` | Data › Reports › a report (`report-view.tsx`) | `deleteReport` | **refused — held below parity** | Q4(a) |
+| `captures` | none — the Log tab's rows carry no action, and `logs.ts` has no delete | — | refused, names the Log tab | parity |
+| `protocol_versions` | none — Versions restores an old one, never removes it | — | refused | immutable; what a past day was lived under |
+| `lab_reports` | none — `deleteLabReport` has no caller | — | refused, names Data › Labs | parity; its results would CASCADE |
+| `reminders` | none — dismissal ends one | — | refused → `status: dismissed` | — |
+| `experiments` | none — concluded or abandoned | — | refused → `status` | — |
+| `exercise_catalog` | none — archive only | — | refused → `status: archived` | `routine_exercises` CASCADE |
+| `settings` · the three compute domains | nothing to delete | — | — | no rows |
+
+**Held below parity** means a screen deletes it and an earlier owner call keeps the Coach out; each
+is one `remove` entry to open, and the refusal says where the user does it. **Not domains, and
+unchanged:** a mission row (`adjust_today`'s, and its settled past stands); a lab result under a
+report; an item inside a meal (the meal's item editor); recipe folders; a photo's reading; workout
+drafts and the conversation store (§7); the grocery list's batch clears (the Coach removes one line
+at a time).
 
 ## 11. The card learned two things
 
@@ -240,13 +320,18 @@ one-off is self-evident, `dismissed` is not, and a set of names cannot say that.
 
 `kind: 'delete'` is the first time the card can word a removal as one: its fixed "this is written to
 your on-device record" line is false of a delete, and until now there was nothing to branch on.
+Since 2026-09-23 that lane reads *"This row is deleted from your on-device record for good. There is
+no undo."* — the write copy's "once" was never true of a removal — and the summary above it names
+the row's day and figures (§10a).
 
 ## 12. Adding a domain
 
 1. Write it in the right area file under `src/lib/ai/domains/`, or a new one.
 2. Call the repository function the screen calls. Nothing else.
-3. Give it a `remove` only if a screen can remove it, and never `hard` on anything that is a record
-   of a day.
+3. If it holds rows, give it a `remove` — the suite fails a domain that says nothing. `hard` when a
+   screen deletes it, with `run` calling that screen's function (and whatever the screen runs next)
+   and `gone` printing the row's day and figures; a record of a day is no exception. `refuse` when
+   no screen does, with `because` naming where the row lives. Map its table in §4d's CASCADE walk.
 4. If it makes an `UNCOVERED_DOMAINS` line false, put that exact line in `retires` and delete it
    from `src/lib/ai/tools/index.ts`. The suite fails if you do one and not the other.
 5. Re-measure the two ceilings. A new enum key is ~3 tokens; a new field is 0.
@@ -278,8 +363,9 @@ and this file records why. No ceiling was raised, so none has to be lowered.
 
 **Phase 2 (commit C), over its own week:**
 
-6. a `delete_record` refused by policy — a `refuse` domain, or `own` on a row this thread's Coach
-   did not write — **more than twice**: the model reaching for deletion;
+6. a `delete_record` refused by policy — a `refuse` domain — **more than twice**: the model reaching
+   for deletion where no screen offers one (until 2026-09-23 this also counted `own` on a row the
+   thread's Coach did not write; that refusal no longer exists);
 7. an `edit_record` create refused for a bespoke-create domain **more than twice**: the
    prefer-the-specific-tool doctrine is not holding;
 8. a staleness refusal **more than once**;
@@ -287,6 +373,16 @@ and this file records why. No ceiling was raised, so none has to be lowered.
    say**.
 
 Any of (6)–(9) → **revert commit C**. Phase 1 stands, because C adds capability and A/B add none.
+
+**Deletion by parity (2026-09-23), over its own week:**
+
+10. **a deletion the owner did not intend** — a removal he approved and wanted back, or one proposed
+    on a row he never asked about. **One is enough.** An edit can be corrected afterwards; a
+    deletion cannot, and the phone holds the only copy of the data.
+
+(10) → **revert the 2026-09-23 commit**: deletion returns to undo-only (`own`, and the
+`conversationId` it reads, come back with it), and commit C stands. Nothing else has to move — no
+migration was involved, and both ceilings were lower after it than before.
 
 **Also unmeasured until a device says:** time to first token with the new prefix; whether a
 six-field before → after card is legible in the serif voice at phone width (a Conformed Set judgment

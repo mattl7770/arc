@@ -296,13 +296,15 @@ export const UNCOVERED_DOMAINS: string[] = [
   // the CANNOT-see list to the read-and-write one. What remains uncovered is
   // what it always was: a logged meal, workout, metric or capture, once
   // written, can only be changed on its own screen.
-  // REWRITTEN 2026-09-19 for the owner's Q2(b) answer, which SUPERSEDES the
-  // rule this line carried (ADR in docs/decisions.md). A meal, a workout and a
-  // water entry are now editable behind a before → after card, and deletable
-  // only as an UNDO of a row this conversation's Coach wrote. What is left
-  // uncovered is what has no repository edit path at all — the Log tab's own
-  // rows, which the user corrects where they were written.
-  'correcting a logged metric or a capture — its row in the Log tab',
+  // REWRITTEN 2026-09-19 for the owner's Q2(b) answer, which SUPERSEDED the
+  // rule this line carried (ADR in docs/decisions.md), and WIDENED 2026-09-23
+  // when the owner reversed Q2(b)'s undo-only half. A meal, a workout and a
+  // water entry are editable behind a before → after card and deletable behind
+  // a card naming their day and figures, exactly as their screens allow. What
+  // is left uncovered is what no screen edits OR deletes — the Log tab's own
+  // rows — so the line now says both, rather than leaving the model to infer
+  // that a row it cannot correct is one it may still remove.
+  'correcting or deleting a logged metric or a capture — its row in the Log tab',
   // NARROWED 2026-09-19 for Q3(a): profile, units, the day boundary, the goal
   // direction and the water target are a registry domain now. What stays out
   // is the security boundary, not a preference.

@@ -15,6 +15,11 @@
  * model's SELECTION behaviour over a domain enum is the one thing the headless
  * suite cannot measure, so the read path shipped first and alone.
  *
+ * Every domain here that holds rows says whether they can be removed, and a
+ * removal follows the screens exactly as a read does (the owner's 2026-09-23
+ * call): `hard` calls the function the screen's own delete calls, and
+ * `refuse` names where the row lives when no screen deletes it.
+ *
  * ## `list` vs `compute`, and why the distinction is in the type
  *
  * A `list` domain returns ROWS, each carrying the id a write would address. A
@@ -34,7 +39,7 @@
  * the model gets is what it could be asked about: a photo's date, pose and the
  * text of any stored reading; a report's kind, period and when it was made.
  */
-import { shiftISODate, todayISODate } from '@/lib/db/date';
+import { clockFromISO, shiftISODate, todayISODate } from '@/lib/db/date';
 import {
   archiveExercise,
   getExercise,
@@ -62,10 +67,10 @@ import {
 import {
   dayFiberTotal,
   dayMicroTotals,
-  deleteMeal,
   getMeal,
   listMealItems,
   listTodayMeals,
+  mealPhotoFileNames,
   updateMealMeta,
   updateMealTime,
 } from '@/lib/db/repositories/nutrition';
@@ -85,11 +90,22 @@ import {
   personalRecords,
 } from '@/lib/db/repositories/training-stats';
 import { getPreferences } from '@/lib/db/repositories/user';
-import { deleteWaterEntry, listWaterEntries, updateWaterEntry } from '@/lib/db/repositories/water';
+import {
+  deleteWaterEntry,
+  listWaterEntries,
+  updateWaterEntry,
+  type WaterEntry,
+} from '@/lib/db/repositories/water';
+import type { RoutineDetail } from '@/lib/exercise/types';
+import { deleteMealWithPhotos } from '@/lib/media/meal-photo-store';
+import { fmtAmount, fmtInt, macroLine } from '@/lib/nutrition/format';
+import type { FoodRow, MealRow } from '@/lib/nutrition/types';
 
 import {
   describeEdit,
+  listed,
   numberField,
+  plural,
   textField,
   timeField,
   dateField,
@@ -108,6 +124,18 @@ const ro = (note: string): DomainField => ({
     throw new Error('read-only');
   },
 });
+
+/** "812 kcal · P 60g · C 90g · F 20g" — the Eat screens' own macro line. */
+function macrosOf(row: {
+  kcal: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+  fat_g: number | null;
+}): string {
+  const parts = [row.kcal === null ? null : `${fmtInt(row.kcal)} kcal`, macroLine(row)];
+  const shown = parts.filter((p): p is string => p !== null);
+  return shown.length > 0 ? shown.join(' · ') : 'no figures recorded';
+}
 
 /** Every logical day in [from, to], capped at `limit`, newest first. */
 function daysIn(args: DomainReadArgs, fallbackDays: number): string[] {
@@ -177,13 +205,36 @@ const mealsDomain: CoachDomainEntry = {
       updateMealTime(db, row.id, { date: next.date, time: next.time });
     }
   },
-  // UNDO, not history (the owner's Q2 answer). A meal is a record of a day, so
-  // it goes only when THIS conversation's Coach logged it.
-  remove: { mode: 'own', run: (db, row) => deleteMeal(db, row.id) },
-  // The line the owner's Q2(b) answer SUPERSEDES (ADR, docs/decisions.md). It
-  // is replaced by a narrower one, not simply dropped: a logged metric and a
-  // capture still have no repository edit path, so the Coach still cannot
-  // touch them.
+  // HARD, through the meal screen's own delete (app/meal-detail.tsx). A record
+  // of a day, and removable anyway: the user can delete it by hand, so the
+  // Coach may too — behind a card naming its day, its figures, its items and
+  // its photos (the owner's 2026-09-23 call, reversing the 2026-09-19 undo-only
+  // rule). `deleteMealWithPhotos`, never bare `deleteMeal`: the CASCADE takes
+  // the photo ROWS and leaves the files, which is why the screen routes through
+  // it. The items, the photos and a pending estimate are the meal's own parts.
+  remove: {
+    mode: 'hard',
+    gone: (db, row) => {
+      const meal = row.raw as MealRow;
+      // What the meal screen draws as lines: a composite's parts sit under
+      // their header, so the header is the line and its parts are not.
+      const lines = listMealItems(db, row.id).filter((i) => i.parent_item_id === null).length;
+      const photos = mealPhotoFileNames(db, row.id).length;
+      return [
+        meal.time ? `${meal.date} ${meal.time}` : meal.date,
+        macrosOf(meal),
+        lines > 0 ? plural(lines, 'item') : null,
+        photos > 0 ? plural(photos, 'photo') : null,
+      ]
+        .filter((p): p is string => p !== null)
+        .join(' · ');
+    },
+    run: (db, row) => deleteMealWithPhotos(db, row.id),
+  },
+  // The line the owner's Q2(b) answer SUPERSEDED (ADR 2026-09-19). It is
+  // replaced by a narrower one, not simply dropped: a logged metric and a
+  // capture still have no repository edit path and no screen delete, so the
+  // Coach still cannot touch them — by parity, not by policy.
   retires: [
     'editing or deleting anything already logged — a meal, workout, metric, capture (its screen in Eat, Train or Data)',
   ],
@@ -304,7 +355,25 @@ const foodCatalogDomain: CoachDomainEntry = {
   // every logged item carries its own macro snapshot, so eating history
   // survives catalog churn untouched. The same holds for recipe ingredients
   // (0031) and template items (0018).
-  remove: { mode: 'hard', run: (db, row) => deleteFood(db, row.id) },
+  //
+  // THE ONE REMOVAL AHEAD OF THE SCREENS. No screen deletes a catalog food —
+  // `deleteFood` has no caller in app/ — and this policy was set on 2026-09-19,
+  // before deletion followed the screens. It is kept because it strands
+  // nothing; whether a screen gains the delete or the Coach loses it is the
+  // owner's call, recorded in the 2026-09-23 ADR rather than decided here.
+  remove: {
+    mode: 'hard',
+    gone: (_db, row) => {
+      const food = row.raw as FoodRow;
+      return `per 100 ${food.basis}: ${macrosOf({
+        kcal: food.kcal_100g,
+        protein_g: food.protein_g_100g,
+        carbs_g: food.carbs_g_100g,
+        fat_g: food.fat_g_100g,
+      })}`;
+    },
+    run: (db, row) => deleteFood(db, row.id),
+  },
   read: {
     kind: 'list',
     run: (db, args) => {
@@ -371,8 +440,17 @@ const mealTemplatesDomain: CoachDomainEntry = {
     renameTemplate(db, row.id, { name: next.name, notes: next.notes });
   },
   // HARD: a template is a stamp, never a record of a day. Logged meals copied
-  // its items as snapshots and are untouched by its removal.
-  remove: { mode: 'hard', run: (db, row) => deleteTemplate(db, row.id) },
+  // its items as snapshots and are untouched by its removal. The figures are
+  // the templates screen's own sums (`listTemplates`), not a second addition.
+  remove: {
+    mode: 'hard',
+    gone: (db, row) => {
+      const summary = listTemplates(db).find((t) => t.template.id === row.id);
+      if (!summary) return plural(0, 'item');
+      return `${plural(summary.itemCount, 'item')} · ${macrosOf(summary)}`;
+    },
+    run: (db, row) => deleteTemplate(db, row.id),
+  },
   read: {
     kind: 'list',
     run: (db, args) =>
@@ -476,9 +554,18 @@ const waterDomain: CoachDomainEntry = {
     }
   },
   // HARD, and narrowly: `deleteWaterEntry` refuses a device row itself, and no
-  // foreign key points at a manual wearable row, so nothing is stranded.
+  // foreign key points at a manual wearable row, so nothing is stranded. The
+  // water screen's own Remove, and the Log tab's quick-add undo, both call it.
   remove: {
     mode: 'hard',
+    // The name carries the canonical ml and the day; the card adds the clock
+    // it was logged at and, for an oz user, the figure as they entered it.
+    gone: (db, row) => {
+      const entry = row.raw as WaterEntry;
+      const volume = getPreferences(db).units.volume;
+      const asEntered = volume === 'oz' ? `${fmtAmount(entry.ml, 'ml', 'oz')}, ` : '';
+      return `${asEntered}logged at ${clockFromISO(entry.at)}`;
+    },
     run: (db, row) => {
       if (!deleteWaterEntry(db, row.id)) {
         throw new Error('That water entry could not be deleted — it may be a device row.');
@@ -533,6 +620,14 @@ const capturesDomain: CoachDomainEntry = {
     },
   },
   createVia: 'log_capture',
+  // PARITY, and it refuses: the Log tab draws a capture and offers no delete
+  // (repositories/logs.ts has none to call), so neither does the Coach.
+  remove: {
+    mode: 'refuse',
+    because:
+      'A logged capture has no delete on any screen, so it has none here either. ' +
+      'It stays on its day in the Log tab.',
+  },
 };
 
 // --- protocol adherence ------------------------------------------------------
@@ -635,7 +730,14 @@ const exerciseCatalogDomain: CoachDomainEntry = {
   // saved workout that used the movement. `archiveExercise` takes it out of the
   // catalog and leaves every set, every PR and every routine line intact — the
   // difference between retiring a movement and erasing the training that used
-  // it. So the domain has NO `remove`, and the retirement is a status patch.
+  // it. No screen deletes one either, so the domain REFUSES removal and the
+  // retirement is a status patch.
+  remove: {
+    mode: 'refuse',
+    because:
+      'No screen deletes a catalog exercise: saved-workout lines cascade from it. ' +
+      'Retire it with edit_record { status: "archived" }, which keeps every set and record.',
+  },
   read: {
     kind: 'list',
     run: (db, args) =>
@@ -705,7 +807,18 @@ const savedWorkoutsDomain: CoachDomainEntry = {
   // HARD: a routine is a plan, not a record of a day, and `workouts.routine_id`
   // is ON DELETE SET NULL (0013) — the sessions performed from it keep every
   // set and simply stop naming a template that no longer exists.
-  remove: { mode: 'hard', run: (db, row) => deleteRoutine(db, row.id) },
+  remove: {
+    mode: 'hard',
+    gone: (_db, row) => {
+      const routine = row.raw as RoutineDetail;
+      const sets = routine.exercises.reduce((n, x) => n + x.targetSets, 0);
+      const names = routine.exercises.map((x) => x.exerciseName);
+      return `${plural(sets, 'set')} of ${plural(names.length, 'exercise')}${
+        names.length > 0 ? `: ${listed(names)}` : ''
+      }`;
+    },
+    run: (db, row) => deleteRoutine(db, row.id),
+  },
   // "Saved workouts (Train)" was a CANNOT line. The parked Modes revamp assumes
   // the Coach can adjust the workout plan itself, and no tool reached a saved
   // workout at all — this is the read half of closing that.
@@ -749,6 +862,12 @@ const protocolVersionsDomain: CoachDomainEntry = {
   // The history `get_protocols` cannot show: it returns the LIVE version only,
   // and "what did this look like in August" had no answer. Immutable rows, so
   // there is nothing here to edit — a past version is restored on its screen.
+  remove: {
+    mode: 'refuse',
+    because:
+      'A protocol version is the immutable record a past day was lived under, and no screen ' +
+      'deletes one: Protocols › the protocol › Versions restores an old one, never removes it.',
+  },
   read: {
     kind: 'list',
     run: (db, args) => {
@@ -783,6 +902,14 @@ const labReportsDomain: CoachDomainEntry = {
   },
   // The report LIST, not the PDF. `get_biomarkers` answers "what is my ApoB";
   // this answers "when was I last drawn, and how much did that panel cover".
+  // `deleteLabReport` exists and no screen calls it — so, by parity, the Coach
+  // does not either. Its results would CASCADE with it (0001).
+  remove: {
+    mode: 'refuse',
+    because:
+      'No screen deletes a lab report, and its results would go with it. ' +
+      'It stays in Data › Labs.',
+  },
   read: {
     kind: 'list',
     run: (db, args) =>
@@ -816,6 +943,18 @@ const progressPhotosDomain: CoachDomainEntry = {
   // pixels are not here and never will be: what the model gets is the dates,
   // the poses and the TEXT of any reading the user already asked for on the
   // screen. A reading is only ever generated there, on demand.
+  //
+  // HELD BELOW PARITY. The photo screen does delete (with its files), and the
+  // 2026-09-23 parity rule would reach it — but Q4(a) opened these as
+  // read-only, "no pixels, no writes", and the owner's deletion call was about
+  // logged rows. Opening it is this one entry: `hard` over
+  // `deleteProgressPhotoWithFiles`, the screen's own function.
+  remove: {
+    mode: 'refuse',
+    because:
+      'Progress photos are read-only to you by the owner’s call: no pixels, no writes. ' +
+      'The user deletes one on Data › Progress photos.',
+  },
   read: {
     kind: 'list',
     run: (db, args) =>
@@ -861,6 +1000,14 @@ const reportsDomain: CoachDomainEntry = {
   // a preview the doctrine requires anyway, and no model prose ever enters a
   // doctor pack (docs/reports-subapp.md). What this fixes is narrower and real:
   // the Coach denying the feature exists when asked about a past report.
+  // HELD BELOW PARITY for the same Q4(a) reason as photos: the report screen
+  // deletes one (`deleteReport`), and opening it is this one entry.
+  remove: {
+    mode: 'refuse',
+    because:
+      'Generated reports are read-only to you by the owner’s call. ' +
+      'The user deletes one on Data › Reports.',
+  },
   read: {
     kind: 'list',
     run: (db, args) =>

@@ -38,6 +38,14 @@
  * `archived` and nothing else: there is no un-archive here, and editing a
  * memory's text is still `forget` then `remember` — two gates on the store the
  * Coach reads itself.
+ *
+ * **None of the four is removable, and each refusal names the status that ends
+ * it.** Reminders and experiments have no delete on any screen. Memories and
+ * knowledge entries DO — the permanent delete on their own screens — and are
+ * held below parity on purpose (docs/coach-domains.md §7): the Coach's removal
+ * is the ARCHIVE, which the user can restore, and giving it the hard delete as
+ * well would be two tools for "forget that", the overlap the fold exists to
+ * remove.
  */
 import { todayISODate } from '@/lib/db/date';
 import { forgetMemory, getMemory } from '@/lib/db/repositories/coach-memory';
@@ -142,6 +150,12 @@ const remindersDomain: CoachDomainEntry = {
     }
     dismissReminder(db, row.id);
   },
+  remove: {
+    mode: 'refuse',
+    because:
+      'No screen deletes a reminder: it ends by dismissal, ' +
+      'edit_record { status: "dismissed" }.',
+  },
 };
 
 // --- experiments -------------------------------------------------------------
@@ -219,6 +233,12 @@ const experimentsDomain: CoachDomainEntry = {
     }
     abandonExperiment(db, exp.id, patch.reason as string);
   },
+  remove: {
+    mode: 'refuse',
+    because:
+      'No screen deletes an experiment: it ends concluded or abandoned, ' +
+      'through edit_record { status }. Experiments lists it either way.',
+  },
 };
 
 // --- durable memories --------------------------------------------------------
@@ -247,6 +267,12 @@ const memoriesDomain: CoachDomainEntry = {
   summarize: ({ row }) => `Forget: "${row!.name}"`,
   edit: (db, row) => {
     forgetMemory(db, row.id);
+  },
+  remove: {
+    mode: 'refuse',
+    because:
+      'Forget it with edit_record { status: "archived" }, which the user can restore. ' +
+      'The permanent delete is theirs, on the memory’s own screen in Data › Knowledge base.',
   },
 };
 
@@ -297,6 +323,12 @@ const knowledgeDomain: CoachDomainEntry = {
   summarize: ({ row }) => `Retire entry "${row!.name}"`,
   edit: (db, row) => {
     archiveKnowledgeEntry(db, row.id);
+  },
+  remove: {
+    mode: 'refuse',
+    because:
+      'Retire it with edit_record { status: "archived" }. The permanent delete is the ' +
+      'user’s, on the Archived list in Data › Knowledge base.',
   },
   retires: [],
 };

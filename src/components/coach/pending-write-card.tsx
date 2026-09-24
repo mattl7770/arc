@@ -113,6 +113,12 @@ import type { PendingWrite } from '@/types/coach';
  * happens is that a row LEAVES the record. The card could not tell the two
  * apart until `PendingWrite` carried `kind`, so this is the first write shape
  * that has ever been able to say the true thing here.
+ *
+ * **And it says it is permanent** (2026-09-23). Once the Coach could delete a
+ * row the user logged by hand, this lane became the one place the card states
+ * the cost: there is no undo and the phone holds the only copy. The summary
+ * line above it names WHICH row — its day and its figures — and this line says
+ * what approving it does. The write copy's "once" was never true of a removal.
  */
 function ConsequenceLanes({ kind }: { kind: PendingWrite['kind'] }) {
   const removing = kind === 'delete';
@@ -133,7 +139,7 @@ function ConsequenceLanes({ kind }: { kind: PendingWrite['kind'] }) {
         </Text>
         <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink">
           {removing
-            ? 'This row leaves your on-device record, once.'
+            ? 'This row is deleted from your on-device record for good. There is no undo.'
             : 'This is written to your on-device record, once.'}
         </Text>
       </View>

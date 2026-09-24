@@ -4625,7 +4625,10 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
     'utf8'
   );
   card.includes("'This is written to your on-device record, once.'") &&
-  card.includes("'This row leaves your on-device record, once.'") &&
+  // The delete twin was rewritten when the Coach gained real deletion
+  // (2026-09-23 ADR): "leaves … once" became "deleted … for good. There is no
+  // undo." — the same fact, now that no undo sits behind it.
+  card.includes("'This row is deleted from your on-device record for good. There is no undo.'") &&
   card.includes('Nothing has been written. The Coach is suspended until you answer.')
     ? ok('the card still states where a write goes, that it happens once, and what NOW means')
     : bad('a consequence line went with the tail');

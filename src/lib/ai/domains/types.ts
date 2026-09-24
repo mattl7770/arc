@@ -29,7 +29,8 @@
  * ## Fail closed, everywhere
  *
  * `selfEvident` defaults to FALSE (the long confirmation card), `remove`
- * defaults to nothing (a domain with no `remove` cannot be deleted from), and
+ * defaults to nothing (a domain with no `remove` cannot be deleted from; the
+ * suite asserts every domain that holds rows says which), and
  * a field with `editable: false` throws at CARD time rather than being silently
  * dropped. The direction is the pending-write card's own
  * (src/components/coach/pending-write-card.tsx): a needlessly wordy card on a
@@ -108,20 +109,40 @@ export type DomainRead =
     };
 
 /**
- * Whether a row may be removed, and how.
+ * Whether a row may be removed, and how. PARITY WITH THE SCREENS, applied to
+ * deletion (the owner's call of 2026-09-23, docs/decisions.md).
  *
- *   - `refuse` — the row is a record of a day. The refusal NAMES the screen, so
- *     the answer is useful rather than merely a no.
- *   - `hard` — an object that is not a day (a recipe, a food, a saved workout).
- *     Every `hard` domain is asserted to have no CASCADE from a log table
- *     pointed at it, so a deletion can never strand history.
- *   - `own` — deletable only when THIS conversation's Coach wrote the row. The
- *     undo, not a licence over history.
+ *   - `hard` — a screen offers this delete, and `run` is what that screen
+ *     calls. A record of a day (a meal, a session, a water entry) is as
+ *     removable as an object, because the user can remove it by hand: the
+ *     guardrail is the card, never a rule about which rows. Every `hard` domain
+ *     is asserted to CASCADE only into its own parts (items, sets, versions),
+ *     so a deletion never strands another row's history.
+ *   - `refuse` — no screen offers this delete, or an owner call holds the
+ *     domain below parity. The refusal NAMES where the row lives and what to
+ *     do instead, so the answer is useful rather than merely a no.
+ *
+ * There is no third mode. `own` (delete only what THIS thread's Coach wrote)
+ * was the 2026-09-19 rule, and the owner reversed it: the model's judgment
+ * decides WHEN, and the card is where the user decides WHETHER.
  */
 export type RemovePolicy =
   | { mode: 'refuse'; because: string }
-  | { mode: 'hard'; run: (db: Database, row: DomainRow) => void }
-  | { mode: 'own'; run: (db: Database, row: DomainRow) => void };
+  | {
+      mode: 'hard';
+      /**
+       * What goes, as the card prints it after the name: the row's date and
+       * its figures ("2026-09-22 19:00 · 800 kcal · P 60g · 3 items"). The
+       * card is the only guardrail on an irreversible act against the only
+       * copy of the data, so a removal is never approved from a bare name. It
+       * is also the staleness re-read's second half: re-rendered past the
+       * gate, and a line that no longer matches refuses. Throw here for a
+       * knowable no-op, before an Approve tap is spent on it.
+       */
+      gone: (db: Database, row: DomainRow) => string;
+      /** The screen's own delete, and whatever that screen runs after it. */
+      run: (db: Database, row: DomainRow, context: CoachToolContext) => void;
+    };
 
 /**
  * A row as the registry sees it: never a bare id.
@@ -404,7 +425,21 @@ export function describeEdit(
   return `Edit ${label} "${row.name}" — ${changes.join(', ')}`;
 }
 
-/** The removal card. A deletion is worded as one, never as an edit. */
-export function describeDelete(label: string, row: DomainRow): string {
-  return `Delete ${label} "${row.name}"`;
+/**
+ * The removal card: the row's name, then what goes with it — its date and its
+ * figures (`RemovePolicy.gone`). A deletion is worded as one, never as an edit.
+ */
+export function describeDelete(label: string, row: DomainRow, gone: string): string {
+  return `Delete ${label} "${row.name}" — ${gone}`;
+}
+
+/** "1 set", "12 sets" — a removal card counts what goes with the row. */
+export function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
+}
+
+/** "Bench Press, Back Squat, Row +2 more" — enough names to recognise a row by. */
+export function listed(names: readonly string[], max = 3): string {
+  const shown = names.slice(0, max).join(', ');
+  return names.length > max ? `${shown} +${names.length - max} more` : shown;
 }

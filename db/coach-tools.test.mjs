@@ -2964,10 +2964,17 @@ console.log('36. the coverage manifest: the model is told what it CANNOT see');
   )
     ? ok('one INVITATION ONLY bullet covers all four tools that act on the record')
     : bad('the invitation-only doctrine is missing or no longer names all four tools');
-  // Q2(b) in the model's own copy: a record of a day is CORRECTED, not removed.
-  /a record of a day is corrected, never removed/.test(promptText)
-    ? ok('…and the deletion rule rides the same bullet, in one clause')
-    : bad('the delete doctrine is missing');
+  // The owner's 2026-09-23 call in the model's own copy. It REPLACED "a record
+  // of a day is corrected, never removed": deletion follows the screens, WHEN
+  // is judgment, and what the model is handed is the fact that makes judgment
+  // matter — the phone holds the only copy.
+  /delete_record removes ONE row for good, as its own screen would\. Nothing brings it back/.test(
+    promptText
+  ) && !/corrected, never removed/.test(promptText)
+    ? ok(
+        '…and the deletion doctrine rides the same bullet: parity and permanence, no undo-only rule'
+      )
+    : bad('the delete doctrine is missing or still says undo-only');
   promptText.includes('"Magnesium citrate upsets his stomach" is a memory.')
     ? ok('the memory-vs-knowledge litmus is in the prompt verbatim')
     : bad('memory/knowledge litmus missing');
