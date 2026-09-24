@@ -1,7 +1,16 @@
-import { Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 
 import { Block, GridCell } from '@/components/ui/block';
 import { SectionLabel } from '@/components/ui/section-label';
+import { palette } from '@/constants/theme';
+import { useMetricSync } from '@/hooks/use-metric-sync';
+import {
+  metricSyncCell,
+  NO_READING,
+  type MetricSyncCell,
+  type MetricSyncContext,
+} from '@/lib/home/metric-sync';
 import type { Metric, SignalLevel } from '@/types/home';
 
 import { signalConditionLabel, signalConditionSpoken, signalTextClass } from './signal';
@@ -71,10 +80,29 @@ import { signalConditionLabel, signalConditionSpoken, signalTextClass } from './
  * The cell is grouped for assistive tech and speaks as one phrase — "Sleep,
  * 7h 12m, good. Deep 42m." — because a label, a number and a condition read as
  * three separate items are three facts the listener has to reassemble.
+ *
+ * ## A blank is one tap from a sync (2026-09-23)
+ *
+ * Owner, from the device: *"when hrv is blank, put quick apple health sync
+ * button there"*. Any of the four cells whose reading has not arrived today
+ * becomes the control, decided per cell by src/lib/home/metric-sync.ts (every
+ * case, and why, is written there). The control REPLACES the em-dash in the
+ * value slot and the detail line beneath it says what the last pass found, so
+ * nothing is added around the grid and a cell is the same height in every
+ * state — the action row is held to the value line's 28pt.
+ *
+ * **No accent.** Home's accent budget is the hero, the completion stamps and
+ * the active tab (app/(tabs)/index.tsx), and 00-design-spec.md allows one
+ * primary action per screen — Home's is the hero's. A sync is a housekeeping
+ * verb beside a reading, so it takes the label voice in ink with a sync glyph —
+ * the register of the `PROTOCOLS ›` / `PLAN ›` links under the mission, not a
+ * filled button. No signal colour either: the control is chrome, and signal
+ * marks biology.
+ *
+ * The whole cell is the tap target — it clears 44pt without padding — and
+ * speaks as one button: "HRV, no reading today, none as of 07:02. Sync Apple
+ * Health."
  */
-
-/** What readiness.ts prints for a missing reading. Spoken, not read aloud. */
-const NO_READING = '—';
 
 /** Absent or `unknown` means ungraded: no word, no hue. */
 function gradedLevel(metric: Metric): SignalLevel | null {
@@ -88,17 +116,142 @@ function gradedLevel(metric: Metric): SignalLevel | null {
  * reading is missing the detail is dropped: every missing metric's detail is
  * "No data yet", and "no data. No data yet." is not worth a listener's time.
  */
-function metricSpoken(metric: Metric): string {
+function metricSpoken(metric: Metric, note: string | null): string {
   const level = gradedLevel(metric);
   const condition = level ? `, ${signalConditionSpoken(level)}` : '';
 
-  if (metric.value === NO_READING) return `${metric.label}, no data.`;
+  // A blank that has been explained ("Apple Health sent none in 14 days") says
+  // the explanation; one that has not says only that there is nothing.
+  if (metric.value === NO_READING) {
+    return note ? `${metric.label}, no data. ${note}.` : `${metric.label}, no data.`;
+  }
 
   const detail = metric.detail ? `. ${metric.detail}` : '';
   return `${metric.label}, ${metric.value}${condition}${detail}.`;
 }
 
-export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
+/** The small-caps name at the top of every cell, in every state. */
+function CellLabel({ label, level }: { label: string; level: SignalLevel | null }) {
+  return (
+    <View className="flex-row items-center justify-between gap-1.5">
+      <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+        {label}
+      </Text>
+      {level ? (
+        <Text
+          className={`font-label text-[10px] font-semibold uppercase tracking-[0.5px] ${signalTextClass(
+            level
+          )}`}>
+          {signalConditionLabel(level)}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+/** A reading, a plain blank, or a blank with its explanation beneath it. */
+function ReadingCell({ metric, note }: { metric: Metric; note: string | null }) {
+  const level = gradedLevel(metric);
+  const detail = note ?? metric.detail;
+
+  return (
+    <View accessible accessibilityRole="text" accessibilityLabel={metricSpoken(metric, note)}>
+      <CellLabel label={metric.label} level={level} />
+
+      <Text
+        className={`mt-1 font-mono text-lg font-semibold ${
+          level ? signalTextClass(level) : 'text-ink'
+        }`}>
+        {metric.value}
+      </Text>
+
+      {detail ? <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{detail}</Text> : null}
+    </View>
+  );
+}
+
+type ActionCell = Extract<MetricSyncCell, { kind: 'offer' | 'syncing' | 'connect' }>;
+
+/** What the action row says, and what the line under it says. */
+function actionCopy(cell: ActionCell): { verb: string; note: string } {
+  switch (cell.kind) {
+    case 'offer':
+      return { verb: 'Sync Apple Health', note: cell.note };
+    case 'syncing':
+      return { verb: 'Syncing', note: 'reading Apple Health' };
+    case 'connect':
+      return { verb: 'Connect', note: 'Apple Health sync is off' };
+  }
+}
+
+/**
+ * The blank, as a control. The action row sits exactly where the value did and
+ * is held to its 28pt line, so the grid does not jump when a pass starts or
+ * lands. A cell has no condition word here: there is no reading to grade.
+ */
+function ActionCellView({
+  metric,
+  cell,
+  onSync,
+  onOpenSettings,
+}: {
+  metric: Metric;
+  cell: ActionCell;
+  onSync: () => void;
+  onOpenSettings: () => void;
+}) {
+  const { verb, note } = actionCopy(cell);
+  const syncing = cell.kind === 'syncing';
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${metric.label}, no reading today, ${note}. ${verb}.`}
+      accessibilityState={{ disabled: syncing, busy: syncing }}
+      disabled={syncing}
+      onPress={cell.kind === 'connect' ? onOpenSettings : onSync}
+      className="active:opacity-60">
+      <CellLabel label={metric.label} level={null} />
+
+      <View className="mt-1 h-7 flex-row items-center gap-1.5">
+        {syncing ? (
+          <ActivityIndicator size="small" color={palette.inkMuted} />
+        ) : cell.kind === 'offer' ? (
+          <Ionicons name="sync-outline" size={14} color={palette.ink} />
+        ) : null}
+        <Text
+          className={`font-label text-[11px] font-semibold uppercase tracking-[1px] ${
+            syncing ? 'text-ink-muted' : 'text-ink'
+          }`}>
+          {verb}
+        </Text>
+        {cell.kind === 'connect' ? (
+          <Ionicons name="chevron-forward" size={12} color={palette.inkMuted} />
+        ) : null}
+      </View>
+
+      <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{note}</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * The grid itself, with the sync facts passed in — exported so the headless
+ * render suite can draw every state, which a server render of Home cannot
+ * reach (under node the HealthKit module is absent, so Home only ever shows
+ * the plain blank).
+ */
+export function MetricsGrid({
+  metrics,
+  context,
+  onSync,
+  onOpenSettings,
+}: {
+  metrics: Metric[];
+  context: MetricSyncContext;
+  onSync: () => void;
+  onOpenSettings: () => void;
+}) {
   return (
     <Block device="grid">
       <SectionLabel label="Metrics" note="Today" />
@@ -118,43 +271,38 @@ export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
       ) : (
         <View className="mt-2 flex-row flex-wrap">
           {metrics.map((metric, index) => {
-            const level = gradedLevel(metric);
+            const cell = metricSyncCell(metric, context);
 
             return (
               <GridCell key={metric.id} index={index} count={metrics.length}>
-                <View accessible accessibilityRole="text" accessibilityLabel={metricSpoken(metric)}>
-                  <View className="flex-row items-center justify-between gap-1.5">
-                    <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                      {metric.label}
-                    </Text>
-                    {level ? (
-                      <Text
-                        className={`font-label text-[10px] font-semibold uppercase tracking-[0.5px] ${signalTextClass(
-                          level
-                        )}`}>
-                        {signalConditionLabel(level)}
-                      </Text>
-                    ) : null}
-                  </View>
-
-                  <Text
-                    className={`mt-1 font-mono text-lg font-semibold ${
-                      level ? signalTextClass(level) : 'text-ink'
-                    }`}>
-                    {metric.value}
-                  </Text>
-
-                  {metric.detail ? (
-                    <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                      {metric.detail}
-                    </Text>
-                  ) : null}
-                </View>
+                {cell.kind === 'offer' || cell.kind === 'syncing' || cell.kind === 'connect' ? (
+                  <ActionCellView
+                    metric={metric}
+                    cell={cell}
+                    onSync={onSync}
+                    onOpenSettings={onOpenSettings}
+                  />
+                ) : (
+                  <ReadingCell metric={metric} note={cell.kind === 'none' ? cell.note : null} />
+                )}
               </GridCell>
             );
           })}
         </View>
       )}
     </Block>
+  );
+}
+
+export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
+  const control = useMetricSync();
+
+  return (
+    <MetricsGrid
+      metrics={metrics}
+      context={control.context}
+      onSync={control.sync}
+      onOpenSettings={control.openSettings}
+    />
   );
 }

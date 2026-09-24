@@ -6,6 +6,7 @@ import { todayISODate } from '@/lib/db/date';
 import {
   dailyMetricSeries,
   deviceLabel,
+  getHealthSyncLog,
   getHealthSyncState,
   latestMetric,
   recentWearableWorkouts,
@@ -14,6 +15,7 @@ import {
 import { getPreferences, isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { isHealthKitSupported } from '@/lib/health/healthkit';
 import { subscribeHealthSync } from '@/lib/health/sync';
+import { noneFromAppleHealth } from '@/lib/home/metric-sync';
 
 /**
  * The Data-tab wearable history view model (docs/wearables-subapp.md §7):
@@ -40,6 +42,14 @@ export interface WearableMetricRow {
   /** Source + date qualifier ("Apple Watch · Jul 29"), or null. */
   qualifier: string | null;
   empty: boolean;
+  /**
+   * What an EMPTY row says in its descriptor slot instead of "No data yet",
+   * when the last Apple Health pass establishes it — "Apple Health sent none in
+   * 14 days" (src/lib/home/metric-sync.ts, the same words Home's metrics strip
+   * uses). Null when the row has data, when sync is off, or when the log cannot
+   * speak for this metric (the sleep-stage rows).
+   */
+  emptyNote: string | null;
 }
 
 export interface WearableSection {
@@ -160,6 +170,11 @@ function read(): Omit<WearablesOverview, 'reload'> {
   const db = getDb();
   const today = todayISODate();
   const fahrenheit = getPreferences(db).units.temperature === 'F';
+  const supported = isHealthKitSupported();
+  const enabled = isHealthSyncEnabled(db);
+  // Only while sync is on: a log left behind by a pass before the switch went
+  // off describes a pipe that is no longer running.
+  const log = supported && enabled ? getHealthSyncLog(db) : null;
 
   const buildRow = (spec: MetricSpec): WearableMetricRow => {
     const series = dailyMetricSeries(db, spec.key, 30, today);
@@ -182,6 +197,7 @@ function read(): Omit<WearablesOverview, 'reload'> {
       unit,
       qualifier,
       empty,
+      emptyNote: empty ? noneFromAppleHealth(log, spec.key) : null,
     };
   };
 
@@ -195,8 +211,8 @@ function read(): Omit<WearablesOverview, 'reload'> {
   const allEmpty = workouts.length === 0 && sections.every((s) => s.rows.every((r) => r.empty));
 
   return {
-    supported: isHealthKitSupported(),
-    enabled: isHealthSyncEnabled(db),
+    supported,
+    enabled,
     lastSyncedAt: getHealthSyncState(db).lastSyncedAt,
     sections,
     workouts,

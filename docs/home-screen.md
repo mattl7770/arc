@@ -60,6 +60,12 @@ Only the highest-signal current numbers:
 - Steps or strain progress
 - Next meal / hydration status (optional)
 
+**A blank is one tap from a sync (2026-09-23).** A cell with no reading today becomes the Apple
+Health sync in place of its em-dash. If the sync cannot run, the cell becomes a door to Settings
+› Apple Health (sync switched off) or stays a plain blank (no HealthKit in the build). If Apple
+Health sent none of that metric on the last pass, the cell says so. It takes no accent, and
+nothing is added around the grid. The full table is in `docs/wearables-subapp.md` §20.
+
 ### 6. Quick Actions Dock — ~~cut 2026-07-24~~
 Originally: log something, chat with Coach, override modes, jump to Dashboard. *(Modes themselves were retired on 2026-09-19 — see Status above.)*
 

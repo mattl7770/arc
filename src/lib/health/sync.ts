@@ -646,6 +646,72 @@ export async function syncHealthData(
   return { status: 'synced', rowsWritten: written, samplesPublished, syncedAt };
 }
 
+// ── One pass at a time (2026-09-23) ─────────────────────────────────────────
+//
+// A pass can now be started from three places while the app is open: the
+// foreground hook below, Settings' *Sync now*, and a blank cell on Home's
+// metrics strip (docs/wearables-subapp.md §20). Nothing stopped two of them
+// running at once. That is harmless to the data — every write is an upsert on
+// a deterministic key — but it doubles the HealthKit reads, and a control
+// cannot honestly say "syncing" about a pass it cannot see.
+//
+// So a pass started through either function below is TRACKED: visible to
+// `isHealthSyncRunning`, announced to `subscribeHealthSyncRunning` when it
+// starts and when it settles, and joinable. `syncHealthData` is unchanged and
+// is still the pass.
+
+const runningPasses: Promise<HealthSyncResult>[] = [];
+const runningListeners = new Set<Listener>();
+
+function emitRunning(): void {
+  for (const listener of runningListeners) listener();
+}
+
+/** Whether a tracked pass is in flight right now. */
+export function isHealthSyncRunning(): boolean {
+  return runningPasses.length > 0;
+}
+
+/** Called when a tracked pass starts and again when it settles; returns the unsubscribe. */
+export function subscribeHealthSyncRunning(listener: Listener): () => void {
+  runningListeners.add(listener);
+  return () => {
+    runningListeners.delete(listener);
+  };
+}
+
+/**
+ * Start a tracked pass that never joins another. For Settings' three setup
+ * flows, whose pass must read AFTER the permission sheet they just showed —
+ * joining a pass that began before the grant would read without it.
+ */
+export function startHealthSync(
+  db: Database,
+  now: Date = new Date(),
+  options: SyncOptions = {}
+): Promise<HealthSyncResult> {
+  const pass = syncHealthData(db, now, options);
+  runningPasses.push(pass);
+  emitRunning();
+  // Registered here, before any caller can await `pass`, so the list is already
+  // clear by the time a caller's own continuation runs.
+  const settle = (): void => {
+    const index = runningPasses.indexOf(pass);
+    if (index !== -1) runningPasses.splice(index, 1);
+    emitRunning();
+  };
+  pass.then(settle, settle);
+  return pass;
+}
+
+/** Join the newest tracked pass if one is running; otherwise start one. */
+export function startOrJoinHealthSync(
+  db: Database,
+  now: Date = new Date()
+): Promise<HealthSyncResult> {
+  return runningPasses[runningPasses.length - 1] ?? startHealthSync(db, now);
+}
+
 /**
  * The boot/foreground hook (app/_layout.tsx): throttled, best-effort, silent.
  * A failed or skipped background sync must never surface — Settings › Apple
@@ -655,7 +721,9 @@ export async function syncHealthIfEnabled(db: Database, now: Date = new Date()):
   try {
     if (!isHealthSyncEnabled(db) || !isHealthKitAvailable()) return;
     if (!shouldAutoSync(getHealthSyncState(db).lastSyncedAt, now)) return;
-    await syncHealthData(db, now);
+    // Joins a pass already running (a tap on Home, Settings' Sync now) rather
+    // than starting a second one beside it.
+    await startOrJoinHealthSync(db, now);
   } catch {
     // Best-effort by design.
   }

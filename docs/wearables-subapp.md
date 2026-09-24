@@ -348,7 +348,8 @@ instead of wiring HealthKit straight into screens.
   (Recovery / Sleep / Activity groups), a recent-workouts list, per-row source chips,
   last-synced footer. Honest empties before the first sync.
 - **Home:** readiness verdict + pillar bar + metrics strip go real via `useReadiness()`;
-  mock-day stays only as the mission's no-protocol seed.
+  mock-day stays only as the mission's no-protocol seed. Since 2026-09-23 a metrics-strip cell
+  with no reading today is a one-tap Apple Health sync, or says why it cannot be (§20).
 
 ## 8. Tests (headless, `npm run db:test`)
 
@@ -1614,3 +1615,122 @@ still holds every sample, and "undo" is: revert the code, clear `firstSyncedAt` 
 `health_sync_state`, and let one pass re-read 90 days under whichever rule the code carries.
 The ARCB1 snapshot is the other way back, and §8 item 1 of the spike puts a **verified restore
 before the first flight** on the build that carries this.
+
+## 20. A blank is one tap from a sync (2026-09-23, **no migration**)
+
+Owner, from the device: *"new method for HRV + other data from garmin? — when hrv is blank, put
+quick apple health sync button there"*. This section is the second half only. A different route
+for Garmin data is being researched separately, and nothing here is Garmin-specific.
+
+### 20.1 What changed on Home
+
+Any cell of the metrics strip (Sleep · HRV · Resting HR · Steps) whose reading has not arrived
+today stops being an em-dash and becomes a control. It costs nothing extra to do all four rather
+than HRV alone: a sync is one pass for every metric, so the four cells share one state. The
+decision is pure and lives in `src/lib/home/metric-sync.ts` (`metricSyncCell`). The facts it
+reads are gathered by `src/hooks/use-metric-sync.ts`, and the control is drawn by
+`src/components/home/metrics-strip.tsx`.
+
+| State | What the blank cell shows | Why |
+|---|---|---|
+| A reading | Unchanged | The control only ever replaces a blank |
+| Module absent (web preview, an older build) | The plain blank, unchanged | A sync cannot run. Settings › Apple Health in that build has nothing to switch on, so a door there would lead nowhere. The readiness line already names the cause |
+| Sync switched off | **Connect ›**, then "Apple Health sync is off". Opens Settings › Apple Health | Enable is the one tap that makes a sync possible, and "No data yet" would imply something is on its way |
+| HealthKit unavailable on the device | The plain blank | A pass returns `unavailable`, and no switch changes that |
+| Apple Health sent none of this metric on the last pass | The blank, with "Apple Health sent none in 14 days" beneath it. **No button** | The brief's "instead of offering the same button forever". See 20.3 |
+| A pass is running, from anywhere | Spinner + **Syncing**, disabled | Visible, and cannot be started twice (20.2) |
+| The last pass this control waited on threw | **Sync Apple Health**, with "sync failed at 09:14" | Quiet and honest, with no alert, and the retry is still there. A later successful pass supersedes it |
+| Otherwise | **Sync Apple Health**, with "none as of 07:02" (or "not synced today", "never synced") | What the last pass found, stated beside the verb |
+
+"None as of" is only quoted when the last pass completed after today's day began. A pass from
+last night never looked at today's bucket, so quoting its time would claim a check that never
+happened.
+
+The control replaces the value slot and is held to its 28pt line, so a cell is the same height in
+every state and nothing is added around the grid (CLAUDE.md §5). **It takes no accent.** Home's
+accent budget is the hero, the completion stamps and the active tab, and 00-design-spec.md allows
+one primary action per screen, which on Home is the hero's. A sync is a housekeeping verb beside
+a reading, so it is set in the label voice, in ink, with a sync glyph. That is the register of
+`PROTOCOLS ›` / `PLAN ›` under the mission, not a filled button. It takes no signal colour
+either: the control is chrome, not biology.
+
+When the pass lands, `emitSynced` re-reads the numbers through `useReadiness`, the same way a
+foreground sync always has. The control re-reads the cursor and the log on the same event, and
+again when the pass settles.
+
+### 20.2 One pass at a time: the gate in `sync.ts`
+
+Nothing used to stop two passes running at once: the foreground hook, Settings' *Sync now*, and
+now this control. That is harmless to the data, because every write is an upsert on a
+deterministic key. But it doubles the HealthKit reads, and a control cannot honestly say
+"Syncing" about a pass it cannot see. So `src/lib/health/sync.ts` gained a small additive gate
+(`syncHealthData` itself is untouched):
+
+- `startOrJoinHealthSync(db)` joins the newest running pass, or starts a tracked one. The
+  foreground hook (`syncHealthIfEnabled`), Settings' *Sync now* and the Home control all use it.
+- `startHealthSync(db, now, options)` always starts a tracked pass and never joins. Settings'
+  three setup flows (Enable, Allow publishing, Read heart rate) use it, because their pass must
+  read **after** the permission sheet they have just shown. A pass that began before the grant
+  would read without it.
+- `isHealthSyncRunning()` / `subscribeHealthSyncRunning()` are what turn every blank cell to
+  "Syncing" while any tracked pass runs. A pass that throws still clears the flag.
+
+After this change, the only thing that calls `syncHealthData` directly is the gate. The
+headless suite pins that on the source, for both `syncHealthIfEnabled` and
+`app/settings-health.tsx`.
+
+### 20.3 "Apple Health sent none", and exactly when it is believed
+
+The evidence is the last pass's own log (§14), the same record Settings › Apple Health
+renders. A metric counts as sent-none only when its line reads `returned: 0` **with no native
+error**. A read that reported an error may have been refused rather than empty, so it proves
+nothing and the offer stays. A metric the log does not name also proves nothing. Sleep is one
+line for every sleep sample, so it can judge the Sleep cell. It cannot judge the deep or REM
+rows: a source can send sleep with no stages, and one count cannot tell those apart.
+
+This will be the HRV cell's usual state on the owner's phone. §12's table (and
+`src/lib/health/coverage.ts`) records that a Garmin writes no HRV to Apple Health in any form.
+iOS also makes "read access declined" indistinguishable from "no data", which is why the copy
+says what happened (*sent none*) and not why. The statement does not flip to "Syncing" during
+a foreground pass: a verdict about a whole window should not flicker every time the app comes
+forward. If a source starts writing the metric, the next pass that reads it clears the
+statement.
+
+### 20.4 The same rule, elsewhere
+
+- **Data › Wearables** (`app/wearables.tsx`) gets the statement and **not** the control. A
+  ledger row is the metric's *latest ever* value, so an empty row means *never*, and the pass
+  that could answer that has already run. Its descriptor now reads "Apple Health sent none in
+  14 days" in place of "No data yet" when the log says so, and only while sync is on. A log
+  left behind by a pass before the switch went off describes a pipe that is no longer running.
+- **Home's Recovery pillar note** ("no HRV or resting heart rate reading today") is unchanged.
+  The pillar is a verdict, not a measurement slot, and a second control on Home would be the
+  one addition CLAUDE.md §5 forbids. The metrics strip is the one place the action lives.
+- **The Coach's readiness payload** (`turn-context.ts`, `read-tools.ts`, `insights.ts`) has no
+  blank to replace. It is unchanged.
+
+### 20.5 Tests
+
+- `db/readiness.test.mjs`: every row of the 20.1 table through `metricSyncCell`. Also the
+  sent-none evidence rules (error, unnamed metric, no log, window plural, the sleep key map),
+  the failure being superseded by a later pass, and `syncFromBlank` resolving `failed` rather
+  than throwing, and `skipped` rather than `failed` for disabled/unavailable.
+- `db/wearables.test.mjs`: the gate. A second caller joins, a settled pass is not re-joined,
+  `startHealthSync` never joins, a later caller joins the newest pass, and a pass that throws
+  still clears the flag. Plus the two source pins in 20.2.
+- `db/screens-render.test.mjs` §17b: Home under node (no module) draws only the plain blank.
+  `MetricsGrid` draws every state: the control on exactly the blank cells, the em-dash replaced
+  and not joined, Syncing disabled, sent-none as a statement, Connect, and failed. The
+  wearables ledger ignores a sent-none log while the module is absent. The no-accent rule is
+  checked on the source, because react-native-web hashes class names out of the markup.
+
+### 20.6 What only the phone can settle
+
+- That the label face fits "SYNC APPLE HEALTH" on one line in a half-width cell at 375pt.
+- That the spinner and the 28pt action row keep the grid from jumping when a pass starts and
+  lands.
+- How long a tap-started pass takes on real HealthKit, and whether "Syncing" feels like
+  feedback or like a wait.
+- That the HRV cell reads "Apple Health sent none in 14 days" from the first foreground on the
+  Garmin setup, as §12 predicts, and that Resting HR, Sleep and Steps offer the control only
+  before their data has come through.

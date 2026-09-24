@@ -31,7 +31,7 @@ import { isoWeekday } from '../src/lib/protocols/cadence.ts';
 import { __setParams } from './render-stubs/expo-router.mjs';
 import { getDb } from './render-stubs/db-client.mjs';
 
-import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
+import { clockFromISO, shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import { dayPhrase } from '../src/lib/utils/day-cursor.ts';
 import { estimateServings } from '../src/lib/recipes/servings.ts';
 import { createFood, setFoodFavorite } from '../src/lib/db/repositories/foods.ts';
@@ -131,6 +131,8 @@ import { ArcTimePicker, isTimeWheelAvailable } from '../src/lib/ui/date-time-pic
 import { MissionItemRow } from '../src/components/home/mission-item.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
 import HomeScreen from '../app/(tabs)/index.tsx';
+import { MetricsGrid } from '../src/components/home/metrics-strip.tsx';
+import WearablesScreen from '../app/wearables.tsx';
 import { StatusControl } from '../src/components/status/status-control.tsx';
 import { StatusRail } from '../src/components/status/status-rail.tsx';
 import { startStatus } from '../src/lib/db/repositories/statuses.ts';
@@ -4338,6 +4340,157 @@ console.log('\n21. The Plan screen — today, a day ahead, and the past days beh
     : bad('the empty day lost the Plan link');
   for (const id of active) db.run('UPDATE protocols SET is_active = 1 WHERE id = ?', [id]);
   rederiveMissionForDay(db, today);
+}
+
+// -------------------------------------------------------------------------
+console.log('\n17b. A blank metric is one tap from an Apple Health sync (2026-09-23)');
+{
+  // Owner, from the device: "when hrv is blank, put quick apple health sync
+  // button there". Home itself cannot reach the control here — under node the
+  // HealthKit module is absent, so every blank is the plain blank — which is
+  // exactly the first assertion. The other states are drawn by rendering the
+  // grid with the facts passed in (MetricsGrid), the way the status components
+  // are rendered in isolation above. The decision behind each state is pinned
+  // in db/readiness.test.mjs; this is that the screen DRAWS it.
+  const today = todayISODate();
+  const home = render('home (no HealthKit module in this build)', HomeScreen);
+  expect('home (no HealthKit module in this build)', home, ['Metrics', 'HRV', 'No data yet']);
+  refute('home (no HealthKit module in this build)', home, [
+    // Never a sync that cannot run, and never a door to a screen with no switch.
+    'Sync Apple Health',
+    'Apple Health sync is off',
+    'Syncing',
+  ]);
+
+  const metrics = [
+    { id: 'sleep', label: 'Sleep', value: '7h 12m', detail: 'Deep 42m', level: 'good' },
+    { id: 'hrv', label: 'HRV', value: '—', detail: 'No data yet', level: 'unknown' },
+    { id: 'rhr', label: 'Resting HR', value: '—', detail: 'No data yet', level: 'unknown' },
+    { id: 'steps', label: 'Steps', value: '4,210', detail: 'today', level: 'unknown' },
+  ];
+  const [y, m, d] = today.split('-').map(Number);
+  const checkedAt = new Date(y, m - 1, d, 7, 2).toISOString();
+  const logOf = (hrvReturned) => ({
+    at: checkedAt,
+    windowDays: 14,
+    rowsWritten: 3,
+    metrics: [
+      ['hrv', hrvReturned],
+      ['rhr', 14],
+      ['sleep', 30],
+      ['steps', 14],
+    ].map(([metric, returned]) => ({
+      metric,
+      label: metric,
+      returned,
+      rows: returned > 0 ? 1 : 0,
+      exclusion: 'source',
+      error: null,
+      rejected: null,
+    })),
+    publish: { armed: false, stalled: false, attempted: 0, succeeded: 0, types: [] },
+  });
+  const context = (over = {}) => ({
+    link: 'connected',
+    available: true,
+    running: false,
+    lastSyncedAt: checkedAt,
+    failedAt: null,
+    log: logOf(12),
+    today,
+    ...over,
+  });
+  const grid = (name, over) =>
+    render(name, MetricsGrid, {}, {
+      metrics,
+      context: context(over),
+      onSync: () => {},
+      onOpenSettings: () => {},
+    });
+  const count = (html, needle) => (html === null ? 0 : html.split(needle).length - 1);
+
+  // THE OFFER — the blank becomes the control, and only the blanks do.
+  const offer = grid('metrics (the offer)');
+  expect('metrics (the offer)', offer, [
+    'Sync Apple Health',
+    `none as of ${clockFromISO(checkedAt)}`,
+    // The whole cell speaks as one button.
+    'aria-label="HRV, no reading today, none as of',
+    // The readings beside it are untouched.
+    '7h 12m',
+    'Deep 42m',
+    '4,210',
+  ]);
+  count(offer, '>Sync Apple Health<') === 2
+    ? ok('exactly the two blank cells became the control; the two readings did not')
+    : bad('the control landed on the wrong cells', String(count(offer, '>Sync Apple Health<')));
+  // The em-dash is REPLACED, not joined: nothing is added around the grid.
+  count(offer, '>—<') === 0
+    ? ok('the control replaces the em-dash rather than sitting beside it')
+    : bad('the blank and the control are both drawn');
+  // No accent: Home's is spent on the hero, the stamps and the tab. Checked on
+  // the SOURCE — react-native-web hashes class names away in this render, so a
+  // search of the markup for `pine` could never fail.
+  const stripSource = readFileSync(
+    new URL('../src/components/home/metrics-strip.tsx', import.meta.url),
+    'utf8'
+  );
+  !/pine/i.test(stripSource)
+    ? ok('the control spends no accent (no pine class or colour anywhere in the strip)')
+    : bad('the metrics strip reaches for the accent');
+
+  // SYNCING — shown, and not tappable while it runs.
+  const syncing = grid('metrics (a pass is running)', { running: true });
+  expect('metrics (a pass is running)', syncing, ['Syncing', 'reading Apple Health']);
+  refute('metrics (a pass is running)', syncing, ['>Sync Apple Health<']);
+  count(syncing, 'aria-disabled="true"') >= 2
+    ? ok('both syncing cells are disabled — a second pass cannot be started from them')
+    : bad('a syncing cell is still tappable', String(count(syncing, 'aria-disabled="true"')));
+
+  // SENT NONE — a statement, not the same button forever.
+  const none = grid('metrics (Apple Health sends no HRV)', { log: logOf(0) });
+  expect('metrics (Apple Health sends no HRV)', none, [
+    'Apple Health sent none in 14 days',
+    'aria-label="HRV, no data. Apple Health sent none in 14 days."',
+  ]);
+  count(none, '>Sync Apple Health<') === 1
+    ? ok('HRV stops offering; Resting HR, which Apple Health does send, still offers')
+    : bad('wrong offer count', String(count(none, '>Sync Apple Health<')));
+
+  // FAILED — quiet and honest, and the retry is still there.
+  const failedAt = new Date(y, m - 1, d, 9, 14).toISOString();
+  const failed = grid('metrics (the last tap failed)', { failedAt });
+  expect('metrics (the last tap failed)', failed, [
+    `sync failed at ${clockFromISO(failedAt)}`,
+    'Sync Apple Health',
+  ]);
+
+  // SWITCHED OFF — a door to the switch, never a sync.
+  const off = grid('metrics (sync switched off)', { link: 'disconnected' });
+  expect('metrics (sync switched off)', off, ['Connect', 'Apple Health sync is off']);
+  refute('metrics (sync switched off)', off, ['>Sync Apple Health<', 'Syncing']);
+
+  // MODULE ABSENT / DEVICE WITHOUT HEALTH DATA — the plain blank.
+  for (const [name, over] of [
+    ['metrics (module absent)', { link: 'unsupported' }],
+    ['metrics (HealthKit unavailable)', { available: false }],
+  ]) {
+    const plain = grid(name, over);
+    expect(name, plain, ['No data yet', 'aria-label="HRV, no data."']);
+    refute(name, plain, ['>Sync Apple Health<', '>Connect<', 'Syncing']);
+  }
+
+  // The wearables ledger takes the statement half of the rule and not the
+  // control (app/wearables.tsx says why). Under node the module is absent, so
+  // it must keep "No data yet" even with a log on file that says "sent none" —
+  // a log is only believed while the pipe it describes is running.
+  setHealthSyncLog(db, logOf(0));
+  const ledger = render('wearables (no HealthKit module in this build)', WearablesScreen);
+  expect('wearables (no HealthKit module in this build)', ledger, ['HRV', 'No data yet']);
+  refute('wearables (no HealthKit module in this build)', ledger, [
+    'Apple Health sent none',
+    'Sync Apple Health',
+  ]);
 }
 
 // -------------------------------------------------------------------------
