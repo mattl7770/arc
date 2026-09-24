@@ -889,8 +889,10 @@ export function buildMealRevisionRequest(
     // would be a lie about a dish that is fully priced by its components.
     //
     // The one COUNT the model is ever shown is a header's piece count (0059),
-    // printed through the same `countLabel` the screens use so the two cannot
-    // drift. A catalog item's serving count is deliberately NOT printed — the
+    // printed through `countLabel` — `8 × slice`, the shape of the model's own
+    // `pieces` JSON. The screens print the same count as `8 slices`
+    // (`piecesLabel`, 2026-09-23): the owner reads those, the model reads this.
+    // A catalog item's serving count is deliberately NOT printed — the
     // row shows `57 g, 104 kcal, …` as it always has — so `2 × 3 slices` never
     // sits beside `8 × slice` and there is no vocabulary to confuse.
     const components = item.components ?? [];

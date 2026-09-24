@@ -5,6 +5,30 @@ landed in one pass. The shipped account is `docs/nutrition-subapp.md` §12m; thi
 is the argument that produced it, kept as written. **The owner answered all four
 questions in §7 with option (a).**
 
+> **Re-cut on the device — 2026-09-23, no migration.** The owner, from the phone:
+> *"this is working poorly. grams are still being used as the unit of measurement,
+> when it should've changed to slices. and the whole interaction when slices comes up
+> is funky."* (The composite itself *"worked more or less."*)
+>
+> Two of §6's device questions came back against this plan. **The label switch did not
+> read**: the `THIS IS` / `I ATE` field — which on the review sheet moved rows on its
+> first keystroke, remounting under the thumb — is now one sentence with two fields,
+> `ATE [3] OF [8] SLICES`. OF declares and ATE scales, so §4.1's two questions each
+> have a field of their own; re-declaring a wrong count is typing into OF, which retires
+> §7 Q3's clear-then-type gesture (clearing OF, on blur, still un-counts without
+> scaling). **The chips beside a count went** — §7 Q2's option (b), the remedy §6 named
+> for `2.7 × slice`; they stay on an uncounted dish. And one thing this plan did not
+> predict: a counted dish still **read in grams** — the review header's amount slot was
+> the grams field, the Adjust screen's "As logged" plate printed summed grams, and
+> `3 × slice` read as multiplication — so a counted dish now reads `3 slices` wherever
+> its amount is drawn, through one formatter (`piecesLabel`). The column, the
+> declare/preserve principle and the rejected denominator all stand: the dish's count
+> lives in the review's OF field exactly as long as the review, and a logged record —
+> the meal screen, and the Adjust screen's rows built from one — reads `ate [3] slices`,
+> with no OF to mistake for the pizza's size. Re-declaring a *counted* record is now two
+> Saves (clear, then declare): the one-Save `cleared` flag of departure 3 was the trap
+> §6 named. Account: `docs/nutrition-subapp.md` §12m, *The device re-cut*.
+
 > **Departures from this plan, in full.**
 >
 > 1. **`selectAllOnFocus` gained a second argument** (`src/components/ui/select-on-focus.ts`).

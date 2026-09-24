@@ -19,6 +19,7 @@ import {
   scaleComposite,
   scaleCompositeTo,
   setCompositeCount,
+  setCompositeWhole,
   setPiecesName,
   setRowAmount,
   toggleExpanded,
@@ -43,8 +44,9 @@ import {
 } from '@/lib/nutrition/estimate';
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
 import { useEstimateQuestions } from '@/hooks/use-estimate-questions';
-import { fmtAmount, fmtInt } from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt, piecesLabel } from '@/lib/nutrition/format';
 import type { MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
+import type { VolumeUnit } from '@/lib/user/types';
 
 /**
  * Correcting a logged meal in plain English (owner, 2026-08-12): *"I should be
@@ -159,13 +161,18 @@ export default function MealReviseScreen() {
     setRows,
     mealName: () => meal?.name ?? 'Meal',
     onError: (message) => setPhase({ kind: 'error', message }),
+    countIsEaten: true,
   });
 
   /** Turn a grounded revision into editable review rows — the estimator's own
    *  builder, so the two screens cannot drift apart in how they price or nest
    *  (src/components/nutrition/estimate-review.tsx). */
   const toReview = (estimate: MealEstimate) => {
-    setRows(rowsFromEstimate(getDb(), estimate));
+    // The count on a logged meal is what was EATEN, and the model was told to
+    // keep it — so the rows carry no whole, and read `ATE [3] SLICES` exactly
+    // as the meal screen does. An `of [3]` here would invite typing the
+    // pizza's eight over three logged slices.
+    setRows(rowsFromEstimate(getDb(), estimate, { countIsEaten: true }));
     asking.begin(estimate.questions);
     setPhase({ kind: 'review', notes: estimate.notes });
   };
@@ -225,6 +232,7 @@ export default function MealReviseScreen() {
     onScaleBegin: (key) => setRows((prev) => beginCompositeScale(prev, key)),
     onScaleEnd: (key) => setRows((prev) => endCompositeScale(prev, key)),
     onCountChange: (key, text) => setRows((prev) => setCompositeCount(prev, key, text)),
+    onWholeChange: (key, text) => setRows((prev) => setCompositeWhole(prev, key, text)),
     onCountBegin: (key) => setRows((prev) => beginCountEdit(prev, key)),
     onCountEnd: (key) => setRows((prev) => endCountEdit(prev, key)),
     onPiecesName: (key, name) => setRows((prev) => setPiecesName(prev, key, name)),
@@ -308,64 +316,7 @@ export default function MealReviseScreen() {
               </Text>
             ) : (
               <View className="mt-2">
-                <Block device="plate">
-                  {beforeTree.map((node, index) => {
-                    // A composite's numbers are its parts'. Drawn open, because
-                    // this plate is read-only context for a sentence the user is
-                    // about to write — hiding the pepperoni would hide the very
-                    // row he means to correct.
-                    const shown =
-                      node.kind === 'composite'
-                        ? {
-                            amount: node.rolled.amount,
-                            unit: node.rolled.unit,
-                            kcal: node.rolled.kcal,
-                          }
-                        : { amount: node.item.amount, unit: node.item.unit, kcal: node.item.kcal };
-                    const parts = node.kind === 'composite' ? node.components : [];
-                    return (
-                      <View key={node.item.id}>
-                        <Divider first={index === 0} />
-                        <View className="min-h-[44px] flex-row items-center gap-3 py-2.5">
-                          <Text className="flex-1 font-serif text-[15px] leading-5 text-ink">
-                            {node.item.name}
-                            {parts.length > 0 ? (
-                              <Text className="font-mono text-[10px] text-ink-muted">
-                                {'  '}
-                                {parts.length} parts
-                              </Text>
-                            ) : null}
-                          </Text>
-                          {shown.amount !== null ? (
-                            <Text className="font-mono text-[11px] text-ink-muted">
-                              {fmtAmount(Math.round(shown.amount), shown.unit, units.volume)}
-                            </Text>
-                          ) : null}
-                          <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
-                            {shown.kcal !== null ? fmtInt(shown.kcal) : '—'}
-                          </Text>
-                        </View>
-                        {parts.map((part) => (
-                          <View
-                            key={part.id}
-                            className="min-h-[36px] flex-row items-center gap-3 pb-2.5 pl-6">
-                            <Text className="flex-1 font-serif text-[14px] leading-5 text-ink-secondary">
-                              {part.name}
-                            </Text>
-                            {part.amount !== null ? (
-                              <Text className="font-mono text-[11px] text-ink-muted">
-                                {fmtAmount(Math.round(part.amount), part.unit, units.volume)}
-                              </Text>
-                            ) : null}
-                            <Text className="w-12 text-right font-mono text-[12px] text-ink-muted">
-                              {part.kcal !== null ? fmtInt(part.kcal) : '—'}
-                            </Text>
-                          </View>
-                        ))}
-                      </View>
-                    );
-                  })}
-                </Block>
+                <AsLoggedPlate tree={beforeTree} volume={units.volume} />
               </View>
             )}
           </View>
@@ -556,5 +507,87 @@ export default function MealReviseScreen() {
         </View>
       ) : null}
     </Screen>
+  );
+}
+
+/**
+ * AS LOGGED — the meal as it stands, the "before" a correction is about.
+ *
+ * Read-only, and a composite is drawn OPEN: this plate is context for a
+ * sentence the user is about to write, and hiding the pepperoni would hide the
+ * very row he means to correct.
+ *
+ * **A counted dish reads in its pieces** (0059; the owner, on the device,
+ * 2026-09-23: *"grams are still being used as the unit of measurement, when it
+ * should've changed to slices"*). This plate printed a composite's summed grams
+ * straight off `fmtAmount` and never asked whether the dish had a count, so a
+ * three-slice pizza read `270 g` here while the meal screen said `3 slices`. It
+ * now prints the count, through the one formatter every surface uses; the
+ * grams are still on the plate, on the parts drawn beneath it.
+ *
+ * Exported for db/screens-render.test.mjs, and only for that: the screen draws
+ * it only once a model key is set, and rendering it on its own lets the suite
+ * pin it without one. Expo Router reads a route module's DEFAULT export; a named
+ * one beside it is inert.
+ */
+export function AsLoggedPlate({ tree, volume }: { tree: MealItemNode[]; volume: VolumeUnit }) {
+  return (
+    <Block device="plate">
+      {tree.map((node, index) => {
+        // A composite's numbers are its parts'.
+        const shown =
+          node.kind === 'composite'
+            ? {
+                amount: node.rolled.amount,
+                unit: node.rolled.unit,
+                kcal: node.rolled.kcal,
+              }
+            : { amount: node.item.amount, unit: node.item.unit, kcal: node.item.kcal };
+        const parts = node.kind === 'composite' ? node.components : [];
+        const amount =
+          node.kind === 'composite' && node.item.serving_qty != null && node.item.piece_name != null
+            ? piecesLabel(node.item.serving_qty, node.item.piece_name)
+            : shown.amount !== null
+              ? fmtAmount(Math.round(shown.amount), shown.unit, volume)
+              : null;
+        return (
+          <View key={node.item.id}>
+            <Divider first={index === 0} />
+            <View className="min-h-[44px] flex-row items-center gap-3 py-2.5">
+              <Text className="flex-1 font-serif text-[15px] leading-5 text-ink">
+                {node.item.name}
+                {parts.length > 0 ? (
+                  <Text className="font-mono text-[10px] text-ink-muted">
+                    {'  '}
+                    {parts.length} parts
+                  </Text>
+                ) : null}
+              </Text>
+              {amount !== null ? (
+                <Text className="font-mono text-[11px] text-ink-muted">{amount}</Text>
+              ) : null}
+              <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
+                {shown.kcal !== null ? fmtInt(shown.kcal) : '—'}
+              </Text>
+            </View>
+            {parts.map((part) => (
+              <View key={part.id} className="min-h-[36px] flex-row items-center gap-3 pb-2.5 pl-6">
+                <Text className="flex-1 font-serif text-[14px] leading-5 text-ink-secondary">
+                  {part.name}
+                </Text>
+                {part.amount !== null ? (
+                  <Text className="font-mono text-[11px] text-ink-muted">
+                    {fmtAmount(Math.round(part.amount), part.unit, volume)}
+                  </Text>
+                ) : null}
+                <Text className="w-12 text-right font-mono text-[12px] text-ink-muted">
+                  {part.kcal !== null ? fmtInt(part.kcal) : '—'}
+                </Text>
+              </View>
+            ))}
+          </View>
+        );
+      })}
+    </Block>
   );
 }

@@ -91,35 +91,114 @@ export function fmtAmount(amount: number, unit: AmountUnit, volume: VolumeUnit =
 }
 
 /**
- * "2 × 1 egg" · "3 × slice" · "2.7 × slice" — a count and the thing it counts,
- * in ONE place (0059).
+ * "2 × 1 egg" · "2 × 3 slices" — a count of a catalog food's SERVING and the
+ * serving's own phrase (0059), and the revision request's header tail
+ * (`— 8 × slice, 3 parts`), which is the model's to read, not the owner's.
  *
- * Lifted out of {@link portionLabel}, which has always built these two tokens,
- * so the review sheet's sub-line, the logged row's sub-line and the revision
- * request's header tail cannot drift from each other. `fmtQty` rounds to one
- * decimal, which is why a third of eight slices prints the honest `2.7 × slice`
- * rather than a `3` the parts do not add up to.
+ * The `×` is right for a serving: `'3 slices'` is a serving PHRASE, so two of
+ * them is `2 × 3 slices`, six slices. It is wrong for a composite's count of
+ * its own pieces, which the owner reads as a quantity — `3 × slice` read as
+ * "three times slice" on the device (2026-09-23) — and that reads through
+ * {@link piecesLabel} instead.
  */
 export function countLabel(qty: number, noun: string): string {
   return `${fmtQty(qty)} × ${noun}`;
 }
 
+/** The food nouns whose plural none of {@link pluralNoun}'s rules reach. */
+const IRREGULAR_PLURALS: Record<string, string> = {
+  half: 'halves',
+  leaf: 'leaves',
+  loaf: 'loaves',
+  potato: 'potatoes',
+  tomato: 'tomatoes',
+};
+
 /**
- * "2 × 1 egg (100 g)" · "3 × slice (270 g)" · "1 × 1 can (330 ml)" · "150 g" —
+ * "slice" → "slices" · "patty" → "patties" · "sandwich" → "sandwiches" ·
+ * "piece of sushi" → "pieces of sushi" — the plural of ONE piece's noun.
+ *
+ * Deliberately small. The noun is stored in the singular (0059) — the model is
+ * asked for the singular and the noun editor edits it — so four rules and five
+ * named words cover the pieces people count: slices, wings, rolls, patties,
+ * sandwiches, halves, potatoes. A noun that already ends in a single `s` is left
+ * alone: it is either plural already (`fries`, `nachos`, or a noun typed as
+ * `slices`) or a word no rule this size pluralises, and `3 slicess` is worse than
+ * `3 fries`.
+ */
+export function pluralNoun(noun: string): string {
+  // A compound with "of" pluralises its HEAD: pieces of sushi, not piece of sushis.
+  const of = noun.indexOf(' of ');
+  if (of > 0) return `${pluralNoun(noun.slice(0, of))}${noun.slice(of)}`;
+  // Otherwise the last word takes it: chicken wing → chicken wings.
+  const cut = noun.lastIndexOf(' ') + 1;
+  const head = noun.slice(0, cut);
+  const word = noun.slice(cut);
+  const lower = word.toLowerCase();
+  if (lower === '') return noun;
+  const irregular = IRREGULAR_PLURALS[lower];
+  // Keep a capital the noun was given: Half → Halves.
+  if (irregular) return `${head}${word[0]}${irregular.slice(1)}`;
+  if (/(ss|sh|ch|x|z)$/.test(lower)) return `${head}${word}es`;
+  if (lower.endsWith('s')) return noun;
+  if (/[^aeiou]y$/.test(lower)) return `${head}${word.slice(0, -1)}ies`;
+  return `${head}${word}s`;
+}
+
+/**
+ * The noun as it agrees with a count — singular only when the count PRINTS as
+ * `1`, so `0.95` (which prints `1`) reads `1 slice`, and a count not yet known
+ * reads plural: `of [ ] pieces`.
+ */
+export function pieceNounFor(count: number | null, noun: string): string {
+  return count != null && fmtQty(count) === '1' ? noun : pluralNoun(noun);
+}
+
+/**
+ * "3 slices" · "1 slice" · "2.7 slices" — a composite's count of its own pieces,
+ * as a person says it (0059; re-cut on the owner's device note of 2026-09-23).
+ *
+ * **This is the dish's amount once it is counted.** The owner, on the phone:
+ * *"grams are still being used as the unit of measurement, when it should've
+ * changed to slices."* Every surface that prints a counted dish's amount prints
+ * THIS, in the place its grams used to lead — the review sheet's header row, the
+ * logged row's sub-line (through {@link portionLabel}), the Adjust screen's
+ * "As logged" plate — and the grams, where they still earn a place, follow as a
+ * secondary figure. One formatter, so the three cannot drift.
+ *
+ * `3 slices`, not `3 of 8 slices`: the eight is the photographed dish, which the
+ * record never stores (the spike's rejected denominator — no migration), so a
+ * label that needed it would read one way on the review and another after Save.
+ * The review's own control still says `of [8]`, beside the number it qualifies.
+ *
+ * `fmtQty` rounds to one decimal, so a third of eight slices prints the honest
+ * `2.7 slices` rather than a `3` the parts do not add up to.
+ */
+export function piecesLabel(count: number, noun: string): string {
+  return `${fmtQty(count)} ${pieceNounFor(count, noun)}`;
+}
+
+/**
+ * "2 × 1 egg (100 g)" · "3 slices (270 g)" · "1 × 1 can (330 ml)" · "150 g" —
  * the honest portion label. A count only reads with the name of what it counts,
  * so an item whose catalog food is gone (food_serving_name NULL) falls back to
  * the bare amount.
  *
  * **Two sources for that name, and they never mix** (0059). A composite HEADER
  * names its own piece in `piece_name` — it has no `food_id`, so the live serving
- * join can never reach it — and a catalog item keeps naming the FOOD's serving
- * through that join, so correcting a serving name still reaches rows already
- * logged. `piece_name` wins where both somehow exist, because a row that has one
- * is a header and a header's `food_serving_name` is NULL by construction.
+ * join can never reach it — and reads as a count of pieces, `3 slices`
+ * ({@link piecesLabel}). A catalog item keeps naming the FOOD's serving through
+ * that join, so correcting a serving name still reaches rows already logged, and
+ * reads as servings, `2 × 1 egg` ({@link countLabel}). `piece_name` wins where
+ * both somehow exist, because a row that has one is a header and a header's
+ * `food_serving_name` is NULL by construction.
+ *
+ * The count LEADS and the amount follows in brackets: once a dish is counted its
+ * unit is the piece, and the grams are the secondary figure.
  *
  * A counted header whose parts are in MIXED UNITS has no honest amount to print
- * (0058 invariant 5), and this already prints the bare `3 × slice` for it —
- * which is then the only whole-dish figure the row has.
+ * (0058 invariant 5), and this prints the bare `3 slices` for it — which is then
+ * the only whole-dish figure the row has.
  */
 export function portionLabel(
   item: Pick<MealItemWithServing, 'amount' | 'unit' | 'serving_qty' | 'food_serving_name'> & {
@@ -127,10 +206,16 @@ export function portionLabel(
   },
   volume: VolumeUnit = 'ml'
 ): string | null {
-  const noun = item.piece_name ?? item.food_serving_name;
-  if (item.serving_qty != null && noun != null) {
-    const base = countLabel(item.serving_qty, noun);
-    return item.amount != null ? `${base} (${fmtAmount(item.amount, item.unit, volume)})` : base;
+  const count =
+    item.serving_qty == null
+      ? null
+      : item.piece_name != null
+        ? piecesLabel(item.serving_qty, item.piece_name)
+        : item.food_serving_name != null
+          ? countLabel(item.serving_qty, item.food_serving_name)
+          : null;
+  if (count != null) {
+    return item.amount != null ? `${count} (${fmtAmount(item.amount, item.unit, volume)})` : count;
   }
   if (item.amount != null) return fmtAmount(item.amount, item.unit, volume);
   return null;

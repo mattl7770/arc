@@ -37,11 +37,13 @@ import { estimateServings } from '../src/lib/recipes/servings.ts';
 import { createFood, setFoodFavorite } from '../src/lib/db/repositories/foods.ts';
 
 import {
+  listMealItems,
   logMeal,
   logMealWithItems,
   setNutritionTargets,
   updateMealName,
 } from '../src/lib/db/repositories/nutrition.ts';
+import { assembleMealItems } from '../src/lib/nutrition/composite.ts';
 import {
   createFolder,
   createRecipe,
@@ -105,6 +107,7 @@ import { OVERFLOW_CAP } from '../src/lib/nutrition/bar.ts';
 import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
 import NutritionHistoryScreen from '../app/nutrition-history.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
+import { AsLoggedPlate } from '../app/meal-revise.tsx';
 import { QuestionsPlate, ReviewItemsPlate } from '../src/components/nutrition/estimate-review.tsx';
 // The two camera screens. They could not be imported here until `expo-camera`
 // moved behind the guarded seam (src/lib/media/camera.ts) — a static native
@@ -4316,6 +4319,12 @@ console.log('19. C8 — the servings estimate is marked, and never pre-filled');
  */
 console.log('20. 0059 — the count of pieces, on the record and on the control');
 {
+  // RE-CUT 2026-09-23 on the owner's device note: *"grams are still being used
+  // as the unit of measurement, when it should've changed to slices. and the
+  // whole interaction when slices comes up is funky."* Every surface below that
+  // prints a counted dish's amount now prints it in pieces, and the control is
+  // one sentence — ATE [3] OF [8] SLICES — instead of a field whose label
+  // switched from THIS IS to I ATE as it moved up a row.
   const today = todayISODate();
   // A counted pizza: 270 g of parts, said to be three slices.
   const { mealId: countedId } = logMealWithItems(db, {
@@ -4335,7 +4344,9 @@ console.log('20. 0059 — the count of pieces, on the record and on the control'
     ],
   });
   const counted = render('meal-detail (counted)', MealDetailScreen, { id: countedId });
-  expect('meal-detail (counted)', counted, ['3 × slice (270 g)']);
+  // THE RECORD: the count leads, in pieces; the grams follow in brackets.
+  expect('meal-detail (counted)', counted, ['3 slices (270 g)']);
+  refute('meal-detail (counted)', counted, ['3 × slice']);
 
   // MIXED UNITS: 0058 invariant 5 refuses a fabricated amount, so the count is
   // the only whole-dish figure the row has — and it still prints.
@@ -4356,12 +4367,61 @@ console.log('20. 0059 — the count of pieces, on the record and on the control'
     ],
   });
   const mixed = render('meal-detail (mixed units)', MealDetailScreen, { id: mixedId });
-  expect('meal-detail (mixed units)', mixed, ['3 × glass']);
-  refute('meal-detail (mixed units)', mixed, ['3 × glass (']);
+  expect('meal-detail (mixed units)', mixed, ['3 glasses']);
+  refute('meal-detail (mixed units)', mixed, ['3 glasses (', '3 × glass']);
 
-  // The control. Both states of the same expanded composite, through the plate
+  // THE ADJUST SCREEN's "As logged" plate printed a composite's summed grams
+  // straight off fmtAmount and never asked whether it was counted — so the same
+  // three slices read `270 g` there. Drawn from its own export, because the
+  // screen only draws it once a model key is set.
+  const loggedPlate = render(
+    'meal-revise "As logged" (counted)',
+    AsLoggedPlate,
+    {},
+    {
+      tree: assembleMealItems(listMealItems(db, countedId)),
+      volume: 'ml',
+    }
+  );
+  expect('meal-revise "As logged" (counted)', loggedPlate, [
+    '3 slices',
+    // The grams are still on the plate — on the parts, drawn open beneath it.
+    '170 g',
+    '100 g',
+  ]);
+  refute('meal-revise "As logged" (counted)', loggedPlate, ['270 g', '3 × slice']);
+  const { mealId: uncountedId } = logMealWithItems(db, {
+    date: today,
+    time: '18:50',
+    name: 'A whole pizza',
+    items: [
+      {
+        name: 'Margherita',
+        components: [
+          { name: 'Pizza crust', amount: 400, kcal: 1000 },
+          { name: 'Mozzarella', amount: 320, kcal: 900 },
+        ],
+      },
+    ],
+  });
+  expect(
+    'meal-revise "As logged" (uncounted)',
+    render(
+      'meal-revise "As logged" (uncounted)',
+      AsLoggedPlate,
+      {},
+      {
+        tree: assembleMealItems(listMealItems(db, uncountedId)),
+        volume: 'ml',
+      }
+    ),
+    // A dish with no count still reads in grams, exactly as before.
+    ['720 g']
+  );
+
+  // THE CONTROL. Both states of the same expanded composite, through the plate
   // the two estimator screens share.
-  const part = (name, amount, kcal) => ({
+  const part = (name, amount, kcal, protein = null) => ({
     key: `p-${name}`,
     name,
     foodId: null,
@@ -4371,7 +4431,7 @@ console.log('20. 0059 — the count of pieces, on the record and on the control'
     base: {
       amount,
       kcal,
-      protein_g: null,
+      protein_g: protein,
       carbs_g: null,
       fat_g: null,
       fiber_g: null,
@@ -4379,16 +4439,18 @@ console.log('20. 0059 — the count of pieces, on the record and on the control'
     },
     amountText: String(amount),
   });
-  const composite = (pieces) => [
+  const composite = (pieces, wholeCount, components) => [
     {
       ...part('Pepperoni pizza', 0, 0),
       key: 'pizza',
       name: 'Pepperoni pizza',
-      components: [part('Crust', 400, 800), part('Cheese', 320, 750)],
+      components,
       expanded: true,
       scaleFrom: null,
       pieces,
-      countText: '',
+      wholeCount,
+      countText: null,
+      wholeText: null,
       countFrom: null,
     },
   ];
@@ -4402,55 +4464,149 @@ console.log('20. 0059 — the count of pieces, on the record and on the control'
     onScaleBegin: noop,
     onScaleEnd: noop,
     onCountChange: noop,
+    onWholeChange: noop,
     onCountBegin: noop,
     onCountEnd: noop,
     onPiecesName: noop,
   };
+  /** The value a labelled field holds in the markup, or null when it is absent. */
+  const fieldValue = (html, label) =>
+    (new RegExp(`<input[^>]*aria-label="${label}"[^>]*value="([^"]*)"`).exec(html ?? '') ??
+      [])[1] ?? null;
 
+  // UNCOUNTED: a whole pizza as priced, 720 g.
   const uncounted = render(
     'review plate (uncounted)',
     ReviewItemsPlate,
     {},
     {
-      rows: composite(null),
+      rows: composite(null, null, [part('Crust', 400, 800), part('Cheese', 320, 750)]),
       label: 'Items',
       emptyNote: 'x',
       handlers,
     }
   );
   expect('review plate (uncounted)', uncounted, [
-    // The label that says what the empty field is asking. Written `This is` and
-    // drawn uppercase by the label voice, exactly as the sibling `I ate` is.
-    'This is',
+    // The sentence's labels, set in the label voice and uppercased by it.
+    '>Ate<',
+    '>of<',
     'Pieces in Pepperoni pizza',
+    '>pieces<',
+    // An uncounted dish's amount is still its grams, in the whole-dish field…
+    'Pepperoni pizza grams',
+    // …and "I ate half" is still one tap away.
+    'I ate half of the Pepperoni pizza',
   ]);
+  fieldValue(uncounted, 'Pieces in Pepperoni pizza') === ''
+    ? ok('review plate (uncounted): OF waits empty for the declaration')
+    : bad('uncounted OF value', String(fieldValue(uncounted, 'Pieces in Pepperoni pizza')));
   refute('review plate (uncounted)', uncounted, [
+    // ATE is an em-dash, not a field, until the dish has an OF.
     'Pepperoni pizza, pieces eaten',
     // The noun is a readout, not a control, while there is no count to name.
     'Name one piece of Pepperoni pizza',
+    // The old field's switching label is gone for good.
+    'This is',
   ]);
 
+  // COUNTED: ate 3 of 8 — the parts already scaled to three eighths.
   const countedPlate = render(
     'review plate (counted)',
     ReviewItemsPlate,
     {},
     {
-      rows: composite({ name: 'slice', count: 8 }),
+      rows: composite({ name: 'slice', count: 3 }, 8, [
+        part('Crust', 150, 300, 10),
+        part('Cheese', 120, 281.25, 12),
+      ]),
       label: 'Items',
       emptyNote: 'x',
       handlers,
     }
   );
   expect('review plate (counted)', countedPlate, [
-    'I ate',
+    // The dish's amount, in the column the grams field stands in for an
+    // uncounted one — and the grams demoted to the head of the sub-line.
+    '>3 slices<',
+    // …the grams LEADING the sub-line, ahead of the macros they now follow.
+    '>270 g · P 22g<',
+    // The one control.
+    'Pepperoni pizza, pieces eaten',
+    'Pieces in Pepperoni pizza',
+    'Name one piece of Pepperoni pizza',
+    '>slices<',
+  ]);
+  fieldValue(countedPlate, 'Pepperoni pizza, pieces eaten') === '3' &&
+  fieldValue(countedPlate, 'Pieces in Pepperoni pizza') === '8'
+    ? ok('review plate (counted): the sentence holds ate [3] of [8]')
+    : bad(
+        'counted field values',
+        `${fieldValue(countedPlate, 'Pepperoni pizza, pieces eaten')} of ${fieldValue(countedPlate, 'Pieces in Pepperoni pizza')}`
+      );
+  // …and it reads as ONE sentence, in order, in one row's markup.
+  const at = (s) => (countedPlate ?? '').indexOf(s);
+  at('>Ate<') < at('aria-label="Pepperoni pizza, pieces eaten"') &&
+  at('aria-label="Pepperoni pizza, pieces eaten"') < at('>of<') &&
+  at('>of<') < at('aria-label="Pieces in Pepperoni pizza"') &&
+  at('aria-label="Pieces in Pepperoni pizza"') < at('>slices<') &&
+  at('>Ate<') > at('Cheese')
+    ? ok('review plate (counted): ATE [3] OF [8] SLICES, in that order, under the parts')
+    : bad('sentence order');
+  refute('review plate (counted)', countedPlate, [
+    // Grams no longer lead a counted dish: its whole-dish grams field is gone…
+    'Pepperoni pizza grams',
+    // …and so are the chips, which on a counted dish could only print 2.7 slices.
+    'I ate half of the Pepperoni pizza',
+    '3 × slice',
+    'This is',
+  ]);
+
+  // A RECORD'S COUNT — the Adjust screen's rows, built from a logged meal: the
+  // count eaten, and no whole. There is no OF to type the pizza's eight into.
+  const recordPlate = render(
+    'review plate (a record’s count)',
+    ReviewItemsPlate,
+    {},
+    {
+      rows: composite({ name: 'slice', count: 3 }, null, [
+        part('Crust', 150, 300),
+        part('Cheese', 120, 281.25),
+      ]),
+      label: 'Revised',
+      emptyNote: 'x',
+      handlers,
+    }
+  );
+  expect('review plate (a record’s count)', recordPlate, [
+    '>3 slices<',
     'Pepperoni pizza, pieces eaten',
     'Name one piece of Pepperoni pizza',
-    // The sub-line leads with the count.
-    '8 × slice',
-    // …and the chips are still there: the count sits BESIDE them (owner).
+    '>slices<',
+  ]);
+  fieldValue(recordPlate, 'Pepperoni pizza, pieces eaten') === '3'
+    ? ok('review plate (a record’s count): ate [3] slices')
+    : bad('record field value', String(fieldValue(recordPlate, 'Pepperoni pizza, pieces eaten')));
+  refute('review plate (a record’s count)', recordPlate, [
+    'Pieces in Pepperoni pizza',
+    '>of<',
+    'Pepperoni pizza grams',
     'I ate half of the Pepperoni pizza',
   ]);
-  refute('review plate (counted)', countedPlate, ['This is']);
+
+  // One slice is a slice.
+  const onePlate = render(
+    'review plate (one of one)',
+    ReviewItemsPlate,
+    {},
+    {
+      rows: composite({ name: 'slice', count: 1 }, 1, [part('Crust', 90, 180)]),
+      label: 'Items',
+      emptyNote: 'x',
+      handlers,
+    }
+  );
+  expect('review plate (one of one)', onePlate, ['>1 slice<', '>slice<']);
+  refute('review plate (one of one)', onePlate, ['1 slices']);
 }
 
 // -------------------------------------------------------------------------

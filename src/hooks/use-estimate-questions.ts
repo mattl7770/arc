@@ -10,6 +10,7 @@ import {
 } from '@/lib/nutrition/estimate';
 import {
   applyAnswer,
+  carryWholes,
   type ReviewItem,
   rowsFromEstimate,
   rowsToRevisionSubject,
@@ -62,6 +63,10 @@ export function useEstimateQuestions(opts: {
   mealName: () => string;
   /** How the screen shows a failed second call. */
   onError: (message: string) => void;
+  /** The rows are a LOGGED meal's (the Adjust screen): a count that comes back
+   *  from the typed answer is what was eaten, with no whole — see
+   *  `rowsFromEstimate`. */
+  countIsEaten?: boolean;
 }): EstimateQuestionsState {
   const [questions, setQuestions] = useState<EstimateQuestion[]>([]);
   const [answers, setAnswers] = useState<QuestionAnswers>({});
@@ -130,7 +135,11 @@ export function useEstimateQuestions(opts: {
           controller.signal
         )
       );
-      opts.setRows(rowsFromEstimate(getDb(), revised));
+      // The model was sent each dish's count EATEN; `carryWholes` gives back the
+      // "of 8" it was sent without, so `ate 3 of 8` does not return as `3 of 3`.
+      opts.setRows(
+        carryWholes(base, rowsFromEstimate(getDb(), revised, { countIsEaten: opts.countIsEaten }))
+      );
       setAnswers((prev) => ({ ...prev, [id]: ANSWERED_BY_TYPING }));
       setOtherFor(null);
       setOtherText('');

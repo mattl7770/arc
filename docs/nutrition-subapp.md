@@ -1220,6 +1220,8 @@ Each of these was reproduced headless. Each bears on the same caffeine and sodiu
 
 Owner, parked backlog: ***"'Slices' as a food unit"** — convenient for composite foods; back burner.* Design: `docs/spikes/slices-as-a-food-unit.md` (**built**), with all four of its questions answered **(a)**.
 
+> **Re-cut on the device, 2026-09-23 (no migration).** The owner, from the phone: *"this is working poorly. grams are still being used as the unit of measurement, when it should've changed to slices. and the whole interaction when slices comes up is funky."* (The composite itself *"worked more or less."*) The model, the column and the arithmetic below all stand. What changed is how a counted dish **reads** — `3 slices`, leading, wherever its amount is drawn — and the **control**, which is now one sentence, `ATE [3] OF [8] SLICES`, in place of the `THIS IS` / `I ATE` field. Superseded below: that field, the `×` in the label, and the chips beside a count. The account is the last subsection of this section, **The device re-cut**.
+
 ### A slice is not a unit. It is a count, and a count is a ratio
 
 `0047` settled the unit vocabulary at two words and no conversion between them, and named `slice` as one of the things it was refusing: *"no `oz`/`cup`/`slice` in the schema."* That holds. Three slices of an eight-slice pizza is **× 3/8** — the arithmetic the composite fraction chips (0058) already do — so this round adds no basis, no piece↔gram factor, and no third value in any CHECK.
@@ -1259,6 +1261,8 @@ So the empty field asks one question and its label says which (**owner decision,
 
 Two entries for the pizza case — `8`, then `3` — and the model's `pieces` performs the first.
 
+*(The two questions stand; since 2026-09-23 they are two fields — OF declares, ATE scales — rather than one field whose label switched between them. See the device re-cut below.)*
+
 Five consequences, each keeping 0047 intact:
 
 1. **Nothing converts.** "Grams per slice" is `amount ÷ serving_qty`, derived every render, never written — a stored copy would disagree the moment a part was hand-edited.
@@ -1269,7 +1273,11 @@ Five consequences, each keeping 0047 intact:
 
 **A wrong count is re-declared by clearing the field** (**owner decision, question 3**): empty means "no count", so the next number declares afresh and moves nothing. No new furniture. On the review sheet that is one gesture; on `meal-detail`, where the editor stages a draft and writes on Save, the draft carries a `cleared` flag so backspacing-then-typing is still one Save.
 
+*(Superseded 2026-09-23: on the review a wrong count is re-declared by typing into OF, with no clearing; clearing, now resolved when the edit ends rather than on the keystroke, only un-counts. The `cleared` flag is gone from meal-detail — it made backspace-then-type declare while type-over scaled. See the device re-cut below.)*
+
 ### The controls
+
+> **Superseded on the device, 2026-09-23.** This is the 2026-09-19 build — the field whose label switched, the `×`, the chips beside a count, and the `3 × slice` sub-lines in the table. What replaced each, and why, is the device re-cut at the end of this section.
 
 **The count sits BESIDE the `½ ⅓ ¼` chips, not instead of them** (**owner decision, question 2**): a chip is the fast handle, a count the precise one — the pairing the whole-dish grams field already has. A chip on a counted dish prints the honest `2.7 × slice`; rounding to `3` would print a count the parts do not add up to.
 
@@ -1327,12 +1335,88 @@ Schema delta **0 / 0**. No Coach tool carries a food portion and nothing under `
 
 ### What only a device can judge
 
+> **Answered on the device, 2026-09-23:** the label switch did **not** read, and neither did the grams. Bullets two to five below are what the re-cut replaced; the first and the last still stand, and the new control's own list is at the end of this section.
+
 - **Whether the model returns `pieces` for the right things.** The rule is a criterion tested against a mock; no real call is made on this branch. The first photographed pizza and plate of two eggs are the test. A wrong answer costs one keypad entry, which is the point of building the owner's half first.
 - **Whether the label switch reads.** `THIS IS` becomes `I ATE` and the field moves up a row the moment the first count lands. If that reads as the control jumping, the fallback is one row in both states with only the label switching.
 - **The `I ATE` row at 375 pt.** Three 44 pt chips, a `w-14` field, a `×`, a noun and the label at `pl-6` is most of a ~343 pt plate interior. Both rows are `flex-wrap`, so it wraps rather than clipping — but whether the wrap reads as one control or two is a hand question.
 - **`2.7 × slice`.** Honest, and possibly alarming. If it grates, the remedy is to replace the chips once a composite is counted (question 2's option b), never to round.
 - **Clear-then-type versus select-and-type.** `selectAllOnFocus` means typing over a focused `8` scales, while backspacing to empty and then typing declares. Two gestures for "change 8 to 6"; §6 of the spike names this as the thing to watch.
 - **Whether `meal-detail`'s own expanded rows read well.** The disclosure's open state is local React state, so the render suite can only draw them collapsed; §20 asserts the control through the shared review plate instead and says so.
+
+### The device re-cut — slices, not grams, and one sentence (2026-09-23, no migration)
+
+The owner, from the phone, on the build that shipped the above: *"this is working poorly. grams are still being used as the unit of measurement, when it should've changed to slices. and the whole interaction when slices comes up is funky."* Of the composite itself: *"this worked more or less."* No migration: `piece_name` and `serving_qty` are as 0059 left them, a review still saves through `rowsToMealItems`, and a logged record's count is still written only by `setCompositeCount` and `clearCompositeCount`, with `scaleCompositeItem` beneath them.
+
+#### Why grams still led — the actual cause
+
+The count was stored, scaled and saved correctly. **The drawing never consulted it where the amount is drawn.** Reproduced with the owner's own two entries — a pizza priced at 720 g, `THIS IS 8`, `I ATE 3`:
+
+1. **The review sheet's header row** hard-wired a composite's amount slot to the whole-dish grams field (`total.amount != null ? <AmountField … />`) — the same boxed field every other row's amount sits in. The count reached the row only as the head of its 10 pt muted sub-line. After `8` then `3` the pizza read **`[270] g`**, with `3 × slice · P 29g` in small print beneath.
+2. **The Adjust screen's "As logged" plate** printed a composite's summed grams straight off `fmtAmount` and never asked whether the dish had a count: **`270 g`** for three slices.
+3. **The logged row** (meal-detail's sub-line) did lead with the count — `portionLabel` put it first — but as **`3 × slice (270 g)`**: the serving-count form `2 × 1 egg`, right for a catalog serving phrase and read, on a count of pieces, as "three times slice".
+
+The Eat tab's meal row and the day view print no item amount at all (name, macro cells, kcal), and a template flattens a composite, so there was nothing on those to fix.
+
+#### Every surface, after
+
+| surface | before | after |
+| --- | --- | --- |
+| review sheet, counted header | `[270] g` field; sub-line `3 × slice · P 29g` | **`3 slices`** in the amount column; sub-line `270 g · P 29g` |
+| review sheet, uncounted header | `[720] g` | unchanged — a dish with no count still reads in grams |
+| meal-detail, composite sub-line | `3 × slice (270 g) · P 29g` | **`3 slices (270 g) · P 29g`** |
+| meal-detail, parts in mixed units | `3 × glass` | **`3 glasses`** |
+| Adjust, "As logged" | `270 g` | **`3 slices`** — the parts drawn open beneath it keep their grams |
+| Adjust, the revised rows | `I ATE [3] × slice` | **`ATE [3] SLICES`** — a record's count, with no OF (below) |
+| a catalog serving (any screen) | `2 × 1 egg (100 g)` | unchanged |
+| the revision request (the model's to read) | `— 8 × slice, 3 parts` | unchanged — the `×` form is the shape of its own `pieces` JSON, and it sits beside the ceilinged prompts |
+
+**One formatter:** `piecesLabel(count, noun)` in `format.ts` — `3 slices`, `1 slice`, `2.7 slices` — singular exactly when the count *prints* as `1`, plural by `pluralNoun`: four rules and five named words (`half`, `leaf`, `loaf`, `potato`, `tomato`) that reach the pieces people count (slices, wings, rolls, patties, sandwiches, `pieces of sushi`), keeping a capital the noun was given, and leaving a noun that already ends in a single `s` alone, because `3 slicess` is worse than `3 fries`. `portionLabel` reads a header through it and a catalog serving through `countLabel`, so the two vocabularies still never mix.
+
+**`3 slices`, not `3 of 8 slices`.** The eight is the photographed dish, and 0059 deliberately never stored it — the spike's rejected denominator — so a label that needed it would read one way on the review and another after Save, the drift one formatter exists to prevent. The review still says *of 8*: in the control, beside the number it qualifies.
+
+**Grams, where they still earn a place:** the review header's sub-line leads with `270 g` (the check that 90 g is a slice), meal-detail keeps `(270 g)` after the count, and **the parts keep their own grams everywhere** — a slice is not a fraction of the cheese, so a part is never counted in pieces.
+
+#### The interaction: one sentence, two fields
+
+What was funky, walked in code: one field and a noun that asked **two different questions depending on state nobody could see** — labelled `THIS IS` on an uncounted dish (declare; nothing scales) and `I ATE` once counted (scale) — and that **moved from its own row into the chips row the moment it switched**. On the review sheet the switch happened on the *first keystroke* of a declaration, and moving it re-parented it: React unmounted the field, the keyboard dropped, and the `2` of a `12` had nowhere to land. Clearing it to re-declare moved it back. The `×` read as multiplication; the noun had to be tapped, emptied letter by letter, and retyped; on a counted dish the chips sat beside the count printing `2.7 × slice`; and meal-detail's clear-then-type declared while type-over scaled — two gestures for "change 8 to 6" with opposite effects, the trap §6 of the spike named.
+
+```
+uncounted:        ATE   —   OF [    ]  PIECES
+                        ½    ⅓    ¼
+counted:          ATE [ 3 ] OF [ 8 ]  SLICES
+a record's count: ATE [ 3 ] SLICES
+```
+
+- **ATE** is how many were eaten. Typing it **scales** every part by the new count over the count at focus, live and non-compounding from the focus snapshot, as before. It is an **em-dash** until the dish has an OF: there is nothing to take a share of, and a number there could only mean "this dish is N pieces", which is OF's question. The dash holds the field's slot, so OF is in the same place in every shape — and keyed, so it stays mounted under the thumb while the dish becomes counted.
+- **OF** is how many pieces the dish *as priced* is. While all of it is eaten, typing it **declares** — or **re-declares**, with no clearing first: the model said 8, the pizza was 6, and it reads `ate 6 of 6` with nothing scaled. Once part of it is eaten, OF says what the sentence then reads: after `ate 3 of 8`, typing 6 gives `ate 3 of 6`, every part × 8/6. Either way OF re-fixes what one piece weighs — it is a re-declaration, as the clear-and-retype it replaces was — where ATE never does (the principle's consequence 4, unchanged in kind).
+- **Text that is not a count shows the dish as it stood at focus**, in either field — empty, `0`, `101`. Only a valid number moves anything. This is what makes an emptied field safe to act on: a `1` typed on the way to `12` is × 8 for that keystroke, and backed out, it never lands. The one exception is shape, not grams: a declaration still being typed keeps its counted shape through an empty keystroke (a declaration never moved a gram), so "8", backspace, "6" does not mount and unmount the ATE field, the header's grams field and the chips around the field being typed into.
+- **Clearing still un-counts without scaling — decided when the edit ends.** Emptied and left, the field that says what the dish is (OF; or ATE on a record's count) un-counts it, every part where it stood at focus. It is resolved on blur, on collapsing the dish (a focused field that unmounts is not promised a blur), and at Save if Save comes first — never on the keystroke, so backspacing an 8 to type a 6 is one edit.
+- **The noun** agrees with the number it follows (`of 1 slice`, `of 8 slices`, `ate 3 slices`), becomes a one-line field on tap with its word **selected**, and commits as it is typed; left empty, it keeps the noun it opened on.
+- **The chips stay on an uncounted dish only** — the fast handle on a burrito, as the owner chose in C4 — drawn under the dash they stand in for. On a counted dish a count says any share exactly (½ of eight is `ate 4`) where a chip could only print `2.7 slices`: the spike's question 2, option (b), which it named as the remedy if the decimal grated. **The whole-dish grams field goes from a counted header too**: the count is edited in one place.
+
+**A record's count has no OF** — `ATE [3] SLICES`. The Adjust screen's rows are built from a logged meal whose count is what was *eaten* (the model is handed it and told to keep it), so `rowsFromEstimate(…, { countIsEaten: true })` gives them no whole. Offering `of [3]` there would invite typing the pizza's eight, which — read as OF must read it — re-declares three logged slices as eight, and a later `ate 3` then takes 3/8 of them. The same holds on the meal screen, below.
+
+**The typed answer keeps the "of".** A clarifying question answered by typing ("Other") sends the model each dish's count *eaten* and asks it to keep it; what comes back is rebuilt by `rowsFromEstimate`, which reads any count as the dish priced whole — so `ate 3 of 8` would have returned as `ate 3 of 3`, the 8 gone. `carryWholes` (`review-rows.ts`), run by the question hook against the rows it sent, gives each dish back its whole when its count came back unchanged, reads a count the answer changed as a count eaten (no whole, `ate [2] slices`), and leaves a dish that was never counted with the model's count as its whole.
+
+The saved count is still the one eaten (`serving_qty`). The review holds the dish's count as view state — `ReviewItem.wholeCount`, never saved, the rejected denominator living exactly as long as the review, and null beside a count for a record's — with `wholeText`; `countText` is now `string | null` (null = untouched, so a field emptied mid-edit shows empty rather than refilling under the thumb), and the focus snapshot `countFrom` is `{ count, whole }`.
+
+**On the meal screen, a counted dish reads `ATE [3] SLICES`, and that is the honest shape.** A record's parts *are* what was eaten, and the whole was never stored. A new number scales every part by new / current; saved empty, the count goes and the parts stay. An **uncounted** dish reads the review's own sentence, `ATE — OF [ ] PIECES` plus the chips: OF declares what the logged parts are, and ATE, in the same Save, then takes a share. The draft is `LoggedCountDraft`; what Save does is `planLoggedCount` (`review-rows.ts`), and the sentence above Save reads the same plan the write runs. An untouched field is `null`, so an editor opened and closed writes nothing — the old draft re-wrote an untouched 2.6667 as the 2.7 its field displayed — and with nothing to write, the button reads **Close** (outlined, never the accent) rather than sitting disabled beside a stuck editor. **The trade, stated:** re-declaring a *counted* record ("it said 8, it was 6, and I ate it all") is now two Saves — clear it, then declare 6 — where the old `cleared` flag made it one. That flag was the trap; a record's count is rare to re-declare (the review is where a count is fixed, in one field); and two Saves each say what they will do before they do it.
+
+**Conformed Set:** one device, the Items plate, unchanged; labels in the label voice (the old ones were mono), every amount mono, no accent (Save keeps it), no signal colour, the chips, the noun and the Close/Save button at 44 pt, and no new border.
+
+#### Verification (2026-09-23)
+
+`db/foods.test.mjs` §16 — `piecesLabel` (`3 slices`, `1 slice`, `2.7 slices`, a 0.95 that prints `1 slice`), `pluralNoun` over thirteen nouns (capitals kept), `portionLabel` at `3 slices (270 g)` / bare `3 slices` in mixed units / `2 × 1 egg (100 g)` unchanged, and `countLabel` unchanged. `db/nutrition-v2.test.mjs` §46 rewritten for the sentence — ATE conjures no count; OF declares and moves not one gram; ATE 3 of 8 is × 3/8, non-compounding; 8-then-3 saves three slices over 3/8 of the parts; OF re-declares (`6 of 6`, nothing scales) and re-reads (`3 of 6`, × 8/6); **backspace-then-type is one edit**; an OF left empty **un-counts without scaling** — on blur, on collapse and at Save, and **after a valid keystroke** (a `1` that made the dish × 8 is backed out to the dish as it stood, not un-counted at 2,160 g); bounds in both fields with the parts checked; a count a hair off its whole still re-declares; a declaration emptied mid-edit keeping its shape without moving a gram; and a record's count (`countIsEaten`) with no whole, ATE scaling it by 4/3 and un-counting it when emptied — §47 (the C5 answer reads `ate 3 of 8`; the typed answer sends the count eaten, a reply rebuilt alone would read `ate 3 of 3`, and `carryWholes` gives the 8 back, reads a changed count as eaten, leaves an uncounted dish its model whole, and is pinned in the question hook), §48 (declares through OF), and a new **§55** (numbered §53 on its branch; the shots fix took §53–§54 first): the logged plan through the repository — ate 3 of the 8 logged, an emptied ATE clearing without scaling, a rename alone at × exactly 1, an untouched draft writing nothing (the 2.6667 case, pinned at the plan *and* at the draft's `eatenText: null`), OF declaring on an uncounted record then ATE taking a share in one Save, the refusals — and a source pin that meal-detail's Save runs exactly that plan. `db/screens-render.test.mjs` §20 rewritten — meal-detail `3 slices (270 g)` and `3 glasses`; the "As logged" plate (drawn from its own export, so the suite needs no key) at `3 slices` with no `270 g`, and an uncounted dish still at `720 g`; the review plate uncounted (the dash, OF empty, `pieces`, the grams field and the chips present, no ATE field, no noun control, no `This is`), counted (`3 slices` in the amount column, `270 g · P 22g` with the grams leading, ATE `3` and OF `8` in that order under the parts, `slices`, no grams field, no chips, no `×`), a record's count (`ate [3] slices`, no OF), and one slice read singular.
+
+#### What only a device can settle (2026-09-23)
+
+- **Whether the sentence reads as one.** `ATE [3] OF [8] SLICES` is ≈250 pt of the ≈281 pt a 375 pt screen leaves inside the plate and its indent; a long noun (`chicken wings`) wraps to a second line, which the row allows rather than clips.
+- **Whether the dash reads as "not yet"** rather than as a broken field, and whether the chips drawn under it read as its alternatives.
+- **The first keystroke of a declaration.** The OF field stays mounted and keeps the keyboard; the header beside it changes from `[720] g` to `8 pieces` and the chips below vanish on that keystroke. Only the hand says whether that reads as confirmation or as movement. On a partly-eaten dish a two-digit OF passes through one digit (`1` on the way to `12` is × 8 for a keystroke), which the live kcal shows.
+- **The fields' height.** Both keep the parts' `AmountField` anatomy, ≈31 pt tall inside a 44 pt row — as the old field did.
+- **Whether the chips are missed on a counted dish**; whether `ate [3] slices` on the record (and on Adjust), beside the fresh review's `ate [3] of [8] slices`, reads as honest or as something lost; and whether two Saves to re-declare a counted record is ever felt.
+- **A plate photographed after eating** — three slices, priced as three — reads `ate [3] of [3] slices` on the fresh review, which is true; typing the pizza's eight into OF there re-declares those three as eight. The Adjust screen and the meal screen cannot do this (no OF on a record's count); the fresh review can, and only the hand says whether it is ever tried.
 
 ## 13. Round 7 — two logging papercuts (2026-09-14, backlog A3 + A4)
 
