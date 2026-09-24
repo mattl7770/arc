@@ -9,6 +9,7 @@
  * routine_exercises, 0013 the workout_sets/workouts enrichment, 0046
  * exercises.measures + workout_sets.distance_m).
  */
+import type { LoadBasis } from './load-basis';
 import type { Measures } from './measures';
 import type { DateString, Timestamp, WearableDevice } from '@/lib/db/types';
 
@@ -326,6 +327,12 @@ export type ExerciseRow = {
   is_custom: 0 | 1;
   /** Who authored this entry (0056). NULL on rows written before it existed. */
   source: ExerciseSource | null;
+  /**
+   * The OWNER's correction of what a weight figure counts (0062), or NULL for
+   * ARC's own reading of the row (`deriveLoadBasis`). Never a stored copy of
+   * the derivation — see the migration header.
+   */
+  load_basis: LoadBasis | null;
   archived: 0 | 1;
   created_at: Timestamp;
   updated_at: Timestamp;
@@ -372,6 +379,16 @@ export type CatalogExercise = {
   isCustom: boolean;
   /** Who authored it (0056) — `'ai'` is the one the picker marks. */
   source: ExerciseSource | null;
+  /**
+   * What this movement's weight figure counts (0062) — the owner's correction
+   * when there is one, ARC's reading otherwise; null when the movement records
+   * no load. The one value every screen and payload reads.
+   */
+  loadBasis: LoadBasis | null;
+  /** ARC's own reading, whatever the owner set — what the chooser offers to go back to. */
+  loadBasisDerived: LoadBasis | null;
+  /** True when {@link loadBasis} is the owner's correction rather than ARC's reading. */
+  loadBasisSetByOwner: boolean;
   primaryMuscles: Muscle[];
   secondaryMuscles: Muscle[];
 };
@@ -624,6 +641,16 @@ export type PersonalRecords = {
   bestE1rmKg: number | null;
   /** Best single-set volume (weight × reps). */
   bestSetVolumeKg: number | null;
+  /**
+   * Best single-SESSION volume for this movement — Σ weight × reps over one
+   * workout's working sets (2026-09-23, Fitbod's "max volume"). In the logged
+   * basis, like every figure here: a per-hand movement's volume is per hand.
+   */
+  bestSessionVolumeKg: number | null;
+  /** Most reps in one working set, at any load — the push-up record. */
+  bestReps: number | null;
+  /** Most reps across one session's working sets — what a bodyweight day adds up to. */
+  bestSessionReps: number | null;
   /** Longest single working set, seconds — the plank record. */
   bestDurationSec: number | null;
   /** Farthest single working set, metres. */

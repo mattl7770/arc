@@ -38,6 +38,7 @@
 import { clockFromISO, formatLocalDate } from '@/lib/db/date';
 import type { PrevSet } from '@/lib/db/repositories/training-stats';
 import { asMeasures, type Measures } from '@/lib/exercise/measures';
+import { RECORD_KINDS, type RecordKind } from '@/lib/exercise/records';
 import type { LoggingType, Mechanic, SetType, WorkoutKind } from '@/lib/exercise/types';
 
 /**
@@ -110,6 +111,13 @@ export type DraftSet = {
   done: boolean;
   pr: boolean;
   /**
+   * WHICH records the set beat when it was stamped (2026-09-23) — what the
+   * block's PR line names ("Set 3: best e1RM, heaviest"). Optional and parsed
+   * leniently, so a draft written before it existed resumes with `pr` alone
+   * rather than being discarded: no version bump, the `ingestId` precedent.
+   */
+  prKinds?: RecordKind[];
+  /**
    * For a set loaded from a stored session: the exact canonical kg it was read
    * with, and the display string it rendered as. An untouched weight writes back
    * byte-for-byte on Save instead of round-tripping through the display unit and
@@ -142,7 +150,12 @@ export type DraftBlock = {
   mechanic: Mechanic | null;
   restSec: number | null;
   prev: PrevSet[];
-  /** Best e1RM before this session — the bar a set must beat to tag a PR. */
+  /**
+   * Best e1RM before this session. It WAS the bar a set had to beat to tag a
+   * PR; since 2026-09-23 the stamp is `stampFor` (src/lib/exercise/
+   * records.ts), which reads every record from the logged history instead. It
+   * is still written and parsed so a draft keeps its shape across builds.
+   */
   bestE1rm: number | null;
   /** Grouped into a superset with the block below it (shared superset_group). */
   linkedToNext: boolean;
@@ -309,6 +322,10 @@ function parseSet(raw: unknown, index: number): DraftSet | null {
     done: asBool(raw.done),
     pr: asBool(raw.pr),
   };
+  if (Array.isArray(raw.prKinds)) {
+    const kinds = RECORD_KINDS.filter((k) => (raw.prKinds as unknown[]).includes(k));
+    if (kinds.length > 0) set.prKinds = kinds;
+  }
   if (raw.storedWeightKg !== undefined) set.storedWeightKg = asFiniteNumber(raw.storedWeightKg);
   if (typeof raw.storedWeightText === 'string') set.storedWeightText = raw.storedWeightText;
   return set;

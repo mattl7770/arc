@@ -1,0 +1,76 @@
+-- ============================================================================
+-- ARC 0062 — what an exercise's weight figure MEANS, when the owner says so
+--
+-- Owner, on the device, 2026-09-23: *"indicate whether weight is per arm,
+-- total, etc. for different exercises"*.
+--
+-- A logged "30 kg" on a dumbbell bench press is one dumbbell; on a barbell bench
+-- press it is the bar and every plate; on a lat pulldown it is the pin in the
+-- stack; on a weighted pull-up it is the belt, not the body. ARC stored all four
+-- as the same bare `weight_kg` and printed all four as "30 kg".
+--
+-- ── MOST OF THE ANSWER IS DERIVED, NOT STORED ──
+--
+-- The basis is read off the catalog row at read time by ONE pure function,
+-- `deriveLoadBasis` (src/lib/exercise/load-basis.ts): equipment first, then the
+-- logging type (weighted / assisted bodyweight), then the name and aliases
+-- ("goblet", "swing", "single-arm", "crossover"). Every seeded movement gets a
+-- right answer that way and so does every custom one, including movements
+-- created long after this file — so the derivation is NOT written into the
+-- table. A stored copy of a derived value is a second definition that stops
+-- improving the day it is written.
+--
+-- What cannot be derived is a correction. `machine` covers a selectorised
+-- stack and a plate-loaded sled alike; nothing in the catalog tells the owner's
+-- leg press from someone else's. So this column holds exactly one thing: the
+-- basis the OWNER set, where ARC's reading was wrong for his gym.
+--
+--   NULL        ARC's reading of the catalog row (the default, and almost every row)
+--   a value     the owner said so — it wins over the derivation, permanently
+--
+-- That is provenance as a column (0034's rule): an asserted value and a derived
+-- one must not wear the same face, and here the NULL is what keeps them apart.
+-- Choosing ARC's own reading in the chooser writes NULL rather than the value,
+-- so "the owner disagreed" stays the only thing a non-NULL can mean.
+--
+-- ── A CORRECTION RELABELS; IT NEVER RESCALES ──
+--
+-- Changing the basis changes what every logged figure of that movement is
+-- CALLED, not what it is. The owner typed the number on the dumbbell all
+-- along; a wrong label is the thing being fixed. No `workout_sets` row is
+-- touched, and nothing derived is cached anywhere to invalidate.
+--
+-- ── THE VOCABULARY, AND WHY THE CHECK CAN STAY CLOSED ──
+--
+--   'total'            the whole load — a barbell counts the bar
+--   'per_hand'         one dumbbell, bell or handle; the other side carries the same
+--   'per_side'         one side of a two-sided load — the plates on one horn of a
+--                      plate-loaded machine, or one of two cable stacks
+--   'stack'            the number on a selectorised machine or cable stack
+--   'bodyweight_plus'  load added to bodyweight — a belt or a vest
+--   'assisted'         the assistance a machine gives, taken off bodyweight
+--
+-- Six answers to one question — "what does this figure count" — and the
+-- question is closed: a load is either all of it, one of two equal halves, a
+-- machine's own number, or an amount relative to the body. A band's tension is
+-- not a weight at all and a sled is 'total'. So the CHECK is vocabulary-only
+-- and total over the domain, which matters because `exercises` parents three
+-- foreign keys (`exercise_muscles`, `routine_exercises`, `workout_sets`):
+-- widening a CHECK here is the twelve-step rebuild, on the table the owner's
+-- whole training history hangs off. Nullable ADD COLUMN with a vocabulary-only
+-- CHECK is the 0031/0034/0056 shape, and like 0056 it validates trivially
+-- against the populated device because every existing row takes the NULL.
+--
+-- ── THE NUMBER: 0062 ──
+--
+-- Main's head is 0061 and the owner's phone is at 0061, so anything at or
+-- below it would be skipped silently by the forward-only runner. 0062 is the
+-- next free number above main; re-check the sibling worktrees at merge.
+--
+-- The runner stamps PRAGMA user_version = 62 after applying this file.
+-- ============================================================================
+
+ALTER TABLE exercises ADD COLUMN load_basis text CHECK (
+  load_basis IS NULL
+  OR load_basis IN ('total', 'per_hand', 'per_side', 'stack', 'bodyweight_plus', 'assisted')
+);

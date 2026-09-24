@@ -85,10 +85,13 @@ import {
   updateRoutine,
 } from '@/lib/db/repositories/routines';
 import {
-  e1rmSeries,
-  exerciseSessionTops,
-  personalRecords,
+  e1rmSeriesFrom,
+  exerciseSessionTopsFrom,
+  personalRecordsFrom,
+  workingSets,
 } from '@/lib/db/repositories/training-stats';
+import { loadRecordsApply } from '@/lib/exercise/load-basis';
+import { repMaxesFrom } from '@/lib/exercise/records';
 import { getPreferences } from '@/lib/db/repositories/user';
 import { listWaterEntries, type WaterEntry } from '@/lib/db/repositories/water';
 import { editWaterCapture, removeWaterCapture } from '@/lib/health/publish';
@@ -111,6 +114,15 @@ import {
   type DomainField,
   type DomainReadArgs,
 } from './types';
+
+/**
+ * What `loadBasis` means wherever a training read carries it (0062). One
+ * sentence, shown on the domain's discovery call — which is where field
+ * vocabulary lives instead of the cached prompt.
+ */
+const LOAD_BASIS_NOTE =
+  'what a weight figure counts: total (bar included), per_hand (one dumbbell — double it for both), ' +
+  'per_side, stack (machine number), bodyweight_plus (added to bodyweight) or assisted (lower is harder)';
 
 /** A read-only field: declared so `query_records` can name it, never patchable. */
 const ro = (note: string): DomainField => ({
@@ -672,24 +684,42 @@ const exerciseStatsDomain: CoachDomainEntry = {
   label: 'exercise record',
   fields: {
     exercise: ro('the movement — pass its catalog id or its exact name as "id"'),
+    loadBasis: ro(LOAD_BASIS_NOTE),
   },
   // COMPUTE: a fold over every set ever logged for one movement. The Exercise
-  // screen's own `personalRecords` / `e1rmSeries`, read rather than re-derived.
+  // screen's own `personalRecords` / `repMaxesFrom` / `e1rmSeries`, read rather
+  // than re-derived — from ONE scan, the way the screen reads it.
+  //
+  // `loadBasis` (0062) rides in the PAYLOAD, never the schema: every weight in
+  // this result is in the logged basis — a per-hand movement's 30 kg is one
+  // dumbbell — and the model cannot tell that from the number. Payload costs
+  // nothing against coach-eval §6's ceilings; a schema sentence would.
   read: {
     kind: 'compute',
     needs: 'an exercise id or its exact name, from the exercise_catalog domain',
     run: (db, args) => {
       const id = resolveExerciseByName(db, args.id) ?? args.id;
-      const records = personalRecords(db, id);
-      const tops = exerciseSessionTops(db, id, Math.min(args.limit, 12));
+      const rows = workingSets(db, id);
+      const limit = Math.min(args.limit, 12);
+      const basis = getExercise(db, id)?.loadBasis ?? null;
+      const tops = exerciseSessionTopsFrom(rows, limit, basis);
       if (tops.length === 0) {
         return { exercise: args.id, note: 'No sets logged for this movement.' };
       }
       return {
         exercise: args.id,
-        records,
-        e1rmSeries: e1rmSeries(db, id, Math.min(args.limit, 12)),
-        recentTopSets: tops,
+        ...(basis != null ? { loadBasis: basis } : {}),
+        // The screen's own gate: an ASSISTED movement's figure is help, so its
+        // "heaviest", "best e1RM" and rep maxes would all crown its easiest
+        // set. Its load records come back null, and the two load tables are
+        // left out rather than sent empty.
+        records: personalRecordsFrom(rows, basis),
+        ...(loadRecordsApply(basis)
+          ? { repMaxes: repMaxesFrom(rows, basis), e1rmSeries: e1rmSeriesFrom(rows, limit) }
+          : {}),
+        // The workout id is the screen's join key for its PR mark; to the model
+        // it is twelve tokens of UUID per row that answer nothing.
+        recentTopSets: tops.map(({ workoutId: _omit, ...top }) => top),
       };
     },
   },
@@ -705,6 +735,7 @@ const exerciseCatalogDomain: CoachDomainEntry = {
     equipment: ro('barbell, dumbbell, machine, cable, bodyweight, …'),
     primaryMuscles: ro('what it trains'),
     isCustom: ro('written by the user or the Coach rather than seeded'),
+    loadBasis: ro(LOAD_BASIS_NOTE),
     status: enumField(['archived'], 'archived = retire it from the catalog; its history stays'),
   },
   resolve: (db, id) => {
@@ -748,6 +779,9 @@ const exerciseCatalogDomain: CoachDomainEntry = {
           name: e.name,
           equipment: e.equipment,
           primaryMuscles: e.primaryMuscles,
+          // Omitted on a movement that records no load: a plank has no figure
+          // to describe.
+          ...(e.loadBasis != null ? { loadBasis: e.loadBasis } : {}),
           ...(e.isCustom ? { isCustom: true } : {}),
         })),
   },

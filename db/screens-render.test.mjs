@@ -89,6 +89,7 @@ import MissionHistoryScreen from '../app/mission-history.tsx';
 import WaterScreen from '../app/water.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import ExerciseDetailScreen from '../app/exercise-detail.tsx';
+import { setExerciseLoadBasis } from '../src/lib/db/repositories/exercise-catalog.ts';
 import RoutineEditScreen from '../app/routine-edit.tsx';
 // The two set grids. They joined the walk with the stopwatch clock field
 // (2026-09-23): workout-live needed a Reanimated stub and both needed
@@ -2004,6 +2005,171 @@ const db = getDb();
       '#185A36',
       '#185a36',
       'the estimated-1RM trend appears here',
+    ]);
+
+    // -----------------------------------------------------------------------
+    // 2026-09-23 — what a weight counts (0062), and trends and PRs per
+    // exercise. Owner: "indicate whether weight is per arm, total, etc." and
+    // "trends, prs, etc for exercises (i.e. fitbod)".
+    expect('exercise detail (load basis + records)', detail, [
+      // The basis, stated and correctable, with what it means in words.
+      'Weight',
+      'Total',
+      'The whole load. A barbell counts the bar.',
+      'Change',
+      // The fuller records grid, and the sections Fitbod has that ARC lacked.
+      'Session volume',
+      'Most reps',
+      'Sessions',
+      'Trend',
+      'Best at each rep count',
+      '8 reps',
+      'History',
+    ]);
+    // ARC's reading, so nothing claims the owner set it.
+    refute('exercise detail (load basis + records)', detail, ['Set by you']);
+    setExerciseLoadBasis(db, 'barbell-bench-press', 'per_side');
+    const corrected = render('exercise detail (corrected basis)', ExerciseDetailScreen, {
+      id: 'barbell-bench-press',
+    });
+    expect('exercise detail (corrected basis)', corrected, ['Per side', 'Set by you']);
+    setExerciseLoadBasis(db, 'barbell-bench-press', null);
+
+    // A push-up's grid was three em-dashes for ever; its records are reps.
+    const pushUp = render('exercise detail (push-up)', ExerciseDetailScreen, { id: 'push-up' });
+    expect('exercise detail (push-up)', pushUp, ['Most reps', 'Session reps']);
+    // No weight figure to describe, no rep-max table for a load it never carries.
+    refute('exercise detail (push-up)', pushUp, ['Best at each rep count', 'Set by you']);
+
+    // The hub's way into any exercise's history: every movement trained, with
+    // its latest top set saying what its weight counts.
+    const hubWithExercises = render('exercise hub (exercises list)', ExerciseScreen);
+    expect('exercise hub (exercises list)', hubWithExercises, [
+      'Exercises',
+      'Barbell Bench Press',
+      'lb total',
+      'Open records and history.',
+    ]);
+
+    // The live logger (and the session editor, the same screen): the load
+    // column's heading says what the number counts. Two lines — unit over basis.
+    const live = render('workout-live (headings)', WorkoutLiveScreen, {
+      exerciseIds: 'dumbbell-bench-press,barbell-bench-press,lat-pulldown',
+    });
+    expect('workout-live (headings)', live, ['lb\nPer hand', 'lb\nTotal', 'lb\nStack']);
+    const benchSession = db.get(
+      `SELECT w.id FROM workouts w JOIN workout_sets s ON s.workout_id = w.id
+        WHERE s.exercise_id = 'barbell-bench-press' ORDER BY w.created_at DESC LIMIT 1`
+    );
+    expect(
+      'workout-live (session editor)',
+      render('workout-live (session editor)', WorkoutLiveScreen, { workoutId: benchSession.id }),
+      ['Session', 'lb\nTotal']
+    );
+    // A resumed session keeps its PR stamps AND says which record each beat.
+    saveWorkoutDraft(db, 'live', {
+      version: DRAFT_VERSION,
+      startedAt: Date.now() - 20 * 60_000,
+      routineId: null,
+      ingestId: null,
+      restEndsAt: null,
+      away: false,
+      blocks: [
+        {
+          key: 1,
+          exerciseId: 'barbell-bench-press',
+          name: 'Barbell Bench Press',
+          loggingType: 'weight_reps',
+          measures: 'reps,load',
+          mechanic: 'compound',
+          restSec: 180,
+          prev: [],
+          bestE1rm: null,
+          linkedToNext: false,
+          sets: [
+            {
+              key: 1,
+              weight: '225',
+              reps: '5',
+              rpe: '',
+              time: '',
+              distance: '',
+              setType: 'normal',
+              done: true,
+              pr: true,
+              prKinds: ['e1rm', 'weight', 'rep_max'],
+            },
+          ],
+        },
+      ],
+    });
+    const resumedPr = render('workout-live (resumed PR)', WorkoutLiveScreen, { resume: '1' });
+    expect('workout-live (resumed PR)', resumedPr, [
+      'PR',
+      // The whole line, for VoiceOver…
+      'aria-label="Set 1: best e1RM, heaviest"',
+      // …drawn as prose with its figure as a nested run (the mono one): the
+      // words are no longer set in the measuring face.
+      '>Set <span',
+    ]);
+    clearWorkoutDraft(db, 'live');
+
+    // Review fixes (2026-09-23). A pull-up at bodyweight — how most are done —
+    // had no trend (it opened on an empty e1RM chart), and its rep-max table
+    // said "Nothing logged yet." over three sessions. Dated in the past, with
+    // created_at moved to match, so no freshness reading on this walk moves.
+    const pastSession = (date, sets, away) => {
+      const id = logWorkout(db, { date, kind: 'strength', ...(away ? { away: true } : {}) }, sets);
+      db.run('UPDATE workouts SET created_at = ? WHERE id = ?', [`${date}T12:00:00.000Z`, id]);
+    };
+    const pull = (reps) => ({ exercise: 'Pull-Up', exerciseId: 'pull-up', reps, weightKg: null });
+    pastSession('2025-03-01', [pull(8), pull(7)]);
+    pastSession('2025-03-03', [pull(9), pull(8)]);
+    pastSession('2025-03-05', [pull(11), pull(9)]);
+    const pullUp = render('exercise detail (bodyweight pull-up)', ExerciseDetailScreen, {
+      id: 'pull-up',
+    });
+    expect('exercise detail (bodyweight pull-up)', pullUp, [
+      'Most reps',
+      'Session reps',
+      // The Trend opens on reps, and says which way they are going.
+      'aria-label="up 29 percent on the previous 2 sessions"',
+      '11 reps',
+      'No sets with added weight yet.',
+    ]);
+    refute('exercise detail (bodyweight pull-up)', pullUp, [
+      'An estimated-1RM trend needs two weighted sessions.',
+      'Nothing logged yet.',
+    ]);
+    // A friendlier bar elsewhere, logged last: the large figure is the home
+    // session the "+29%" is about, and says so.
+    pastSession('2025-03-07', [pull(15)], true);
+    expect(
+      'exercise detail (pull-up, away last)',
+      render('exercise detail (pull-up, away last)', ExerciseDetailScreen, { id: 'pull-up' }),
+      ['Latest at home', '11 reps', 'aria-label="up 29 percent on the previous 2 sessions"']
+    );
+
+    // Sets of fifteen carry no e1RM. The hub reads "+10%" from the top weight,
+    // so the screen it opens must open on that chart, not an empty e1RM one.
+    const ext = (weightKg) => ({
+      exercise: 'Leg Extension',
+      exerciseId: 'leg-extension',
+      reps: 15,
+      weightKg,
+    });
+    pastSession('2025-03-02', [ext(50)]);
+    pastSession('2025-03-04', [ext(55)]);
+    const legExt = render('exercise detail (high reps)', ExerciseDetailScreen, {
+      id: 'leg-extension',
+    });
+    expect('exercise detail (high reps)', legExt, [
+      'Latest',
+      'aria-label="up 10 percent on the previous session"',
+    ]);
+    refute('exercise detail (high reps)', legExt, [
+      'An estimated-1RM trend needs two weighted sessions.',
+      'An estimated 1RM needs a set of 12 reps or fewer',
     ]);
 
     // A9: routine-edit is the one screen-render-covered survivor of the

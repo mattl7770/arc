@@ -617,6 +617,27 @@ console.log('11. set weights arrive in display lb and store canonical kg');
   summary.includes('Bench 8 × 225 lb')
     ? ok(`confirmation shows the sets in display units ("${summary}")`)
     : bad('set summary', summary);
+  // What the weight COUNTS (0062) is on the card before he approves it: "60s"
+  // on a dumbbell press is 60 lb per hand, and a card that read like a total
+  // would store the wrong claim for good.
+  const dbCard = toolByName('log_workout').confirmSummary(
+    { kind: 'strength', sets: [{ exercise: 'Dumbbell Bench Press', reps: 8, weight: 60 }] },
+    db
+  );
+  const barCard = toolByName('log_workout').confirmSummary(
+    { kind: 'strength', sets: [{ exercise: 'Barbell Bench Press', reps: 5, weight: 225 }] },
+    db
+  );
+  const freeCard = toolByName('log_workout').confirmSummary(
+    { kind: 'strength', sets: [{ exercise: 'Sandbag Toss', reps: 5, weight: 60 }] },
+    db
+  );
+  dbCard.includes('Dumbbell Bench Press 8 × 60 lb per hand') &&
+  barCard.includes('Barbell Bench Press 5 × 225 lb total') &&
+  freeCard.includes('Sandbag Toss 5 × 60 lb') &&
+  !/per hand|total|stack/.test(freeCard.split('Sandbag Toss')[1] ?? '')
+    ? ok(`the card says what the weight counts ("${dbCard}"), and a free-text movement claims nothing`)
+    : bad('card basis', [dbCard, barCard, freeCard].join(' | '));
 }
 
 console.log('12. sub-week training windows refuse to extrapolate a weekly rate');
@@ -2083,6 +2104,16 @@ console.log('26. get_training_recommendation reports engine state (never decides
     rec.recommendation.exercises.every((e) => e.target && typeof e.target.kind === 'string')
       ? ok('every recommended exercise carries a progression target')
       : bad('targets', JSON.stringify(rec.recommendation.exercises[0]));
+    // 0062: what a target weight COUNTS rides beside it — payload, not schema.
+    const LEGAL = ['total', 'per_hand', 'per_side', 'stack', 'bodyweight_plus', 'assisted'];
+    const withBasis = rec.recommendation.exercises.filter((e) => 'loadBasis' in e);
+    withBasis.length > 0 && withBasis.every((e) => LEGAL.includes(e.loadBasis))
+      ? ok(
+          `loaded movements say what their weight counts (${withBasis
+            .map((e) => `${e.name}: ${e.loadBasis}`)
+            .join(', ')})`
+        )
+      : bad('loadBasis on recommendation', JSON.stringify(rec.recommendation.exercises));
   } else {
     ok('no exercises on this recommendation kind (nothing to target)');
   }

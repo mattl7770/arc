@@ -21,11 +21,47 @@ import { createRoutine } from '../src/lib/db/repositories/routines.ts';
 import {
   e1rmSeries,
   exerciseSessionTops,
+  exerciseSessionTopsFrom,
   lastSessionSets,
   personalRecords,
   recentMuscleLoads,
+  trainedExercises,
   weeklyMuscleSets,
+  workingSets,
 } from '../src/lib/db/repositories/training-stats.ts';
+import {
+  archiveExercise,
+  createCustomExercise,
+  getExercise,
+  setExerciseLoadBasis,
+} from '../src/lib/db/repositories/exercise-catalog.ts';
+import {
+  candidateFromTyped,
+  defaultTrendMetric,
+  directionOf,
+  e1rmRecordOf,
+  phraseText,
+  primaryTrendMetric,
+  prSummary,
+  prSummaryParts,
+  recordCellsFor,
+  recordKindsFor,
+  recordSessionIds,
+  recordsBeaten,
+  repMaxEmptyNote,
+  repMaxesFrom,
+  sessionSeriesFrom,
+  stampFor,
+  trendEmptyNote,
+  trendHeadline,
+  trendMetricsFor,
+  trendOf,
+  trendPhrase,
+  trendPhraseParts,
+  trendToken,
+} from '../src/lib/exercise/records.ts';
+import { measuredSetLine } from '../src/lib/exercise/format.ts';
+import { DEFAULT_UNIT_PREFERENCES } from '../src/lib/user/types.ts';
 import { buildRecommendation } from '../src/lib/db/repositories/training-recommend.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 import {
@@ -1020,6 +1056,687 @@ console.log('9. the away-gym flag: real training, unreal measurement (0055)');
   personalRecords(hotel, 'barbell-bench-press').maxWeightKg === null
     ? ok('…while still setting no record, because it is still not a measurement')
     : bad('fallback PR leaked');
+}
+
+// ---------------------------------------------------------------------------
+// 2026-09-23 — owner: "trends, prs, etc for exercises (i.e. fitbod)" and
+// "indicate whether weight is per arm, total, etc." Every figure below is
+// computed in src/lib/exercise/records.ts; the screens only draw it.
+console.log('10. records, best at each rep count, and the PR rule (2026-09-23)');
+{
+  const { db, raw } = freshDb();
+  const set = (exerciseId, reps, weightKg, extra = {}) => ({
+    exercise: exerciseId,
+    exerciseId,
+    reps,
+    weightKg,
+    ...extra,
+  });
+  const benchIds = [
+    logAt(db, raw, '2026-07-01T17:00:00.000Z', '2026-07-01', 'A', 'strength', [
+      set('barbell-bench-press', 5, 100),
+      set('barbell-bench-press', 8, 90),
+    ]),
+    logAt(db, raw, '2026-07-05T17:00:00.000Z', '2026-07-05', 'A', 'strength', [
+      set('barbell-bench-press', 5, 102.5),
+      set('barbell-bench-press', 3, 105),
+    ]),
+    // The best numbers on the board, logged AWAY: they must set nothing.
+    logAt(
+      db,
+      raw,
+      '2026-07-09T17:00:00.000Z',
+      '2026-07-09',
+      'A',
+      'strength',
+      [set('barbell-bench-press', 5, 120)],
+      true
+    ),
+    logAt(db, raw, '2026-07-12T17:00:00.000Z', '2026-07-12', 'A', 'strength', [
+      set('barbell-bench-press', 5, 105),
+      set('barbell-bench-press', 8, 90),
+    ]),
+  ];
+  const rows = workingSets(db, 'barbell-bench-press');
+
+  // --- the three new records ------------------------------------------------
+  const prs = personalRecords(db, 'barbell-bench-press');
+  near(prs.maxWeightKg, 105) && near(prs.bestE1rmKg, 122.5)
+    ? ok('heaviest 105 and best e1RM 122.5 — the 120 kg away set owns neither')
+    : bad('records', JSON.stringify(prs));
+  near(prs.bestSessionVolumeKg, 1245, 0.01)
+    ? ok('best SESSION volume 1245 (5×105 + 8×90), not the away session and not one set')
+    : bad('session volume', prs.bestSessionVolumeKg);
+  prs.bestReps === 8 && prs.bestSessionReps === 13
+    ? ok('most reps in a set 8, in a session 13')
+    : bad('rep records', JSON.stringify([prs.bestReps, prs.bestSessionReps]));
+
+  // --- best at each rep count ----------------------------------------------
+  const maxes = repMaxesFrom(rows);
+  JSON.stringify(maxes) ===
+  JSON.stringify([
+    { reps: 3, weightKg: 105, date: '2026-07-05' },
+    { reps: 5, weightKg: 105, date: '2026-07-12' },
+    { reps: 8, weightKg: 90, date: '2026-07-01' },
+  ])
+    ? ok('rep maxes: EXACT counts only (3, 5, 8), dated the first day each was reached')
+    : bad('rep maxes', JSON.stringify(maxes));
+  maxes.every((m) => m.weightKg < 120)
+    ? ok('…and the away 5 × 120 is in none of them')
+    : bad('away rep max');
+
+  // --- the PR rule, live ----------------------------------------------------
+  const ctx = { away: false, measures: 'reps,load', basis: 'total' };
+  const cand = (reps, weightKg, extra = {}) => ({
+    weightKg,
+    reps,
+    rpe: null,
+    setType: 'normal',
+    durationSec: null,
+    distanceM: null,
+    ...extra,
+  });
+  const beat = (c, session = [], context = ctx, history = rows) =>
+    recordsBeaten(c, history, session, context).join(',');
+  beat(cand(5, 110)) === 'e1rm,weight,rep_max'
+    ? ok('5 × 110 beats the e1RM, the heaviest and the best at 5 reps')
+    : bad('5×110', beat(cand(5, 110)));
+  prSummary([{ index: 1, reps: 5, kinds: ['e1rm', 'weight', 'rep_max'] }]) ===
+  'Set 1: best e1RM, heaviest'
+    ? ok(
+        '…and reads "Set 1: best e1RM, heaviest" — the heaviest set is its rep count’s best already'
+      )
+    : bad('summary dedupe');
+  beat(cand(8, 95)) === 'rep_max,set_volume'
+    ? ok('8 × 95 is a best-at-8 and the best set volume (760 > 720) — no e1RM, not the heaviest')
+    : bad('8×95', beat(cand(8, 95)));
+  beat(cand(12, 60)) === 'reps'
+    ? ok('a loaded 12 × 60 is the most reps in a set — the grid’s "Most reps" stamps too')
+    : bad('12×60', beat(cand(12, 60)));
+  beat(cand(2, 110)) === 'weight'
+    ? ok('2 × 110 is the heaviest, but a first-ever set of 2 is not a "best at 2"')
+    : bad('2×110', beat(cand(2, 110)));
+  beat(cand(5, 130), [], { ...ctx, away: true }) === ''
+    ? ok('an AWAY session stamps nothing, even 5 × 130 — the rule lives in records.ts now')
+    : bad('away stamp', beat(cand(5, 130), [], { ...ctx, away: true }));
+  beat(cand(5, 130, { setType: 'warmup' })) === ''
+    ? ok('a warmup stamps nothing')
+    : bad('warmup stamp');
+  beat(cand(5, 200), [], ctx, []) === ''
+    ? ok('the FIRST session of a movement stamps nothing: a record needs a previous best')
+    : bad('first session stamped');
+  beat(cand(2, 110), [cand(2, 112)]) === '' && beat(cand(2, 110), [cand(2, 108)]) === 'weight'
+    ? ok('a set is measured against the sets already done in the session as well as the history')
+    : bad('session bar', beat(cand(2, 110), [cand(2, 112)]));
+  beat(cand(8, 95), [cand(8, 95)]) === 'session_volume'
+    ? ok(
+        'equal to a set already done is no set record — but the second 8 × 95 carries the session’s volume past its best (1520 > 1245)'
+      )
+    : bad('session bar (equal)', beat(cand(8, 95), [cand(8, 95)]));
+  beat(cand(5, 50), [cand(8, 95), cand(8, 95)]) === ''
+    ? ok('…and only the set that carries it over: once the session is past its best, the next set stamps nothing')
+    : bad('session volume stamped twice', beat(cand(5, 50), [cand(8, 95), cand(8, 95)]));
+  beat(cand(5, 130), [], { ...ctx, basis: 'assisted' }) === ''
+    ? ok('an ASSISTED movement stamps no load record — more assistance is an easier set')
+    : bad('assisted stamp');
+  beat(cand(20, null)) === ''
+    ? ok('a loaded lift with the weight left blank scores no "most reps" — that is a typo')
+    : bad('blank weight reps', beat(cand(20, null)));
+
+  // --- the same rule, after the fact: the history's PR mark -----------------
+  const marked = recordSessionIds(rows, { measures: 'reps,load', basis: 'total' });
+  marked.has(benchIds[1]) && marked.has(benchIds[3]) && !marked.has(benchIds[0])
+    ? ok('history marks the sessions that set a record then — never the first one')
+    : bad('record sessions', JSON.stringify([...marked]));
+  !marked.has(benchIds[2])
+    ? ok('…and never the away session, whose 120 is still the biggest number there')
+    : bad('away session marked');
+  exerciseSessionTopsFrom(rows).every((t) => typeof t.workoutId === 'string')
+    ? ok('every history row carries the workout id its mark is keyed on')
+    : bad('workoutId on tops');
+
+  // --- bodyweight, holds and runs --------------------------------------------
+  logAt(db, raw, '2026-07-10T17:00:00.000Z', '2026-07-10', 'B', 'strength', [
+    set('push-up', 20, null),
+    set('push-up', 25, null),
+  ]);
+  logAt(db, raw, '2026-07-11T17:00:00.000Z', '2026-07-11', 'B', 'strength', [
+    set('push-up', 22, null),
+    set('push-up', 30, null),
+  ]);
+  const pushTops = exerciseSessionTops(db, 'push-up');
+  pushTops.map((t) => t.reps).join() === '25,30'
+    ? ok('a push-up session’s top set is its MOST reps (was: whichever set came first)')
+    : bad('push-up tops', JSON.stringify(pushTops));
+  const pushPrs = personalRecords(db, 'push-up');
+  pushPrs.bestReps === 30 && pushPrs.bestSessionReps === 52
+    ? ok('a push-up finally has records: 30 in a set, 52 in a session')
+    : bad('push-up records', JSON.stringify(pushPrs));
+  const pushCtx = { away: false, measures: 'reps', basis: null };
+  const pushRows = workingSets(db, 'push-up');
+  beat(cand(31, null), [], pushCtx, pushRows) === 'reps' &&
+  beat(cand(30, null), [], pushCtx, pushRows) === ''
+    ? ok('31 push-ups stamps "most reps"; 30 ties and does not')
+    : bad('push-up PR');
+  beat(cand(25, null), [cand(28, null)], pushCtx, pushRows) === 'session_reps'
+    ? ok('28 then 25 push-ups (53 > 52) stamps "most reps in a session" on the set that carried it over')
+    : bad('session reps', beat(cand(25, null), [cand(28, null)], pushCtx, pushRows));
+
+  // A weighted dip: the loaded set is the session's top, and an unweighted set
+  // can still set the rep record — the load is optional on this movement.
+  logAt(db, raw, '2026-07-06T17:00:00.000Z', '2026-07-06', 'C', 'strength', [
+    set('chest-dip', 8, 10),
+    set('chest-dip', 15, null),
+  ]);
+  const dipTop = exerciseSessionTops(db, 'chest-dip')[0];
+  dipTop.weightKg === 10 && dipTop.reps === 8
+    ? ok('weighted dip 10 kg × 8 outranks a bodyweight 15: reps and kilograms are not one scale')
+    : bad('dip top', JSON.stringify(dipTop));
+  beat(
+    cand(16, null),
+    [],
+    { away: false, measures: 'reps,load', basis: 'bodyweight_plus' },
+    workingSets(db, 'chest-dip')
+  ) === 'reps'
+    ? ok('…and 16 bodyweight dips stamps "most reps" (added load is optional here)')
+    : bad('dip reps PR');
+
+  logAt(db, raw, '2026-07-07T17:00:00.000Z', '2026-07-07', 'D', 'strength', [
+    set('plank', null, null, { durationSec: 60 }),
+  ]);
+  logAt(db, raw, '2026-07-08T17:00:00.000Z', '2026-07-08', 'D', 'strength', [
+    set('plank', null, null, { durationSec: 90 }),
+  ]);
+  beat(
+    cand(null, null, { durationSec: 95 }),
+    [],
+    { away: false, measures: 'time', basis: null },
+    workingSets(db, 'plank')
+  ) === 'duration'
+    ? ok('a 95 s plank stamps "longest"')
+    : bad('plank PR');
+  logAt(db, raw, '2026-07-13T07:00:00.000Z', '2026-07-13', 'E', 'cardio', [
+    set('treadmill-run', null, null, { durationSec: 1800, distanceM: 5000 }),
+  ]);
+  const runCtx = { away: false, measures: 'time,distance', basis: null };
+  const runRows = workingSets(db, 'treadmill-run');
+  beat(cand(null, null, { durationSec: 1700, distanceM: 5000 }), [], runCtx, runRows) === 'pace' &&
+  beat(cand(null, null, { durationSec: 2200, distanceM: 6000 }), [], runCtx, runRows) ===
+    'duration,distance'
+    ? ok('a faster 5 km stamps "fastest pace"; a longer, slower 6 km stamps longest and farthest')
+    : bad(
+        'run PRs',
+        [
+          beat(cand(null, null, { durationSec: 1700, distanceM: 5000 }), [], runCtx, runRows),
+          beat(cand(null, null, { durationSec: 2200, distanceM: 6000 }), [], runCtx, runRows),
+        ].join(' | ')
+      );
+
+  prSummary([
+    { index: 2, reps: 8, kinds: ['rep_max'] },
+    { index: 3, reps: 1, kinds: ['rep_max'] },
+    { index: 4, reps: 8, kinds: [] },
+  ]) === 'Set 2: best at 8 reps · Set 3: best single' &&
+  prSummary([{ index: 1, reps: 5, kinds: [] }]) === null
+    ? ok('prSummary: "Set 2: best at 8 reps · Set 3: best single", null when nothing was beaten')
+    : bad('summary', prSummary([{ index: 2, reps: 8, kinds: ['rep_max'] }]));
+  // The voice rule: a why-line is serif, and only its figures are mono — the
+  // parts say which is which, so the screen never sets the words in mono.
+  const parts = prSummaryParts([{ index: 4, reps: 5, kinds: ['rep_max', 'session_volume'] }]);
+  JSON.stringify(parts.filter((p) => p.measured).map((p) => p.text)) === '["4","5 reps"]' &&
+  phraseText(parts) === 'Set 4: best at 5 reps, best session volume'
+    ? ok('the PR line marks only its figures ("4", "5 reps") as measured — the words are prose')
+    : bad('pr parts', JSON.stringify(parts));
+
+  // --- every record on the grid is one a set can stamp ----------------------
+  const combos = [
+    ['reps,load', 'total'],
+    ['reps,load', 'per_hand'],
+    ['reps,load', 'bodyweight_plus'],
+    ['reps', null],
+    ['time', null],
+    ['time,distance', null],
+    ['distance', null],
+    ['load,time', 'total'],
+    ['load,distance', 'per_hand'],
+  ];
+  const strays = combos.flatMap(([m, b]) => {
+    const kinds = recordKindsFor(m, b);
+    const cells = recordCellsFor(m, b);
+    const missing = kinds.filter((k) => k !== 'rep_max' && !cells.includes(k));
+    const extra = cells.filter((c) => c !== 'sessions' && !kinds.includes(c));
+    return missing.length + extra.length > 0 ? [`${m}/${b}: +${extra} -${missing}`] : [];
+  });
+  strays.length === 0
+    ? ok('the Records grid and the stamp read one list: every grid record stamps, every stamp has a cell')
+    : bad('grid/kind drift', strays.join(' | '));
+  recordCellsFor('time', null).join() === 'duration,sessions' &&
+  recordCellsFor('reps,load', 'bodyweight_plus').join() === 'reps,session_reps,sessions,weight,e1rm'
+    ? ok('a plank’s grid is Longest · Sessions (no dead Top set), a pull-up’s leads with its reps')
+    : bad('cells', recordCellsFor('time', null).join());
+  recordKindsFor('reps,load', 'assisted').length === 0 &&
+  recordCellsFor('reps,load', 'assisted').join() === 'reps,session_reps,sessions'
+    ? ok('an assisted movement stamps nothing, and its grid shows its rep counts as facts')
+    : bad('assisted cells');
+
+  // The typed fields become the same numbers Finish would store.
+  const lb = { ...DEFAULT_UNIT_PREFERENCES, weight: 'lb', distance: 'km' };
+  const typed = candidateFromTyped(
+    { weight: '225', reps: '5', rpe: '', time: '1:30', distance: '0.4', setType: 'normal' },
+    lb
+  );
+  near(typed.weightKg, 102.06, 0.01) &&
+  typed.reps === 5 &&
+  typed.rpe === null &&
+  typed.durationSec === 90 &&
+  near(typed.distanceM, 400, 0.01)
+    ? ok('candidateFromTyped: 225 lb → 102.06 kg, "1:30" → 90 s, 0.4 km → 400 m, blank RPE → null')
+    : bad('typed', JSON.stringify(typed));
+  candidateFromTyped(
+    {
+      weight: '176.4',
+      reps: '5',
+      rpe: '',
+      time: '',
+      distance: '',
+      setType: 'normal',
+      storedWeightKg: 80,
+      storedWeightText: '176.4',
+    },
+    lb
+  ).weightKg === 80
+    ? ok('…and an untouched stored weight keeps its exact kg, as Finish does')
+    : bad('stored weight');
+}
+
+console.log('11. trends: one value per session, and the direction of travel');
+{
+  const { db, raw } = freshDb();
+  const bench = (reps, weightKg) => ({
+    exercise: 'Bench',
+    exerciseId: 'barbell-bench-press',
+    reps,
+    weightKg,
+  });
+  [
+    ['2026-07-01', [bench(5, 100), bench(8, 90)], false],
+    ['2026-07-05', [bench(5, 102.5), bench(3, 105)], false],
+    ['2026-07-09', [bench(5, 120)], true],
+    ['2026-07-12', [bench(5, 105), bench(8, 90)], false],
+  ].forEach(([date, sets, away]) =>
+    logAt(db, raw, `${date}T17:00:00.000Z`, date, 'A', 'strength', sets, away)
+  );
+  const rows = workingSets(db, 'barbell-bench-press');
+  const e1rm = sessionSeriesFrom(rows, 'e1rm');
+  e1rm.length === 4 &&
+  e1rm.map((p) => p.date).join() === '2026-07-01,2026-07-05,2026-07-09,2026-07-12' &&
+  near(e1rm[0].value, 116.67, 0.01) &&
+  near(e1rm[3].value, 122.5, 0.01)
+    ? ok('e1RM series: one point per session, oldest → newest')
+    : bad('e1rm series', JSON.stringify(e1rm));
+  e1rm[2].away === true && e1rm.filter((p) => p.away).length === 1
+    ? ok('…the away session plotted and marked, the rest unmarked')
+    : bad('series mark');
+  const volume = sessionSeriesFrom(rows, 'volume');
+  volume.map((p) => Math.round(p.value)).join() === '1220,828,600,1245'
+    ? ok('volume series sums each session (1220, 828, 600, 1245)')
+    : bad('volume series', JSON.stringify(volume));
+  sessionSeriesFrom(rows, 'top_weight', 2)
+    .map((p) => p.value)
+    .join() === '120,105'
+    ? ok('`limit` keeps the most recent sessions')
+    : bad('limit');
+
+  const trend = trendOf(e1rm);
+  trend &&
+  trend.direction === 'up' &&
+  trend.compared === 2 &&
+  near(trend.baseline, 118.13, 0.01) &&
+  trendToken(trend) === '+4%' &&
+  trendPhrase(trend) === '+4% on the previous 2 sessions' &&
+  trendPhrase(trend, { spoken: true }) === 'up 4 percent on the previous 2 sessions'
+    ? ok('direction: latest home session vs the mean of the ones before — "+4% on the previous 2"')
+    : bad('trend', JSON.stringify(trend));
+  const pt = (value, away) => ({
+    workoutId: String(value),
+    date: '2026-07-01',
+    value,
+    ...(away ? { away: true } : {}),
+  });
+  const level = trendOf([pt(100), pt(101)]);
+  const down = trendOf([pt(100), pt(90)]);
+  level.direction === 'level' &&
+  trendToken(level) === 'level' &&
+  trendPhrase(level) === 'level with the previous session' &&
+  down.direction === 'down' &&
+  trendToken(down) === '−10%'
+    ? ok('within ±2% reads level; −10% reads down')
+    : bad('level/down', JSON.stringify([level, down]));
+  trendOf([pt(100), pt(150, true)]) === null && trendOf([pt(100)]) === null
+    ? ok('an away session is never compared, and one home session has no direction')
+    : bad('away/one-point trend');
+  const window = trendOf([pt(50), pt(100), pt(100), pt(100), pt(100)]);
+  window.compared === 3 && window.direction === 'level'
+    ? ok('the baseline is the three sessions before the latest, not all history')
+    : bad('window', JSON.stringify(window));
+
+  trendMetricsFor('reps,load', 'total').join() === 'e1rm,top_weight,volume,reps' &&
+  trendMetricsFor('reps', null).join() === 'reps,session_reps' &&
+  trendMetricsFor('time', null).join() === 'duration' &&
+  trendMetricsFor('time,distance', null).join() === 'distance,duration' &&
+  trendMetricsFor('load,distance', 'per_hand').join() === 'top_weight,distance' &&
+  trendMetricsFor('reps,load', 'assisted').join() === 'reps,session_reps'
+    ? ok('trend metrics follow what a movement measures, and assisted drops the load ones')
+    : bad('metrics');
+  primaryTrendMetric('reps,load', 'total') === 'e1rm' &&
+  primaryTrendMetric('time,distance', null) === null &&
+  primaryTrendMetric('load,distance', 'per_hand') === null
+    ? ok('anything covering distance gets no single direction (farther or faster?)')
+    : bad('primary metric');
+}
+
+console.log('12. the Train hub’s Exercises list, and the per-hand decision (2026-09-23)');
+{
+  const { db, raw } = freshDb();
+  const s = (exerciseId, reps, weightKg, extra = {}) => ({
+    exercise: exerciseId,
+    exerciseId,
+    reps,
+    weightKg,
+    ...extra,
+  });
+  trainedExercises(db).length === 0
+    ? ok('nothing trained → an empty list, not a crash')
+    : bad('empty list');
+  [
+    ['2026-07-01', [s('barbell-bench-press', 5, 100)]],
+    ['2026-07-05', [s('barbell-bench-press', 5, 102.5)]],
+    ['2026-07-08', [s('plank', null, null, { durationSec: 60 })]],
+    ['2026-07-09', [s('plank', null, null, { durationSec: 90 })]],
+    ['2026-07-10', [s('leg-extension', 15, 50)]],
+    ['2026-07-11', [s('leg-extension', 15, 55), s('push-up', 25, null)]],
+    ['2026-07-12', [s('barbell-bench-press', 5, 105), s('barbell-bench-press', 8, 90)]],
+    ['2026-07-13', [s('treadmill-run', null, null, { durationSec: 1800, distanceM: 5000 })]],
+    ['2026-07-14', [s('treadmill-run', null, null, { durationSec: 1700, distanceM: 5000 })]],
+    ['2026-07-15', [s('dumbbell-bench-press', 8, 30)]],
+  ].forEach(([date, sets]) => logAt(db, raw, `${date}T17:00:00.000Z`, date, 'A', 'strength', sets));
+  const list = trainedExercises(db);
+  list.map((x) => x.exerciseId).join() ===
+  'dumbbell-bench-press,treadmill-run,barbell-bench-press,leg-extension,push-up,plank'
+    ? ok('every movement trained, most recently trained first')
+    : bad('order', list.map((x) => x.exerciseId).join());
+  const by = new Map(list.map((x) => [x.exerciseId, x]));
+  const bench = by.get('barbell-bench-press');
+  bench.sessions === 3 &&
+  bench.lastDate === '2026-07-12' &&
+  bench.latest.weightKg === 105 &&
+  bench.latest.reps === 5 &&
+  bench.trendMetric === 'e1rm' &&
+  bench.trend.direction === 'up' &&
+  bench.loadBasis === 'total'
+    ? ok('bench: 3 sessions, latest top set 5 × 105, e1RM heading up, weights total')
+    : bad('bench row', JSON.stringify(bench));
+  const ext = by.get('leg-extension');
+  ext.trendMetric === 'top_weight' && trendToken(ext.trend) === '+10%'
+    ? ok('sets of 15 carry no e1RM, so the direction falls back to the top weight (+10%)')
+    : bad('high-rep fallback', JSON.stringify(ext));
+  by.get('treadmill-run').trend === null && by.get('treadmill-run').trendMetric === null
+    ? ok('a run gets no arrow — farther or faster is the run’s purpose, not ARC’s call')
+    : bad('run trend');
+  by.get('plank').trendMetric === 'duration' && by.get('plank').trend.direction === 'up'
+    ? ok('a plank’s direction is its longest hold')
+    : bad('plank trend');
+  by.get('push-up').trend === null && by.get('push-up').latest.reps === 25
+    ? ok('one push-up session: a latest top set, no direction yet')
+    : bad('push-up row', JSON.stringify(by.get('push-up')));
+
+  // Archived movements keep their row — history outlives the catalog.
+  archiveExercise(db, 'plank');
+  trainedExercises(db).some((x) => x.exerciseId === 'plank')
+    ? ok('an archived movement stays on the list; its history still opens')
+    : bad('archived dropped');
+
+  // An AWAY latest session is shown, marked — and never compared.
+  logAt(
+    db,
+    raw,
+    '2026-07-16T17:00:00.000Z',
+    '2026-07-16',
+    'A',
+    'strength',
+    [s('barbell-bench-press', 5, 130)],
+    true
+  );
+  const awayBench = trainedExercises(db).find((x) => x.exerciseId === 'barbell-bench-press');
+  awayBench.latest.away === true &&
+  awayBench.latest.weightKg === 130 &&
+  near(awayBench.trend.latest, 122.5)
+    ? ok('an away latest session is the row’s top set, marked away; the direction still reads home')
+    : bad('away latest', JSON.stringify(awayBench));
+
+  // THE PER-HAND DECISION. A dumbbell's figure stays the dumbbell: 30 is 30,
+  // never 60, in every record, trend and payload — and says so in its line.
+  const db30 = by.get('dumbbell-bench-press');
+  const dbPrs = personalRecords(db, 'dumbbell-bench-press');
+  db30.loadBasis === 'per_hand' && dbPrs.maxWeightKg === 30 && dbPrs.bestSetVolumeKg === 240
+    ? ok('per hand: the records are the dumbbell’s own 30 kg and 240 kg — nothing is doubled')
+    : bad('per-hand records', JSON.stringify(dbPrs));
+  const kg = { ...DEFAULT_UNIT_PREFERENCES, weight: 'kg' };
+  measuredSetLine(
+    { reps: 8, weightKg: 30, durationSec: null, distanceM: null },
+    kg,
+    db30.loadBasis
+  ) === '8 × 30 kg per hand'
+    ? ok('…and the line says what the number is: "8 × 30 kg per hand"')
+    : bad(
+        'line',
+        measuredSetLine(
+          { reps: 8, weightKg: 30, durationSec: null, distanceM: null },
+          kg,
+          'per_hand'
+        )
+      );
+  // A correction relabels; nothing that counts WORK moves, because nothing
+  // that counts work ever reads a weight, let alone its basis.
+  const readWork = () =>
+    JSON.stringify({
+      freshness: muscleFreshness(recentMuscleLoads(db, 14, NOW), NOW),
+      volume: weeklyMuscleSets(db, NOW),
+    });
+  const before = readWork();
+  setExerciseLoadBasis(db, 'dumbbell-bench-press', 'total');
+  before === readWork() && personalRecords(db, 'dumbbell-bench-press').maxWeightKg === 30
+    ? ok('correcting the basis moves no freshness, no weekly volume and no record')
+    : bad('basis moved a work reading');
+}
+
+console.log('13. review fixes: one direction, assisted ranking, the live stamp as a function');
+{
+  const { db, raw } = freshDb();
+  const s = (exerciseId, reps, weightKg, extra = {}) => ({
+    exercise: exerciseId,
+    exerciseId,
+    reps,
+    weightKg,
+    ...extra,
+  });
+  const log = (date, sets, away) =>
+    logAt(db, raw, `${date}T17:00:00.000Z`, date, 'A', 'strength', sets, away);
+  const kg = { ...DEFAULT_UNIT_PREFERENCES, weight: 'kg' };
+
+  // --- the hub's arrow and the screen it opens are the same series ----------
+  log('2026-07-10', [s('leg-extension', 15, 50)]);
+  log('2026-07-11', [s('leg-extension', 15, 55)]);
+  const extRows = workingSets(db, 'leg-extension');
+  const extRow = trainedExercises(db).find((x) => x.exerciseId === 'leg-extension');
+  extRow.trendMetric === 'top_weight' &&
+  defaultTrendMetric(extRows, 'reps,load', 'stack') === 'top_weight' &&
+  sessionSeriesFrom(extRows, 'top_weight').length === 2
+    ? ok('sets of 15: the hub reads "+10%" from the top weight, and detail OPENS on that chart')
+    : bad('hub/detail metric', defaultTrendMetric(extRows, 'reps,load', 'stack'));
+  trendEmptyNote('e1rm', extRows) ===
+  'An estimated 1RM needs a set of 12 reps or fewer that is not logged below RPE 6. Fewer than two sessions have one.'
+    ? ok('…and the e1RM chip, picked by hand, says why it is empty — not "needs two weighted sessions"')
+    : bad('e1rm empty note', trendEmptyNote('e1rm', extRows));
+
+  // A pull-up at bodyweight — the commonest way to do one — has a direction.
+  log('2026-07-01', [s('pull-up', 8, null), s('pull-up', 7, null)]);
+  log('2026-07-03', [s('pull-up', 9, null), s('pull-up', 8, null)]);
+  log('2026-07-05', [s('pull-up', 11, null), s('pull-up', 9, null)]);
+  const pullRows = workingSets(db, 'pull-up');
+  const pullBasis = getExercise(db, 'pull-up').loadBasis;
+  const pullRow = trainedExercises(db).find((x) => x.exerciseId === 'pull-up');
+  pullBasis === 'bodyweight_plus' &&
+  pullRow.trendMetric === 'reps' &&
+  trendToken(pullRow.trend) === '+29%' &&
+  directionOf(pullRows, 'reps,load', pullBasis).metric === 'reps' &&
+  defaultTrendMetric(pullRows, 'reps,load', pullBasis) === 'reps'
+    ? ok('bodyweight pull-ups 8 → 9 → 11: the arrow reads most reps (+29%), and detail opens on it')
+    : bad('pull-up direction', JSON.stringify(pullRow));
+  repMaxesFrom(pullRows, pullBasis).length === 0 &&
+  repMaxEmptyNote(pullRows, pullBasis) === 'No sets with added weight yet.' &&
+  repMaxEmptyNote([], pullBasis) === 'Nothing logged yet.' &&
+  repMaxEmptyNote(extRows.map((r) => ({ ...r, weight_kg: null })), 'stack') ===
+    'No loaded set of 20 reps or fewer yet.'
+    ? ok('the rep-max table says what is missing: no added weight yet, not "nothing logged"')
+    : bad('rep-max note', repMaxEmptyNote(pullRows, pullBasis));
+  const benchNoRows = defaultTrendMetric([], 'reps,load', 'total');
+  benchNoRows === 'e1rm' && trendEmptyNote('e1rm', []) === 'An estimated-1RM trend needs two weighted sessions.'
+    ? ok('with nothing to draw, a lift still opens on e1RM and states what it needs')
+    : bad('empty default', benchNoRows);
+
+  // --- an ASSISTED movement: less help is the harder set ---------------------
+  const assisted = createCustomExercise(db, {
+    name: 'Assisted Pull-Up',
+    equipment: 'machine',
+    loggingType: 'assisted_bodyweight',
+    primaryMuscles: ['lats'],
+  });
+  log('2026-07-02', [s(assisted, 8, 35), s(assisted, 8, 15)]);
+  log('2026-07-06', [s(assisted, 10, 30), s(assisted, 8, 10)]);
+  const aRows = workingSets(db, assisted);
+  const aTops = exerciseSessionTopsFrom(aRows, 12, 'assisted');
+  aTops.map((t) => `${t.reps}x${t.weightKg}`).join() === '8x15,10x30'
+    ? ok('assisted top sets: most reps, then LESS help — 8 × 15 over 8 × 35 (was the easiest set)')
+    : bad('assisted tops', JSON.stringify(aTops));
+  exerciseSessionTops(db, assisted)[0].weightKg === 15
+    ? ok('…and the DB form reads the basis itself, so no caller can forget it')
+    : bad('assisted DB tops');
+  const aPrs = personalRecords(db, assisted);
+  aPrs.maxWeightKg === null &&
+  aPrs.bestE1rmKg === null &&
+  aPrs.bestSetVolumeKg === null &&
+  aPrs.bestSessionVolumeKg === null &&
+  aPrs.bestReps === 10 &&
+  repMaxesFrom(aRows, 'assisted').length === 0
+    ? ok('assisted records: no heaviest, no e1RM, no volume, no rep maxes — only the rep counts')
+    : bad('assisted records', JSON.stringify(aPrs));
+  const aRow = trainedExercises(db).find((x) => x.exerciseId === assisted);
+  aRow.loadBasis === 'assisted' &&
+  aRow.latest.reps === 10 &&
+  aRow.latest.weightKg === 30 &&
+  aRow.trendMetric === 'reps'
+    ? ok('the hub row reads the assisted session’s most reps, and its arrow reads reps too')
+    : bad('assisted hub row', JSON.stringify(aRow));
+  e1rmRecordOf(aRows, { measures: 'reps,load', basis: 'assisted' }) === null
+    ? ok('…and no e1RM "record" for the report either')
+    : bad('assisted report record');
+
+  // --- the live stamp, from the logger's own state ---------------------------
+  log('2026-07-01', [s('barbell-bench-press', 5, 100)]);
+  log('2026-07-05', [s('barbell-bench-press', 5, 105)]);
+  const history = workingSets(db, 'barbell-bench-press');
+  const typed = (key, weight, reps, extra = {}) => ({
+    key,
+    weight: String(weight),
+    reps: String(reps),
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: true,
+    pr: false,
+    ...extra,
+  });
+  // bench → row → bench: one session of bench, split across two blocks.
+  const blocks = [
+    { key: 1, exerciseId: 'barbell-bench-press', measures: 'reps,load', sets: [typed(11, 110, 5)] },
+    { key: 2, exerciseId: 'barbell-row', measures: 'reps,load', sets: [typed(21, 80, 8)] },
+    { key: 3, exerciseId: 'barbell-bench-press', measures: 'reps,load', sets: [typed(31, 110, 5)] },
+  ];
+  const stamp = (set, over = {}) =>
+    stampFor({
+      set,
+      exerciseId: 'barbell-bench-press',
+      measures: 'reps,load',
+      blocks,
+      history,
+      basis: 'total',
+      away: false,
+      editing: false,
+      units: kg,
+      ...over,
+    }).join(',');
+  const firstBlockOnly = blocks.map((b) =>
+    b.key === 3 ? { ...b, sets: b.sets.map((x) => ({ ...x, done: false })) } : b
+  );
+  stamp(blocks[0].sets[0], { blocks: firstBlockOnly }) ===
+  'e1rm,weight,rep_max,set_volume,session_volume'
+    ? ok('ticking 5 × 110 in the first bench block stamps e1RM, heaviest and the rest')
+    : bad('first block stamp', stamp(blocks[0].sets[0], { blocks: firstBlockOnly }));
+  stamp(blocks[2].sets[0]) === ''
+    ? ok('the SAME 5 × 110 in the second bench block stamps nothing — the first block already set it')
+    : bad('second block re-stamped', stamp(blocks[2].sets[0]));
+  stamp(blocks[0].sets[0], { blocks: firstBlockOnly, away: true }) === '' &&
+  stamp(blocks[0].sets[0], { blocks: firstBlockOnly, editing: true }) === '' &&
+  stamp(blocks[0].sets[0], { blocks: firstBlockOnly, basis: 'assisted' }) === '' &&
+  stamp(blocks[0].sets[0], { blocks: firstBlockOnly, exerciseId: null }) === ''
+    ? ok('no stamp away, none while editing a past session, none for assisted or a free-text block')
+    : bad('stamp refusals');
+  // A done set whose numbers change is asked again, as it now reads.
+  const edited = (patch) => stamp({ ...blocks[0].sets[0], ...patch }, { blocks: firstBlockOnly });
+  edited({ weight: '1100' }).startsWith('e1rm,weight') &&
+  !edited({ reps: '6' }).includes('rep_max') &&
+  edited({ weight: '100' }) === '' &&
+  edited({ setType: 'warmup' }) === ''
+    ? ok('a corrected set is re-asked: 100 kg holds no record, 6 reps is no "best at 6", a warmup none')
+    : bad('restamp', [edited({ weight: '100' }), edited({ reps: '6' })].join(' | '));
+
+  // --- the report asks the same rule ----------------------------------------
+  const benchRecord = e1rmRecordOf(history, { measures: 'reps,load', basis: 'total' });
+  benchRecord && benchRecord.date === '2026-07-05' && near(benchRecord.e1rmKg, 122.5, 0.01)
+    ? ok('e1rmRecordOf: the all-time best, dated the session that beat the old one')
+    : bad('report record', JSON.stringify(benchRecord));
+  e1rmRecordOf(history.filter((r) => r.date === '2026-07-01'), {
+    measures: 'reps,load',
+    basis: 'total',
+  }) === null
+    ? ok('…and a movement’s first-ever session is no record: nothing was beaten')
+    : bad('first session reported');
+
+  // --- the Trend's headline is the session its direction line describes ----
+  const pt = (value, away) => ({ workoutId: String(value), date: '2026-07-01', value, ...(away ? { away: true } : {}) });
+  const withAway = [pt(100), pt(105), pt(130, true)];
+  const h1 = trendHeadline(withAway, trendOf(withAway));
+  const h2 = trendHeadline([pt(100), pt(130, true)], trendOf([pt(100), pt(130, true)]));
+  const h3 = trendHeadline([pt(100), pt(110)], trendOf([pt(100), pt(110)]));
+  h1.value === 105 &&
+  h1.label === 'Latest at home' &&
+  h2.value === 130 &&
+  h2.label === 'Latest · away gym' &&
+  h3.value === 110 &&
+  h3.label === 'Latest'
+    ? ok('an away last point: the figure is the home session the "+5%" is about, and says so')
+    : bad('headline', JSON.stringify([h1, h2, h3]));
+
+  // --- the direction phrase marks only its figures -------------------------
+  const four = trendOf([pt(100), pt(100), pt(100), pt(110)]);
+  const phrase = trendPhraseParts(four);
+  JSON.stringify(phrase.filter((p) => p.measured).map((p) => p.text)) === '["+10%","3 sessions"]' &&
+  phraseText(phrase) === '+10% on the previous 3 sessions' &&
+  trendPhraseParts(trendOf([pt(100), pt(101)])).every((p) => !p.measured)
+    ? ok('"+10% on the previous 3 sessions": the figures are mono, the words are prose')
+    : bad('phrase parts', JSON.stringify(phrase));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

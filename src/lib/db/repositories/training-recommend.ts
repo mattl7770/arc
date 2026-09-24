@@ -25,6 +25,7 @@ import {
   progressionIncrementKg,
 } from '@/lib/exercise/constants';
 import { meanFreshness, muscleFreshness } from '@/lib/exercise/freshness';
+import { loadRecordsApply } from '@/lib/exercise/load-basis';
 import { suggestProgression } from '@/lib/exercise/progression';
 import { type RoutineCandidate, recommendToday } from '@/lib/exercise/recommend';
 import { volumeLedger } from '@/lib/exercise/volume';
@@ -55,6 +56,17 @@ function progressionFor(db: Database, ex: CatalogExercise): ProgressionSuggestio
       targetWeightKg: null,
       targetReps: repRange.high,
       note: 'Progress reps or time.',
+    };
+  }
+  // An ASSISTED movement's figure is help, not load (0062): double
+  // progression would add assistance and call it progress. Its direction is the
+  // other way, and the number to aim at is the reps.
+  if (!loadRecordsApply(ex.loadBasis)) {
+    return {
+      kind: 'hold',
+      targetWeightKg: null,
+      targetReps: repRange.high,
+      note: 'Take assistance off as the reps allow.',
     };
   }
   return suggestProgression({
