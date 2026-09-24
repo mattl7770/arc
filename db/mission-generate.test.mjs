@@ -2166,5 +2166,164 @@ console.log('31. a hand-made skip of a carried row settles the debt, whichever s
   raw.close();
 }
 
+console.log('32. two doses under one title: each row stays paired with its OWN item');
+{
+  // A protocol may list one title twice (the multiset rule). The re-derive used
+  // to pair a row with the FIRST queued entry of its title, so which dose a row
+  // re-synced to depended on the order of the plan and of the rows. The move
+  // mark made that visible: the evening time the user chose could land on the
+  // morning dose.
+  const { db, raw } = freshDb();
+  const TODAY = '2026-08-03';
+  const pm = { id: 'pm', title: 'Magnesium', time: '20:00', dose: '400 mg' };
+  const am = { id: 'am', title: 'Magnesium', time: '08:00', dose: '200 mg' };
+  const stack = createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: TODAY },
+    content([{ items: [pm] }])
+  );
+  generateMissionForDay(db, TODAY);
+  const evening = rows(raw, TODAY)[0];
+  moveMissionItem(db, logIdOn(raw, TODAY), evening.id, '21:30');
+
+  // The edit adds a morning dose of the same title AHEAD of the evening one.
+  addVersion(db, stack, content([{ items: [am, pm] }]), 'morning dose');
+  rederiveMissionFromToday(db, TODAY);
+  const kept = rowById(raw, evening.id);
+  valueOf(kept).item === 'pm' &&
+  valueOf(kept).dose === '400 mg' &&
+  kept.scheduled_time === '21:30' &&
+  valueOf(kept).moved === true
+    ? ok('the moved evening row stays the evening dose, at the time it was moved to')
+    : bad('the moved row paired with the other dose', JSON.stringify(kept));
+  const morning = rows(raw, TODAY).filter((r) => valueOf(r).item === 'am');
+  morning.length === 1 &&
+  morning[0].scheduled_time === '08:00' &&
+  valueOf(morning[0]).dose === '200 mg' &&
+  valueOf(morning[0]).moved === undefined
+    ? ok('…and the new morning dose lands at its own time, unmarked')
+    : bad('the morning dose', JSON.stringify(morning));
+
+  // The done case, which predates the mark: a COMPLETED evening row used to
+  // claim the first entry of its title — the morning one — and leave the
+  // pending morning row to re-sync onto the evening dose.
+  setMissionStatus(db, evening.id, 'completed', TODAY);
+  moveMissionItem(db, logIdOn(raw, TODAY), morning[0].id, '10:00');
+  addVersion(db, stack, content([{ items: [{ ...am, dose: '250 mg' }, pm] }]), 'more');
+  rederiveMissionFromToday(db, TODAY);
+  const stillMorning = rowById(raw, morning[0].id);
+  valueOf(stillMorning).item === 'am' &&
+  valueOf(stillMorning).dose === '250 mg' &&
+  stillMorning.scheduled_time === '10:00'
+    ? ok('a done evening dose leaves the moved morning row as the morning dose')
+    : bad('the done row took the morning slot', JSON.stringify(stillMorning));
+  rows(raw, TODAY).length === 2
+    ? ok('…and the day still holds exactly two rows for two doses')
+    : bad(
+        'doses duplicated or lost',
+        rows(raw, TODAY)
+          .map((r) => r.value)
+          .join(' | ')
+      );
+  raw.close();
+
+  // A moved row whose OWN item is gone does not hand its time to a different
+  // item that happens to share the title: the move was about that item.
+  const swap = freshDb();
+  const one = createProtocolWithVersion(
+    swap.db,
+    { name: 'Stack', type: 'supplement_stack', startedOn: TODAY },
+    content([{ items: [pm] }])
+  );
+  generateMissionForDay(swap.db, TODAY);
+  const old = rows(swap.raw, TODAY)[0];
+  moveMissionItem(swap.db, logIdOn(swap.raw, TODAY), old.id, '21:30');
+  const fresh = { id: 'fresh', title: 'Magnesium', time: '19:00', dose: '300 mg' };
+  addVersion(swap.db, one, content([{ items: [fresh] }]), 'replaced');
+  rederiveMissionFromToday(swap.db, TODAY);
+  const after = rows(swap.raw, TODAY);
+  after.length === 1 &&
+  valueOf(after[0]).item === 'fresh' &&
+  after[0].scheduled_time === '19:00' &&
+  valueOf(after[0]).moved === undefined
+    ? ok('a replaced item lands at its own time — the move does not pass to another item')
+    : bad('the move passed to another item', JSON.stringify(after));
+  swap.raw.close();
+}
+
+console.log('33. a skipped carried row settles EVERY miss it stood for, and nothing else');
+{
+  // One carried row stands for every outstanding miss of its item ("three
+  // missed days produce one row"). Skipping it used to settle only the most
+  // recent, so the next morning the OLDER miss was carried in its place — the
+  // skip came back as a debt the user had just declined.
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-07-27', carryOver: true },
+    content([
+      {
+        items: [
+          { id: 'lower', title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 3, 5] } },
+          { id: 'upper', title: 'Upper body', cadence: { kind: 'weekdays', days: [1, 5] } },
+        ],
+      },
+    ])
+  );
+  // Wednesday 08-05 is excused: its untouched row is not a debt at all.
+  startStatus(db, {
+    label: 'sick',
+    startDate: '2026-08-05',
+    endDate: '2026-08-05',
+    source: 'user',
+  });
+  const lowerOn = (date) =>
+    entriesOn(db, raw, date).find((r) => r.title === 'Lower body' && !valueOf(r).carried);
+  const beforeWindow = lowerOn('2026-07-31'); // Fri, eight days before Saturday
+  const mon = lowerOn('2026-08-03');
+  const wed = lowerOn('2026-08-05');
+  const fri = lowerOn('2026-08-07');
+  const upperRows = raw
+    .prepare("SELECT id FROM log_entries WHERE title = 'Upper body'")
+    .all()
+    .map((r) => r.id);
+
+  const sat = carriedOn(db, raw, '2026-08-08', 'Lower body')[0];
+  sat && valueOf(sat).carried_from?.entry === fri.id
+    ? ok('Saturday carries ONE row for the item, anchored on the latest miss')
+    : bad('saturday carry', JSON.stringify(sat));
+
+  setMissionStatus(db, sat.id, 'skipped', '2026-08-08');
+  const settled = [mon, fri].map((r) => rowById(raw, r.id));
+  settled.every((r) => r.status === 'skipped' && valueOf(r).skipped_via === sat.id)
+    ? ok('the skip settles both misses in the window, each stamped with the copy')
+    : bad('a miss was left owed', JSON.stringify(settled.map((r) => [r.status, r.value])));
+  rowById(raw, wed.id).status === 'pending' &&
+  valueOf(rowById(raw, wed.id)).skipped_via === undefined
+    ? ok('…not the excused day, which was never a debt')
+    : bad('the skip reached an excused day', rowById(raw, wed.id).value);
+  rowById(raw, beforeWindow.id).status === 'pending'
+    ? ok('…not a miss older than the carry window, which stays an honest untouched row')
+    : bad('the skip rewrote history outside the window', rowById(raw, beforeWindow.id).value);
+  upperRows.every((id) => rowById(raw, id).status === 'pending')
+    ? ok('…and not another item of the same protocol')
+    : bad('the skip reached another item');
+  const sunday = carriedOn(db, raw, '2026-08-09', 'Lower body');
+  sunday.length === 0
+    ? ok('Sunday carries nothing: the older miss does not come back in its place')
+    : bad('an older miss came back', JSON.stringify(sunday.map((r) => r.value)));
+  carriedOn(db, raw, '2026-08-09', 'Upper body').length === 1
+    ? ok('…while the item nobody skipped is still carried')
+    : bad('upper body lost its carry');
+
+  // The undo re-opens every row the skip settled, not only the anchor.
+  toggleMission(db, sat.id, '2026-08-08');
+  const reopened = [mon, fri].map((r) => rowById(raw, r.id));
+  reopened.every((r) => r.status === 'pending' && valueOf(r).skipped_via === undefined)
+    ? ok('un-skipping the copy re-opens every miss it had settled')
+    : bad('the undo left a miss settled', JSON.stringify(reopened.map((r) => [r.status, r.value])));
+  raw.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

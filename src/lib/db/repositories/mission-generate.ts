@@ -36,12 +36,11 @@ import type { ProtocolItem } from '@/lib/protocols/types';
 
 import { experimentsRunningOn } from './experiments';
 import {
+  CARRY_MAX_DAYS,
+  carryDebtRows,
   countMissionEntries,
-  excusedDatesIn,
   getOrCreateDailyLog,
-  NOT_CARRIED_SQL,
   NOT_REMOVED_SQL,
-  NOT_UNSEEN_SQL,
   PLANNED_ROW_SQL,
   setMissionStatus,
 } from './mission';
@@ -351,8 +350,14 @@ export function quotaDoneThisWeek(db: Database, today: string): Map<string, numb
  * honest record of a miss (every adherence read counts it as one), and
  * rewriting week-old history on every app open to add an annotation no surface
  * needs is the worse trade. Out of the window simply means out of the window.
+ * (A hand-made skip of a carried copy writes inside the window, on the user's
+ * tap — see `skipCarriedOriginal` in ./mission.ts.)
+ *
+ * DEFINED in ./mission.ts since 2026-09-23, because `carryDebtRows` reads the
+ * window there and that module cannot import this one. Re-exported here, where
+ * the carry lives and where every caller already imports it from.
  */
-export const CARRY_MAX_DAYS = 7;
+export { CARRY_MAX_DAYS };
 
 /**
  * How far AHEAD the mission's Plan screen may look, and commit
@@ -424,46 +429,24 @@ type CarryDebt = {
  *
  * `late_on` rows are excluded for free: settling a debt flips the original to
  * `skipped`.
+ *
+ * The excusal read is the SHARED definition (`excusedDatesIn`) as of 0061,
+ * where it used to apply a mode-only filter of its own. The deliberate
+ * consequence, named rather than discovered: **nothing carries out of a
+ * timezone-excused day either**, which C11 never considered. A day the ledger
+ * forgave should not breed a debt, and having two answers to "was this day
+ * excused" in one module was the older bug.
+ *
+ * ## The rows themselves come from `carryDebtRows` (./mission.ts, 2026-09-23)
+ *
+ * The query that applies every rule above moved there so a hand-made skip of
+ * a carried copy can settle exactly the rows this function counted — every
+ * miss the copy stands for, not only its anchor. It lives in ./mission.ts
+ * because that is where the skip is, and this module imports that one.
  */
 function outstandingCarries(db: Database, date: string): Map<string, CarryDebt> {
-  const from = addDays(date, -CARRY_MAX_DAYS);
-  // Resolved once in JS rather than restated in SQL, exactly as missionBySource
-  // does it, so the excusal rule has ONE definition. `'0'` — a false literal —
-  // covers the ordinary case of no excused day in the window; the list is
-  // bounded by CARRY_MAX_DAYS.
-  //
-  // It reads the SHARED definition (`excusedDatesIn`) as of 0061, where it used
-  // to apply a mode-only filter of its own. The deliberate consequence, named
-  // rather than discovered: **nothing carries out of a timezone-excused day
-  // either**, which C11 never considered. A day the ledger forgave should not
-  // breed a debt, and having two answers to "was this day excused" in one
-  // module was the older bug.
-  const excusedDates = [...excusedDatesIn(db, from, addDays(date, -1))];
-  const isExcusedDay =
-    excusedDates.length > 0 ? `d.date IN (${excusedDates.map(() => '?').join(', ')})` : '0';
-
-  const rows = db.all<{ id: string; protocolId: string; item: string; date: string }>(
-    `SELECT e.id AS id,
-            e.protocol_id AS protocolId,
-            json_extract(e.value, '$.item') AS item,
-            d.date AS date
-       FROM log_entries e
-       JOIN daily_logs d ON d.id = e.daily_log_id
-      WHERE d.date >= ? AND d.date < ?
-        AND e.status = 'pending'
-        AND e.protocol_id IS NOT NULL
-        AND json_extract(e.value, '$.item') IS NOT NULL
-        AND NOT (${isExcusedDay})
-        AND ${PLANNED_ROW_SQL}
-        AND ${NOT_REMOVED_SQL}
-        AND ${NOT_CARRIED_SQL}
-        AND ${NOT_UNSEEN_SQL}
-      ORDER BY d.date`,
-    [from, date, ...excusedDates]
-  );
-
   const debts = new Map<string, CarryDebt>();
-  for (const row of rows) {
+  for (const row of carryDebtRows(db, date)) {
     const key = quotaKey(row.protocolId, row.item);
     const seen = debts.get(key);
     // Rows arrive oldest-first, so the last one wins the anchor: the carry ages
@@ -1248,13 +1231,41 @@ export function rederiveMissionForDay(
     else planByKey.set(key, [p]);
   }
 
-  // Preserved rows already satisfy their plan entry, so a completed item is
-  // never re-inserted as a duplicate pending row. ALL of them consume a slot,
-  // including pending-but-not-ours ones (counting only settled rows would let a
+  // Every row claims ONE entry from its key's queue. Preserved rows already
+  // satisfy their plan entry, so a completed item is never re-inserted as a
+  // duplicate pending row. ALL of them consume a slot, including
+  // pending-but-not-ours ones (counting only settled rows would let a
   // preserved pending row be duplicated by its matching plan entry). They are
   // left untouched — settled or hand-made — so we drop the slot, never the row.
-  for (const row of preservedRows) {
-    planByKey.get(planKey(row.title, row.protocol_id, row.carried))?.shift();
+  //
+  // ## A row claims its OWN item's entry first (2026-09-23)
+  //
+  // The key is (title, protocol, carried), so two doses under one title share
+  // a queue, and the row used to take whichever entry was at its head. Which
+  // dose a row re-synced to then depended on the order of the plan and of the
+  // rows: an evening dose added after a morning one, or a completed evening
+  // row claiming the morning slot, re-synced the pending morning row onto the
+  // evening dose. A row moved by hand made it visible, because the move's time
+  // went with the row onto the wrong dose. So the claim runs twice: first
+  // every row takes the entry of its own `value.item`; then any row still
+  // unpaired — no item on the row, or an item the plan no longer names —
+  // takes the head of its queue, exactly as every row did before. Preserved
+  // rows go first in both passes, as they always have.
+  const claimed = new Map<string, PlannedEntry>();
+  const claimants = [...preservedRows, ...replaceable];
+  for (const ownItemOnly of [true, false]) {
+    for (const row of claimants) {
+      if (claimed.has(row.id)) continue;
+      const queue = planByKey.get(planKey(row.title, row.protocol_id, row.carried));
+      if (!queue || queue.length === 0) continue;
+      const at = !ownItemOnly
+        ? 0
+        : row.item === null
+          ? -1
+          : queue.findIndex((entry) => entry.extras.item === row.item);
+      if (at === -1) continue;
+      claimed.set(row.id, queue.splice(at, 1)[0]!);
+    }
   }
 
   // Replaceable (ours, pending) rows: KEEP and re-sync to the matching plan
@@ -1276,21 +1287,30 @@ export function rederiveMissionForDay(
   // as before. The mark is appended LAST, which is also where the move's own
   // json_set put it, so an unchanged day still compares equal and writes
   // nothing.
+  //
+  // The mark belongs to the ITEM it was made on. A moved row that could only
+  // be paired with a different item of the same title (its own is gone from
+  // the plan) is re-synced to that item like any other row, time and all, and
+  // its moved time goes to the retitle hand-off below in case its own item is
+  // still in the plan under a new title. A row with no item id (written before
+  // items had one, or an experiment's) cannot be told apart, and keeps its time.
   const toRemove: string[] = [];
   const toUpdate: { id: string; value: string; scheduledTime: string | null }[] = [];
   const unmatchedMoved: Classified[] = [];
   for (const row of replaceable) {
-    const entry = planByKey.get(planKey(row.title, row.protocol_id, row.carried))?.shift();
+    const entry = claimed.get(row.id);
     if (!entry) {
       toRemove.push(row.id);
       if (row.moved) unmatchedMoved.push(row);
       continue;
     }
+    const keepsTime = row.moved && (row.item === null || entry.extras.item === row.item);
+    if (row.moved && !keepsTime) unmatchedMoved.push(row);
     // Both the stored value and the plan entry's extras are built by the same
     // planForDay shape, so JSON.stringify key order matches and a string compare
     // detects a real dose/why change.
-    const value = JSON.stringify(row.moved ? { ...entry.extras, moved: true } : entry.extras);
-    const scheduledTime = row.moved ? row.scheduled_time : entry.scheduledTime;
+    const value = JSON.stringify(keepsTime ? { ...entry.extras, moved: true } : entry.extras);
+    const scheduledTime = keepsTime ? row.scheduled_time : entry.scheduledTime;
     if (value !== row.value || scheduledTime !== row.scheduled_time) {
       toUpdate.push({ id: row.id, value, scheduledTime });
     }
