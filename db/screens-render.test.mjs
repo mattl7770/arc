@@ -6160,7 +6160,7 @@ console.log('\n25. 2026-09-23 — the water screen says when a glass cannot reac
     : bad('water: the pointer is not in the Add plate, or goes somewhere else');
   src.includes('publishPointer: waterPublishPointer(waterPublishFacts(db))')
     ? ok(
-        'water: the line is re-read with the screen (on focus and after every write), from the shared rule'
+        'water: the line is re-read with the screen (on focus, on a return to the foreground, after every write), from the shared rule'
       )
     : bad('water: the pointer is not read through waterPublishPointer');
   const row = readFileSync(

@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
@@ -29,6 +29,7 @@ import { shortDate, windowLabel } from '@/lib/experiments/format';
 import {
   editWaterCapture,
   logWaterCapture,
+  releaseStalledWater,
   removeWaterCapture,
   waterPublishFacts,
   waterPublishPointer,
@@ -88,8 +89,11 @@ import { daysBetween } from '@/lib/screenings/format';
  * stalled silently until he found *Allow publishing* in Settings. So while sync
  * is on and water is unasked or refused, the Add plate ends with one ruled row
  * pointing there (`waterPublishPointer`). It reads the same classifier
- * Settings reads, scoped to Water, and is re-read on focus, so it is gone when
- * he comes back from granting it.
+ * Settings reads, scoped to Water, and is re-read on focus AND when the app
+ * comes back to the foreground: a refusal is lifted in the iOS Settings app,
+ * and returning from another app is not a navigation focus. So the row is gone
+ * when he comes back from granting it either way, and the glasses that stalled
+ * behind it are sent then (`releaseStalledWater`), not on the next sync.
  *
  * ## Four objects, in the order the question is asked
  *
@@ -317,9 +321,18 @@ export default function WaterScreen() {
   const [goalOpen, setGoalOpen] = useState(false);
   const [goalText, setGoalText] = useState('');
 
+  /** The Apple Health line as last drawn, so a re-read can tell that it went. */
+  const shownPointer = useRef(view.publishPointer);
+
   const refresh = useCallback((forDay: string) => {
-    setView(read());
+    const next = read();
+    const before = shownPointer.current;
+    shownPointer.current = next.publishPointer;
+    setView(next);
     setEntries(listWaterEntries(getDb(), forDay));
+    // The line just went: water was allowed while it showed. Send the glasses
+    // that stalled behind it now (docs/wearables-subapp.md §20.11).
+    void releaseStalledWater(getDb(), before, next.publishPointer);
   }, []);
 
   // op-sqlite is synchronous, so the first read already ran in the initializers
@@ -331,14 +344,22 @@ export default function WaterScreen() {
   // The no-focus case (the screen simply left open across midnight, no event to
   // run this) is handled at write time in `add`, where the log day is resolved
   // fresh — so a stale `day` can never backdate the new day's first glass.
-  useFocusEffect(
-    useCallback(() => {
-      const freshToday = todayISODate();
-      const nextDay = day === view.today ? freshToday : day;
-      if (nextDay !== day) setDay(nextDay);
-      refresh(nextDay);
-    }, [refresh, day, view.today])
-  );
+  const recheck = useCallback(() => {
+    const freshToday = todayISODate();
+    const nextDay = day === view.today ? freshToday : day;
+    if (nextDay !== day) setDay(nextDay);
+    refresh(nextDay);
+  }, [refresh, day, view.today]);
+  useFocusEffect(recheck);
+  // And on a return to the foreground, which is not a navigation focus. A
+  // refusal of water is lifted in the iOS Settings app, and without this the
+  // line saying Apple Health refuses water stayed after he had allowed it.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') recheck();
+    });
+    return () => sub.remove();
+  }, [recheck]);
 
   const { today, recordStart, daysOnRecord, days, targetMl, spec, volumeUnit } = view;
   const { timezoneNotes, publishPointer } = view;

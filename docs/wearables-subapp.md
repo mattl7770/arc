@@ -19,7 +19,9 @@ ARC's own whole-ounce display, now a tenth below 32 oz, printed through one form
 **Amended:** 2026-09-23 — **a glass goes out when it is logged** (**§20.10**), not on the next
 sync, through a water-only walk that shares the full sync's single in-flight pass; and the water
 screen says, in one line, when a glass cannot go out because water's write permission is unasked
-or refused (**§20.11**).
+or refused (**§20.11**). The line clears on a return from the iOS Settings app too, and the
+glasses stalled behind it go out then. A glass corrected while the walk is still sending a
+backlog now reaches Health with the corrected amount (**§20.5**, the edit race).
 **Read first:** CLAUDE.md §8 (wearables strategy) and §9 (DB conventions), `docs/project-status.md`.
 
 Apple Health is the decided ingestion hub (2026-07-24 ADR): it is on-device, every vendor's
@@ -1768,6 +1770,24 @@ Undo already holds. No UUID is stored, and none needs to be.
 - **The race.** If the Undo lands while the walk's save is in flight, the Undo's delete finds
   nothing, and then the save lands as an orphan. The walk checks after each save that its row still
   exists, and takes the orphan straight back out.
+- **The edit race (2026-09-23, from a review of §20.10–§20.11).** The walk used to read its whole
+  batch, amounts included, when it began, then save row after row. A backlog of stalled glasses
+  (up to 200 saves, which the §20.11 row sends him to release) takes seconds, long enough to
+  correct one on the water screen. The edit's delete found nothing for a glass the walk had not
+  reached, so it stood down, and the walk then sent the old amount, which Health kept for good.
+  Three changes close it, all in `runWaterPass`:
+  - The walk **re-reads each row just before its save**. A glass corrected before the walk reaches
+    it goes out with the corrected amount, and one undone before then is never sent.
+  - After each save, `settleSavedWater` re-reads the row once more. If the amount changed while the
+    save was in flight, it deletes by tag and re-saves the current amount, at the same instant and
+    under the same tag, then checks again. The row-gone check above is the same step.
+  - While the walk is saving a row (`waterSaving`), the edit's own re-send **stands aside** for
+    that row. The save may land before or after the edit's delete looks, so the delete's answer
+    cannot be trusted then, and two re-sends at once could leave two glasses. The walk corrects
+    it instead.
+
+  The builder's earlier note called this race unreachable at human speed. That was true of a
+  single glass, but not of a backlog.
 - **One switch.** With sync off the row is still deleted, but ARC writes nothing to Health in
   either direction.
 
@@ -1950,14 +1970,18 @@ The water screen now ends its **Add** plate with one ruled row while that is the
 | Sync | Water's write permission | The row |
 | --- | --- | --- |
 | off | any | none. Nothing is sent by design, and Settings says so |
-| on | never asked | *"Not sent to Apple Health yet — allow it in Settings › Apple Health"* |
+| on | never asked | *"Not sent to Apple Health yet — tap Allow publishing in Settings › Apple Health"* |
 | on | refused | *"Apple Health is refusing water from ARC — see Settings › Apple Health"* |
 | on | granted | none. The row goes once he has allowed it |
 | on | no module, or no status API | none. Nothing honest can be said, and there is no switch to point at |
 
-The row opens `/settings-health`. For a refusal that screen already names the iOS Settings path.
-It is not on the Log tab tile and not on Home: the water screen is the place where a glass is
-logged *and* read back.
+The row opens `/settings-health`. The unasked line names *Allow publishing*, the one control
+there that fixes it, which Settings shows in exactly that state (`unaskedWriteIdentifiers`); a
+test pins that the control exists under that name. For a refusal that screen already names the
+iOS Settings path. It is not on the Log tab tile and not on Home: the water screen is the place
+where a glass is logged *and* read back. (A review asked for the same row under the Log tab's
+water tiles, since that is where the glass in §20.12 check 1 is tapped. It was declined: the
+brief placed the row on the water screen and ruled out the Log tab and Home.)
 
 **One way to read the grant.** Settings classifies every published type with
 `classifyWriteAccess` over `authorizationStatusFor`. `healthWriteAccess` now takes an optional
@@ -1965,8 +1989,17 @@ list of identifiers, and the water screen asks it about Water alone, so weight's
 cannot answer for water. The unscoped call Settings makes is unchanged. For one type the
 classifier returns only `granted`, `denied` or `undetermined`. The rule is `waterPublishPointer`,
 pure, in `publish.ts`. The facts are `waterPublishFacts`: the switch and that scoped call, read
-with the screen, so they are re-read on focus and the row is gone when he comes back from
-granting it. The *Allow publishing* pass then sends every capture that stalled.
+with the screen. The *Allow publishing* pass then sends every capture that stalled.
+
+**When the row is re-read, and what goes out when it goes.** The screen re-reads on focus, which
+covers a return from Settings › Apple Health. A refusal, though, is lifted in the iOS Settings
+app, and coming back from another app is not a navigation focus. The row used to stay after he
+had allowed water there. So the screen now re-reads on an `AppState` change to `active` as well,
+through the same `recheck` its focus effect runs. The foreground sync is throttled to one pass per
+15 minutes, so the glasses that stalled behind the row could still wait. Each re-read therefore
+hands the line it showed before and the line it shows now to `releaseStalledWater`. When a line
+has gone, that starts the same water-only pass a tap starts (§20.10). Nothing starts if there
+was no line, if the line is still there, or if it went because sync was turned off.
 
 **Design.** The row is a ruled row of the Add plate, not a new device. It is set in the serif
 annotation size in muted ink with a chevron, and has a 44pt target. It takes no accent (the
@@ -1974,7 +2007,13 @@ plate's accent is its Add action) and no signal colour (a permission is chrome).
 
 **Tests.** `db/wearables.test.mjs` §24b covers the rule for every state in the table, the
 single-type classifications, and the facts under node. It also pins on the source that the facts
-come from the scoped `healthWriteAccess` and nothing else. `db/screens-render.test.mjs` §25
+come from the scoped `healthWriteAccess` and nothing else. It drives `releaseStalledWater` over a
+glass stalled by a refusing save: four before/after pairs and sync off start nothing, and a line
+that went with sync on sends the glass. It pins on the source that the screen re-reads on focus and
+on `active` through one `recheck`, and that every re-read goes through `releaseStalledWater`. It
+also drives the §20.5 edit race: a backlog walk held on its first save while a later glass is
+corrected and another undone, and a glass corrected after Health holds it but before the walk has
+heard back. `db/screens-render.test.mjs` §25
 renders the water screen under node with sync on and off, and no row appears. It then draws the
 row itself for both lines, and pins on the source that the row sits inside the Add plate, opens
 Settings › Apple Health, spends no accent and has a 44pt target.
@@ -1992,6 +2031,14 @@ Settings › Apple Health, spends no accent and has a 44pt target.
    Health.
 4. **The refused wording.** If the sheet is answered with Water off, the water screen should show
    the refusing line, and Settings should show its note pointing to iOS Settings.
+5. **Coming back from iOS Settings.** With the refusing line on Data → Water, switch to the iOS
+   Settings app, turn Water on under Privacy & Security → Health → ARC, and switch back to ARC
+   without leaving the water screen. The line should be gone, and the glasses logged while it
+   showed should be in the Health app within seconds, without *Sync now*. If iOS relaunches ARC
+   after a Health permission change instead, the boot sync sends them, which is also a pass.
+6. **A correction during the backlog.** With several glasses stalled, tap *Allow publishing*, go
+   straight back to Data → Water and correct an older glass. The Health app should end with the
+   corrected amount for it, once.
 
 ---
 

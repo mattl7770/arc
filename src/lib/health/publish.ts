@@ -353,6 +353,22 @@ const NATIVE_WATER_DEPS: WaterPublishDeps = {
 let waterInFlight: Promise<HealthPublishResult> | null = null;
 
 /**
+ * The capture the walk is saving right now, from the moment it re-reads the
+ * row until Health holds what the row says. {@link republishWater} leaves this
+ * one row to the walk, which checks it again after its save and corrects what
+ * it sent (§20.5, the edit race). One walk runs at a time, so one id is enough.
+ */
+let waterSaving: string | null = null;
+
+/**
+ * How many times the walk re-sends one capture that was corrected while it was
+ * being saved. An edit takes a tap and a save a fraction of a second, so a
+ * second correction is already beyond what a person can do; the bound only
+ * stops a loop.
+ */
+const WATER_RESAVE_LIMIT = 3;
+
+/**
  * One water publish pass: arm if needed, then walk the manual captures forward
  * from the cursor, one sample each, until the batch is exhausted or a save is
  * refused. The same two rules as {@link publishBodyMetrics}, under a cursor of
@@ -397,36 +413,40 @@ async function runWaterPass(
   let attempted = 0;
   let written = 0;
   let stalled = false;
-  for (const row of publishableWaterAfter(db, cursor, PUBLISH_BATCH_ROWS)) {
-    const sample = waterSampleFor(row);
+  for (const listed of publishableWaterAfter(db, cursor, PUBLISH_BATCH_ROWS)) {
+    // Read again, now. The batch was read when the pass began, and a backlog of
+    // stalled glasses takes seconds to walk, long enough to open the water
+    // screen and correct one. Sending the listed amount would put the old one
+    // in Health for good: the edit's own re-send asks "was it published?" and
+    // hears no, because the walk had not reached it yet.
+    const row = getPublishableWater(db, listed.id);
+    const sample = row ? waterSampleFor(row) : null;
     if (sample) {
       attempted++;
-      const saved = await deps.save(
-        sample.hkIdentifier,
-        sample.hkUnit,
-        sample.value,
-        sample.at,
-        sample.at,
-        { [ARC_WRITE_METADATA_KEY]: sample.sourceRowId }
-      );
-      if (!saved) {
-        stalled = true; // rule 2: the cursor stays on the last accepted row
-        break;
-      }
-      written++;
-      // Undone while the save was in flight: the row is gone, so the sample it
-      // just produced has no capture behind it. Take it straight back out —
-      // this is the one ordering in which the Undo's own delete runs first and
-      // finds nothing.
-      // Never allowed to throw: a rejection here would end the pass before its
-      // cursor is saved, and the next pass would re-post every row saved above.
-      if (getPublishableWater(db, row.id) === null) {
-        await deps.deleteByTag(sample.hkIdentifier, row.id).catch(() => 0);
+      waterSaving = listed.id;
+      try {
+        const saved = await deps.save(
+          sample.hkIdentifier,
+          sample.hkUnit,
+          sample.value,
+          sample.at,
+          sample.at,
+          { [ARC_WRITE_METADATA_KEY]: sample.sourceRowId }
+        );
+        if (!saved) {
+          stalled = true; // rule 2: the cursor stays on the last accepted row
+          break;
+        }
+        written++;
+        await settleSavedWater(db, listed.id, sample, deps);
+      } finally {
+        waterSaving = null;
       }
     }
     // A row with nothing honest to send is stepped over: it can never become
-    // publishable, and stalling on it would stop every capture behind it.
-    cursor = { createdAt: row.createdAt, id: row.id };
+    // publishable, and stalling on it would stop every capture behind it. So
+    // is one removed since the batch was read, which has nothing to send.
+    cursor = { createdAt: listed.createdAt, id: listed.id };
   }
 
   const next: HealthPublishState = {
@@ -446,6 +466,57 @@ async function runWaterPass(
     byType:
       attempted > 0 ? [{ label: WATER_PUBLISH_METRIC.label, attempted, succeeded: written }] : [],
   };
+}
+
+/**
+ * After the walk's save lands, make Health hold what the row holds NOW.
+ *
+ * - **Undone while the save was in flight:** the row is gone, so the sample
+ *   just saved has no capture behind it. Take it straight back out. This is
+ *   the one ordering in which the Undo's own delete runs first and finds
+ *   nothing.
+ * - **Corrected while the save was in flight:** the edit's re-send stood aside
+ *   for this row ({@link waterSaving}), so the walk replaces what it sent with
+ *   the corrected amount, same instant, same tag. Then it checks again, since
+ *   the re-save was in flight too.
+ *
+ * Never allowed to throw: a rejection here would end the pass before its
+ * cursor is saved, and the next pass would re-post every row saved before it.
+ * A refused re-save leaves the glass missing from Health rather than wrong
+ * there, the same outcome {@link editWaterCapture} accepts.
+ */
+async function settleSavedWater(
+  db: Database,
+  id: string,
+  sent: BodySample,
+  deps: WaterPublishDeps
+): Promise<void> {
+  let inHealth = sent;
+  for (let resaves = 0; ; resaves++) {
+    const row = getPublishableWater(db, id);
+    if (row === null) {
+      await deps.deleteByTag(inHealth.hkIdentifier, id).catch(() => 0);
+      return;
+    }
+    const now = waterSampleFor(row);
+    if (
+      now !== null &&
+      now.value === inHealth.value &&
+      now.at.getTime() === inHealth.at.getTime()
+    ) {
+      return;
+    }
+    if (resaves >= WATER_RESAVE_LIMIT) return;
+    await deps.deleteByTag(inHealth.hkIdentifier, id).catch(() => 0);
+    if (now === null) return;
+    const saved = await deps
+      .save(now.hkIdentifier, now.hkUnit, now.value, now.at, now.at, {
+        [ARC_WRITE_METADATA_KEY]: now.sourceRowId,
+      })
+      .catch(() => false);
+    if (!saved) return;
+    inHealth = now;
+  }
 }
 
 /** Whether a Health write may happen right now — the one switch, and a module. */
@@ -514,6 +585,11 @@ export function editWaterCapture(
 }
 
 async function republishWater(db: Database, id: string, deps: WaterPublishDeps): Promise<void> {
+  // The walk is saving this very row. Its save may land after the delete below
+  // has looked, or before it, so either answer here could be wrong; the walk
+  // re-reads the row once its save lands and replaces the amount itself
+  // (settleSavedWater). Two re-sends at once would leave two glasses.
+  if (waterSaving === id) return;
   try {
     const removed = await deps.deleteByTag(WATER_PUBLISH_METRIC.hkIdentifier, id);
     if (removed === 0) return;
@@ -660,9 +736,13 @@ export type WaterPublishFacts = {
   access: HealthWriteAccess;
 };
 
-/** Water was never put to the user: the write scope arrived after he connected. */
+/**
+ * Water was never put to the user: the write scope arrived after he connected.
+ * It names the control, because *Allow publishing* is the one tap that fixes
+ * it, and it is shown in exactly this state (`unaskedWriteIdentifiers`).
+ */
 export const WATER_UNASKED_LINE =
-  'Not sent to Apple Health yet — allow it in Settings › Apple Health';
+  'Not sent to Apple Health yet — tap Allow publishing in Settings › Apple Health';
 /** Water was asked and refused. The fix is in iOS Settings, which that screen names. */
 export const WATER_REFUSED_LINE =
   'Apple Health is refusing water from ARC — see Settings › Apple Health';
@@ -688,6 +768,29 @@ export function waterPublishPointer(facts: WaterPublishFacts): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * Send what stalled, once the water screen's line has gone: the screen calls
+ * this with the line it showed before a re-read and the line it shows after.
+ *
+ * *Allow publishing* runs a sync of its own, but a refusal is lifted in the iOS
+ * Settings app, and coming back from there starts a sync only if the last one
+ * was at least `AUTO_SYNC_THROTTLE_MIN` ago. Without this the glasses logged
+ * meanwhile would wait for the next tap or the next sync, behind a screen that
+ * had just stopped saying they could not go out.
+ *
+ * Starts nothing unless a line was showing and is gone. If it went because sync
+ * was turned off, {@link publishWaterOnLog} starts nothing either. Never throws.
+ */
+export function releaseStalledWater(
+  db: Database,
+  before: string | null,
+  after: string | null,
+  deps: WaterPublishDeps = NATIVE_WATER_DEPS
+): Promise<HealthPublishResult | null> {
+  if (before === null || after !== null) return Promise.resolve(null);
+  return publishWaterOnLog(db, deps);
 }
 
 /** The facts, read: the same switch and the same classifier Settings reads. */

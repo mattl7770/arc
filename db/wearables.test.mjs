@@ -81,6 +81,7 @@ import {
   PUBLISH_BATCH_ROWS,
   publishWaterCaptures,
   publishWaterOnLog,
+  releaseStalledWater,
   removeWaterCapture,
   requestWaterPublish,
   WATER_REFUSED_LINE,
@@ -2873,10 +2874,20 @@ console.log('24b. a glass goes out when it is logged, and says when it cannot (2
     WATER_UNASKED_LINE
   );
   eq(
-    '...which says what happened and where to fix it, in one line',
+    '...which says what happened and the one tap that fixes it, in one line',
     WATER_UNASKED_LINE,
-    'Not sent to Apple Health yet — allow it in Settings › Apple Health'
+    'Not sent to Apple Health yet — tap Allow publishing in Settings › Apple Health'
   );
+  // The line names a control, so the control must exist under that name, and
+  // appear in the state the line is shown for (a write type never asked).
+  const settingsSrc = readFileSync(new URL('../app/settings-health.tsx', import.meta.url), 'utf8');
+  settingsSrc.includes("'Allow publishing'") &&
+  settingsSrc.includes('unaskedWrites.length > 0 ?') &&
+  settingsSrc.includes('<StackHeader title="Apple Health"')
+    ? ok(
+        '...and Settings › Apple Health has an "Allow publishing" control, shown while a type is unasked'
+      )
+    : bad('the unasked line names a control Settings › Apple Health does not show');
   eq(
     'pointer, sync on and water refused: the refused line',
     waterPublishPointer({ syncEnabled: true, access: 'denied' }),
@@ -2931,6 +2942,151 @@ console.log('24b. a glass goes out when it is logged, and says when it cannot (2
   !publishSrc.includes('authorizationStatusFor')
     ? ok('the facts come from Settings’ own classifier, scoped — no second way to read the grant')
     : bad('water facts compute the grant some other way');
+
+  // --- The line goes when water is allowed, and what stalled goes out then ----
+  // A review of this branch: a refusal is lifted in the iOS Settings app, and
+  // coming back from another app is not a navigation focus, so the refusing
+  // line stayed after he had fixed it. And the foreground sync is throttled, so
+  // the glasses that stalled behind the line waited for the next tap.
+  {
+    const { db: sdb } = freshDb();
+    setHealthSyncEnabled(sdb, true);
+    const shk = fakeHealthKit();
+    await publishWaterCaptures(sdb, new Date(), shk.deps); // armed, nothing on record
+    const refusing = { ...shk.deps, save: async () => false };
+    const stalledGlass = logWaterCapture(sdb, today, 250, refusing);
+    await settle();
+    shk.saved(stalledGlass) === 0 &&
+    getHealthPublishState(sdb, HEALTH_WATER_PUBLISH_KEY).cursorId === null
+      ? ok('refused: the glass is on record and stalled on the cursor, not in Apple Health')
+      : bad('stalled setup', JSON.stringify(shk.samples));
+    const stays = [
+      ['no line before or after', null, null],
+      ['the same line still showing', WATER_UNASKED_LINE, WATER_UNASKED_LINE],
+      ['a refusal becoming an unasked line', WATER_REFUSED_LINE, WATER_UNASKED_LINE],
+      ['a line appearing', null, WATER_REFUSED_LINE],
+    ];
+    for (const [name, before, after] of stays) {
+      const result = await releaseStalledWater(sdb, before, after, shk.deps);
+      await settle();
+      result === null && shk.calls.length === 0
+        ? ok(`releaseStalledWater, ${name}: starts nothing`)
+        : bad(`releaseStalledWater, ${name}`, JSON.stringify({ result, calls: shk.calls }));
+    }
+    setHealthSyncEnabled(sdb, false);
+    const offRelease = await releaseStalledWater(sdb, WATER_REFUSED_LINE, null, shk.deps);
+    offRelease === null && shk.calls.length === 0
+      ? ok('releaseStalledWater, the line went because sync was turned off: starts nothing')
+      : bad('release with sync off', JSON.stringify(offRelease));
+    setHealthSyncEnabled(sdb, true);
+    const released = await releaseStalledWater(sdb, WATER_REFUSED_LINE, null, shk.deps);
+    released?.samplesWritten === 1 && shk.saved(stalledGlass) === 1
+      ? ok(
+          'releaseStalledWater, the line went with sync on: the stalled glass goes out now, not on the next sync'
+        )
+      : bad('release', JSON.stringify({ released, samples: shk.samples }));
+
+    const waterSrc = readFileSync(new URL('../app/water.tsx', import.meta.url), 'utf8');
+    waterSrc.includes('useFocusEffect(recheck)') &&
+    /AppState\.addEventListener\('change', \(state\) => \{\s*if \(state === 'active'\) recheck\(\);/.test(
+      waterSrc
+    )
+      ? ok(
+          'water: the line is re-read on focus AND on a return to the foreground, through one recheck'
+        )
+      : bad('water: the line is not re-read when the app comes back to the foreground');
+    waterSrc.includes('releaseStalledWater(getDb(), before, next.publishPointer)')
+      ? ok(
+          'water: every re-read hands the line it showed and the line it shows to releaseStalledWater'
+        )
+      : bad('water: a re-read that clears the line does not send what stalled');
+  }
+
+  // --- A capture corrected while the walk is sending a backlog ---------------
+  // The same review: the walk read its whole batch, amounts included, when it
+  // began, and a backlog of stalled glasses takes seconds. The edit's own
+  // re-send asks "was it published?" by a tagged delete, hears no for a glass
+  // the walk has not reached, and stands down, so the walk then sent the OLD
+  // amount and Health kept it for good.
+  {
+    const { db: edb } = freshDb();
+    setHealthSyncEnabled(edb, true);
+    const ehk = fakeHealthKit();
+    await publishWaterCaptures(edb, new Date(), ehk.deps); // armed
+    const a = logWater(edb, today, 250);
+    const b = logWater(edb, today, 500);
+    const c = logWater(edb, today, 473.176473);
+    const release = ehk.hold();
+    const pass = publishWaterCaptures(edb, new Date(), ehk.deps);
+    await settle(); // the walk is saving a, with b and c already read
+    editWaterCapture(edb, c, 236.5882365, ehk.deps); // corrected before the walk reaches it
+    removeWaterCapture(edb, b, ehk.deps); // undone before the walk reaches it
+    await settle();
+    release();
+    const backlog = await pass;
+    await settle();
+    const sentC = ehk.samples.filter((s) => tagOf(s) === c);
+    sentC.length === 1 &&
+    sentC[0].value === 236.5882365 &&
+    ehk.calls.filter((call) => tagOf(call) === c).length === 1
+      ? ok('a glass corrected before the walk reached it goes out with the corrected amount, once')
+      : bad(
+          'backlog edit sent the old amount',
+          JSON.stringify({ sentC, calls: ehk.calls.filter((call) => tagOf(call) === c) })
+        );
+    ehk.calls.every((call) => tagOf(call) !== b) && ehk.saved(a) === 1
+      ? ok('...and a glass undone before the walk reached it is never sent at all')
+      : bad('backlog undo', JSON.stringify(ehk.calls.map(tagOf)));
+    backlog.samplesWritten === 2 &&
+    getHealthPublishState(edb, HEALTH_WATER_PUBLISH_KEY).cursorId === c
+      ? ok('...and the walk steps over the removed row: two written, cursor on the last')
+      : bad('backlog walk', JSON.stringify(backlog));
+
+    // Corrected while its own save is in flight, in the ordering where Health
+    // already holds the sample when the edit lands: the edit's tagged delete
+    // would find it and re-send, and the walk would re-send too.
+    const d = logWater(edb, today, 500);
+    const deletes = [];
+    let letGo;
+    const landed = new Promise((resolve) => {
+      letGo = resolve;
+    });
+    const commitThenWait = {
+      ...ehk.deps,
+      save: async (identifier, unit, value, start, end, metadata) => {
+        ehk.calls.push({ identifier, unit, value, metadata });
+        ehk.samples.push({ identifier, unit, value, at: start.toISOString(), metadata });
+        if (tagOf({ metadata }) === d && value === 500) await landed;
+        return true;
+      },
+      deleteByTag: (identifier, rowId) => {
+        deletes.push(rowId);
+        return ehk.deps.deleteByTag(identifier, rowId);
+      },
+    };
+    const racePass = publishWaterCaptures(edb, new Date(), commitThenWait);
+    await settle(); // d is in Health at 500; the walk has not heard back yet
+    editWaterCapture(edb, d, 300, commitThenWait);
+    await settle();
+    deletes.filter((id) => id === d).length === 0
+      ? ok('corrected mid-save: the edit’s re-send stands aside for the row the walk is saving')
+      : bad('the edit and the walk both re-sent', JSON.stringify(deletes));
+    letGo();
+    await racePass;
+    await settle();
+    const sentD = ehk.samples.filter((s) => tagOf(s) === d);
+    sentD.length === 1 && sentD[0].value === 300
+      ? ok(
+          '...and the walk replaces what it sent: one glass in Apple Health, at the corrected 300 mL'
+        )
+      : bad('mid-save edit', JSON.stringify(sentD));
+    editWaterCapture(edb, d, 350, commitThenWait);
+    await settle();
+    const afterD = ehk.samples.filter((s) => tagOf(s) === d);
+    afterD.length === 1 && afterD[0].value === 350
+      ? ok('...and once the walk is done with it, an edit re-sends it the ordinary way')
+      : bad('edit after the walk', JSON.stringify(afterD));
+  }
 }
 
 console.log('25. one pass at a time — the gate behind Home’s blank-cell sync (2026-09-23)');
