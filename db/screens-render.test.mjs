@@ -1327,6 +1327,13 @@ const db = getDb();
     // estimator now returns plus the fiber column. The three free-form meals
     // already logged above contribute nothing — which is exactly the day the
     // screen's undercount caveat exists for, so it is asserted here too.
+    //
+    // First, the day BEFORE either lands, when no item has recorded fiber:
+    // the fiber plate says "not recorded", as the Eat tab one tap back does —
+    // never "0 g" (review finding, 2026-09-23).
+    const bare = render('nutrition-micros (no fiber recorded)', NutritionMicrosScreen);
+    expect('nutrition-micros (no fiber recorded)', bare, ['Fiber', 'Eaten today', 'not recorded']);
+    refute('nutrition-micros (no fiber recorded)', bare, ['>0<', 'g of ']);
     logMealWithItems(db, {
       date: today,
       time: '15:10',
@@ -1412,7 +1419,13 @@ const db = getDb();
       'logged as totals only add no sodium, caffeine or fiber here.',
       // The rest of the shortlist is still one tap away, where it was.
       'Micronutrients',
+      // …and the owner's example on the row he reads every day (review
+      // finding): the Flat white's meal row says its caffeine, the soup's its
+      // sodium — one figure each, so the soup's 21 g of fiber is not beside it.
+      '145 mg caffeine',
+      '1,150 mg sodium',
     ]);
+    refute('nutrition hub (key micros)', hub, ['21 g fiber', '90 mg sodium']);
     // In order: the three sit UNDER the macro cells, inside the Today grid,
     // ahead of the capture buttons.
     if (hub !== null) {

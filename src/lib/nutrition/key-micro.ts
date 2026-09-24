@@ -123,6 +123,38 @@ export function partsAsItem(parts: { micros?: string | null; fiber_g?: number | 
   return { micros, fiber_g: fiber };
 }
 
+/**
+ * The one notable micro for each of a day's MEALS, keyed by meal id — what the
+ * Eat tab's meal rows print (review finding, 2026-09-23). The owner's example
+ * was a latte, and a latte is usually a meal of one item: shown on meal-detail
+ * and not on the tab he reads every day, it read as undone.
+ *
+ * The same rule as every item row, over the meal's items summed — exactly how a
+ * composite's header reads its parts ({@link partsAsItem}). So a meal row says
+ * `126 mg caffeine` for the latte, the dinner whose items together pass a fifth
+ * of the sodium limit says so, and a meal under every line prints nothing. A
+ * meal with no entry in `rows` (typed totals) has no entry here.
+ *
+ * `rows` is `dayMealItemMicros`' result — every item of the day that records
+ * micros or fiber, with its meal id.
+ */
+export function mealKeyMicroLabels(
+  rows: { meal_id: string; micros: string | null; fiber_g: number | null }[]
+): Record<string, string> {
+  const byMeal = new Map<string, { micros: string | null; fiber_g: number | null }[]>();
+  for (const row of rows) {
+    const items = byMeal.get(row.meal_id) ?? [];
+    items.push(row);
+    byMeal.set(row.meal_id, items);
+  }
+  const labels: Record<string, string> = {};
+  for (const [mealId, items] of byMeal) {
+    const label = keyMicroLabel(partsAsItem(items));
+    if (label !== null) labels[mealId] = label;
+  }
+  return labels;
+}
+
 // --- The day's three, under the macro bars ------------------------------------
 
 /** One of the Today grid's three readings. */

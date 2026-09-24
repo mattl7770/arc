@@ -1440,7 +1440,7 @@ of ~2,300 limit   of ~400 limit     of 34 g
 
 - **Sodium and caffeine against their ceilings**, the references `micros.ts` sources (FDA). The tilde says what they are: general guidance, not a target he set.
 - **Fiber against his own target** (`nutrition_targets.fiber_g`), the value the micros screen and the Coach read. **Read, never counted down**: fiber is summed from items, so a typed-totals meal contributes none by construction and a remainder would be a lie. With no target the figure stands alone over `no target set` (00-design-spec.md §5).
-- **Nothing recorded is an em-dash and `not recorded`, never a 0.** `dayFiberRecorded` (new, `repositories/nutrition.ts`) is NULL when no item today recorded fiber. `dayFiberTotal` keeps its 0 for the callers that already frame it.
+- **Nothing recorded is an em-dash and `not recorded`, never a 0.** `dayFiberRecorded` (new, `repositories/nutrition.ts`) is NULL when no item today recorded fiber. Every reader that prints or reports the day's fiber takes it: this row, the micronutrients screen's fiber plate, the Coach's `nutritionTargets.fiber` and `keyMicros`, and the `micronutrients` domain (see the review below). `dayFiberTotal`'s 0 is left to nothing that shows it.
 - **The caveat, only when it is true.** A meal logged as totals only (typed kcal and macros, no items) adds none of the three, and the grid says so in one line: *"A meal logged as totals only adds no sodium, caffeine or fiber here."* Items with no micros record (most seed foods) are the everyday case, and the micronutrients screen's own caveat covers them. Putting that sentence here would put it on every day.
 - **Drawn only once something is logged.** On an empty day all three would read `not recorded`, which the empty grid already says.
 
@@ -1460,7 +1460,7 @@ The rest of the shortlist stays on the micronutrients screen, reached from Over 
 
 Nothing else on the shortlist competes for the slot. The three are the owner's. It prints as `145 mg caffeine`, a nested Text at the end of the row's own mono sub-line (`src/components/nutrition/key-micro-tail.tsx`), one step up the ink ladder (`ink-secondary` on `ink-muted`). No accent, no signal colour.
 
-Where it is drawn: **meal-detail** (each item, and a composite's header, which reads its parts' sum through `partsAsItem`) and the **estimator's review table** (at the live portion, so an amount edit or an answered question moves it). The Eat tab's day list shows meal rows, not item lines, so it carries none. See "What only the phone can settle" below.
+Where it is drawn: **meal-detail** (each item, and a composite's header, which reads its parts' sum through `partsAsItem`), the **estimator's review table** (at the live portion, so an amount edit or an answered question moves it), and, since the review, **the Eat tab's meal rows**: the same rule over the meal's items summed (`mealKeyMicroLabels` over `dayMealItemMicros`), on its own 11px mono line under the macro columns, which leave no room beside them on a narrow phone.
 
 ### "Other micronutrients should start getting something" — the step taken, and why it is the smallest honest one
 
@@ -1494,6 +1494,7 @@ Why most of the shortlist reads `not recorded`: only catalog and label foods car
 | − *"Those are always grams of macronutrient, whatever the portion unit is."* becomes *"Always grams, whatever the portion unit."* | −9 |
 | **after** | **995**, 5 of headroom |
 | revision prompt, with the same shortlist and components clause | 855 → **895** |
+| revision prompt, the review's two fixes (fiber in the restraint rule +2; the 10% bound scoped to added or re-estimated items +28) | 895 → **925** |
 
 The note names what is left to cut. The Coach's ceilings (`db/coach-eval.test.mjs` §6) did not move: the Coach's new figures ride its day **payload**, never a tool schema (below).
 
@@ -1508,12 +1509,22 @@ Each was fixed with a failing test first, through the screen's own path: model r
    - **A chip tapped while a typed answer is in flight is ignored.** The reply was asked over the rows as they stood.
    - **The cost, stated:** a hand edit made *after* a question was first answered is lost when that answer changes. It was true of one question before, and it is now true of several. A silently doubled portion is a wrong record, and a re-typed figure is an annoyance.
 
+### The review (2026-09-23)
+
+An independent review of this round found four things. All four were real and are fixed, each with a failing test first.
+
+1. **A revision re-estimated every item's fiber blind** (major). The reply schema asks for `fiber_g`, and the request never printed it. So correcting the latte put a fresh guess on the lentil soup's 16.4 g, and Save (`replaceMealItems`) wrote it over the only copy. The Eat tab's fiber cell would have moved with nothing on screen to say why. The request now prints `fiber 16.4 g` beside the macros (a recorded 0 prints, an unrecorded one does not), and the restraint rule reads *"macros, fiber and micros it went in with"*. It had three builders: the Adjust screen, the offline drain, and the typed "Other" answer. The review named two. The drain was the third, and it writes with no review at all. The Adjust screen's and the drain's builders were two copies of one function, so they are one now (`loggedToRevisionItems`, `estimate.ts`). Pinned by §62 through each path: reply, ground, review rows, save, and the day's fiber.
+2. **Fiber on an unrecorded day read three ways.** The Eat tab said `not recorded`, the micronutrients screen one tap away said `0 g of 34 g` with a rule, and the Coach's `nutritionTargets.fiber.eaten` said 0 beside `keyMicros.fiber_g: null` in the same result. All of them read `dayFiberRecorded` now, and so does the `micronutrients` domain. The screen draws `not recorded` with no rule, and `nutritionTargets.fiber` says in its note that `eaten: null` is not 0 g.
+3. **The latte's caffeine was missing from the Eat tab's meal row**, the surface the owner reads most. A one-item latte is a meal row there. The row now carries the same one figure, as described above.
+4. **The revision prompt's 10% clause could strip an untouched item.** It bound every item, so a model told to leave an item alone was also invited to drop a key under 10% of a day's value from it, and nothing would restore it (an AI-named item rarely re-grounds). The bound now applies to *"an item you add or re-estimate"*, and *"Any other item keeps every key it was shown, scaled if its portion moved."*
+
 ### The Coach
 
 `get_today_snapshot` gains **`keyMicros`**: `sodium_mg` / `sodiumLimit_mg`, `caffeine_mg` / `caffeineLimit_mg`, `fiber_g` / `fiberTarget_g`, and a note that null is not zero, each figure is a floor, and the limits are guidance, not targets. When it is true, the note also carries the totals-only sentence. It uses the same repository reads and references as the screen, and it is omitted on a day with no meals. **Payload only**: the tool's description and `inputSchema` do not move (pinned), so the cached-prefix ceilings are untouched. The full shortlist was already readable through `query_records` → `micronutrients`.
 
 ### Verification
 
+- The review round: `db/nutrition-v2.test.mjs` §62 (fiber shown and kept through the Adjust screen, the offline drain and the typed answer; a recorded 0 printed; the scoped 10% clause) and §63 (`mealKeyMicroLabels`, pure and from the day's rows: a latte, a composite's parts, nothing for a typed meal or another day). They failed 8 assertions on the unfixed tree. `db/coach-tools.test.mjs` §46 adds the target-set, nothing-recorded day (`nutritionTargets.fiber.eaten` null); `db/coach-domains.test.mjs` pins the domain's null fiber; `db/screens-render.test.mjs` §7c renders the micros screen's `not recorded` fiber, and §7c2 the Eat tab's `145 mg caffeine` and `1,150 mg sodium` meal rows (4 failures on the old screens).
 - `db/nutrition-v2.test.mjs` §56–§61 are new. §56–§58 are the three defects, and each failed before its fix (10 failures on the unfixed tree). §59: the shortlist bullet names every `MICROS` key, the 10% bound in both prompts, the omit rule, the named cut taken, the ceiling unmoved, a salmon's three micros kept with an off-list key dropped and rice recording none, half a fillet saving half its omega-3, and the revision request printing every micro at one decimal finer. §60: `keyMicro`'s order, both thresholds at their edges, one figure only, a parsed object read as its JSON, and a composite's summed parts. §61: `dayKeyMicros` in all three states, `countTotalsOnlyMeals`, the caveat's wording, and `dayFiberRecorded`'s NULL.
 - §21 and §53 were updated where the wording they pinned was rewritten, and both are **stronger**: §21 now requires every vocabulary key in both prompts.
 - `db/coach-tools.test.mjs` §46: `keyMicros` absent on an empty day; caffeine and sodium against their limits with fiber NULL; fiber against a target and the totals-only note; the `inputSchema` unchanged.
@@ -1526,7 +1537,7 @@ No model was called.
 - **Whether the row reads as part of Today or as a second dashboard.** It is quieter than the macros in every voice, and only the hand says whether that is quiet enough, or too quiet for "more accessible".
 - **`of ~2,300 limit` at 375 pt.** ~90 pt of text in a ~92 pt cell. It is `numberOfLines={1}`, so a font that runs wider truncates rather than wraps.
 - **Whether the estimator actually records the shortlist sparsely.** "10%+ of a day's value" is a criterion and the model decides. To look for: a salmon with omega-3 and vitamin D and a rice with nothing (good), or every item carrying ten keys (the bound failed; tighten the sentence, not a rule).
-- **Whether the key micro is missed on the Eat tab's meal rows.** A one-item latte meal shows its caffeine on the meal screen and not on the day list. The brief scoped the tail to item rows, and a meal row has no micros column to read it from without a new query.
+- **Whether the meal row's key micro is noise.** Sodium past 460 mg is common on a whole dinner, so many dinner rows will carry a sodium figure. If that reads as clutter, the meal-row threshold can be raised on its own without touching the item rule.
 - **The question plate while a typed answer is in flight.** Chip taps are ignored for the second or two of `Working…`, and the chips do not dim.
 
 ---

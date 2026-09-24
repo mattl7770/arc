@@ -8,6 +8,7 @@ import {
   dailyIntakeSeries,
   dayFiberRecorded,
   dayFiberTotal,
+  dayMealItemMicros,
   dayMicroTotals,
   firstMealDate,
   listTodayMeals,
@@ -21,7 +22,7 @@ import { checkedGroceryCount, openGroceryLineCount } from '@/lib/db/repositories
 import { pendingEstimateMealIds } from '@/lib/db/repositories/pending-estimates';
 import { recipeCount, recipesCookedSince } from '@/lib/db/repositories/recipes';
 import { getGoalDirection } from '@/lib/db/repositories/user';
-import { countTotalsOnlyMeals } from '@/lib/nutrition/key-micro';
+import { countTotalsOnlyMeals, mealKeyMicroLabels } from '@/lib/nutrition/key-micro';
 import type { Micros } from '@/lib/nutrition/micros';
 import type { PartialMealMetrics } from '@/lib/nutrition/remaining';
 import type { DayTotals, MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
@@ -63,6 +64,10 @@ export type NutritionDay = {
    * which add none of the three. See src/lib/nutrition/key-micro.ts.
    */
   keyMicros: { micros: Micros; fiberEaten: number | null; totalsOnlyMeals: number };
+  /** meal_id → the one notable micro its row prints — `126 mg caffeine` on a
+   *  latte — by `keyMicro` over the meal's items (2026-09-23). A meal with
+   *  nothing over a line has no entry. */
+  mealKeyMicros: Record<string, string>;
   /** The target set governing today, or null until targets are first set. */
   targets: NutritionTargetsRow | null;
   /** The meals whose numbers are owed by a QUEUED AI estimate (0057) — logged
@@ -167,6 +172,7 @@ function readToday(): Omit<NutritionDay, 'reload'> {
       fiberEaten: dayFiberRecorded(db, date),
       totalsOnlyMeals: countTotalsOnlyMeals(meals, mealItemCounts(db, date)),
     },
+    mealKeyMicros: mealKeyMicroLabels(dayMealItemMicros(db, date)),
     targets: activeNutritionTargets(db, date) ?? null,
     partialMeals: partialMealMetrics(db, date),
     pendingEstimates: readPendingEstimates(db, date),

@@ -27,10 +27,11 @@ import type { JsonText } from '@/lib/db/types';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
 
+import type { MealItemNode } from './composite';
 import { countLabel } from './format';
 import { coerceMicros, MICROS, mergeMicros, parseMicros, serializeMicros } from './micros';
 import { itemForPortion } from './servings';
-import type { AmountUnit, EstimateConfidence, FoodRow } from './types';
+import type { AmountUnit, EstimateConfidence, FoodRow, MealItemWithServing } from './types';
 
 export type EstimateInput =
   | { kind: 'text'; description: string }
@@ -440,6 +441,20 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
  * The revision prompt takes the same shortlist and the same components clause:
  * 855 → **895**.
  *
+ * The review of that round (2026-09-23) moved the REVISION prompt only, which
+ * has always been the looser of the two: 895 → **925**.
+ *
+ *   +2   "fiber" in the restraint rule. The request never printed an item's
+ *        fiber, so every correction re-estimated it blind on the items it did
+ *        not touch, and Save wrote the guess over the logged figure. The
+ *        request prints it now; the rule says to hand it back.
+ *   +28  the notable-source bound scoped to an item the model adds or
+ *        re-estimates, and "Any other item keeps every key it was shown". As
+ *        written, the 10% clause invited dropping a sub-10% key from an item
+ *        the model was told to leave alone, and nothing would restore it.
+ *
+ * The estimation prompt did not move: 995.
+ *
  * What is left to cut, when that runs out and it is genuinely needed: "Estimate
  * a drink in millilitres directly;" (~−12 — the unit rule before it and "never
  * convert it to grams" after it, which a test pins, already carry it), then
@@ -826,6 +841,13 @@ export type MealRevisionItem = {
   protein_g: number | null;
   carbs_g: number | null;
   fat_g: number | null;
+  /** The item's fiber, printed beside its macros so it rides back on an item
+   *  the model was not asked to change (2026-09-23). The reply schema always
+   *  asked for fiber and the request never showed it, so every correction
+   *  re-estimated every item's fiber blind — and a Save wrote the guess over
+   *  the only copy. Optional only so a caller with no fiber to give compiles;
+   *  every builder in this app passes it. */
+  fiber_g?: number | null;
   /** The item's stored micro snapshot, so sodium and caffeine can be shown to
    * the model and carried back on an item it was not asked to change. */
   micros?: JsonText | null;
@@ -845,6 +867,43 @@ export type MealRevisionSubject = {
 };
 
 /**
+ * A LOGGED meal's tree (0058) as the model is shown it — the one builder for
+ * the Adjust screen (app/meal-revise.tsx) and the offline drain
+ * (estimate-queue.ts), which each carried their own copy until 2026-09-23 and
+ * had both left fiber out. One builder, so what a stored item carries into a
+ * revision cannot differ by whether the phone was online when it was typed.
+ *
+ * A composite goes as a header with its parts and, where it has one, its count
+ * of pieces (0059) — the pair is only ever stored on a header. Nothing about
+ * the units is restated (0047's rule).
+ */
+export function loggedToRevisionItems(tree: MealItemNode[]): MealRevisionItem[] {
+  const plain = (i: MealItemWithServing): MealRevisionItem => ({
+    name: i.name,
+    amount: i.amount,
+    unit: i.unit,
+    kcal: i.kcal,
+    protein_g: i.protein_g,
+    carbs_g: i.carbs_g,
+    fat_g: i.fat_g,
+    fiber_g: i.fiber_g,
+    micros: i.micros,
+  });
+  return tree.map((node) =>
+    node.kind === 'composite'
+      ? {
+          ...plain(node.item),
+          pieces:
+            node.item.serving_qty != null && node.item.piece_name != null
+              ? { name: node.item.piece_name, count: node.item.serving_qty }
+              : null,
+          components: node.components.map(plain),
+        }
+      : plain(node.item)
+  );
+}
+
+/**
  * The revision system prompt.
  *
  * Its whole job is restraint. The failure mode is not a bad number, it is a
@@ -861,7 +920,7 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   'Rules:',
   '- Return the COMPLETE revised item list, not a patch.',
   '- Change ONLY what the correction implies. Every other item must come back with the same',
-  '  name, amount, unit, macros and micros it went in with — do not re-estimate the meal.',
+  '  name, amount, unit, macros, fiber and micros it went in with — do not re-estimate the meal.',
   '- An item\'s "unit" is "ml" for anything drunk and "g" for anything eaten. Keep the unit',
   '  each item arrived with unless the correction itself changes what the item is; never',
   '  restate a millilitre amount as grams.',
@@ -875,10 +934,11 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '  of oil as there was butter) unless the user gave an amount.',
   '- Keep per-item confidence honest: an item the user has just corrected is usually more',
   '  certain, not less; one you had to infer is "low".',
-  '- "micros" on the same terms as an estimate, for the portion stated rather than per 100:',
-  '  sodium_mg and caffeine_mg where the item plausibly carries them;',
+  '- "micros" are for the portion stated, not per 100. An item you add or re-estimate takes them',
+  "  on an estimate's terms: sodium_mg and caffeine_mg where it plausibly carries them;",
   `  ${NOTABLE_MICRO_KEYS} only where the portion`,
   "  gives 10%+ of a day's value; omitted where you would be guessing.",
+  '  Any other item keeps every key it was shown, scaled if its portion moved.',
   '- Use the notes field to say what you changed, in one short sentence.',
   '',
   'Questions (optional, and USUALLY ABSENT):',
@@ -931,6 +991,11 @@ export function buildMealRevisionRequest(
       item.protein_g === null ? null : `P ${Math.round(item.protein_g)}`,
       item.carbs_g === null ? null : `C ${Math.round(item.carbs_g)}`,
       item.fat_g === null ? null : `F ${Math.round(item.fat_g)}`,
+      // Fiber to one decimal (2026-09-23): the reply schema asks for it, so an
+      // item shown without it came back with the model's fresh guess, and Save
+      // wrote that over the logged figure. A recorded 0 prints — "measured
+      // none" is a figure to hand back — and an unrecorded one does not.
+      item.fiber_g == null ? null : `fiber ${Math.round(item.fiber_g * 10) / 10} g`,
       micros.sodium_mg == null ? null : `sodium ${Math.round(micros.sodium_mg)} mg`,
       micros.caffeine_mg == null ? null : `caffeine ${Math.round(micros.caffeine_mg)} mg`,
       ...MICROS.filter((m) => m.key !== 'sodium_mg' && m.key !== 'caffeine_mg').map((m) => {

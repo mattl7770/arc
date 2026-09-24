@@ -522,12 +522,16 @@ const MACRO_CELL_LAST = 'flex-1';
 function MealRowItem({
   meal,
   estimatePending,
+  keyMicro,
   first,
   onPress,
 }: {
   meal: MealRow;
   /** A queued AI estimate owes this meal its numbers (0057). */
   estimatePending: boolean;
+  /** The one notable micro of the meal's items — `126 mg caffeine` — or null
+   *  (`mealKeyMicroLabels`, src/lib/nutrition/key-micro.ts). */
+  keyMicro: string | null;
   first: boolean;
   onPress: () => void;
 }) {
@@ -585,6 +589,19 @@ function MealRowItem({
                     </View>
                   ))}
                 </View>
+              ) : null}
+              {/* The owner's "caffeine on a latte", on the row he reads every
+                  day (2026-09-23): one figure at most, the same rule as an item
+                  row, in the macros' own mono voice and ink — its own line,
+                  because the fixed macro columns leave no room beside them on
+                  a narrow phone. No accent and no signal colour: a figure in a
+                  meal is not a biological state. */}
+              {keyMicro !== null ? (
+                <Text
+                  numberOfLines={1}
+                  className="mt-0.5 font-mono text-[11px] leading-4 text-ink-secondary">
+                  {keyMicro}
+                </Text>
               ) : null}
             </>
           )}
@@ -747,6 +764,7 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     direction,
     timezoneChanged,
     keyMicros,
+    mealKeyMicros,
     reload,
   } = useNutrition();
   const [logOpen, setLogOpen] = useState(false);
@@ -1022,6 +1040,7 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                   key={meal.id}
                   meal={meal}
                   estimatePending={pendingEstimates.has(meal.id)}
+                  keyMicro={mealKeyMicros[meal.id] ?? null}
                   first={index === 0}
                   onPress={() => router.push({ pathname: '/meal-detail', params: { id: meal.id } })}
                 />

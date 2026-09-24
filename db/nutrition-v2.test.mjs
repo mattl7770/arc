@@ -121,6 +121,11 @@ import {
   MealEstimationUnavailableError,
   parseMealEstimate,
 } from '../src/lib/nutrition/estimate.ts';
+// Namespaces for what the review round adds (§62, §63), for the reason given
+// above reviewRowsModule: a missing export fails its own assertion.
+import * as estimateModule from '../src/lib/nutrition/estimate.ts';
+import * as keyMicroModule from '../src/lib/nutrition/key-micro.ts';
+import * as nutritionRepoModule from '../src/lib/db/repositories/nutrition.ts';
 import {
   microsForAmount,
   MICROS,
@@ -2273,6 +2278,10 @@ console.log('36. C4/C5: the estimator prompts have a ceiling now');
   //        its length
   //   ---
   //   995, 5 of headroom. The revision prompt: 855 → 895.
+  //
+  // That round's review moved the revision prompt only, 895 → 925: "fiber" in
+  // the restraint rule (+2) and the 10% bound scoped to added or re-estimated
+  // items (+28). §62 pins both. The estimation prompt stayed at 995.
   //
   // The rule the Coach's own budget note states applies verbatim: **the next
   // addition trims rather than raises this.** What is left to cut is named on
@@ -4584,6 +4593,270 @@ console.log('61. dayKeyMicros: sodium and caffeine against ceilings, fiber again
   near(dayFiberRecorded(db, TODAY), 15.8)
     ? ok('…and the sum once an item records it')
     : bad('fiber sum', String(dayFiberRecorded(db, TODAY)));
+}
+
+// ===========================================================================
+// 62. Review finding (2026-09-23): a revision never showed the model an item's
+// fiber. Every correction re-estimated fiber blind — on the items it did not
+// touch as well — and the Adjust screen's Save and the offline drain both wrote
+// the guess over the only copy. Fiber is a headline figure on the Eat tab now,
+// so this is the defect the micros line was fixed for, one column over. All
+// three builders of the model's view go through here: the Adjust screen, the
+// offline drain, and the typed "Other" answer on a fresh estimate.
+// ===========================================================================
+console.log('62. defect: a revision shows every item’s fiber, so a correction elsewhere keeps it');
+{
+  const R = MEAL_REVISION_SYSTEM_PROMPT;
+  R.includes('macros, fiber and micros it went in with')
+    ? ok('the restraint rule names fiber beside the macros and micros')
+    : bad('the restraint rule omits fiber');
+
+  const SOUP_LINE = /- Lentil soup — [^\n]*fiber ([0-9.]+) g/;
+  const requestText = (meal, instruction) =>
+    buildMealRevisionRequest(meal, instruction).messages[0].content[0].text;
+  // A model that does as it is told: the soup comes back exactly as it was
+  // shown, and the latte is re-made with oat milk. The soup's fiber is whatever
+  // the request printed, or null when it printed none — a model cannot hand
+  // back a figure it was never given.
+  const faithfulReply = (text) => {
+    const shown = SOUP_LINE.exec(text);
+    return JSON.stringify({
+      title: 'Lunch',
+      items: [
+        {
+          name: 'Lentil soup',
+          amount: 400,
+          unit: 'g',
+          kcal: 320,
+          protein_g: 18,
+          carbs_g: 50,
+          fat_g: 4,
+          fiber_g: shown ? Number(shown[1]) : null,
+          micros: { sodium_mg: 1150, iron_mg: 6.6 },
+          confidence: 'medium',
+        },
+        {
+          name: 'Oat latte',
+          amount: 360,
+          unit: 'ml',
+          kcal: 170,
+          protein_g: 3,
+          carbs_g: 24,
+          fat_g: 7,
+          fiber_g: null,
+          micros: { caffeine_mg: 126 },
+          confidence: 'medium',
+        },
+      ],
+      notes: 'Swapped the milk for oat.',
+    });
+  };
+  const logLunch = (db) =>
+    logMealWithItems(db, {
+      date: TODAY,
+      time: '12:00',
+      name: 'Lunch',
+      source: 'ai_suggested',
+      items: [
+        {
+          name: 'Lentil soup',
+          amount: 400,
+          kcal: 320,
+          protein_g: 18,
+          carbs_g: 50,
+          fat_g: 4,
+          fiber_g: 16.4,
+          micros: JSON.stringify({ sodium_mg: 1150, iron_mg: 6.6 }),
+        },
+        {
+          name: 'Latte',
+          amount: 360,
+          unit: 'ml',
+          kcal: 190,
+          protein_g: 10,
+          carbs_g: 14,
+          fat_g: 10,
+          micros: JSON.stringify({ caffeine_mg: 126 }),
+        },
+      ],
+    }).mealId;
+
+  // a. The Adjust screen (app/meal-revise.tsx): the logged tree, one builder.
+  {
+    const { db } = freshDb();
+    const mealId = logLunch(db);
+    const toItems = estimateModule.loggedToRevisionItems;
+    const text =
+      typeof toItems === 'function'
+        ? requestText(
+            { name: 'Lunch', items: toItems(assembleMealItems(listMealItems(db, mealId))) },
+            'the latte was oat milk'
+          )
+        : '';
+    SOUP_LINE.exec(text)?.[1] === '16.4'
+      ? ok('the Adjust screen shows the model the soup’s 16.4 g of fiber')
+      : bad('fiber not shown to the model', text);
+    // Ground, review rows as the Adjust screen builds them (count EATEN), and
+    // Save by replacement — the screen's own path.
+    const revised = groundMealEstimate(db, parseMealEstimate(faithfulReply(text)));
+    replaceMealItems(
+      db,
+      mealId,
+      rowsToMealItems(rowsFromEstimate(db, revised, { countIsEaten: true }))
+    );
+    near(dayFiberRecorded(db, TODAY), 16.4)
+      ? ok('…so Save keeps it: correcting the latte leaves the day at 16.4 g of fiber')
+      : bad('the soup’s fiber was rewritten', String(dayFiberRecorded(db, TODAY)));
+  }
+
+  // b. The offline drain (estimate-queue.ts), which writes with no review.
+  {
+    const { db } = freshDb();
+    const mealId = logLunch(db);
+    queueMealRevision(db, mealId, 'the latte was oat milk');
+    const sent = [];
+    await drainEstimateQueue(db, {
+      estimators: {
+        estimate: async () => {
+          throw new Error('not this path');
+        },
+        revise: async (meal, instruction) => {
+          const text = requestText(meal, instruction);
+          sent.push(text);
+          return parseMealEstimate(faithfulReply(text));
+        },
+      },
+      pendingStore: null,
+      mealPhotoStore: null,
+    });
+    SOUP_LINE.exec(sent[0] ?? '')?.[1] === '16.4' && near(dayFiberRecorded(db, TODAY), 16.4)
+      ? ok('the offline drain shows it too, and the drained meal keeps its 16.4 g')
+      : bad('the drain lost the fiber', `${sent[0]} → ${dayFiberRecorded(db, TODAY)}`);
+  }
+
+  // c. The typed "Other" answer on a fresh estimate (rowsToRevisionSubject).
+  {
+    const { db } = freshDb();
+    const estimate = groundMealEstimate(
+      db,
+      parseMealEstimate(faithfulReply('- Lentil soup — 400 g, fiber 16.4 g'))
+    );
+    const text = requestText(
+      rowsToRevisionSubject('Lunch', rowsFromEstimate(db, estimate)),
+      'the latte was a large'
+    );
+    SOUP_LINE.exec(text)?.[1] === '16.4'
+      ? ok('a typed answer on the review screen shows the rows’ fiber as well')
+      : bad('the typed answer hid the fiber', text);
+  }
+
+  // A recorded 0 prints as a 0 — "measured none" is a figure the model should
+  // hand back — and an unrecorded fiber prints nothing at all.
+  const zero = requestText(
+    {
+      name: 'x',
+      items: [
+        {
+          name: 'Egg',
+          amount: 50,
+          unit: 'g',
+          kcal: 72,
+          protein_g: 6,
+          carbs_g: 0,
+          fat_g: 5,
+          fiber_g: 0,
+        },
+        { name: 'Toast', amount: 30, unit: 'g', kcal: 80, protein_g: 3, carbs_g: 15, fat_g: 1 },
+      ],
+    },
+    'y'
+  );
+  zero.includes('- Egg — 50 g, 72 kcal, P 6, C 0, F 5, fiber 0 g') &&
+  !/- Toast — [^\n]*fiber/.test(zero)
+    ? ok('a recorded 0 g prints as “fiber 0 g”; an unrecorded fiber prints nothing')
+    : bad('fiber zero/absent', zero);
+
+  // Review finding, same round: the notable-source clause bound every item,
+  // untouched ones included, so a model could drop a key under 10% from an
+  // item it was told to leave alone. It now binds what the model adds or
+  // re-estimates, and any other item keeps every key it was shown.
+  R.includes('An item you add or re-estimate takes them') &&
+  R.includes('Any other item keeps every key it was shown') &&
+  R.includes("only where the portion\n  gives 10%+ of a day's value")
+    ? ok('the 10% bound is scoped to added or re-estimated items; the rest keep every key')
+    : bad('the notable-source clause still binds untouched items');
+}
+
+// ===========================================================================
+// 63. Review finding (2026-09-23): the owner's example — caffeine on a latte —
+// showed on meal-detail and the review table but not on the Eat tab's meal
+// row, where a one-item latte is seen every day. A meal row reads keyMicro
+// over its items' sum, the way a composite's header reads its parts'.
+// ===========================================================================
+console.log('63. a meal row on the Eat tab reads the one notable micro of its items');
+{
+  const labels = keyMicroModule.mealKeyMicroLabels;
+  const rowsFor = nutritionRepoModule.dayMealItemMicros;
+  typeof labels === 'function' && typeof rowsFor === 'function'
+    ? ok('mealKeyMicroLabels and dayMealItemMicros exist')
+    : bad('missing', `${typeof labels} / ${typeof rowsFor}`);
+  if (typeof labels === 'function' && typeof rowsFor === 'function') {
+    const pure = labels([
+      { meal_id: 'latte', micros: '{"caffeine_mg":126,"sodium_mg":130}', fiber_g: 0 },
+      { meal_id: 'dinner', micros: '{"sodium_mg":300}', fiber_g: 2 },
+      { meal_id: 'dinner', micros: '{"sodium_mg":250}', fiber_g: null },
+      { meal_id: 'toast', micros: '{"sodium_mg":150}', fiber_g: 1.5 },
+    ]);
+    pure.latte === '126 mg caffeine' && pure.dinner === '550 mg sodium' && pure.toast === undefined
+      ? ok('per meal: a latte’s caffeine; two items’ sodium summed over its line; nothing under it')
+      : bad('mealKeyMicroLabels', JSON.stringify(pure));
+
+    const { db } = freshDb();
+    const latte = logMealWithItems(db, {
+      date: TODAY,
+      time: '08:00',
+      name: 'Latte',
+      items: [
+        {
+          name: 'Latte',
+          amount: 360,
+          unit: 'ml',
+          kcal: 190,
+          micros: JSON.stringify({ caffeine_mg: 126 }),
+        },
+      ],
+    }).mealId;
+    const typed = logMeal(db, { date: TODAY, time: '09:00', name: 'Typed', kcal: 500 });
+    // A composite: the header records nothing, its parts carry the sodium.
+    const pizza = logMealWithItems(db, {
+      date: TODAY,
+      time: '19:00',
+      name: 'Pizza',
+      items: [
+        {
+          name: 'Pizza',
+          unit: 'g',
+          components: [
+            { name: 'Crust', amount: 200, kcal: 500, micros: JSON.stringify({ sodium_mg: 600 }) },
+            { name: 'Cheese', amount: 100, kcal: 300, micros: JSON.stringify({ sodium_mg: 400 }) },
+          ],
+        },
+      ],
+    }).mealId;
+    logMealWithItems(db, {
+      date: '2020-01-01',
+      time: '08:00',
+      name: 'Old latte',
+      items: [{ name: 'Latte', amount: 360, unit: 'ml', kcal: 190, micros: '{"caffeine_mg":90}' }],
+    });
+    const read = labels(rowsFor(db, TODAY));
+    read[latte] === '126 mg caffeine' &&
+    read[pizza] === '1,000 mg sodium' &&
+    read[typed] === undefined &&
+    Object.keys(read).length === 2
+      ? ok('from the day: the latte, the pizza’s parts summed, nothing for a typed meal or another day')
+      : bad('day read', JSON.stringify(read));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

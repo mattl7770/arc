@@ -879,9 +879,9 @@ export function relogMeal(
 
 /**
  * The day's fiber, summed from meal items (meals carry no fiber column — only
- * itemized/AI meals know it). Zero on a day with none recorded; the Today card
- * only surfaces fiber when a fiber target exists, so a manual-entry day isn't
- * scolded over data it never captured.
+ * itemized/AI meals know it). Zero on a day with none recorded — which is why
+ * nothing that prints or reports the day's fiber reads it any more: see
+ * {@link dayFiberRecorded}, which says NULL there instead.
  */
 export function dayFiberTotal(db: Database, date: string): number {
   const row = db.get<{ fiber: number | null }>(
@@ -898,8 +898,12 @@ export function dayFiberTotal(db: Database, date: string): number {
  * The day's fiber as {@link dayFiberTotal} sums it — but NULL, not 0, when no
  * item today recorded any (2026-09-23). The Eat tab now prints fiber under its
  * macro bars on every day, and a 0 there would claim a day of zero-fiber foods
- * when the truth is that nothing logged carried a fiber figure at all. The
- * older reader keeps its 0 for the callers that already frame it.
+ * when the truth is that nothing logged carried a fiber figure at all.
+ *
+ * Every reader that prints or reports the day's fiber takes this one — the Eat
+ * tab, the micronutrients screen, the Coach's `nutritionTargets.fiber` and
+ * `keyMicros`, and the `micronutrients` domain — so no two of them can say
+ * "not recorded" and "0 g" about the same day (review finding, 2026-09-23).
  */
 export function dayFiberRecorded(db: Database, date: string): number | null {
   const row = db.get<{ fiber: number | null }>(
@@ -910,6 +914,26 @@ export function dayFiberRecorded(db: Database, date: string): number | null {
     [date]
   );
   return row?.fiber ?? null;
+}
+
+/**
+ * Every item of the day that records micros or fiber, with its meal — what
+ * `mealKeyMicroLabels` (src/lib/nutrition/key-micro.ts) folds into the one
+ * notable figure each Eat-tab meal row prints (2026-09-23). A composite header
+ * stores neither, so it drops out here and its parts carry the dish, the way
+ * they do in every roll-up. A meal typed as totals has no items and no rows.
+ */
+export function dayMealItemMicros(
+  db: Database,
+  date: string
+): { meal_id: string; micros: string | null; fiber_g: number | null }[] {
+  return db.all<{ meal_id: string; micros: string | null; fiber_g: number | null }>(
+    `SELECT mi.meal_id, mi.micros, mi.fiber_g
+     FROM meal_items mi
+     JOIN meals m ON m.id = mi.meal_id
+     WHERE m.date = ? AND (mi.micros IS NOT NULL OR mi.fiber_g IS NOT NULL)`,
+    [date]
+  );
 }
 
 /**

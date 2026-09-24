@@ -19,7 +19,6 @@ import { weekSummary } from '@/lib/db/repositories/exercise';
 import {
   activeNutritionTargets,
   dayFiberRecorded,
-  dayFiberTotal,
   dayMicroTotals,
   listTodayMeals,
   mealItemCounts,
@@ -468,16 +467,23 @@ function todayTargetsPayload(
   // Fiber is deliberately outside the countdown model (see remaining.ts): it is
   // summed from meal ITEMS, so a hand-typed meal contributes none by
   // construction and every mixed day would under-report. Reported as eaten-vs-
-  // target with that stated, never as a remainder.
+  // target with that stated, never as a remainder. `eaten` is NULL when no
+  // item today recorded fiber (2026-09-23) — the same figure `keyMicros.fiber_g`
+  // and the Eat tab carry, so the payload never holds a 0 beside a null for
+  // one day's fiber.
   const fiberTarget = targets.fiber_g;
+  const fiberEaten = fiberTarget != null && fiberTarget > 0 ? dayFiberRecorded(db, date) : null;
   const fiber =
     fiberTarget != null && fiberTarget > 0
       ? {
           label: 'fiber',
           target: fiberTarget,
-          eaten: round1(dayFiberTotal(db, date)),
+          eaten: fiberEaten == null ? null : round1(fiberEaten),
           remaining: null,
-          note: 'Fiber counts only itemized meals, so this total is a floor, not a full day.',
+          note:
+            fiberEaten == null
+              ? 'No item logged today recorded fiber: eaten is null, which is not recorded, not 0 g.'
+              : 'Fiber counts only itemized meals, so this total is a floor, not a full day.',
         }
       : undefined;
   const unguarded = unguardedNote(meals, targets, partial);

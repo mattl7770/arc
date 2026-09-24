@@ -3747,12 +3747,28 @@ console.log('46. get_today_snapshot carries sodium, caffeine and fiber — paylo
     : bad('keyMicros note', String(key?.note));
 
   setNutritionTargets(db, { effective_date: TODAY, fiber_g: 30, created_by: 'user' });
+  // Review finding (2026-09-23): with a target set and nothing recording fiber,
+  // `nutritionTargets.fiber.eaten` read 0 beside `keyMicros.fiber_g: null` in
+  // the same result. One day, one figure: both null.
+  const unrecorded = run('get_today_snapshot', db);
+  const targetFiber = unrecorded.nutritionTargets?.fiber;
+  targetFiber &&
+  targetFiber.target === 30 &&
+  targetFiber.eaten === null &&
+  targetFiber.note.includes('not recorded, not 0 g') &&
+  unrecorded.keyMicros.fiber_g === null
+    ? ok('target set, nothing recorded: nutritionTargets.fiber.eaten is null, as keyMicros is')
+    : bad('two fiber figures', JSON.stringify([targetFiber, unrecorded.keyMicros?.fiber_g]));
   logMealWithItems(db, {
     date: TODAY,
     time: '12:30',
     name: 'Lentil soup',
     items: [{ name: 'Lentil soup', amount: 400, kcal: 320, fiber_g: 16.4 }],
   });
+  const recordedFiber = run('get_today_snapshot', db).nutritionTargets?.fiber;
+  recordedFiber?.eaten === 16.4 && recordedFiber.note.includes('a floor, not a full day')
+    ? ok('…and 16.4 of 30 g once an item records it, still called a floor')
+    : bad('recorded fiber', JSON.stringify(recordedFiber));
   logMeal(db, { date: TODAY, time: '18:00', name: 'Typed dinner', kcal: 700, protein_g: 45 });
   key = run('get_today_snapshot', db).keyMicros;
   key.fiber_g === 16.4 &&

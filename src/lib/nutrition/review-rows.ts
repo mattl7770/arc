@@ -1087,6 +1087,9 @@ export function rowsToRevisionSubject(name: string, rows: ReviewItem[]): MealRev
       protein_g: p.protein_g ?? null,
       carbs_g: p.carbs_g ?? null,
       fat_g: p.fat_g ?? null,
+      // Shown so it rides back unchanged on a row the typed answer is not
+      // about (2026-09-23) — see MealRevisionItem.fiber_g.
+      fiber_g: p.fiber_g ?? null,
       micros: p.micros ?? null,
     };
   };
