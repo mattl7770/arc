@@ -37,6 +37,7 @@ import { estimateServings } from '../src/lib/recipes/servings.ts';
 import { createFood, setFoodFavorite } from '../src/lib/db/repositories/foods.ts';
 
 import {
+  getMeal,
   listMealItems,
   logMeal,
   logMealWithItems,
@@ -112,7 +113,10 @@ import { QuestionsPlate, ReviewItemsPlate } from '../src/components/nutrition/es
 // The two camera screens. They could not be imported here until `expo-camera`
 // moved behind the guarded seam (src/lib/media/camera.ts) — a static native
 // import is a resolve failure under node, not a render failure.
-import BarcodeScanScreen from '../app/barcode-scan.tsx';
+import BarcodeScanScreen, { ScanMealName } from '../app/barcode-scan.tsx';
+import { CombineFooter } from '../src/components/nutrition/combine-meals.tsx';
+import { planCombine } from '../src/lib/nutrition/combine.ts';
+import { closeUndo, offerUndo } from '../src/lib/nutrition/undo-store.ts';
 import MealEstimateScreen from '../app/meal-estimate.tsx';
 import FoodNewScreen from '../app/food-new.tsx';
 import FoodSearchScreen from '../app/food-search.tsx';
@@ -5120,6 +5124,167 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
   card.includes('Nothing has been written. The Coach is suspended until you answer.')
     ? ok('the card still states where a write goes, that it happens once, and what NOW means')
     : bad('a consequence line went with the tail');
+}
+
+console.log('\n23. 2026-09-23 — Undo, Combine, and a multi-scan meal’s name');
+{
+  // The owner's three food-logging notes from the device. A server render runs
+  // no taps, so each state is drawn the way the screen draws it: an offer made
+  // in the store (as the screen's handlers make it), a plan built from real
+  // rows, a component rendered from its own export.
+  const today = todayISODate();
+  const noop = () => {};
+  const offer = (scope, said, spoken, figure = null) => ({
+    scope,
+    icon: 'restaurant-outline',
+    said,
+    figure,
+    spoken,
+    undo: noop,
+    settle: noop,
+  });
+
+  // RESTING: one word on the list's label line, and no row is a checkbox.
+  const resting = render('nutrition hub (combine available)', NutritionScreen);
+  expect('nutrition hub (combine available)', resting, [
+    'Combine meals that were one meal',
+    '>Combine<',
+  ]);
+  refute('nutrition hub (combine available)', resting, [
+    'role="checkbox"',
+    'Tap the meals that were really one meal.',
+    'Undo',
+  ]);
+
+  // A MEAL DELETED on its own screen comes back from the list it returns to.
+  offerUndo(offer({ on: 'list' }, 'Deleted Lunch', 'Undo deleting Lunch', '640 kcal'));
+  const deleted = render('nutrition hub (a deleted meal)', NutritionScreen);
+  expect('nutrition hub (a deleted meal)', deleted, [
+    'Deleted Lunch',
+    ' · 640 kcal',
+    'Undo deleting Lunch',
+    '>Undo<',
+  ]);
+  expect(
+    'nutrition-history (a deleted meal)',
+    render('nutrition-history (a deleted meal)', NutritionHistoryScreen, {}),
+    ['Deleted Lunch', 'Undo deleting Lunch']
+  );
+  closeUndo();
+
+  // AN ITEM REMOVED on the meal screen — drawn there, on that meal only.
+  const { mealId } = logMealWithItems(db, {
+    date: today,
+    time: '07:40',
+    name: 'Porridge',
+    items: [
+      { name: 'Oats', amount: 60, kcal: 228, protein_g: 8 },
+      { name: 'Milk', amount: 200, unit: 'ml', kcal: 92, protein_g: 7 },
+    ],
+  });
+  const { mealId: otherId } = logMealWithItems(db, {
+    date: today,
+    time: '07:45',
+    name: 'Coffee',
+    items: [{ name: 'Espresso', amount: 30, unit: 'ml', kcal: 3 }],
+  });
+  offerUndo(offer({ on: 'meal', mealId }, 'Removed Banana', 'Undo removing Banana', '107 kcal'));
+  const detail = render('meal-detail (an item removed)', MealDetailScreen, { id: mealId });
+  expect('meal-detail (an item removed)', detail, [
+    'Removed Banana',
+    ' · 107 kcal',
+    'Undo removing Banana',
+    // The receipt sits above the plate's closing row, where the item was.
+    'Add food to this meal',
+  ]);
+  detail !== null && detail.indexOf('Removed Banana') < detail.indexOf('Add food to this meal')
+    ? ok('meal-detail: the receipt is the plate’s row above Add food')
+    : bad('meal-detail: receipt placement');
+  refute(
+    'meal-detail (another meal)',
+    render('meal-detail (another meal)', MealDetailScreen, { id: otherId }),
+    ['Removed Banana']
+  );
+  refute(
+    'nutrition hub (an item offer)',
+    render('nutrition hub (an item offer)', NutritionScreen),
+    ['Removed Banana']
+  );
+  closeUndo();
+
+  // THE COMBINE FOOT, in its three states, from the planner the repository runs.
+  const porridge = getMeal(db, mealId);
+  const coffee = getMeal(db, otherId);
+  const ready = render(
+    'combine foot (ready)',
+    CombineFooter,
+    {},
+    { plan: planCombine([coffee, porridge]), name: null, onName: noop, onCombine: noop }
+  );
+  expect('combine foot (ready)', ready, [
+    'Name of the combined meal',
+    'value="Porridge"',
+    'On combine: these 2 become one meal, “Porridge”, at 07:40 — 323 kcal, so the day’s total does not change.',
+    'Combine 2 meals',
+  ]);
+  expect(
+    'combine foot (named)',
+    render(
+      'combine foot (named)',
+      CombineFooter,
+      {},
+      { plan: planCombine([coffee, porridge]), name: 'Breakfast', onName: noop, onCombine: noop }
+    ),
+    ['value="Breakfast"', '“Breakfast”', 'Combine 2 meals into Breakfast']
+  );
+  const few = render(
+    'combine foot (one chosen)',
+    CombineFooter,
+    {},
+    { plan: planCombine([porridge]), name: null, onName: noop, onCombine: noop }
+  );
+  expect('combine foot (one chosen)', few, ['Tap at least one more.', 'aria-disabled="true"']);
+  refute('combine foot (one chosen)', few, ['Name of the combined meal', 'On combine']);
+  const refused = render(
+    'combine foot (refused)',
+    CombineFooter,
+    {},
+    {
+      plan: planCombine([coffee, porridge], new Set([otherId])),
+      name: null,
+      onName: noop,
+      onCombine: noop,
+    }
+  );
+  expect('combine foot (refused)', refused, [
+    '“Coffee” is still waiting on its estimate.',
+    'aria-disabled="true"',
+  ]);
+
+  // THE MULTI-SCAN NAME — prefilled, a count in the note, no button of its own.
+  const named = render(
+    'barcode scan (meal name)',
+    ScanMealName,
+    {},
+    {
+      value: 'Greek Yogurt · Fage',
+      current: 'Greek Yogurt · Fage',
+      count: 2,
+      onChange: noop,
+      onCommit: noop,
+    }
+  );
+  expect('barcode scan (meal name)', named, [
+    'Meal name',
+    '2 foods',
+    'value="Greek Yogurt · Fage"',
+    'aria-label="Meal name"',
+  ]);
+  refute('barcode scan (meal name)', named, ['role="button"']);
+  // …and the screen itself, before any add, draws no name field.
+  refute('barcode scan (fresh)', render('barcode scan (fresh)', BarcodeScanScreen), [
+    'aria-label="Meal name"',
+  ]);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

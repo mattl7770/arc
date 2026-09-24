@@ -1504,3 +1504,84 @@ above, this one is invisible to a render.
 2. **Whether `name · brand` is the right meal title at a glance** on the Eat
    tab's list, where meal names are read in a column. Long product names may
    want truncating.
+
+## 14. Round 8 — undo, combine, and a name for a multi-scan meal (2026-09-23, no migration)
+
+Three notes from the owner's device, verbatim: *"undo for removing a food"*, *"some way to easily combine multiple food logs that are the same meal"*, *"meal name for scanning multiple foods"*. No migration: head stays `0061`. Every write below goes through the repository functions the screens already called; the new ones are in `src/lib/db/repositories/nutrition.ts` under *Taking back, putting back, combining*.
+
+### Undo — every place a food is removed by hand
+
+The grep, and what each site does now:
+
+| where | removal | the Undo |
+| --- | --- | --- |
+| `app/meal-detail.tsx`, an item's × (plain item, composite header, composite part) | `takeMealItem` → `removeMealItem` | receipt row at the foot of the Items plate, above Add food |
+| `app/meal-detail.tsx`, **Delete this meal** | `takeMealWithPhotos` → `takeMeal` → `deleteMeal` | receipt row at the foot of the day list the screen returns to (the Eat tab, or a past day in `app/nutrition-history.tsx`) |
+| `app/nutrition.tsx`, the Log tab | no removal exists on either list (checked) | — |
+| the Coach's `delete_record` on `meals` | `deleteMealWithPhotos` = take + settle at once | none — it has its own confirmation card, whose copy says there is no undo |
+| the estimate review's × (`meal-estimate`, `meal-revise`) | removes a **draft** row before anything is saved | **not in this change** — nothing is logged yet, and the review component is shared with estimator work on another branch |
+
+**An Undo puts back the rows, not a copy of them.** Before removing, the repository reads every row the removal will delete — every column, plus the `rowid` — and the Undo re-inserts those rows verbatim: the same ids, the same snapshot figures (macros, micros, amount, unit, count, `piece_name`), the same `created_at`, and the same `rowid` when nothing has taken it since. The `rowid` matters because item reads order by `created_at, rowid`, and a batch logged in one millisecond ties on the first: the middle of three is put back in the middle, not at the end. A meal's place in the list is `(time IS NULL), time, created_at, id`, all restored.
+
+- **Totals come back to the exact figure.** A meal's totals are restored verbatim when the meal is as the removal left it, and re-derived otherwise. Re-deriving alone is right in arithmetic and wrong in the last bit: `logMealWithItems` sums in JS and `recomputeMealTotals` in SQLite, and the two can differ by one ulp — found by the test, a 189.4 that was not the 189.4 it had been.
+- **What SET NULL would have done, the Undo does.** A catalog food or a recipe deleted while the Undo was open comes back as a cleared `food_id` / `recipe_id` — the state the row would be in had it never been removed.
+- **A composite comes back whole.** Removing a header takes its parts (0058 cascade); removing the last part takes its header (invariant 4). Both are read before the delete and put back header first.
+
+**The look, timing and wording are the water receipt's** (`src/components/log/quick-add-grid.tsx`), in one shared component, `src/components/nutrition/undo-row.tsx`: a ruled row of the plate it sits in, the 44 pt floor, a 15 pt glyph, the sentence, **Undo** in the label voice. `Removed Greek yogurt · 150 kcal`, `Deleted Lunch · 640 kcal`, `Combined 3 meals into Breakfast`. One voice change: the water row is all mono because `Logged 16 oz` is a measurement; a food's name is speech, so the sentence is serif and only its kcal is mono. No accent, no motion, **no timer**.
+
+**The window** (`src/lib/nutrition/undo-store.ts` — one offer at a time, held in a module because the meal screen closes on delete and the list it returns to has to draw the offer). The precedent's two rules hold: no timer, and the next removal replaces the offer. One is added — **the offer closes when the screen showing it is left**, and on the meal screen when any other write is made there — for two reasons: an item put back beside a scale, a count or a revision made since would build a meal nobody logged; and a deleted meal's files are held until the window closes, which should not outlive the visit.
+
+### Photos: the files wait, and the crash story
+
+`deleteMealWithPhotos` removed the photo files at once, and a removed file is the one thing an Undo cannot bring back. **Decided: the rows go at once, the files when the window closes.** The alternative — soft-holding the meal row — needs a column, a migration and a filter on every read of `meals`, for a state that lasts seconds.
+
+- `takeMealWithPhotos` deletes the rows and **holds** the file names (`src/lib/media/held-files.ts`, in memory). Both reconcile passes — `sweepMealPhotos` and `sweepPendingEstimatePhotos` — skip a held name, so no sweep can take a file an Undo is about to need. Today the sweeps run once per launch, before any Undo can exist; the hold makes that timing irrelevant rather than load-bearing.
+- **Undo** (`restoreMealWithPhotos`) puts the rows back onto files that were never removed, and releases the hold.
+- **The window closes** (`settleMealRemoval`): the files are removed and released — the queued-estimate photo too, which the pending directory's own sweep used to reclaim a launch later.
+- **The app killed inside the window**: the Undo and its hold die with the process. The rows are already gone, so on the next launch the files are orphans no row claims and the sweep reclaims them. Neither failure the brief names can happen: a row never survives without its file (rows go first, and come back only through the Undo while the files are held), and no file outlives the next launch.
+- **The Coach's delete is the same removal with the window shut at once** — `deleteMealWithPhotos` is now literally take + settle, so the two paths cannot drift (the parity rule, `docs/coach-domains.md`).
+
+### Combine — several meals that were one
+
+**The entry point** is the day list where the meals sit: `Combine` on the Eaten-today plate's own label line, in the label voice, drawn only on a day with two meals that could combine. It turns the rows into checkboxes (a leading square, in ink, never the accent; a meal waiting on its estimate is drawn disabled, its own line already saying why) and adds a foot to the same plate (`src/components/nutrition/combine-meals.tsx`): the **Name** field, the consequence in future tense, and an outlined **Combine N meals**. The resting screen gains one word; no row changes until asked. A swipe or long-press was refused for the reason the water tile's long-press was deleted — an invisible affordance is one the owner never finds. Combining lives on the Eat tab (today's list); the history day view gets the Undo row but not the entry point.
+
+**What the result keeps** — `planCombine` (`src/lib/nutrition/combine.ts`, pure) decides, and `combineMeals` runs the same plan in one transaction:
+
+- **The earliest meal's row** — its id, date and time — in the list's own order (by clock, untimed last, then by when logged). Keeping a row rather than minting one keeps every reference to it valid.
+- **The name** typed at the moment of combining, trimmed; untouched or emptied, the earliest meal's own. The field is prefilled, so a quick combine is two taps and never waits on typing.
+- **Every item** moves by `UPDATE … SET meal_id` — the same ids, rowids and `created_at`, headers and parts together (0058 invariant 3). The combined meal lists them in the order they were logged.
+- **A free-form meal** (typed totals, no items) becomes one item, `<name> (as logged)`, carrying those totals — `addMealItem`'s rule for the same problem, since `recomputeMealTotals` reads items only. An unpriced one becomes a name-only item: what was eaten is a record even unpriced, and the countdown already refused it and refuses the item the same way (`partialMealMetrics`). It is stamped with its meal's own `created_at`, so it sits where that meal was logged.
+- **Every photo** moves to the result; its retention clock is its own `created_at` (0033), so nothing expires sooner or later. The meal screen draws the newest, as before.
+- **Notes**: every one kept, in list order. **`source`**: `ai_suggested` when any was — a meal holding an estimate reads as one, as `relogMeal` keeps it.
+
+**Every reference to an absorbed meal, checked:**
+
+| reference | kind | on combine |
+| --- | --- | --- |
+| `meal_items.meal_id` | FK, CASCADE | moved to the result |
+| `meal_photos.meal_id` | FK, CASCADE | moved to the result |
+| `pending_estimates.meal_id` | FK, CASCADE, UNIQUE | **refused** — the drain applies `replaceMealItems` to its meal and would replace every other meal's items; combine it once the numbers land |
+| `meals.recipe_id` | FK out, SET NULL | kept; two *different* recipes are **refused** (a meal carries one, and "times cooked" counts `meals.recipe_id` — one would be un-cooked). The same recipe twice combines, and its cook count drops by one, which is the point: it was one meal |
+| `meal_items.food_id`, `parent_item_id` | FK out / within | unchanged — rows move whole |
+| meal templates, recipes saved from a meal, reports | copies | hold numbers and names, never a meal id |
+| `ai_messages.tool_calls` (the Coach's record) | ids in JSON, append-only | kept as history; a later read by an absorbed id is refused with "No meal with id …" and pointed at the list. The result keeps the earliest id, so that one still resolves |
+| `memory_chunks`, exports | — | carry no meal id |
+
+Also refused, writing nothing: meals from different days, fewer than two, a meal that is gone.
+
+**Undo is exact, and given.** `uncombineMeals` deletes the stand-in items, re-inserts each absorbed meal's row verbatim, moves its items and photos back by id — so each keeps its `rowid`, `created_at` and old place — and restores the kept meal's columns as they stood. Every meal row is what it was, so every day total is what it was, to the bit. One cost, stated: the moved rows' `updated_at` records the two moves (the 0014 trigger stamps every UPDATE); it is a write stamp, not the record. **It refuses** when the combined meal has changed since — its items are not exactly the set the combine left — because putting rows back around a change would build a meal nobody logged.
+
+### A multi-scan meal's name
+
+A4 (§13) named a scan's meal after its first product. Once the scanner has put **two** foods into a meal it created, a **Meal name** field sits above Done (`ScanMealName`, `app/barcode-scan.tsx`), prefilled with the name the meal has — the one it would have kept. It is not focused and has no button; Done works untouched, and an untouched, emptied or unchanged field writes nothing (`mealNameToSave`, `format.ts`). A typed name is written through the meal screen's own `updateMealName` on Done, when the field stops being edited, and when the screen goes (an unmount commit, so the back chevron keeps it too). A meal that arrived by `mealId` is someone else's record and is never offered the field (A4's rule).
+
+### Verification
+
+`db/nutrition-v2.test.mjs` §56–§60, over real SQLite. §56 — an item taken and put back is every column and rowid it was, the middle of its batch back in the middle, and the meal, the day, its fiber and its micros read exactly what they read; a food deleted inside the window returns cleared; a meal changed since is re-derived; a meal gone is refused; a composite header takes and returns its parts, and a last part its header. §57 — a deleted meal's rows go and its two files stay, held; a sweep inside the window leaves them; Undo returns every row of four tables exactly, the day's totals and order, and a drawable photo; settling removes the files; **the crash** (a sweep that holds nothing) reclaims the file with no row surviving; a queued estimate and its photo come back, then settle; a recipe deleted inside the window returns cleared; the Coach's delete holds nothing; and a source pin that meal-detail removes only through the taking functions. §58 — four meals (two itemized, one with a photo and micros, a typed coffee, an unpriced tea) combine with an unchosen pizza untouched: the earliest id and time, the typed name, day totals, fiber and micros unchanged, the countdown refusing exactly what it did, every item moved once and none doubled, two stand-ins in logged order, the photo drawn on the result, notes and `source` kept, `PRAGMA foreign_key_check` empty — and Undo returning every row of every meal table, and the day. §59 — a composite combined stays one tree; a stale Undo is refused and writes nothing; the pending, two-recipe, two-day and too-few refusals write nothing; the same recipe twice keeps it. §60 — the pure plan (order, sums over the priced meals only, the name, the sentence) and the slot (replace settles, close by kind, Undo never also settles, a failed Undo settles). `db/barcode.test.mjs` §10 — `mealNameToSave`, and a two-scan session named at Done. `db/screens-render.test.mjs` §23 — the resting Eat tab shows `Combine` and no checkbox; a list offer draws on the Eat tab and in history; an item offer draws above Add food on its own meal only; the combine foot in its three states; the scanner's name field prefilled with no button, and absent before any add.
+
+### What only a device can settle
+
+- **Whether `Combine` on the label line is found** — one 11 pt word beside the kcal tally — and whether a row turning into a checkbox reads as a mode.
+- **Whether the receipt on the day list reads as the meal just deleted** after the pop animation, and whether closing it on leaving the tab is ever felt as losing an Undo that was wanted.
+- **The scanner's name field** — whether it is noticed after the second scan, and whether the keyboard covers Done while it is open.
+- **Focus across the tab and the stack.** The window closes on `useFocusEffect` blur, and a tab root blurring when a stack screen is pushed over the tab navigator is React Navigation's behaviour; only the device shows it.

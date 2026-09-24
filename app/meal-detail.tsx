@@ -3,6 +3,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { type Dispatch, type SetStateAction, useCallback, useState } from 'react';
 import { Alert, Image, Pressable, Text, TextInput, View } from 'react-native';
 
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
@@ -10,6 +11,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
@@ -21,9 +23,10 @@ import {
   getMeal,
   listMealItems,
   relogMeal,
-  removeMealItem,
+  restoreMealItems,
   scaleCompositeItem,
   setCompositeCount,
+  takeMealItem,
   updateMealItemPortion,
   updateMealName,
   updateMealTime,
@@ -36,10 +39,13 @@ import {
   planLoggedCount,
 } from '@/lib/nutrition/review-rows';
 import {
-  deleteMealWithPhotos,
   mealPhotoView,
+  restoreMealWithPhotos,
+  settleMealRemoval,
+  takeMealWithPhotos,
   type MealPhotoView,
 } from '@/lib/media/meal-photo-store';
+import { closeUndo, offerUndo, onMeal, runUndo } from '@/lib/nutrition/undo-store';
 import {
   fmtInt,
   fmtQty,
@@ -132,8 +138,28 @@ const PART_FRACTIONS: { label: string; factor: number; spoken: string }[] = [
  * image it was estimated from (0033), and it is drawn here at its own aspect
  * with the retention stated under it. A meal with no photo draws NOTHING —
  * no frame, no placeholder, no "add a photo" control that this binary could not
- * honour (00-design-spec.md §5). Deleting the meal deletes the file, which is
- * why {@link deleteMealWithPhotos} stands in for `deleteMeal` here.
+ * honour (00-design-spec.md §5). Deleting the meal deletes the file — once the
+ * Undo below has had its chance, which is why {@link takeMealWithPhotos} stands
+ * in for `deleteMeal` here.
+ *
+ * ## Undo (owner, device, 2026-09-23)
+ *
+ * *"undo for removing a food."* Both removals on this screen offer one, drawn
+ * as the Log tab's water receipt is (src/components/nutrition/undo-row.tsx):
+ *
+ * - **An item's ×** runs `takeMealItem` — `removeMealItem`, having read every
+ *   row it deletes — and the receipt appears at the foot of the Items plate,
+ *   above Add food. Undo puts those rows back verbatim (`restoreMealItems`):
+ *   same ids, same snapshot, same place in the list, and the meal's totals
+ *   back to the exact figures they read before.
+ * - **Delete this meal** runs `takeMealWithPhotos` and closes the screen as it
+ *   always has; the receipt is on the day list it returns to, because that is
+ *   where the meal was and where it comes back. Its photo files stay on disk,
+ *   held, until that offer closes (src/lib/media/held-files.ts).
+ *
+ * The window (src/lib/nutrition/undo-store.ts): no timer; the next removal
+ * replaces it; any other write on this screen, or leaving it, closes it — an
+ * item put back beside an edit made since would be a meal nobody logged.
  *
  * ## Conformed Set surface system
  *
@@ -348,8 +374,16 @@ export default function MealDetailScreen() {
     setTimeEdit(null);
     setNameEdit(null);
     setCountEdit(null);
+    // Every write on this screen reloads, and each one is "the next write" that
+    // closes an open item Undo — putting a row back beside a scale or a count
+    // made since would rebuild a meal nobody logged. `removeItem` offers its
+    // own Undo AFTER this runs.
+    closeUndo(onMeal);
   }, [mealId]);
   useFocusEffect(reload);
+  // An item removed here, while it can still be put back. Closed when this
+  // screen is left (src/hooks/use-undo-offer.ts).
+  const undo = useUndoOffer('meal', mealId);
 
   const { meal, items, photo } = state;
   const today = todayISODate();
@@ -447,9 +481,28 @@ export default function MealDetailScreen() {
 
   const removeItem = (itemId: string) => {
     // Removing a composite takes its parts (the 0058 cascade); removing the
-    // LAST part takes the composite (invariant 4). Both live in the repository,
-    // so this screen just re-reads.
-    removeMealItem(getDb(), itemId);
+    // LAST part takes the composite (invariant 4). Both live in the repository
+    // (`takeMealItem` IS `removeMealItem`, having read the rows first), so this
+    // screen re-reads — which closes any older Undo — and offers this one.
+    const db = getDb();
+    const taken = takeMealItem(db, itemId);
+    reload();
+    if (!taken) return;
+    offerUndo({
+      scope: { on: 'meal', mealId: taken.mealId },
+      icon: 'restaurant-outline',
+      said: `Removed ${taken.name}`,
+      figure: taken.kcal != null ? `${fmtInt(taken.kcal)} kcal` : null,
+      spoken: `Undo removing ${taken.name}`,
+      undo: () => restoreMealItems(db, taken),
+      // Items own no files: closing the window has nothing left to finish.
+      settle: () => {},
+    });
+  };
+
+  /** Put back the last removal; the repository did the work, so re-read. */
+  const undoRemoval = () => {
+    runUndo();
     reload();
   };
 
@@ -610,8 +663,22 @@ export default function MealDetailScreen() {
       return;
     }
     // NOT `deleteMeal`: the 0033 CASCADE takes the photo ROWS and leaves the
-    // bytes on disk forever. This is the one call that clears both.
-    deleteMealWithPhotos(getDb(), meal.id);
+    // bytes on disk. The rows go now; the bytes go when the Undo offered on the
+    // day list closes without being taken (`settleMealRemoval`) — a removed
+    // file is the one thing an Undo could not bring back.
+    const db = getDb();
+    const taken = takeMealWithPhotos(db, meal.id);
+    if (taken) {
+      offerUndo({
+        scope: { on: 'list' },
+        icon: 'restaurant-outline',
+        said: `Deleted ${meal.name}`,
+        figure: meal.kcal != null ? `${fmtInt(meal.kcal)} kcal` : null,
+        spoken: `Undo deleting ${meal.name}`,
+        undo: () => restoreMealWithPhotos(db, taken),
+        settle: () => settleMealRemoval(taken),
+      });
+    }
     router.back();
   };
 
@@ -987,6 +1054,10 @@ export default function MealDetailScreen() {
               )}
             </View>
           )}
+
+          {/* The receipt for the item just removed — a ruled row of this same
+              plate, where the item was, above the way to add one. */}
+          {undo ? <UndoRow offer={undo} onUndo={undoRemoval} /> : null}
 
           <View className="mt-1">
             <ActionRow

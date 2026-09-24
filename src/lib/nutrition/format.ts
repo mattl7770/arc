@@ -257,3 +257,21 @@ export function mealNameForProduct(
   if (brand === '' || brand.toLowerCase() === name.toLowerCase()) return name;
   return `${name} · ${brand}`;
 }
+
+/**
+ * The name to WRITE when a multi-scan meal's name field is left (owner, device,
+ * 2026-09-23: *"meal name for scanning multiple foods"*) — or null, which means
+ * write nothing.
+ *
+ * Null for an untouched field (`draft === null`), for one emptied (a meal keeps
+ * its name; `updateMealName` refuses "" anyway), and for one that reads what the
+ * meal is already called. So Done on a field nobody touched is a no-op, and the
+ * default — the first product's name, {@link mealNameForProduct} — stands
+ * without a write.
+ */
+export function mealNameToSave(draft: string | null, current: string): string | null {
+  if (draft === null) return null;
+  const trimmed = draft.trim();
+  if (trimmed === '' || trimmed === current) return null;
+  return trimmed;
+}

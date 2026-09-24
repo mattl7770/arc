@@ -9,8 +9,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { cacheBarcodeFood, findFoodByBarcode } from '../src/lib/db/repositories/foods.ts';
-import { getMeal, logMealWithItems, updateMealName } from '../src/lib/db/repositories/nutrition.ts';
-import { mealNameForProduct } from '../src/lib/nutrition/format.ts';
+import {
+  addMealItem,
+  getMeal,
+  listMealItems,
+  logMealWithItems,
+  updateMealName,
+} from '../src/lib/db/repositories/nutrition.ts';
+import { mealNameForProduct, mealNameToSave } from '../src/lib/nutrition/format.ts';
 import { itemForPortion } from '../src/lib/nutrition/servings.ts';
 import {
   lookupOffProduct,
@@ -393,6 +399,50 @@ console.log('9. B2 — a scanned DRINK is cached in millilitres (0047)');
   solid.basis === 'g' && cl.basis === 'g'
     ? ok('a solid stays g, and a `cl` product falls back to g rather than converting')
     : bad('solid/cl basis', `${solid.basis} / ${cl.basis}`);
+}
+
+console.log('10. 2026-09-23 — a meal of several scans can be named before it is left');
+{
+  // The owner, from the device: "meal name for scanning multiple foods". The
+  // field is prefilled with the name the meal has; what is typed is written
+  // only when it changes something, so the quick path writes nothing.
+  mealNameToSave(null, 'Greek Yogurt · Fage') === null
+    ? ok('an untouched field writes nothing — the first product’s name stands')
+    : bad('untouched');
+  mealNameToSave('   ', 'Greek Yogurt · Fage') === null
+    ? ok('an emptied field writes nothing — a meal keeps its name')
+    : bad('emptied');
+  mealNameToSave(' Greek Yogurt · Fage ', 'Greek Yogurt · Fage') === null
+    ? ok('the name it already has, re-typed, writes nothing')
+    : bad('same name');
+  mealNameToSave('  Breakfast ', 'Greek Yogurt · Fage') === 'Breakfast'
+    ? ok('a typed name is trimmed and written')
+    : bad('typed name', String(mealNameToSave('  Breakfast ', 'Greek Yogurt · Fage')));
+
+  // The session as app/barcode-scan.tsx runs it: the first add creates the
+  // meal named after its product, the second add joins it, and the name field
+  // commits through the meal screen's own rename.
+  const { db } = freshDb();
+  const yogurt = cacheBarcodeFood(db, parseOffProduct(GREEK_YOGURT, '0123456789012'));
+  const created = mealNameForProduct(yogurt, 'Breakfast');
+  const { mealId } = logMealWithItems(db, {
+    date: '2026-09-23',
+    time: '08:05',
+    name: created,
+    items: [itemForPortion(yogurt, { amount: 170 })],
+  });
+  addMealItem(db, mealId, itemForPortion(yogurt, { amount: 50 }));
+  const untouched = mealNameToSave(null, created);
+  if (untouched !== null) updateMealName(db, mealId, untouched);
+  getMeal(db, mealId)?.name === 'Greek Yogurt · Fage' && listMealItems(db, mealId).length === 2
+    ? ok('two scans, Done untouched: one meal, two items, still named after the first product')
+    : bad('untouched session', getMeal(db, mealId)?.name);
+  const typed = mealNameToSave('Breakfast', created);
+  if (typed !== null) updateMealName(db, mealId, typed);
+  const meal = getMeal(db, mealId);
+  meal?.name === 'Breakfast' && meal.time === '08:05' && listMealItems(db, mealId).length === 2
+    ? ok('named at Done: the meal is “Breakfast”, its time and items untouched')
+    : bad('typed session', JSON.stringify(meal));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -13,10 +13,12 @@ import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
   createFood,
+  deleteFood,
   getFood,
   listRecentBarcodeFoods,
   listRecentFoods,
 } from '../src/lib/db/repositories/foods.ts';
+import { createRecipe, deleteRecipe } from '../src/lib/db/repositories/recipes.ts';
 import {
   createTemplate,
   deleteTemplate,
@@ -31,6 +33,8 @@ import {
   addMealItem,
   allMealPhotos,
   clearCompositeCount,
+  combineMeals,
+  dayFiberTotal,
   dayMicroTotals,
   deleteMeal,
   getMeal,
@@ -45,10 +49,14 @@ import {
   relogMeal,
   removeMealItem,
   replaceMealItems,
+  restoreMealItems,
   scaleCompositeItem,
   setCompositeCount,
   setNutritionTargets,
+  takeMealItem,
+  takenPhotoFileNames,
   todayTotals,
+  uncombineMeals,
   updateMealItemPortion,
   updateMealTime,
 } from '../src/lib/db/repositories/nutrition.ts';
@@ -74,8 +82,27 @@ import {
   deleteMealWithPhotos,
   MEAL_PHOTO_RETENTION_DAYS,
   mealPhotoView,
+  restoreMealWithPhotos,
+  settleMealRemoval,
   sweepMealPhotos,
+  takeMealWithPhotos,
 } from '../src/lib/media/meal-photo-store.ts';
+import { heldFiles, releaseFiles } from '../src/lib/media/held-files.ts';
+import {
+  combineConsequence,
+  combinedName,
+  mealListOrder,
+  planCombine,
+} from '../src/lib/nutrition/combine.ts';
+import {
+  closeUndo,
+  currentUndo,
+  offerUndo,
+  onList,
+  onMeal,
+  runUndo,
+  subscribeUndo,
+} from '../src/lib/nutrition/undo-store.ts';
 import { assembleMealItems } from '../src/lib/nutrition/composite.ts';
 import {
   applyAnswer,
@@ -3917,6 +3944,610 @@ console.log('55. 2026-09-23: a LOGGED composite — ate [3] slices, and the Save
   opener.length > 0 && opener.includes('eatenText: null,') && opener.includes('wholeText: null,')
     ? ok('openCountEdit seeds both fields untouched, so an untouched count saves as no change')
     : bad('openCountEdit seeds a display value');
+}
+
+// === Undo and combine (owner, device, 2026-09-23) ============================
+//
+// *"undo for removing a food"* and *"some way to easily combine multiple food
+// logs that are the same meal"*. EXACT is the bar for both, so these sections
+// compare whole rows — every column, and the rowid the item reads order by —
+// rather than a total or two.
+
+/** Every row of a table with its rowid, in rowid order — what "exact" means. */
+function rowsOf(raw, table, where = '1 = 1', ...params) {
+  return raw
+    .prepare(`SELECT rowid AS __rowid, * FROM ${table} WHERE ${where} ORDER BY rowid`)
+    .all(...params);
+}
+const sameRows = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+/** The same, blind to the one column an UPDATE-based move must restamp. */
+const withoutStamp = (tables) =>
+  tables.map((rows) => rows.map(({ updated_at: _stamp, ...rest }) => rest));
+const MEAL_TABLES = ['meals', 'meal_items', 'meal_photos', 'pending_estimates'];
+const everything = (raw) => MEAL_TABLES.map((t) => rowsOf(raw, t));
+const totalsOf = (db) => JSON.stringify(todayTotals(db, TODAY));
+const dayOrder = (db) => JSON.stringify(listTodayMeals(db, TODAY).map((m) => m.id));
+
+console.log('56. undo: a removed item comes back as the same rows, in the same place');
+{
+  const { db, raw } = freshDb();
+  const food = microFood(db);
+  // Three items in ONE insert batch — one millisecond, so their order among
+  // themselves is the rowid tie-break, and the middle one is the hard case.
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:00',
+    name: 'Breakfast',
+    items: [
+      itemForPortion(getFood(db, food), { amount: 80 }),
+      {
+        name: 'Banana',
+        amount: 120,
+        kcal: 107,
+        protein_g: 1.3,
+        carbs_g: 27.4,
+        fat_g: 0.4,
+        fiber_g: 3.1,
+      },
+      { name: 'Coffee', amount: 240, unit: 'ml', kcal: 2.4, protein_g: 0.3, carbs_g: 0, fat_g: 0 },
+    ],
+  });
+  const before = rowsOf(raw, 'meal_items', 'meal_id = ?', mealId);
+  const meal = getMeal(db, mealId);
+  const totals = totalsOf(db);
+  const fiber = dayFiberTotal(db, TODAY);
+  const micros = JSON.stringify(dayMicroTotals(db, TODAY));
+  const order = listMealItems(db, mealId).map((i) => i.id);
+
+  const taken = takeMealItem(db, order[1]);
+  taken && taken.name === 'Banana' && taken.kcal === 107 && taken.rows.length === 1
+    ? ok('taking an item holds its row — its name and energy for the receipt')
+    : bad('taken banana', JSON.stringify(taken));
+  listMealItems(db, mealId).length === 2 && near(getMeal(db, mealId).kcal, meal.kcal - 107)
+    ? ok('…and removes it through removeMealItem: the meal’s totals follow at once')
+    : bad('removal', String(getMeal(db, mealId).kcal));
+
+  restoreMealItems(db, taken);
+  sameRows(rowsOf(raw, 'meal_items', 'meal_id = ?', mealId), before)
+    ? ok('Undo: every column of every item is back — id, snapshot, micros, created_at, rowid')
+    : bad('item rows differ after undo');
+  JSON.stringify(listMealItems(db, mealId).map((i) => i.id)) === JSON.stringify(order)
+    ? ok('…in its own place: the middle of its batch, not the end')
+    : bad('item order after undo');
+  const after = getMeal(db, mealId);
+  after.kcal === meal.kcal &&
+  after.protein_g === meal.protein_g &&
+  after.carbs_g === meal.carbs_g &&
+  after.fat_g === meal.fat_g &&
+  totalsOf(db) === totals &&
+  dayFiberTotal(db, TODAY) === fiber &&
+  JSON.stringify(dayMicroTotals(db, TODAY)) === micros
+    ? ok('…and the meal, the day, its fiber and its micros read exactly what they read before')
+    : bad('totals after undo', `${after.kcal} vs ${meal.kcal}`);
+
+  // A catalog food deleted while the Undo was open: the row comes back as
+  // `ON DELETE SET NULL` would have left it had it never been removed.
+  const catalogItem = order[0];
+  const heldFood = takeMealItem(db, catalogItem);
+  deleteFood(db, food);
+  restoreMealItems(db, heldFood);
+  const back = listMealItems(db, mealId).find((i) => i.id === catalogItem);
+  back && back.food_id === null && back.kcal === before[0].kcal && back.micros === before[0].micros
+    ? ok('a food deleted inside the window: the item returns, its link cleared as SET NULL would')
+    : bad('food-less restore', JSON.stringify(back));
+
+  // The meal changed while the item was out (outside the screen's window, but
+  // a future caller may): the old figures no longer describe it, so they are
+  // re-derived from the items it now holds.
+  const changed = takeMealItem(db, order[1]);
+  addMealItem(db, mealId, { name: 'Honey', kcal: 64, protein_g: 0, carbs_g: 17, fat_g: 0 });
+  restoreMealItems(db, changed);
+  const summed = listMealItems(db, mealId).reduce((sum, i) => sum + (i.kcal ?? 0), 0);
+  near(getMeal(db, mealId).kcal, summed) && listMealItems(db, mealId).length === 4
+    ? ok('put back into a meal that changed since, the totals are re-derived from its items')
+    : bad('changed-meal restore', `${getMeal(db, mealId).kcal} vs ${summed}`);
+
+  // The meal itself gone: there is nothing to put the item back into.
+  const orphan = takeMealItem(db, order[2]);
+  deleteMeal(db, mealId);
+  throws(() => restoreMealItems(db, orphan))
+    ? ok('an item whose meal has since gone is refused, not re-parented')
+    : bad('restore into a missing meal');
+}
+{
+  const { db, raw } = freshDb();
+  const { mealId } = pizzaMeal(db);
+  const before = rowsOf(raw, 'meal_items', 'meal_id = ?', mealId);
+  const kcal = getMeal(db, mealId).kcal;
+  const header = before.find((r) => r.is_composite === 1);
+  const parts = before.filter((r) => r.parent_item_id === header.id);
+
+  const whole = takeMealItem(db, header.id);
+  whole.rows.length === 4 && rowsOf(raw, 'meal_items', 'meal_id = ?', mealId).length === 1
+    ? ok('removing the pizza took its three parts, and the Undo holds all four rows')
+    : bad('composite take', String(whole.rows.length));
+  restoreMealItems(db, whole);
+  sameRows(rowsOf(raw, 'meal_items', 'meal_id = ?', mealId), before) &&
+  getMeal(db, mealId).kcal === kcal &&
+  assembleMealItems(listMealItems(db, mealId))[0].components.length === 3
+    ? ok('…and puts the header back before its parts: the same pizza, the same kcal')
+    : bad('composite restore');
+
+  removeMealItem(db, parts[0].id);
+  removeMealItem(db, parts[1].id);
+  const beforeLast = rowsOf(raw, 'meal_items', 'meal_id = ?', mealId);
+  const last = takeMealItem(db, parts[2].id);
+  last.rows.length === 2 && rowsOf(raw, 'meal_items', 'id = ?', header.id).length === 0
+    ? ok('the LAST part takes its header (invariant 4), and the Undo holds both')
+    : bad('last part take', String(last.rows.length));
+  restoreMealItems(db, last);
+  sameRows(rowsOf(raw, 'meal_items', 'meal_id = ?', mealId), beforeLast)
+    ? ok('…and Undo brings the header back with its one part')
+    : bad('last part restore');
+  takeMealItem(db, 'no-such-item') === null
+    ? ok('taking an item that is not there takes nothing')
+    : bad('phantom take');
+}
+
+console.log('57. undo: a deleted meal comes back whole, and its files wait for the window');
+{
+  const { db, raw } = freshDb();
+  const store = fakeStore();
+  logMeal(db, { date: TODAY, time: '07:00', name: 'Toast', kcal: 200 });
+  const { mealId } = pizzaMeal(db);
+  attachMealPhoto(db, mealId, JPEG, store);
+  attachMealPhoto(db, mealId, JPEG, store);
+  const names = allMealPhotos(db).map((p) => p.file_name);
+  const before = everything(raw);
+  const totals = totalsOf(db);
+  const order = dayOrder(db);
+
+  const taken = takeMealWithPhotos(db, mealId);
+  getMeal(db, mealId) === undefined &&
+  rowsOf(raw, 'meal_items', 'meal_id = ?', mealId).length === 0 &&
+  allMealPhotos(db).length === 0 &&
+  store.files.size === 2
+    ? ok('delete: the meal, its items and its photo rows go at once — both files stay on disk')
+    : bad('take meal', `${store.files.size} file(s)`);
+  names.every((n) => heldFiles().has(n)) ? ok('…held, by name') : bad('files not held');
+  const inside = sweepMealPhotos(db, store);
+  inside.orphans === 0 && store.files.size === 2
+    ? ok('a sweep inside the window does not take a held file for an orphan')
+    : bad('held file swept', JSON.stringify(inside));
+
+  restoreMealWithPhotos(db, taken);
+  sameRows(everything(raw), before)
+    ? ok('Undo: every row of the meal, its items and its photos is back, rowid and all')
+    : bad('meal rows differ after undo');
+  totalsOf(db) === totals && dayOrder(db) === order
+    ? ok('…the day’s totals are the figure they were, and the meal is in its own place')
+    : bad('day after undo');
+  mealPhotoView(db, mealId, new Date(), store) !== null && heldFiles().size === 0
+    ? ok('…the photo draws again — its file was never removed — and nothing is held')
+    : bad('photo after undo');
+
+  const again = takeMealWithPhotos(db, mealId);
+  settleMealRemoval(again, store, null);
+  store.files.size === 0 && heldFiles().size === 0 && getMeal(db, mealId) === undefined
+    ? ok('the window closing without Undo removes the files and releases them')
+    : bad('settle', `${store.files.size} file(s)`);
+  const clean = sweepMealPhotos(db, store);
+  clean.orphans === 0 && clean.dangling === 0
+    ? ok('…leaving a sweep nothing to find')
+    : bad('residue after settle', JSON.stringify(clean));
+}
+{
+  // THE CRASH. The app is killed inside the window: the Undo and its holds die
+  // with the process. The next launch holds nothing, so its sweep sees files no
+  // row claims — and no row survived to lose them.
+  const { db } = freshDb();
+  const store = fakeStore();
+  const mealId = logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 700 });
+  attachMealPhoto(db, mealId, JPEG, store);
+  const taken = takeMealWithPhotos(db, mealId);
+  const nextLaunch = sweepMealPhotos(db, store, new Date(), new Set());
+  nextLaunch.orphans === 1 &&
+  nextLaunch.dangling === 0 &&
+  store.files.size === 0 &&
+  allMealPhotos(db).length === 0 &&
+  getMeal(db, mealId) === undefined
+    ? ok('killed inside the window: the next launch reclaims the file, and no row outlives it')
+    : bad('crash sweep', JSON.stringify(nextLaunch));
+  // This process did not die; release what the simulated one held.
+  releaseFiles(takenPhotoFileNames(taken));
+}
+{
+  // A placeholder with a queued photo estimate (0057) — the queue row is part
+  // of the meal, and its photo lives in the other directory.
+  const { db, raw } = freshDb();
+  const pendingStore = fakeStore();
+  const file = writePendingEstimatePhoto('/9j/queued', pendingStore);
+  const { mealId } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '13:00', name: placeholderMealName(null) },
+    { kind: 'photo', file_name: file, width: 800, height: 600 }
+  );
+  const before = everything(raw);
+  const taken = takeMealWithPhotos(db, mealId);
+  listPendingEstimates(db).length === 0 &&
+  sweepPendingEstimatePhotos(db, pendingStore).orphanFilesRemoved === 0 &&
+  pendingStore.files.has(file)
+    ? ok('a deleted placeholder’s queued photo is held, and its own directory’s sweep leaves it')
+    : bad('pending take');
+  restoreMealWithPhotos(db, taken);
+  sameRows(everything(raw), before) && pendingEstimateMealIds(db, TODAY).has(mealId)
+    ? ok('…Undo queues the estimate again, pointing at the same photo')
+    : bad('pending restore');
+  const again = takeMealWithPhotos(db, mealId);
+  settleMealRemoval(again, null, pendingStore);
+  !pendingStore.files.has(file) && heldFiles().size === 0
+    ? ok('…and settling removes the queued photo with the meal')
+    : bad('pending settle');
+}
+{
+  // A recipe deleted while the Undo was open — `meals.recipe_id` is SET NULL.
+  const { db } = freshDb();
+  const recipeId = createRecipe(db, { title: 'Chili', servings: 4, ingredients: [] });
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:00',
+    name: 'Chili',
+    recipe_id: recipeId,
+    items: [{ name: 'Chili', amount: 350, kcal: 420 }],
+  });
+  const taken = takeMealWithPhotos(db, mealId);
+  deleteRecipe(db, recipeId);
+  restoreMealWithPhotos(db, taken);
+  const back = getMeal(db, mealId);
+  back && back.recipe_id === null && back.kcal === 420
+    ? ok('a recipe deleted inside the window: the meal returns, its link cleared as SET NULL would')
+    : bad('recipe-less restore', JSON.stringify(back));
+}
+{
+  // The Coach's path is the same removal with the window shut at once.
+  const { db } = freshDb();
+  const store = fakeStore();
+  const mealId = logMeal(db, { date: TODAY, time: '12:30', name: 'Lunch', kcal: 700 });
+  attachMealPhoto(db, mealId, JPEG, store);
+  deleteMealWithPhotos(db, mealId, store);
+  getMeal(db, mealId) === undefined && store.files.size === 0 && heldFiles().size === 0
+    ? ok('deleteMealWithPhotos (the Coach) is take-then-settle: nothing held, nothing left')
+    : bad('coach delete');
+  const screen = readFileSync(new URL('../app/meal-detail.tsx', import.meta.url), 'utf8');
+  screen.includes('takeMealItem(db, itemId)') &&
+  screen.includes('takeMealWithPhotos(db, meal.id)') &&
+  !screen.includes('deleteMealWithPhotos(') &&
+  !screen.includes('removeMealItem(')
+    ? ok('meal-detail removes only through the taking functions — every removal there has an Undo')
+    : bad('meal-detail removes without an Undo');
+}
+
+console.log('58. combine: four meals become one — nothing lost, nothing doubled, nothing dangling');
+{
+  const { db, raw } = freshDb();
+  const store = fakeStore();
+  const food = microFood(db);
+  // Two barcode-style meals, a typed coffee, an unpriced tea — and the
+  // evening's pizza, which is not chosen and must not move.
+  const oat = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:10',
+    name: 'Oat milk · Oatly',
+    items: [itemForPortion(getFood(db, food), { amount: 250 })],
+  }).mealId;
+  const granola = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:12',
+    name: 'Granola',
+    notes: 'Estimated from the pack',
+    source: 'ai_suggested',
+    items: [
+      {
+        name: 'Granola',
+        amount: 60,
+        kcal: 270.6,
+        protein_g: 6.1,
+        carbs_g: 38.2,
+        fat_g: 10.3,
+        fiber_g: 4.2,
+        confidence: 'medium',
+        micros: JSON.stringify({ sodium_mg: 30 }),
+      },
+      { name: 'Blueberries', amount: 80, kcal: 45.6, protein_g: 0.6, carbs_g: 11.6, fat_g: 0.3 },
+    ],
+  }).mealId;
+  attachMealPhoto(db, granola, JPEG, store);
+  const coffee = logMeal(db, {
+    date: TODAY,
+    time: '08:20',
+    name: 'Coffee',
+    kcal: 15,
+    protein_g: 1,
+  });
+  const tea = logMeal(db, { date: TODAY, time: '08:30', name: 'Tea' });
+  const pizza = pizzaMeal(db).mealId;
+
+  const before = everything(raw);
+  const totals = todayTotals(db, TODAY);
+  const fiber = dayFiberTotal(db, TODAY);
+  const micros = JSON.stringify(dayMicroTotals(db, TODAY));
+  const order = dayOrder(db);
+  const itemIds = rowsOf(raw, 'meal_items', 'meal_id IN (?, ?)', oat, granola).map((r) => r.id);
+  const pizzaRows = rowsOf(raw, 'meal_items', 'meal_id = ?', pizza);
+  const modes = () =>
+    JSON.stringify(
+      ['kcal', 'protein_g'].map(
+        (metric) =>
+          dayFigure(listTodayMeals(db, TODAY), metric, 3000, partialMealMetrics(db, TODAY)).mode
+      )
+    );
+  const modesBefore = modes();
+
+  // Chosen out of order, and named at the moment of combining.
+  const combined = combineMeals(db, [tea, granola, coffee, oat], { name: '  Breakfast ' });
+
+  combined.keptId === oat && combined.count === 4 && combined.name === 'Breakfast'
+    ? ok('the earliest meal survives — its id — and the typed name is trimmed and taken')
+    : bad('kept', JSON.stringify({ keptId: combined.keptId, name: combined.name }));
+  const result = getMeal(db, oat);
+  result.time === '08:10' && result.date === TODAY && result.name === 'Breakfast'
+    ? ok('…at the earliest time, on the same day')
+    : bad('result meal', JSON.stringify(result));
+  [granola, coffee, tea].every((id) => getMeal(db, id) === undefined) && getMeal(db, pizza)
+    ? ok('the absorbed rows are gone; the pizza nobody chose is untouched')
+    : bad('absorbed rows');
+  sameRows(rowsOf(raw, 'meal_items', 'meal_id = ?', pizza), pizzaRows)
+    ? ok('…down to every column of its items')
+    : bad('pizza moved');
+
+  const after = todayTotals(db, TODAY);
+  near(after.kcal, totals.kcal) &&
+  near(after.protein_g, totals.protein_g) &&
+  near(after.carbs_g, totals.carbs_g) &&
+  near(after.fat_g, totals.fat_g) &&
+  after.mealCount === totals.mealCount - 3
+    ? ok(
+        `TOTALS: the day reads ${Math.round(after.kcal)} kcal before and after — four meals are one`
+      )
+    : bad('day totals moved', `${totals.kcal} → ${after.kcal}`);
+  near(dayFiberTotal(db, TODAY), fiber) && JSON.stringify(dayMicroTotals(db, TODAY)) === micros
+    ? ok('…and so do its fiber and its micronutrients')
+    : bad('fiber/micros moved');
+  modes() === modesBefore
+    ? ok(
+        '…and the countdown refuses exactly what it refused before (the unpriced tea still counts)'
+      )
+    : bad('countdown changed', `${modesBefore} → ${modes()}`);
+
+  const items = listMealItems(db, oat);
+  const ids = items.map((i) => i.id);
+  itemIds.every((id) => ids.includes(id)) &&
+  new Set(ids).size === ids.length &&
+  ids.length === itemIds.length + 2
+    ? ok(
+        `ITEMS: all ${itemIds.length} moved by id, none doubled, plus two stand-ins — ${ids.length} in all`
+      )
+    : bad('items', JSON.stringify(ids));
+  const coffeeItem = items.find((i) => i.name === 'Coffee (as logged)');
+  const teaItem = items.find((i) => i.name === 'Tea (as logged)');
+  coffeeItem && coffeeItem.kcal === 15 && coffeeItem.protein_g === 1 && coffeeItem.carbs_g === null
+    ? ok('a free-form meal’s typed totals become an item — “Coffee (as logged)”, 15 kcal')
+    : bad('coffee stand-in', JSON.stringify(coffeeItem));
+  teaItem && teaItem.kcal === null
+    ? ok('…and an unpriced one keeps its name as a name-only item, never a 0')
+    : bad('tea stand-in', JSON.stringify(teaItem));
+  JSON.stringify(items.map((i) => i.name)) ===
+  JSON.stringify(['Micro food', 'Granola', 'Blueberries', 'Coffee (as logged)', 'Tea (as logged)'])
+    ? ok('…listed in the order they were logged, the stand-ins at their meals’ own moments')
+    : bad('item order', JSON.stringify(items.map((i) => i.name)));
+
+  latestMealPhoto(db, oat)?.meal_id === oat && mealPhotoView(db, oat, new Date(), store) !== null
+    ? ok('PHOTOS: the granola’s photo moved to the result, and draws there')
+    : bad('photo not moved');
+  result.notes === 'Estimated from the pack' && result.source === 'ai_suggested'
+    ? ok('…its note is kept, and a meal holding an estimate reads as one (source)')
+    : bad('notes/source', JSON.stringify(result));
+  raw.prepare('PRAGMA foreign_key_check').all().length === 0
+    ? ok('REFERENCES: PRAGMA foreign_key_check finds nothing dangling')
+    : bad('dangling reference', JSON.stringify(raw.prepare('PRAGMA foreign_key_check').all()));
+
+  // THE UNDO, on the same fixture.
+  uncombineMeals(db, combined);
+  sameRows(withoutStamp(everything(raw)), withoutStamp(before))
+    ? ok('UNDO: every row of every meal table is back — ids, rowids, created_at, totals, photos')
+    : bad('rows differ after uncombine');
+  totalsOf(db) === JSON.stringify(totals) &&
+  near(dayFiberTotal(db, TODAY), fiber) &&
+  dayOrder(db) === order
+    ? ok('…and the day reads exactly what it read before the combine, in the same order')
+    : bad('day after uncombine');
+}
+
+console.log('59. combine: composites stay whole, a stale Undo is refused, refusals write nothing');
+{
+  const { db, raw } = freshDb();
+  const { mealId: pizza } = pizzaMeal(db);
+  const dessert = logMealWithItems(db, {
+    date: TODAY,
+    time: '20:15',
+    name: 'Ice cream',
+    items: [{ name: 'Ice cream', amount: 100, kcal: 207, protein_g: 3.5, carbs_g: 24, fat_g: 11 }],
+  }).mealId;
+  const kcal = getMeal(db, pizza).kcal + 207;
+  const combined = combineMeals(db, [dessert, pizza]);
+  const tree = assembleMealItems(listMealItems(db, pizza));
+  combined.name === 'Dinner' &&
+  tree.length === 3 &&
+  tree[0].kind === 'composite' &&
+  tree[0].components.length === 3 &&
+  near(getMeal(db, pizza).kcal, kcal)
+    ? ok(
+        'a pizza combined keeps its header over its three parts; an untyped name is the earliest’s'
+      )
+    : bad('composite combine', JSON.stringify(tree.map((n) => n.kind)));
+  raw.prepare('PRAGMA foreign_key_check').all().length === 0
+    ? ok('…no part is orphaned into another meal (0058 invariant 3)')
+    : bad('composite dangling');
+  addMealItem(db, pizza, { name: 'Garlic bread', kcal: 180 });
+  const moved = everything(raw);
+  throws(() => uncombineMeals(db, combined)) && sameRows(everything(raw), moved)
+    ? ok('an Undo after the combined meal changed is refused, and writes nothing')
+    : bad('stale uncombine');
+}
+{
+  const { db, raw } = freshDb();
+  const soup = logMeal(db, { date: TODAY, time: '12:00', name: 'Soup', kcal: 300 });
+  const { mealId: waiting } = queueNewMealEstimate(
+    db,
+    { date: TODAY, time: '12:05', name: 'a sandwich' },
+    { kind: 'text', description: 'a sandwich' }
+  );
+  const r1 = createRecipe(db, { title: 'Chili', servings: 4, ingredients: [] });
+  const r2 = createRecipe(db, { title: 'Cornbread', servings: 8, ingredients: [] });
+  const chili = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:00',
+    name: 'Chili',
+    recipe_id: r1,
+    items: [{ name: 'Chili', kcal: 420 }],
+  }).mealId;
+  const cornbread = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:05',
+    name: 'Cornbread',
+    recipe_id: r2,
+    items: [{ name: 'Cornbread', kcal: 190 }],
+  }).mealId;
+  const old = logMeal(db, { date: '2000-01-01', time: '12:00', name: 'Old', kcal: 1 });
+  const snapshot = everything(raw);
+  const refusal = (ids) => {
+    try {
+      combineMeals(db, ids);
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  };
+  const pendingMessage = refusal([soup, waiting]);
+  pendingMessage && pendingMessage.includes('a sandwich') && pendingMessage.includes('estimate')
+    ? ok('a meal waiting on its estimate is refused by name — its drain would replace everything')
+    : bad('pending refusal', String(pendingMessage));
+  const recipeMessage = refusal([chili, cornbread]);
+  recipeMessage && recipeMessage.includes('Chili') && recipeMessage.includes('Cornbread')
+    ? ok('two meals cooked from two recipes are refused — a meal carries one recipe')
+    : bad('recipe refusal', String(recipeMessage));
+  (refusal([soup, old]) ?? '').includes('different days')
+    ? ok('meals from different days are refused')
+    : bad('day refusal');
+  refusal([soup]) !== null && refusal([soup, soup]) !== null && refusal([soup, 'gone']) !== null
+    ? ok('one meal, the same meal twice, or a meal that is gone: refused')
+    : bad('too-few refusal');
+  sameRows(everything(raw), snapshot)
+    ? ok('…and not one of those refusals wrote anything')
+    : bad('a refusal wrote');
+  const more = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:30',
+    name: 'More chili',
+    recipe_id: r1,
+    items: [{ name: 'Chili', kcal: 210 }],
+  }).mealId;
+  const twice = combineMeals(db, [chili, more]);
+  getMeal(db, twice.keptId).recipe_id === r1 && getMeal(db, twice.keptId).kcal === 630
+    ? ok('two servings of the SAME recipe combine, and keep it')
+    : bad('same recipe', JSON.stringify(getMeal(db, twice.keptId)));
+}
+
+console.log('60. the combine plan (pure), and the one Undo slot');
+{
+  const m = (id, time, created, extra = {}) => ({
+    id,
+    date: TODAY,
+    time,
+    name: id,
+    kcal: 100,
+    recipe_id: null,
+    created_at: created,
+    ...extra,
+  });
+  const untimed = m('untimed', null, '2026-09-23T06:00:00.000Z');
+  const late = m('late', '12:00', '2026-09-23T07:00:00.000Z');
+  const early = m('early', '08:00', '2026-09-23T11:00:00.000Z');
+  const tie = m('tie', '08:00', '2026-09-23T12:00:00.000Z', { kcal: null });
+  JSON.stringify([untimed, late, tie, early].sort(mealListOrder).map((x) => x.id)) ===
+  JSON.stringify(['early', 'tie', 'late', 'untimed'])
+    ? ok('list order: by clock, a tie by when it was logged, the untimed last')
+    : bad('list order');
+  const plan = planCombine([untimed, late, early]);
+  plan.kind === 'ok' &&
+  plan.keep.id === 'early' &&
+  plan.time === '08:00' &&
+  plan.kcal === 300 &&
+  JSON.stringify(plan.absorb.map((x) => x.id)) === JSON.stringify(['late', 'untimed'])
+    ? ok('the plan keeps the earliest and sums the energy the three carry')
+    : bad('plan', JSON.stringify(plan));
+  planCombine([early, tie]).kcal === 100
+    ? ok('…summing only the meals that recorded any — no invented 0')
+    : bad('null kcal sum');
+  planCombine([early]).kind === 'too-few' && planCombine([early, early]).kind === 'too-few'
+    ? ok('one meal (or one chosen twice) is too few')
+    : bad('too-few');
+  planCombine([early, late], new Set(['late'])).kind === 'refused'
+    ? ok('a pending estimate refuses the plan')
+    : bad('pending plan');
+  combinedName(null, early) === 'early' &&
+  combinedName('   ', early) === 'early' &&
+  combinedName(' Brunch ', early) === 'Brunch'
+    ? ok('the name: the earliest meal’s unless something is typed; an emptied field is not a name')
+    : bad('combinedName');
+  const sentence = combineConsequence(plan, 'Brunch');
+  sentence ===
+  'On combine: these 3 become one meal, “Brunch”, at 08:00 — 300 kcal, so the day’s total does not change. Their items and photos move into it.'
+    ? ok('the consequence names the name, the time and the energy, in future tense')
+    : bad('consequence', sentence);
+  combineConsequence({ ...plan, time: null, kcal: null }, 'Brunch').includes(
+    'with no time — no energy recorded'
+  )
+    ? ok('…and says so when there is no time and no energy')
+    : bad('consequence (empty)');
+
+  // THE SLOT — the water receipt's timing: one offer, replaced by the next, no timer.
+  const log = [];
+  const offer = (tag, scope = { on: 'list' }, fails = false) => ({
+    scope,
+    icon: 'restaurant-outline',
+    said: tag,
+    figure: null,
+    spoken: tag,
+    undo: () => {
+      if (fails) throw new Error('gone');
+      log.push(`undo ${tag}`);
+    },
+    settle: () => log.push(`settle ${tag}`),
+  });
+  let emits = 0;
+  const unsubscribe = subscribeUndo(() => emits++);
+  offerUndo(offer('a'));
+  offerUndo(offer('b'));
+  currentUndo()?.said === 'b' && JSON.stringify(log) === JSON.stringify(['settle a'])
+    ? ok('a new offer replaces the open one, and the replaced one is settled (its files go)')
+    : bad('replace', JSON.stringify(log));
+  closeUndo(onMeal);
+  closeUndo(onList);
+  currentUndo() === null && JSON.stringify(log) === JSON.stringify(['settle a', 'settle b'])
+    ? ok('leaving a screen closes only its own kind of offer, settling it')
+    : bad('close', JSON.stringify(log));
+  offerUndo(offer('c', { on: 'meal', mealId: 'm1' }));
+  runUndo() === true && currentUndo() === null && log.at(-1) === 'undo c'
+    ? ok('Undo puts it back and clears the slot — and is never settled as well')
+    : bad('run', JSON.stringify(log));
+  runUndo() === false ? ok('with nothing open, Undo does nothing') : bad('empty run');
+  offerUndo(offer('d', { on: 'list' }, true));
+  runUndo() === false && log.at(-1) === 'settle d' && currentUndo() === null
+    ? ok('an Undo that cannot be done is settled — nothing is left held for it')
+    : bad('failed run', JSON.stringify(log));
+  unsubscribe();
+  emits === 7 ? ok('every change told its listeners, once each') : bad('emits', String(emits));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
