@@ -17,7 +17,7 @@ import {
   type OverTime,
 } from '@/hooks/use-nutrition';
 import { expectedDayFraction } from '@/lib/home/readiness';
-import { barFigure, macroGrade } from '@/lib/nutrition/bar';
+import { barFigure, macroGrade, OVERFLOW_CAP } from '@/lib/nutrition/bar';
 import { fmtInt, macroCells } from '@/lib/nutrition/format';
 import {
   dayFigure,
@@ -115,13 +115,15 @@ import type { SignalLevel } from '@/types/home';
  *   Over time    → **ruled plate**: two readings and a drill-down.
  *
  * **Accent budget: one — one ACTION, drawn as the two ways of taking it.**
- * `Photo` and `Describe` are the screen's only accent in every state; `Set
- * daily targets` and `Other ways to log` are outlined and stay outlined. The
- * full argument for why two pine buttons is one claim and not two is at the
- * buttons. Since FB2 the macro bars spend **no accent at all** — a met bar's
- * pine fill was C6's one state mark here, and the bars now carry the signal
- * palette instead (see {@link MacroBar}), which gives the budget its headroom
- * back.
+ * `Photo` and `Describe` are the screen's only pine ACTION in every state;
+ * `Set daily targets` and `Other ways to log` are outlined and stay outlined.
+ * The full argument for why two pine buttons is one claim and not two is at the
+ * buttons. Since FB2 the macro bars' FILLS spend no accent — a met bar's pine
+ * fill was C6's one state mark here, and the fills now carry the signal palette
+ * instead. Since FB3 the one pine the bars carry is the run past the mark on an
+ * over-target day: a state mark, the class C6's met fill was, absent on any day
+ * that stays inside its targets, and at most ~7% of the buttons' own area (see
+ * {@link MacroBar}).
  *
  * ## Readability (C6, 2026-09-14 — docs/spikes/nutrition-readability.md)
  *
@@ -231,11 +233,11 @@ function targetsCorner(
 
 /**
  * One progress bar: what has been eaten against what the target is, coloured by
- * where that metric is heading. Drawn under the kcal hero and under each macro
- * cell, in BOTH modes, in every state — a metric with no target keeps its rail
- * and draws no fill, because there are no denominators until targets exist
- * (00-design-spec.md §5) but there is no reason for the grid to change height
- * when one is set.
+ * where that metric is heading, with anything past the target drawn past the
+ * mark. Drawn under the kcal hero and under each macro cell, in BOTH modes, in
+ * every state — a metric with no target keeps its rail and draws no fill,
+ * because there are no denominators until targets exist (00-design-spec.md §5)
+ * but there is no reason for the grid to change height when one is set.
  *
  * ## Colour — the signal palette, by owner override (FB2, 2026-09-21)
  *
@@ -263,66 +265,123 @@ function targetsCorner(
  * adherence-neutral rule was protecting is protected by the bands instead of by
  * refusing to colour at all.
  *
- * ## Which cut, and the measurements that chose it
+ * ## Which cut — the `bar` cut, the ceiling at this floor (FB3, 2026-09-21)
  *
- * The palette specifies two values per state: the SWATCH for fills, the INK cut
- * for text. A bar fill is a fill, so the swatch is the obvious reach — and on
- * this rail it fails. Measured against `paper-deep` `#C6C1B0`, 2026-09-21:
+ * The owner, on FB2's bars, from the device: *"the colors should pop a little
+ * more."* FB2 filled with the INK cut, because two of the four swatches measure
+ * under 3:1 on this rail (optimal 2.36, caution 2.10). But the ink cuts are TEXT
+ * cuts — darkened for reading, not for colour — and they landed at 4.17–4.56:1:
+ * legible, drab, and three of the four under 4.5.
  *
- * | state | swatch | on the rail | ink cut | on the rail |
+ * The fill now takes `signal-*-bar`: at each state's own hue (held to within
+ * 0.9° of the swatch), the most chromatic colour that still clears 4.5:1 on the
+ * rail. The derivation is written beside the tokens in tailwind.config.js.
+ * Measured against the rail, `paper-deep` `#C6C1B0`, and against `paper`
+ * `#E7E4DA` — the grid device draws no ground, so the sheet is what the room
+ * past the mark sits on:
+ *
+ * | state | `bar` cut | on the rail | on the paper | chroma vs the ink cut |
  * | --- | --- | --- | --- | --- |
- * | optimal | `#2E8B57` | 2.36:1 ✗ | `#185A36` | **4.56:1** ✓ |
- * | good | `#2C6C95` | 3.16:1 ✓ | `#24567A` | **4.34:1** ✓ |
- * | caution | `#A97B22` | 2.10:1 ✗ | `#6E4F15` | **4.17:1** ✓ |
- * | poor | `#AA402C` | 3.35:1 ✓ | `#8F3524` | **4.31:1** ✓ |
- * | unknown | — | — | `#5C5340` | **4.21:1** ✓ |
+ * | optimal | `#005B30` | **4.59:1** ✓ | 6.50:1 | +17% |
+ * | good | `#00537E` | **4.59:1** ✓ | 6.50:1 | +23% |
+ * | caution | `#694900` | **4.56:1** ✓ | 6.46:1 | +7% |
+ * | poor | `#9D1700` | **4.56:1** ✓ | 6.46:1 | +35% |
+ * | unknown | `#5C5340`, the metadata ink | 4.21:1 | 5.97:1 | — |
  *
- * Two of the four swatches are under WCAG 1.4.11's 3:1 non-text floor on this
- * stock, and a palette where half the states are invisible is not "more
- * colourful", it is the same defect in new hues. **So the fill takes the ink
- * cut**, which clears 3:1 on every state with margin. That is not a
- * contradiction of §2's "the swatch is for fills": the swatch was measured for
- * fills on the light paper steps, and `paper-deep` is the darkest stock in the
- * set — the rule the palette actually states is *reaching for the swatch to
- * colour a value is the most likely way to fail contrast*, and this is that case.
+ * **This is the ceiling, not a step toward one.** More chroma at these hues
+ * means a lighter colour, and lighter falls under the floor. Caution gains
+ * least because a yellow dark enough for 4.5:1 on a light warm stock IS a brown;
+ * anything more colourful than this needs a different rail, not a different
+ * cut. What the chroma buys is separation. In OKLab, where one just-noticeable
+ * difference is ~0.02, the nearest pair moves from ΔEok 0.091 (caution–poor,
+ * under the ink cuts) to 0.118 (optimal–caution) — past five JNDs — and all six
+ * pairs move apart.
  *
- * The rail stays `paper-deep` (1.42:1 on `paper`) — deliberately under threshold
- * and deliberately not a mark. A rail is the GROUND a reading sits in.
+ * `unknown` is deliberately NOT raised. A withheld verdict keeps the metadata
+ * ink, quieter than every stated one — the absence of a judgment must never
+ * out-shout a judgment.
+ *
+ * The rail stays `paper-deep` (1.42:1 on `paper`) — deliberately under
+ * threshold and deliberately not a mark. A rail is the GROUND a reading sits in.
  *
  * ## What colour does NOT carry
  *
- * The four ink cuts are near-isoluminant by construction (4.17–4.56 against one
- * ground), so to anyone not perceiving hue they are one dark mark — the same
- * fact that rewrote the pillar cells (src/components/home/readiness-strip.tsx).
- * **Colour here is reinforcement, never the sole carrier**, and nothing was
- * taken away to make room for it:
+ * The four `bar` cuts are near-isoluminant by construction (4.56–4.59 against
+ * one ground — each sits AT the floor, because that is where the chroma is), so
+ * to anyone not perceiving hue they are one dark mark — the same fact that
+ * rewrote the pillar cells (src/components/home/readiness-strip.tsx). **Colour
+ * here is reinforcement, never the sole carrier**, and nothing was taken away to
+ * make room for it:
  *
  *   - the cell's LABEL still flips `PROTEIN LEFT` → `PROTEIN OVER`, and the hero
  *     still says `kcal over`;
  *   - the figure and its denominator are unchanged, in mono, above the bar;
- *   - the FILL LENGTH is still literal progress, and a met bar still reaches
- *     the terminator;
+ *   - the FILL LENGTH is still literal progress, a met bar still reaches the
+ *     terminator, and an over bar now draws ink past it — geometry, not hue;
  *   - Home still states the pillar's level in a word (`signalConditionLabel`).
  *
- * ## Geometry — 6px, and a 3px terminator
+ * ## Geometry — the rail, the mark, and the room past it (FB3)
  *
- * 4px was the C6 compromise between rule and gauge; the owner has now judged it
- * on hardware and it lost. **6px** (18 device pixels at @3x) reads as a measured
- * bar rather than a hairline, and the terminator goes **3px** wide and full
- * height — 18×9 device pixels, 2.25× the area of C6's 2×4pt nick.
+ * **6px tall, 3px terminator**, as FB2 set them. 4px was C6's compromise between
+ * rule and gauge, and it lost on hardware; 6px (18 device pixels at @3x) reads as
+ * a measured bar rather than a hairline, and the terminator is 3px wide and full
+ * height — 18×9 device pixels, 2.25× C6's 2×4pt nick. The owner, on those:
+ * *"size of the bars is ok."* FB3 changes LENGTH, to answer the other half of his
+ * note: *"the blue could also go over the bar again for overflow."*
  *
- * The terminator measures **2.13–2.33:1** against the graded fills (`ink`
- * `#1C1911` on the four ink cuts). That is under 3:1 and it is accepted, for the
- * reason the rail is: it is not what carries the state. `met` is carried by the
- * fill reaching the rail's end (geometry, at full width) and by the label's own
- * word; the terminator marks WHERE THE TARGET IS, and it is at its most legible
- * exactly when it matters most for that — 9.74:1 on the bare rail, where the
- * fill has not arrived. It is strictly better than what shipped, besides: C6's
- * terminator sat on `ink-secondary` at 1.66:1.
+ *     [==== fill ====..... rail .....|]  2px  [== run ==+ ....... room ]
+ *      flex 1: the target, and only it  gutter  flex OVERFLOW_CAP
+ *
+ * - **The rail is the target and only the target.** The fill caps at 100% of
+ *   it, and a met bar reaches the terminator at its right end — a day exactly
+ *   on target is a FULL rail, which is the reading C6 protected by refusing to
+ *   rescale the rail. That refusal stands.
+ * - **The room past the mark is half the rail's length** — the flex ratio IS
+ *   {@link OVERFLOW_CAP}, the same constant `barFigure` caps at, so the cap and
+ *   the room cannot disagree. Over target, the excess draws there: a 2,900 on
+ *   2,400 day is a full rail and a run 21% of the rail's length past it. At
+ *   exactly 150% the run fills the room; past it the run stops and a `+` is
+ *   knocked out of its end in `pine-on` (9.52:1 on pine). The mono figure above
+ *   says by how much; the bar says *over, by this much, or by more than this*.
+ * - **A 2px gutter of bare sheet keeps the two marks two.** Butted together they
+ *   would read as one longer bar: the run is 1.66:1 against the terminator, and
+ *   pine against the `good` cut is two dark blues (ΔEok 0.084, the closest any
+ *   two colours on the bar come). On the sheet both edges are crisp — paper
+ *   against pine 8.31:1, against the fills 6.46–6.50:1 — and the mark stays
+ *   exactly where the target is.
+ *
+ * **The cost, stated:** the rail is two-thirds of the bar's width on EVERY day,
+ * over or not, so a day that is never over draws a shorter rail than FB2 did.
+ * That is the price of drawing past the mark without rescaling it; whether the
+ * bare third reads as room or as a bar cut short is a device question.
+ *
+ * ## The run is the accent, and the only accent the bars spend
+ *
+ * He asked for "the blue", and pine is the right one: the FILL wears the
+ * verdict's palette and the RUN is behaviour beyond the plan — what was eaten
+ * past the target — so the two meanings sit side by side in their two palettes
+ * and never share a colour. The run is a STATE mark, the class the accent
+ * budget admits (C6's met-bar pine fill was the same class, and FB2 gave it
+ * back), not a claim to be the next action: Photo and Describe stay the only
+ * action in pine. Nothing is pine until a target is passed, so an ordinary day
+ * carries none. **At most** — all four bars past 150% on a 393pt phone — the runs
+ * total about 215pt of 6pt ink, ~1,300pt², roughly 7% of the ~17,900pt² the two
+ * capture buttons already spend. A plausible heavy day (+21% kcal, +11% protein,
+ * +25% carbs, +29% fat) draws about 90pt of it.
+ *
+ * The terminator measures **2.12–2.14:1** against the graded fills (`ink`
+ * `#1C1911` on the four `bar` cuts). That is under 3:1 and it is accepted, for
+ * the reason the rail is: it is not what carries the state. `met` is carried by
+ * the fill reaching the rail's end (geometry, at full width) and by the label's
+ * own word; the terminator marks WHERE THE TARGET IS, and it is at its most
+ * legible exactly when it matters most for that — 9.74:1 on the bare rail, where
+ * the fill has not arrived. It is strictly better than C6's, besides: that one
+ * sat on `ink-secondary` at 1.66:1.
  *
  * Filled views on a filled track, never a border: a one-sided border width
  * beside a border colour is the shape that drops RN off its CoreAnimation border
- * path (src/components/ui/block.tsx).
+ * path (src/components/ui/block.tsx). The gutter is empty space and the `+` is
+ * two filled 1px views, for the same reason.
  *
  * **It says nothing to VoiceOver.** The cell above already speaks the same fact
  * in words; a bar that read as "seventy-two percent" beside a number that says
@@ -338,26 +397,52 @@ function MacroBar({
   target: number | null;
   level: SignalLevel;
 }) {
-  const { fillPct, met } = barFigure(eaten, target ?? 0);
+  const { fillPct, met, overPct, capped } = barFigure(eaten, target ?? 0);
   return (
     <View
       accessibilityElementsHidden
       importantForAccessibility="no"
       testID={`macro-bar-${level}`}
-      className="relative mt-1.5 h-[6px] bg-paper-deep">
-      <View className={MACRO_BAR_FILL[level]} style={{ width: `${fillPct}%` }} />
-      {/* The terminator. Absolutely positioned at the rail's right end rather
-          than appended after the fill, so it marks where the TARGET is and not
-          where the fill happens to stop — they are the same point only because
-          the fill caps at 100%, and the mark must not move if that ever changes. */}
-      {met ? <View className="absolute right-0 top-0 h-[6px] w-[3px] bg-ink" /> : null}
+      className="mt-1.5 h-[6px] flex-row">
+      {/* The rail: the target's span, and nothing past it. */}
+      <View className="relative h-[6px] bg-paper-deep" style={{ flex: 1 }}>
+        <View className={MACRO_BAR_FILL[level]} style={{ width: `${fillPct}%` }} />
+        {/* The terminator. Absolutely positioned at the rail's right end rather
+            than appended after the fill, so it marks where the TARGET is and
+            not where the fill happens to stop — they are the same point only
+            because the fill caps at 100%, and the mark must not move if that
+            ever changes. */}
+        {met ? <View className="absolute right-0 top-0 h-[6px] w-[3px] bg-ink" /> : null}
+      </View>
+      {/* The gutter — bare sheet, drawn on every day, so the rail's length
+          never depends on whether today is over. */}
+      <View className="w-[2px]" />
+      {/* The room past the mark: `OVERFLOW_CAP` of the rail's length. */}
+      <View className="h-[6px]" style={{ flex: OVERFLOW_CAP }}>
+        {overPct > 0 ? (
+          <View
+            testID="macro-over"
+            className={MACRO_BAR_OVER}
+            style={{ width: `${overPct / OVERFLOW_CAP}%` }}>
+            {/* Past the cap: a `+` knocked out of the run's end. Inside the run
+                rather than after it, so a capped run is never SHORTER than one
+                at exactly 150%. */}
+            {capped ? (
+              <View testID="macro-over-cap" className="absolute right-[2px] top-0 h-[6px] w-[5px]">
+                <View className="absolute left-0 top-[2.5px] h-px w-[5px] bg-pine-on" />
+                <View className="absolute left-[2px] top-[0.5px] h-[5px] w-px bg-pine-on" />
+              </View>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
     </View>
   );
 }
 
 /**
  * Grade → fill class, as WHOLE literals: Tailwind's scanner only sees class
- * names that appear verbatim in source, so a built `bg-signal-${level}-ink`
+ * names that appear verbatim in source, so a built `bg-signal-${level}-bar`
  * fragment would compile to nothing at all. Same shape as the pillar's maps
  * (src/components/home/signal.tsx).
  *
@@ -367,21 +452,27 @@ function MacroBar({
  * beside those renders, is what closes the gap between "the right level reached
  * the bar" and "the right class is on it".
  *
- * `unknown` is the metadata ink, not a fifth hue — an absent verdict is absent.
- * Its rail is usually empty besides (no target, no denominator, no fill), but
- * not always: a day before 10:00 or one that changed timezone draws its real
- * length in this neutral cut, which is the timezone ADR's rule made visible —
- * show the quantity, withhold the judgment.
+ * The four graded levels take the `bar` cut (FB3 — the measurements are at
+ * {@link MacroBar}). `unknown` is the metadata ink, not a fifth hue — an absent
+ * verdict is absent. Its rail is usually empty besides (no target, no
+ * denominator, no fill), but not always: a day before 10:00 or one that changed
+ * timezone draws its real length in this neutral cut, which is the timezone
+ * ADR's rule made visible — show the quantity, withhold the judgment.
  */
 const MACRO_BAR_FILL: Record<SignalLevel, string> = {
-  optimal: 'h-[6px] bg-signal-optimal-ink',
-  good: 'h-[6px] bg-signal-good-ink',
-  caution: 'h-[6px] bg-signal-caution-ink',
-  poor: 'h-[6px] bg-signal-poor-ink',
+  optimal: 'h-[6px] bg-signal-optimal-bar',
+  good: 'h-[6px] bg-signal-good-bar',
+  caution: 'h-[6px] bg-signal-caution-bar',
+  poor: 'h-[6px] bg-signal-poor-bar',
   unknown: 'h-[6px] bg-signal-unknown',
 };
 
-export { MACRO_BAR_FILL };
+/** The run past the mark — one literal whatever the grade, because how far over
+ *  the day went is behaviour: it wears the accent, never the verdict's palette.
+ *  Exported beside the fill table for the same reason that one is. */
+const MACRO_BAR_OVER = 'relative h-[6px] bg-pine';
+
+export { MACRO_BAR_FILL, MACRO_BAR_OVER };
 
 /** Whole class literals — Tailwind's scanner never sees a built fragment. The
  *  first two cells are fixed so the macros form COLUMNS down the day (a record

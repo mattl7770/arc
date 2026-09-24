@@ -128,6 +128,23 @@ export const palette = {
     poor: '#8F3524',
     unknown: '#5C5340',
   },
+  /**
+   * The GAUGE cut (FB3, 2026-09-21) — one consumer, the Eat tab's macro bars
+   * (`MacroBar`, app/nutrition.tsx), mirrored from `signal.*.bar` in
+   * tailwind.config.js, where the derivation is written down. Each is the most
+   * chromatic colour at its state's own hue that still clears 4.5:1 on the
+   * `paperDeep` rail: 4.59 / 4.59 / 4.56 / 4.56 there, 6.50 / 6.50 / 6.46 / 6.46
+   * on `paper`. Not a text cut and not a general fill — a gauge on paperDeep.
+   *
+   * No `unknown`: a withheld verdict keeps the metadata ink (`signalInk.unknown`,
+   * 4.21:1 on the rail), deliberately quieter than any stated one.
+   */
+  signalBar: {
+    optimal: '#005B30',
+    good: '#00537E',
+    caution: '#694900',
+    poor: '#9D1700',
+  },
 } as const;
 
 /**

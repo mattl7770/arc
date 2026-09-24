@@ -9,11 +9,16 @@ import type { DayMetric } from './remaining';
  * arithmetic behind C6's Today-grid bars (docs/spikes/nutrition-readability.md
  * §3.1), pure so it can be pinned headlessly.
  *
- * Two numbers come out and nothing else:
+ * Four numbers come out and nothing else:
  *
- *   `fillPct`  how much of the rail is inked — `eaten / target`, capped at 100.
+ *   `fillPct`  how much of the RAIL is inked — `eaten / target`, capped at 100.
  *   `met`      whether the target has been reached, which is what draws the
  *              terminator at the rail's end.
+ *   `overPct`  how far PAST the rail's end the excess runs, as a percentage of
+ *              the rail's own length — 0 until the target is passed, at most
+ *              {@link OVERFLOW_CAP} × 100.
+ *   `capped`   whether the excess is longer than the cap can draw, which is
+ *              what stamps the `+` on the run.
  *
  * **`met` no longer decides the fill's COLOUR** (FB2, 2026-09-21). It used to
  * turn the fill from `ink-secondary` to `pine`, a change measuring 1.01:1 — the
@@ -22,13 +27,30 @@ import type { DayMetric } from './remaining';
  * coloured by {@link macroGrade} instead, and the terminator keeps its job: a
  * met bar reaches the mark, an unmet one does not.
  *
- * **The cap is the design, not a clamp for safety.** Over target the bar STOPS
- * at the mark and the number above it keeps counting — the cell's label already
- * flips to "PROTEIN OVER". Running the fill past the mark would make the rail
- * mean 125% of the target, so a bar AT target would read four-fifths full on the
- * day it is exactly right; and how far past is "too far" depends on goal
- * direction, which is C7's question rather than this one's. Adherence-neutral
- * either way: no warning colour, no shame state (docs/nutrition-subapp.md §8).
+ * ## Over target: the run past the mark (FB3, 2026-09-21)
+ *
+ * The owner, from the device: *"the blue could also go over the bar again for
+ * overflow."* Until FB3 the bar STOPPED at the mark and only the number kept
+ * counting, so a 2,900 on 2,400 day drew exactly what a 2,400 day drew — full.
+ *
+ * **The rail still means the target, and the fill still caps at it.** C6's
+ * objection to running the fill past the mark was that it rescales the rail —
+ * make the rail mean 125% and a bar AT target reads four-fifths full on the day
+ * it is exactly right. That objection stands, so the rail is not rescaled.
+ * Instead the bar keeps room BESIDE the rail — bare sheet, half the rail's
+ * length — and the excess is a second, separate run drawn there, past the
+ * rail's end. A day at target is a full rail and nothing beyond it; a day over
+ * target is a full rail and ink past its end.
+ *
+ * **The cap is 150% of the rail's length** ({@link OVERFLOW_CAP} = 0.5 of it
+ * past the mark). Beyond that the run stops and `capped` stamps a `+` — the
+ * figure above the bar already states the exact amount, so the bar only has to
+ * say *over, by this much, or by more than this*.
+ *
+ * Adherence-neutral still: the run says HOW FAR past the plan the day went, not
+ * whether that is a fault. Whether it is lives in the fill's grade, by goal
+ * direction — protein over target is `optimal`, a gaining day's calories over
+ * target can be too — so the run is never a warning colour on its own.
  *
  * A non-positive target never reaches here — `dayFigure` already refuses one
  * (remaining.ts), because a "0 kcal" goal is not a frame of reference and
@@ -37,20 +59,40 @@ import type { DayMetric } from './remaining';
  * one: with no frame of reference there is no progress to claim.
  */
 
+/** How far past the mark the run may reach, as a fraction of the rail's own
+ *  length: 0.5 draws at most 150% of the rail in all. `MacroBar` lays the room
+ *  past the mark out from this same constant (flex 1 : OVERFLOW_CAP), so a run
+ *  at the cap fills the room exactly and never paints outside the bar. */
+export const OVERFLOW_CAP = 0.5;
+
 export type BarFigure = {
   /** 0–100 — the rail's inked fraction, as a percentage for a `style` width. */
   fillPct: number;
   /** True once `eaten` reaches `target` — the ink terminator at the rail's end. */
   met: boolean;
+  /** 0–50 — the run past the mark, as a percentage of the RAIL's length. */
+  overPct: number;
+  /** True when the excess is longer than {@link OVERFLOW_CAP} can draw. */
+  capped: boolean;
 };
 
 export function barFigure(eaten: number, target: number): BarFigure {
-  if (!Number.isFinite(target) || target <= 0) return { fillPct: 0, met: false };
+  if (!Number.isFinite(target) || target <= 0) {
+    return { fillPct: 0, met: false, overPct: 0, capped: false };
+  }
   // A negative or non-finite eaten figure draws nothing rather than reversing
   // the fill. Nothing upstream produces one (`sumRounded` skips NULL and adds
   // recorded values), so this is a floor, not a case.
   const value = Number.isFinite(eaten) && eaten > 0 ? eaten : 0;
-  return { fillPct: Math.min(100, (value / target) * 100), met: value >= target };
+  const excess = value / target - 1;
+  return {
+    fillPct: Math.min(100, (value / target) * 100),
+    met: value >= target,
+    overPct: excess > 0 ? Math.min(OVERFLOW_CAP, excess) * 100 : 0,
+    // Strictly past the cap: a day at exactly 150% is drawable in full, and the
+    // `+` means "more than is drawn", not "at the edge".
+    capped: excess > OVERFLOW_CAP,
+  };
 }
 
 // --- The grade a bar is coloured by (FB2, 2026-09-21) ------------------------
