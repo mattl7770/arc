@@ -186,7 +186,7 @@ function read(): DataOverviewState {
     // A single old reading still gives a headline; only a never-logged metric
     // has nothing to show.
     empty: weightLatest === null,
-    emptyLabel: 'Log weight to start a trend',
+    emptyLabel: 'No weight logged yet',
   };
 
   // Water — today's intake is the headline; the last 14 days are the trend.

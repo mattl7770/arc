@@ -113,6 +113,14 @@ console.log('0. an empty database yields no insights and an honest brief');
   brief.includes('Nothing logged yet')
     ? ok('an empty database asks the user to start, rather than reporting a null reading')
     : bad('empty brief', brief);
+  // Slop pass 3 (docs/ai-slop-candidates-2026-09.md §10). This brief is built
+  // here, not in a screen, so neither string-walk of app/ ever read it. Its gate
+  // said "a few days of anything at all" — vaguer than the code, whose detectors
+  // need about ten (the BUILDING branch already said so). The gate is the fact.
+  brief ===
+  'Nothing logged yet. Start with today: weight, what you eat, and any training. Trends need about ten days.'
+    ? ok('…and states the real gate — about ten days — not "a few days of anything"')
+    : bad('sparse brief wording', brief);
 }
 
 console.log('0b. the three empty states are distinguished honestly');
@@ -125,6 +133,11 @@ console.log('0b. the three empty states are distinguished honestly');
   buildingBrief.includes('Baseline building') && buildingBrief.includes('5 days')
     ? ok('a few days in: says how far along the baseline is')
     : bad('building brief', buildingBrief);
+  // Slop pass 3: it ended "Keep the cadence and they will start showing up." —
+  // the screen narrating its own future. The count and the gate are the fact.
+  buildingBrief.endsWith('Trends need about ten.') && !buildingBrief.includes('Keep the cadence')
+    ? ok('…and stops at the gate, with no promise about what comes next')
+    : bad('building brief tail', buildingBrief);
 
   // STABLE — plenty of data, nothing moving. That is GOOD NEWS and a
   // monitoring system should say so, not imply the user under-logged.
@@ -138,6 +151,18 @@ console.log('0b. the three empty states are distinguished honestly');
     ? ok('a data-rich stable user is told things are steady, not accused of under-logging')
     : bad('stable brief', stableBrief);
 
+  // STABLE with no wearable at all — the branch that closed on an aphorism,
+  // "Stable is the goal, not the absence of news." (slop pass 3). The same
+  // shape as the report line cut in the list's §8: a maxim explaining a verdict
+  // the sentence before it had already stated.
+  const handLogged = freshDb();
+  for (let d = 0; d <= 20; d++) seedMeal(handLogged.raw, d, 150);
+  const handBrief = generateDailyBrief(handLogged.db, NOW);
+  handBrief ===
+  'Everything is holding steady. No trend, gap, or symptom pattern worth flagging today.'
+    ? ok('steady with no watch: the verdict, and nothing after it')
+    : bad('stable no-floor brief', handBrief);
+
   // STATUS-AWARE — an EXCUSING status must not get cadence-nagging. It says
   // "don't judge me by today", and the brief is the one surface that would
   // otherwise spend the day contradicting it (home-screen.md).
@@ -147,6 +172,12 @@ console.log('0b. the three empty states are distinguished honestly');
   sickBrief.includes('Sick day') && !/Start with today|Baseline building/.test(sickBrief)
     ? ok('a sick day is not nagged about logging cadence')
     : bad('sick brief', sickBrief);
+  // Slop pass 3: it closed "Look after the basics." — the one piece of generic
+  // wellness advice in the brief, on the one day the user asked not to be told
+  // anything. The fact is that nothing in the data needs attention.
+  sickBrief === 'Sick day. Nothing in your data needs attention.'
+    ? ok('…and says so in one fact, with no advice appended')
+    : bad('sick brief tail', sickBrief);
 
   // …and the owner's Q2(b) reaching the brief: a status the Coach left
   // COUNTING has excused nothing, so the nag still applies.
@@ -523,6 +554,11 @@ console.log('20. wearable rows outside the window are named, not called nothing'
   brief.includes(`last synced ${isoDaysAgo(NOW, 40)}`)
     ? ok(`a stale sync is described, not denied ("${brief}")`)
     : bad('stale sync', brief);
+  // Slop pass 3: the three things to log are the fact; "to widen what I can
+  // read" narrated what logging them would do to the brief itself.
+  brief.endsWith('Add weight, meals and training.') && !brief.includes('widen what I can read')
+    ? ok('…and names the three things to log, without narrating what that does')
+    : bad('floor brief tail', brief);
 }
 
 console.log('21. today’s partial total never enters a stated daily average or its day count');

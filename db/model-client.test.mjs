@@ -8,6 +8,7 @@
 import {
   ANTHROPIC_MESSAGES_URL,
   ANTHROPIC_VERSION,
+  COACH_MODELS,
   CoachTurnError,
   DEFAULT_MODEL,
   MessageAccumulator,
@@ -588,6 +589,26 @@ console.log('11. systemContext rides as a second, UNCACHED system block');
   blank.system.length === 1
     ? ok('blank systemContext never ships an empty block')
     : bad('blank block', JSON.stringify(blank.system));
+}
+
+console.log('12. the model picker states each option; it does not sell one');
+{
+  // Slop pass 3 (docs/ai-slop-candidates-2026-09.md §10). The list's §8 cut
+  // "near-Opus quality for a fraction of the cost" from the margin on Settings ›
+  // Coach; the same claim survived just above it, in the picker row's own
+  // note — built HERE, so the walk of app/ never read it. A note is a fact about
+  // the option (the default, a cost multiple, speed), never a comparison that
+  // flatters one product against another.
+  const sonnet = COACH_MODELS.find((m) => m.id === DEFAULT_MODEL);
+  sonnet?.note === 'Default'
+    ? ok('the default model is marked as the default, and nothing more')
+    : bad('default note', sonnet?.note);
+  COACH_MODELS.every((m) => !/near-|quality/i.test(m.note))
+    ? ok('no note borrows another model’s name to describe itself')
+    : bad('comparative note', COACH_MODELS.map((m) => m.note).join(' | '));
+  COACH_MODELS.find((m) => m.id === 'claude-opus-5')?.note.includes('~2.5× the cost')
+    ? ok('Opus keeps its cost multiple — the figure is the decision aid')
+    : bad('opus note', JSON.stringify(COACH_MODELS));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

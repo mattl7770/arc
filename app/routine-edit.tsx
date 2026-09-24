@@ -225,7 +225,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
     } catch (error) {
       inFlight.current = false;
       console.warn('[routines] save failed', error);
-      Alert.alert('Save failed', 'Nothing was changed. Please try again.');
+      Alert.alert('Save failed', 'Nothing was changed. Try again.');
     }
   };
 
@@ -248,7 +248,7 @@ function RoutineEditor({ id }: { id: string | undefined }) {
             } catch (error) {
               inFlight.current = false;
               console.warn('[routines] delete failed', error);
-              Alert.alert('Delete failed', 'Nothing was changed. Please try again.');
+              Alert.alert('Delete failed', 'Nothing was changed. Try again.');
             }
           },
         },

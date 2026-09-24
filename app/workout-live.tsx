@@ -1064,7 +1064,7 @@ function WorkoutLive({
       router.back();
     } catch (error) {
       console.warn('[exercise] workout save failed', error);
-      Alert.alert('Save failed', 'Nothing was changed. Please try again.');
+      Alert.alert('Save failed', 'Nothing was changed. Try again.');
     }
   };
 
@@ -1090,7 +1090,7 @@ function WorkoutLive({
               router.back();
             } catch (error) {
               console.warn('[exercise] workout delete failed', error);
-              Alert.alert('Delete failed', 'The session is unchanged. Please try again.');
+              Alert.alert('Delete failed', 'The session is unchanged. Try again.');
             }
           },
         },

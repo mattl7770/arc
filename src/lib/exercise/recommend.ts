@@ -142,6 +142,6 @@ export function recommendToday(input: RecommendInput, now: Date = new Date()): R
 
   return {
     kind: 'empty',
-    why: 'Build a routine or log a few sessions and ARC will start recommending your next workout.',
+    why: 'A recommendation needs a saved workout or a few logged sessions.',
   };
 }

@@ -19,7 +19,7 @@
  *
  * Run: npm run db:test (via node --import ./db/register-render-hooks.mjs).
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 import React from 'react';
 import { renderToString } from 'react-dom/server';
@@ -100,7 +100,7 @@ import { OVERFLOW_CAP } from '../src/lib/nutrition/bar.ts';
 import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
 import NutritionHistoryScreen from '../app/nutrition-history.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
-import { ReviewItemsPlate } from '../src/components/nutrition/estimate-review.tsx';
+import { QuestionsPlate, ReviewItemsPlate } from '../src/components/nutrition/estimate-review.tsx';
 // The two camera screens. They could not be imported here until `expo-camera`
 // moved behind the guarded seam (src/lib/media/camera.ts) — a static native
 // import is a resolve failure under node, not a render failure.
@@ -539,6 +539,29 @@ const db = getDb();
     'on record',
     'By day',
   ]);
+
+  // Home and the Data tab on the same never-touched database (slop pass 3,
+  // docs/ai-slop-candidates-2026-09.md §10). Much of what Home prints on day
+  // one is BUILT in src/lib — the brief (src/lib/ai/insights.ts) and the
+  // readiness line (src/lib/home/readiness.ts) — so two string-walks of app/
+  // and src/components/ never read it. Each lost a tail that consoled or
+  // narrated; the fact it carried is pinned beside the refutation.
+  const firstHome = render('home (never touched)', HomeScreen);
+  expect('home (never touched)', firstHome, [
+    // The build fact, and the one thing a reader needs to know about it.
+    'rides the next app build. Readings already in Apple Health will land then.',
+    // SPARSE: what to log, and the gate as the number the detectors need.
+    'Start with today: weight, what you eat, and any training. Trends need about ten days.',
+  ]);
+  refute('home (never touched)', firstHome, [
+    'is safe there and will land here once it does',
+    'a few days of anything at all',
+  ]);
+  // An empty trend row names the absence, like the five rows around it. This
+  // one narrated the row's future instead ("Log weight to start a trend").
+  const firstData = render('data tab (never touched)', DataScreen);
+  expect('data tab (never touched)', firstData, ['No weight logged yet']);
+  refute('data tab (never touched)', firstData, ['Log weight to start a trend']);
 
   // The water record on a database that has never logged a drop. Like
   // mission-history above, this render must happen HERE — the never-logged
@@ -4412,9 +4435,12 @@ console.log('\n21. The Plan screen — today, a day ahead, and the past days beh
   });
   expect('mission-day (beyond the carry window)', settled, [
     'Old dose',
-    'This day is settled',
-    'the record stands as it is',
+    'More than a week back, the record stands as it is.',
   ]);
+  // Slop pass 3 (§10): the line opened "This day is settled." and then said it
+  // again with the boundary attached. The boundary and the consequence are the
+  // fact; the restatement may not come back.
+  refute('mission-day (beyond the carry window)', settled, ['This day is settled']);
 
   // A `?date=` past the horizon is clamped, exactly as the arrow is.
   const beyond = render('mission-day (beyond the horizon)', MissionDayScreen, {
@@ -4482,6 +4508,127 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
 
   db.run(`DELETE FROM timezone_changes WHERE id = 'render-tz'`);
   refute('home (the row removed again)', render('home', HomeScreen), ['Timezone changed']);
+}
+
+// ---------------------------------------------------------------------------
+// 22. Slop pass 3 (docs/ai-slop-candidates-2026-09.md §10) — the retired lines
+// no page render in this suite reaches.
+//
+// One is a component that renders straight from props: the estimator's
+// questions plate. The rest are Alert bodies (a native sheet — RN's Alert has
+// no DOM), an accessibilityHint (react-native-web drops the prop, so a render
+// cannot see it either way), the Coach's confirmation card (it imports the
+// tools barrel, a directory import this harness does not resolve), and strings
+// no screen here draws: the Coach's preview replies and two delivery notes the
+// model relays. Those are a SOURCE SCAN, honest about being one — the
+// long-press sweep in §0 is the precedent.
+{
+  console.log('\n22. Slop pass 3 — the retired lines, where a page render cannot reach them');
+
+  // The questions plate is labelled by what is filed under it. "A few things"
+  // was the "How it is going" shape (the list's §0) on the one plate that asks.
+  const plate = render(
+    'questions plate',
+    QuestionsPlate,
+    {},
+    {
+      questions: [
+        {
+          id: 'shots',
+          ask: 'How many shots?',
+          allowOther: false,
+          options: [
+            { label: 'One', effect: { kind: 'scale_item', name: 'Latte', factor: 1 } },
+            { label: 'Two', effect: { kind: 'scale_item', name: 'Latte', factor: 2 } },
+          ],
+        },
+      ],
+      answers: {},
+      otherFor: null,
+      otherText: '',
+      otherBusy: false,
+      handlers: {
+        onAnswer: () => {},
+        onOpenOther: () => {},
+        onOtherText: () => {},
+        onApplyOther: () => {},
+        onCancelOther: () => {},
+      },
+    }
+  );
+  expect('questions plate', plate, ['Questions', 'How many shots?']);
+  refute('questions plate', plate, ['A few things']);
+
+  // Everything else, by source. Each pattern is the CODE form of the line, so a
+  // docblock that quotes a retired sentence (several do, as history) is not a
+  // hit — and each target must exist and be read, or the scan fails loudly
+  // rather than passing over nothing.
+  const RETIRED = [
+    // Eleven Alert and error bodies said "Please try again." — the only
+    // "Please" in the app's copy. The house form is "Try again.": five sibling
+    // error bodies end with it, and it is the label on every retry button.
+    ['app', /'[^'\n]*Please try again[^'\n]*'/, 'Please try again'],
+    ['src/components', /'[^'\n]*Please try again[^'\n]*'/, 'Please try again'],
+    // Home's Protocols link: the editorial the 2026-09-15 pass cut from its
+    // accessibilityLabel, back through the hint slot.
+    ['app/(tabs)/index.tsx', /hint="What builds the day"/, 'the Protocols hint'],
+    // The confirmation card's ON APPROVE lane ended "…, and the Coach carries
+    // on from there" — the NOW lane above it already says the Coach is
+    // suspended until you answer. Where the write goes, and that it happens
+    // once, are the fact; they are pinned just below.
+    [
+      'src/components/coach/pending-write-card.tsx',
+      /'[^'\n]*carries on from there[^'\n]*'/,
+      'the ON APPROVE tail',
+    ],
+    // Save as template: a sheet opened by choosing to save a template.
+    [
+      'app/meal-detail.tsx',
+      /'Name it so you can log it again in one tap\.'/,
+      'the template sheet body',
+    ],
+    // The Coach's preview replies (no key connected).
+    [
+      'src/lib/ai/coach-service.ts',
+      /Good question|built to answer|straight with you|the chat foundation|becomes the real thing/,
+      'the preview replies',
+    ],
+    // Two delivery notes documented as "safe to relay to the user as-is" that
+    // spoke of the user in the third person, and instructed the model.
+    [
+      'src/lib/notifications/reminders.ts',
+      /'[^'\n]*(?:The user can enable|do not promise a phone alert)[^'\n]*'/,
+      'the delivery notes',
+    ],
+  ];
+  const sourcesUnder = (path) => {
+    const url = new URL(`../${path}`, import.meta.url);
+    if (!statSync(url).isDirectory()) return [path];
+    return readdirSync(url, { recursive: true })
+      .map((entry) => `${path}/${String(entry).replace(/\\/g, '/')}`)
+      .filter((file) => /\.(ts|tsx)$/.test(file));
+  };
+  for (const [path, pattern, what] of RETIRED) {
+    const files = sourcesUnder(path);
+    const hits = files.filter((file) =>
+      pattern.test(readFileSync(new URL(`../${file}`, import.meta.url), 'utf8'))
+    );
+    files.length === 0
+      ? bad(`slop scan: ${path} matched no source files`)
+      : hits.length === 0
+        ? ok(`slop scan (${files.length} file${files.length === 1 ? '' : 's'}): ${what} stays cut`)
+        : bad(`slop scan: ${what} is back`, hits.join(', '));
+  }
+  // …and the card's facts are still there to be read.
+  const card = readFileSync(
+    new URL('../src/components/coach/pending-write-card.tsx', import.meta.url),
+    'utf8'
+  );
+  card.includes("'This is written to your on-device record, once.'") &&
+  card.includes("'This row leaves your on-device record, once.'") &&
+  card.includes('Nothing has been written. The Coach is suspended until you answer.')
+    ? ok('the card still states where a write goes, that it happens once, and what NOW means')
+    : bad('a consequence line went with the tail');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -562,6 +562,17 @@ console.log('6. recommendToday (pure): freshest routine, caution, empty');
     : bad('caution', JSON.stringify(rec2));
   const rec3 = recommendToday({ ledger, routines: [], fallbackExercises: [] }, NOW);
   rec3.kind === 'empty' ? ok('no routines + no fallback → empty guidance') : bad('empty');
+  // Slop pass 3 (docs/ai-slop-candidates-2026-09.md §10). The Train hub prints
+  // this under "Train today", but it is built HERE, which is why the walk that
+  // retired "routine" from every screen missed it. It said "Build a routine…
+  // and ARC will start recommending your next workout": the retired noun, and
+  // the card narrating its own future. The precondition is the fact.
+  rec3.why === 'A recommendation needs a saved workout or a few logged sessions.'
+    ? ok('…stating the precondition in the house noun')
+    : bad('empty why', rec3.why);
+  !/\broutine\b/i.test(rec3.why) && !/will start recommending/.test(rec3.why)
+    ? ok('…with no "routine" and no promise about what the card does next')
+    : bad('retired wording back', rec3.why);
 }
 
 // ---------------------------------------------------------------------------

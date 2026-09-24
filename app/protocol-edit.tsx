@@ -452,7 +452,7 @@ function ProtocolEditor({ id }: { id: string | undefined }) {
       // let the user retry.
       inFlight.current = false;
       console.warn('[protocols] save failed', error);
-      Alert.alert('Save failed', 'Nothing was changed. Please try again.');
+      Alert.alert('Save failed', 'Nothing was changed. Try again.');
     }
   };
 

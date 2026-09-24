@@ -169,7 +169,7 @@ export default function ProtocolVersionsScreen() {
               rederiveMissionFromToday(db, todayISODate());
             } catch (error) {
               console.warn('[protocols] restore failed', error);
-              Alert.alert('Restore failed', 'Nothing was changed. Please try again.');
+              Alert.alert('Restore failed', 'Nothing was changed. Try again.');
             }
           },
         },

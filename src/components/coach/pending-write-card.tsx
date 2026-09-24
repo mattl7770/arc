@@ -133,8 +133,8 @@ function ConsequenceLanes({ kind }: { kind: PendingWrite['kind'] }) {
         </Text>
         <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink">
           {removing
-            ? 'This row leaves your on-device record, once, and the Coach carries on from there.'
-            : 'This is written to your on-device record, once, and the Coach carries on from there.'}
+            ? 'This row leaves your on-device record, once.'
+            : 'This is written to your on-device record, once.'}
         </Text>
       </View>
     </View>

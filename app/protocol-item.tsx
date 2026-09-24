@@ -237,7 +237,7 @@ function ProtocolItemEditor({
       // form, say so, and let the user retry.
       inFlight.current = false;
       console.warn('[protocols] item save failed', error);
-      Alert.alert('Save failed', 'Nothing was changed. Please try again.');
+      Alert.alert('Save failed', 'Nothing was changed. Try again.');
     }
   };
 

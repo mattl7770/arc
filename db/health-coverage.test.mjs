@@ -146,5 +146,38 @@ console.log('5. in-workout heart rate — unverified, and honest about WHY a bla
     : bad('use line', row?.use);
 }
 
+console.log('6. the notes are written to the reader of Settings, not to a code reviewer');
+{
+  // Slop pass 3 (docs/ai-slop-candidates-2026-09.md §10). Every `garminNote`
+  // renders on Settings › Apple Health, but this file is not a screen, so the
+  // string-walks of app/ never read it. Two notes opened "Nothing in this
+  // repository establishes…" — an audit memo's register, addressed to someone
+  // reading the code — and argued their verdicts ("which presupposes it", "which
+  // is the point of reading it") instead of stating them. The facts stay: what
+  // is unconfirmed, the one-evening test, the declined-grant caveat, the route.
+  const voice = /repository|presupposes|point of reading it|none of the three was checked/i;
+  const leaks = [
+    ...METRIC_COVERAGE.map((m) => m.garminNote),
+    ...GARMIN_ONLY_METRICS.map((m) => m.note),
+  ].filter((note) => voice.test(note));
+  leaks.length === 0
+    ? ok('no note speaks of a repository or argues its own verdict')
+    : bad('audit-memo voice on a Settings screen', leaks.join(' | '));
+
+  const water = METRIC_COVERAGE.find(
+    (m) => m.hkIdentifier === 'HKQuantityTypeIdentifierDietaryWater'
+  );
+  water?.garminNote.startsWith('Unconfirmed whether Garmin writes hydration') &&
+  water.garminNote.includes('The test is one evening') &&
+  water.garminNote.includes('Any other hydration app on the phone also fills this')
+    ? ok('water: unconfirmed, the one-evening test, and the other-apps fact all survive')
+    : bad('water note', water?.garminNote);
+
+  const steps = METRIC_COVERAGE.find((m) => m.hkIdentifier === 'HKQuantityTypeIdentifierStepCount');
+  steps?.garminNote.includes('step counts in the two apps can differ')
+    ? ok('steps: the FAQ is kept as the caveat it is to a reader — the counts can differ')
+    : bad('steps note', steps?.garminNote);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

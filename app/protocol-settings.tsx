@@ -158,7 +158,7 @@ function ProtocolSettings({ id }: { id: string | undefined }) {
       // reviseProtocol is one transaction: nothing partial persisted.
       inFlight.current = false;
       console.warn('[protocols] settings save failed', error);
-      Alert.alert('Save failed', 'Nothing was changed. Please try again.');
+      Alert.alert('Save failed', 'Nothing was changed. Try again.');
     }
   };
 
@@ -188,7 +188,7 @@ function ProtocolSettings({ id }: { id: string | undefined }) {
             } catch (error) {
               inFlight.current = false;
               console.warn('[protocols] delete failed', error);
-              Alert.alert('Delete failed', 'Nothing was changed. Please try again.');
+              Alert.alert('Delete failed', 'Nothing was changed. Try again.');
             }
           },
         },

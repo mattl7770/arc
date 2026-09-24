@@ -500,6 +500,13 @@ console.log('8. the link state — three different reasons a pillar is blank');
   off.readiness.detail.includes('cannot be read in this build')
     ? ok('unsupported → says the module is not in this build')
     : bad('unsupported detail', off.readiness.detail);
+  // Slop pass 3 (docs/ai-slop-candidates-2026-09.md §10): the fact the user
+  // needs about their data is that it is not lost — one clause. It used to be a
+  // consoling sentence ("…is safe there and will land here once it does").
+  off.readiness.detail.endsWith('Readings already in Apple Health will land then.') &&
+  !off.readiness.detail.includes('safe there')
+    ? ok('…and says nothing is lost in one clause, not a reassurance')
+    : bad('unsupported detail tail', off.readiness.detail);
   // Sleep and Recovery only — Nutrition never read a wearable, and Strain
   // stopped reading one on 2026-08-25 (§6b asserts it never blames the link).
   off.pillars
@@ -512,6 +519,12 @@ console.log('8. the link state — three different reasons a pillar is blank');
   disconnected.readiness.detail.includes('Connect Apple Health')
     ? ok('disconnected → points at the Settings toggle')
     : bad('disconnected detail', disconnected.readiness.detail);
+  // Slop pass 3: the route in is the fact. "…to power readiness" narrated the
+  // widget reacting — the tail the list's §8 cut from the metrics strip's own
+  // copy of this sentence ("…to populate this").
+  disconnected.readiness.detail === 'Connect Apple Health in Settings.'
+    ? ok('…and gives the route in, and stops')
+    : bad('disconnected detail wording', disconnected.readiness.detail);
   disconnected.pillars.find((p) => p.label === 'Sleep').note === 'Apple Health sync is switched off'
     ? ok('a switched-off link reads differently from an absent module')
     : bad('disconnected note');

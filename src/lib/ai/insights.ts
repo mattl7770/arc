@@ -922,21 +922,21 @@ export function generateDailyBrief(db: Database, now: Date = new Date()): string
     const excusing = openStatuses(db, today).filter((row) => row.excuses === 1);
     if (excusing.length > 0) {
       const named = excusing.map((row) => row.label).join(' and ');
-      return `${named[0]!.toUpperCase()}${named.slice(1)} day. Nothing in your data needs attention. Look after the basics.`;
+      return `${named[0]!.toUpperCase()}${named.slice(1)} day. Nothing in your data needs attention.`;
     }
     if (tracked === 0) {
       return floor
-        ? `Nothing logged by hand yet. What I can see: ${floor}. Add weight, meals and training to widen what I can read.`
-        : 'Nothing logged yet. Start with today: weight, what you eat, and any training. Trends need a few days of anything at all.';
+        ? `Nothing logged by hand yet. What I can see: ${floor}. Add weight, meals and training.`
+        : 'Nothing logged yet. Start with today: weight, what you eat, and any training. Trends need about ten days.';
     }
     // The detectors need ~10 days (a 7-day window against a 21-day baseline,
     // with a real minimum in each). Say where they are, not that they failed.
     if (tracked < 10) {
-      return `Baseline building. ${tracked} day${tracked === 1 ? '' : 's'} of data so far. Trends need about ten. Keep the cadence and they will start showing up.`;
+      return `Baseline building. ${tracked} day${tracked === 1 ? '' : 's'} of data so far. Trends need about ten.`;
     }
     return floor
       ? `Everything is holding steady. No trend, gap, or symptom pattern worth flagging today. What I can see: ${floor}.`
-      : 'Everything is holding steady. No trend, gap, or symptom pattern worth flagging today. Stable is the goal, not the absence of news.';
+      : 'Everything is holding steady. No trend, gap, or symptom pattern worth flagging today.';
   }
   return parts.join(' ');
 }
