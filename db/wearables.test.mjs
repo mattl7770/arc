@@ -75,12 +75,24 @@ import {
 } from '../src/lib/health/mapping.ts';
 import {
   editWaterCapture,
+  logMetricCapture,
+  logWaterCapture,
   publishBodyMetrics,
   PUBLISH_BATCH_ROWS,
   publishWaterCaptures,
+  publishWaterOnLog,
   removeWaterCapture,
+  requestWaterPublish,
+  WATER_REFUSED_LINE,
+  WATER_UNASKED_LINE,
+  waterPublishFacts,
+  waterPublishPointer,
 } from '../src/lib/health/publish.ts';
-import { readDailyCumulative } from '../src/lib/health/healthkit.ts';
+import {
+  classifyWriteAccess,
+  healthWriteAccess,
+  readDailyCumulative,
+} from '../src/lib/health/healthkit.ts';
 import {
   clampRowsToWindow,
   foregroundTracker,
@@ -2592,6 +2604,333 @@ console.log('24. water is two-way — the walk, the echo, the undo (2026-09-21, 
   absent.status === 'unavailable' && absent.samplesWritten === 0
     ? ok('no HealthKit module: the water pass is a silent no-op')
     : bad('absent water pass', JSON.stringify(absent));
+}
+
+// ---------------------------------------------------------------------------
+// A verifier's finding on main: a glass logged in ARC reached Apple Health only
+// on the next sync pass, so "tap Glass, open the Health app" showed nothing, and
+// until *Allow publishing* was tapped every capture stalled with nothing on the
+// water screen saying so. Both halves are here, through the functions the taps
+// themselves call, against a fake HealthKit whose saves can be held open.
+console.log('24b. a glass goes out when it is logged, and says when it cannot (2026-09-23)');
+{
+  const WATER = WATER_PUBLISH_METRIC.hkIdentifier;
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const settle = async () => {
+    for (let i = 0; i < 6; i++) await tick();
+  };
+  const tagOf = (s) => s.metadata?.[ARC_WRITE_METADATA_KEY];
+
+  /** Records every save; `hold()` keeps saves pending until the returned release runs. */
+  const fakeHealthKit = () => {
+    const calls = [];
+    const samples = [];
+    let gate = null;
+    const hk = {
+      calls,
+      samples,
+      saved: (id) => samples.filter((s) => tagOf(s) === id).length,
+      hold: () => {
+        let release;
+        gate = new Promise((resolve) => {
+          release = resolve;
+        });
+        return () => {
+          gate = null;
+          release();
+        };
+      },
+      deps: {
+        isAvailable: () => true,
+        save: async (identifier, unit, value, start, end, metadata) => {
+          calls.push({ identifier, unit, value, metadata });
+          if (gate) await gate;
+          samples.push({ identifier, unit, value, at: start.toISOString(), metadata });
+          return true;
+        },
+        deleteByTag: async (identifier, rowId) => {
+          const before = samples.length;
+          for (let i = samples.length - 1; i >= 0; i--) {
+            if (samples[i].identifier === identifier && tagOf(samples[i]) === rowId) {
+              samples.splice(i, 1);
+            }
+          }
+          return before - samples.length;
+        },
+      },
+    };
+    return hk;
+  };
+
+  const { raw, db } = freshDb();
+  setHealthSyncEnabled(db, true);
+  const today = todayISODate();
+  const hk = fakeHealthKit();
+
+  // Armed first, as the first sync after the water build already did on his
+  // phone. Rule 1 is unchanged: this glass is history and stays in ARC.
+  const history = logWater(db, today, 100);
+  const armed = await publishWaterCaptures(db, new Date(), hk.deps);
+  armed.armed && hk.calls.length === 0
+    ? ok('arming is unchanged: a capture on record before the first pass is never sent')
+    : bad('arming', JSON.stringify(armed));
+
+  // --- The tap: logWaterCapture is what the vessels and the water screen's Add call ---
+  const glass = logWaterCapture(db, today, 236.5882365, hk.deps);
+  hk.calls.length === 0 && getPublishableWater(db, glass) !== null
+    ? ok(
+        'the tap returns with its row written and nothing sent yet: the publish is not on the tap’s time'
+      )
+    : bad('the publish ran inside the tap', JSON.stringify(hk.calls));
+  await settle();
+  hk.saved(glass) === 1 &&
+  hk.samples[0].identifier === WATER &&
+  hk.samples[0].unit === 'mL' &&
+  hk.samples[0].value === 236.5882365
+    ? ok(
+        'with no sync pass at all, the glass is in Apple Health: one DietaryWater sample, tagged with its row id'
+      )
+    : bad('no publish on log', JSON.stringify(hk.samples));
+  getHealthPublishState(db, HEALTH_WATER_PUBLISH_KEY).cursorId === glass
+    ? ok('...and the water cursor moved past it, as a sync pass would have moved it')
+    : bad(
+        'cursor after publish on log',
+        JSON.stringify(getHealthPublishState(db, HEALTH_WATER_PUBLISH_KEY))
+      );
+
+  // --- The next sync sees it behind the cursor: no second copy --------------
+  // `publishWaterCaptures` is the walk `syncHealthData` runs (pinned below).
+  const nextSync = await publishWaterCaptures(db, new Date(), hk.deps);
+  nextSync.samplesAttempted === 0 && hk.saved(glass) === 1 && hk.saved(history) === 0
+    ? ok(
+        'the next sync’s water walk attempts nothing: the glass went out once, and history stays home'
+      )
+    : bad('the next sync re-posted', JSON.stringify({ nextSync, samples: hk.samples }));
+
+  // --- The Undo now finds the sample: the ordinary case has changed ---------
+  removeWaterCapture(db, glass, hk.deps);
+  await settle();
+  hk.saved(glass) === 0
+    ? ok('an Undo after the publish takes the glass back out of Apple Health')
+    : bad('undo after publish on log', JSON.stringify(hk.samples));
+
+  // --- A full pass already walking: the tap does not join a pass that read before it ---
+  // Hold the saves so the first pass is caught mid-walk.
+  const release = hk.hold();
+  const first = logWaterCapture(db, today, 250, hk.deps);
+  await settle(); // its pass has started and is waiting on the save
+  const joined = publishWaterCaptures(db, new Date(), hk.deps); // a sync arriving now
+  const second = logWaterCapture(db, today, 500, hk.deps);
+  await settle(); // its trigger ran while the first pass was still in flight
+  const third = logWaterCapture(db, today, 750, hk.deps);
+  await settle();
+  hk.calls.filter((c) => tagOf(c) === first).length === 1 &&
+  hk.calls.filter((c) => tagOf(c) === second).length === 0
+    ? ok(
+        'while a pass is mid-save, a sync joins it and the next glass waits: no second walk on the same cursor'
+      )
+    : bad('two walks ran at once', JSON.stringify(hk.calls.map(tagOf)));
+  release();
+  const joinedResult = await joined;
+  await settle();
+  joinedResult.samplesWritten === 1 &&
+  hk.saved(first) === 1 &&
+  hk.saved(second) === 1 &&
+  hk.saved(third) === 1
+    ? ok(
+        '...then ONE queued follow-up carries both later glasses: each is in Apple Health exactly once'
+      )
+    : bad('queued follow-up', JSON.stringify({ joinedResult, samples: hk.samples.map(tagOf) }));
+  const afterQueue = await publishWaterCaptures(db, new Date(), hk.deps);
+  afterQueue.samplesAttempted === 0
+    ? ok('...and the sync after that has nothing left to send')
+    : bad('left over after the queue', JSON.stringify(afterQueue));
+
+  // requestWaterPublish directly: one waits, never two.
+  const hold2 = hk.hold();
+  logWater(db, today, 120);
+  const running = requestWaterPublish(db, new Date(), hk.deps);
+  await tick();
+  const queuedA = requestWaterPublish(db, new Date(), hk.deps);
+  const queuedB = requestWaterPublish(db, new Date(), hk.deps);
+  queuedA !== running && queuedA === queuedB
+    ? ok(
+        'requestWaterPublish never joins a running pass, and later asks share the one queued behind it'
+      )
+    : bad('water gate', `${queuedA === running} / ${queuedA === queuedB}`);
+  hold2();
+  await Promise.all([running, queuedA]);
+
+  // --- The keypad, the command line and the Coach: logMetricCapture --------
+  const callsBefore = hk.calls.length;
+  logMetricCapture(db, today, 'water', 330, hk.deps);
+  await settle();
+  const waterRow = raw
+    .prepare(
+      `SELECT id FROM wearable_data WHERE metric_type = 'water_ml' AND value = 330
+       AND source_device = 'manual'`
+    )
+    .get();
+  waterRow && hk.saved(waterRow.id) === 1
+    ? ok('logMetricCapture(water): a keypad or Coach glass goes out when it is logged too')
+    : bad(
+        'logMetricCapture water',
+        JSON.stringify({ waterRow, calls: hk.calls.slice(callsBefore) })
+      );
+  const callsBeforeWeight = hk.calls.length;
+  const bodyBefore = raw.prepare('SELECT count(*) n FROM body_metrics').get().n;
+  logMetricCapture(db, today, 'weight', 80, hk.deps);
+  logMetricCapture(db, today, 'hrv', 48, hk.deps);
+  await settle();
+  hk.calls.length === callsBeforeWeight &&
+  raw.prepare('SELECT count(*) n FROM body_metrics').get().n === bodyBefore + 1
+    ? ok('...and every other metric is logMetric unchanged: written, nothing started')
+    : bad('logMetricCapture non-water', JSON.stringify(hk.calls.slice(callsBeforeWeight)));
+
+  // --- A no-op when it cannot run, and never a throw into the tap ----------
+  setHealthSyncEnabled(db, false);
+  const offCalls = hk.calls.length;
+  const off = logWaterCapture(db, today, 200, hk.deps);
+  const offResult = await publishWaterOnLog(db, hk.deps);
+  await settle();
+  getPublishableWater(db, off) !== null && offResult === null && hk.calls.length === offCalls
+    ? ok('sync off: the glass is written and nothing is sent or scheduled')
+    : bad('sync off', JSON.stringify({ offResult, calls: hk.calls.length - offCalls }));
+  setHealthSyncEnabled(db, true);
+  const absentDeps = { ...hk.deps, isAvailable: () => false };
+  const absentResult = await publishWaterOnLog(db, absentDeps);
+  absentResult === null
+    ? ok('no HealthKit module (web preview, node): nothing runs')
+    : bad('absent module', JSON.stringify(absentResult));
+  const nativeResult = await publishWaterOnLog(db);
+  nativeResult === null
+    ? ok('...and with the native deps under node, the default the screens use, nothing runs either')
+    : bad('native deps under node', JSON.stringify(nativeResult));
+
+  // The capture sent while sync was off goes on the next pass: the switch
+  // postpones a glass, it does not lose it.
+  const throwing = {
+    ...hk.deps,
+    save: async () => {
+      throw new Error('HealthKit exploded');
+    },
+  };
+  let escaped = false;
+  let thrownId = null;
+  let thrownResult;
+  try {
+    thrownId = logWaterCapture(db, today, 90, throwing);
+    thrownResult = await publishWaterOnLog(db, throwing);
+  } catch {
+    escaped = true;
+  }
+  await settle();
+  !escaped &&
+  thrownId !== null &&
+  thrownResult === null &&
+  getPublishableWater(db, thrownId) !== null
+    ? ok(
+        'a save that throws never reaches the tap: the row stands and the trigger resolves to null'
+      )
+    : bad('a throw escaped', `${escaped} / ${thrownResult}`);
+  await publishWaterCaptures(db, new Date(), hk.deps);
+  hk.saved(off) === 1 && hk.saved(thrownId) === 1
+    ? ok(
+        '...and the next sync sends both the glass logged with sync off and the one whose save threw'
+      )
+    : bad('retry after off/throw', JSON.stringify(hk.samples.map(tagOf)));
+
+  // --- Every door that writes a glass calls through here -------------------
+  // The screens cannot be tapped under node, so the wiring is pinned on the
+  // source: a bare `logWater(` / `logMetric(` at any of these doors would put
+  // that door back on the next sync's clock.
+  const doors = [
+    ['../src/components/log/quick-add-grid.tsx', 'logWaterCapture(getDb(), todayISODate(),'],
+    ['../app/water.tsx', 'logWaterCapture(getDb(), writeDay,'],
+    ['../app/metric-entry.tsx', 'logMetricCapture(getDb(), today, active.key, canonical)'],
+    ['../src/components/log/command-field.tsx', 'logMetricCapture(db, date, result.metric,'],
+    ['../src/lib/ai/tools/write-tools.ts', 'logMetricCapture(db, logDate(args, context.now),'],
+  ];
+  for (const [file, call] of doors) {
+    const src = readFileSync(new URL(file, import.meta.url), 'utf8');
+    src.includes(call) && !/\blogWater\(|\blogMetric\(/.test(src)
+      ? ok(`${file.replace('../', '')} writes a glass through the publish-on-log wrapper`)
+      : bad(`${file.replace('../', '')} writes water without starting its publish`);
+  }
+  const syncSrc = readFileSync(new URL('../src/lib/health/sync.ts', import.meta.url), 'utf8');
+  syncSrc.includes('[publishBodyMetrics, publishWaterCaptures]')
+    ? ok('the full sync still walks water through publishWaterCaptures, the gate the tap shares')
+    : bad('sync.ts walks water around the shared gate');
+
+  // --- The pointer: when the water screen says a glass cannot go out -------
+  const eq = (name, actual, expected) =>
+    actual === expected
+      ? ok(name)
+      : bad(name, `${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);
+  eq(
+    'pointer, sync on and water never asked: the unasked line',
+    waterPublishPointer({ syncEnabled: true, access: 'undetermined' }),
+    WATER_UNASKED_LINE
+  );
+  eq(
+    '...which says what happened and where to fix it, in one line',
+    WATER_UNASKED_LINE,
+    'Not sent to Apple Health yet — allow it in Settings › Apple Health'
+  );
+  eq(
+    'pointer, sync on and water refused: the refused line',
+    waterPublishPointer({ syncEnabled: true, access: 'denied' }),
+    WATER_REFUSED_LINE
+  );
+  eq('pointer, granted: gone', waterPublishPointer({ syncEnabled: true, access: 'granted' }), null);
+  for (const access of ['undetermined', 'denied', 'granted', 'unsupported', 'unknown']) {
+    eq(
+      `pointer, sync off (${access}): nothing, because nothing is sent by design`,
+      waterPublishPointer({ syncEnabled: false, access }),
+      null
+    );
+  }
+  eq(
+    'pointer, no module in this build: nothing, and no door to a screen with no switch',
+    waterPublishPointer({ syncEnabled: true, access: 'unsupported' }),
+    null
+  );
+  eq(
+    'pointer, status API missing: nothing, because nothing honest can be said',
+    waterPublishPointer({ syncEnabled: true, access: 'unknown' }),
+    null
+  );
+  // Scoped to Water, the classifier Settings reads can only give the three
+  // states the pointer keys on. These are HKAuthorizationStatus raw values.
+  eq('one type, never asked, classifies undetermined', classifyWriteAccess([0]), 'undetermined');
+  eq('one type, refused, classifies denied', classifyWriteAccess([1]), 'denied');
+  eq('one type, allowed, classifies granted', classifyWriteAccess([2]), 'granted');
+  // His own case, and why the scope matters: weight, body fat and waist granted
+  // in August, water never asked. Unscoped that is `incomplete`; scoped, water
+  // alone is `undetermined`, and a refusal of water alone is `denied` rather
+  // than a `partial` that could not say which type was refused.
+  eq('his phone, unscoped: incomplete', classifyWriteAccess([2, 2, 2, 0]), 'incomplete');
+  eq(
+    'a mix with a refusal, if ever passed unscoped, still points (refused line)',
+    waterPublishPointer({ syncEnabled: true, access: classifyWriteAccess([2, 2, 2, 1]) }),
+    WATER_REFUSED_LINE
+  );
+  eq(
+    'healthWriteAccess scoped to water, under node: unsupported',
+    healthWriteAccess([WATER]),
+    'unsupported'
+  );
+  const facts = waterPublishFacts(db);
+  facts.syncEnabled === true &&
+  facts.access === 'unsupported' &&
+  waterPublishPointer(facts) === null
+    ? ok('the facts the water screen reads, under node: sync on, no module, no line')
+    : bad('water facts', JSON.stringify(facts));
+  const publishSrc = readFileSync(new URL('../src/lib/health/publish.ts', import.meta.url), 'utf8');
+  publishSrc.includes('healthWriteAccess([WATER_PUBLISH_METRIC.hkIdentifier])') &&
+  !publishSrc.includes('authorizationStatusFor')
+    ? ok('the facts come from Settings’ own classifier, scoped — no second way to read the grant')
+    : bad('water facts compute the grant some other way');
 }
 
 console.log('25. one pass at a time — the gate behind Home’s blank-cell sync (2026-09-23)');

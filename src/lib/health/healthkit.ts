@@ -283,21 +283,32 @@ export function classifyWriteAccess(statuses: readonly number[]): HealthWriteAcc
 }
 
 /** Each write identifier's raw sharing status, or null when it is unknowable. */
-function writeStatuses(): number[] | null {
+function writeStatuses(identifiers: readonly string[] = HEALTH_WRITE_IDENTIFIERS): number[] | null {
   const mod = hk;
   if (!mod) return null;
   const statusFor = mod.authorizationStatusFor;
   if (typeof statusFor !== 'function') return null;
   try {
-    return HEALTH_WRITE_IDENTIFIERS.map((identifier) => statusFor.call(mod, identifier));
+    return identifiers.map((identifier) => statusFor.call(mod, identifier));
   } catch {
     return null;
   }
 }
 
-export function healthWriteAccess(): HealthWriteAccess {
+/**
+ * The classification over every published type, or over only the ones named.
+ *
+ * The scope is for the water screen (2026-09-23), which asks one question —
+ * can a glass logged here reach Apple Health? — and must not have it answered
+ * by weight's grant. It is Settings' own read and Settings' own classifier,
+ * narrowed, so the two screens cannot disagree about water. One type
+ * classifies as `granted`, `denied` or `undetermined`.
+ */
+export function healthWriteAccess(
+  identifiers: readonly string[] = HEALTH_WRITE_IDENTIFIERS
+): HealthWriteAccess {
   if (!hk) return 'unsupported';
-  const statuses = writeStatuses();
+  const statuses = writeStatuses(identifiers);
   return statuses === null ? 'unknown' : classifyWriteAccess(statuses);
 }
 

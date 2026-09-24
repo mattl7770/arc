@@ -42,6 +42,11 @@
  * take it out, and {@link editWaterCapture} can replace it. See
  * docs/wearables-subapp.md §20 for the echo, which has a different shape from
  * weight's and is closed on the READ side.
+ *
+ * **And water goes out when it is logged (2026-09-23), not on the next sync.**
+ * {@link logWaterCapture} and {@link logMetricCapture} write the capture and
+ * start a water-only walk behind it, through the same single in-flight pass the
+ * full sync's walk uses, so the two never save one glass twice (§20.10).
  */
 import {
   newestBodyCursor,
@@ -51,17 +56,19 @@ import {
 } from '@/lib/db/repositories/body';
 import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
-import { dayInstant } from '@/lib/db/repositories/logs';
+import { dayInstant, logMetric } from '@/lib/db/repositories/logs';
 import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import {
   deleteWaterEntry,
   getPublishableWater,
+  logWater,
   newestWaterCursor,
   publishableWaterAfter,
   updateWaterEntry,
   type PublishableWater,
   type WaterCursor,
 } from '@/lib/db/repositories/water';
+import { metricByKey, type MetricKey } from '@/lib/log/metrics';
 import {
   getHealthPublishState,
   HEALTH_WATER_PUBLISH_KEY,
@@ -70,7 +77,13 @@ import {
 } from '@/lib/db/repositories/wearables';
 
 import { ARC_WRITE_METADATA_KEY, BODY_PUBLISH_METRICS, WATER_PUBLISH_METRIC } from './mapping';
-import { deleteHealthQuantityByTag, isHealthKitAvailable, saveHealthQuantity } from './healthkit';
+import {
+  deleteHealthQuantityByTag,
+  healthWriteAccess,
+  isHealthKitAvailable,
+  saveHealthQuantity,
+  type HealthWriteAccess,
+} from './healthkit';
 
 /**
  * Rows walked per pass. Publishing only ever runs forward from the cursor, so
@@ -513,4 +526,174 @@ async function republishWater(db: Database, id: string, deps: WaterPublishDeps):
   } catch {
     // Best-effort: see the note on editWaterCapture.
   }
+}
+
+// --- A glass goes out when it is logged (2026-09-23) --------------------------------
+//
+// Until this, nothing after a write started a publish: a glass reached Apple
+// Health on the next sync pass — boot, a foreground return at least
+// AUTO_SYNC_THROTTLE_MIN after the last pass, Sync now, or a blank Home metric.
+// The obvious test — tap Glass, open the Health app — showed nothing. Every door
+// that writes a manual capture now starts a water-only pass straight after the
+// write (docs/wearables-subapp.md §20.10).
+
+/**
+ * The follow-up water pass queued behind the running one, not yet started. The
+ * water walk's half of the rule `sync.ts` keeps for whole passes (§22.2): never
+ * more than one waits.
+ */
+let waterQueued: Promise<HealthPublishResult> | null = null;
+
+/**
+ * A water pass that sees every capture written before this call.
+ *
+ * {@link publishWaterCaptures} JOINS a running pass. That is right for the full
+ * sync, because the pass it joins does all its work, and wrong for a capture
+ * just written: a pass that began before the tap read its rows before the tap,
+ * so joining it would leave the new glass for the next sync. So this never
+ * joins a running pass. It queues ONE follow-up behind it, and a later ask
+ * shares that follow-up, which has not started and so will read later still.
+ *
+ * Every water walk goes through {@link publishWaterCaptures}: this one, its
+ * follow-up and the full sync's. Its single in-flight pass is the gate, so two
+ * walks never read the water cursor at once. A capture saved by one walk is
+ * behind the cursor before the next walk reads it, which is what stops the next
+ * sync from saving it a second time.
+ */
+export function requestWaterPublish(
+  db: Database,
+  now: Date = new Date(),
+  deps: WaterPublishDeps = NATIVE_WATER_DEPS
+): Promise<HealthPublishResult> {
+  if (waterQueued) return waterQueued;
+  const running = waterInFlight;
+  if (!running) return publishWaterCaptures(db, now, deps);
+  const ignore = (): void => undefined;
+  const queued = running.then(ignore, ignore).then(() => {
+    waterQueued = null;
+    // Its own clock, read when it actually starts.
+    return publishWaterCaptures(db, new Date(), deps);
+  });
+  waterQueued = queued;
+  return queued;
+}
+
+/**
+ * Start sending the manual water captures to Apple Health, without waiting for
+ * the next sync. What every door that writes a glass calls straight after the
+ * write, through {@link logWaterCapture} and {@link logMetricCapture}.
+ *
+ * - **Nothing is scheduled** with sync off or no HealthKit (the web preview, a
+ *   build without the module, node). It is the same one switch as every other
+ *   Health write, checked before anything is queued.
+ * - **Never on the tap's time.** The pass starts on the next macrotask, after
+ *   the handler has returned and the new row is drawn, and every native call
+ *   in it is asynchronous. The tap pays for one preference read.
+ * - **Never throws or rejects.** The capture is already written. A refused
+ *   save stalls on the cursor (rule 2) and the next sync retries it.
+ *
+ * Resolves to the pass's result, or null when nothing ran. The screens ignore
+ * it; the headless suite awaits it.
+ */
+export function publishWaterOnLog(
+  db: Database,
+  deps: WaterPublishDeps = NATIVE_WATER_DEPS
+): Promise<HealthPublishResult | null> {
+  try {
+    if (!mayTouchHealth(db, deps)) return Promise.resolve(null);
+  } catch {
+    return Promise.resolve(null);
+  }
+  return new Promise<void>((resolve) => setTimeout(resolve, 0))
+    .then(() => requestWaterPublish(db, new Date(), deps))
+    .catch(() => null);
+}
+
+/**
+ * Log one water capture AND start sending it to Apple Health: the Log tab's
+ * vessels and the water screen's Add. Returns `logWater`'s id, which the Undo
+ * deletes by. The write is synchronous and first, exactly as before; the
+ * publish is {@link publishWaterOnLog}, which cannot fail the write.
+ */
+export function logWaterCapture(
+  db: Database,
+  date: string,
+  ml: number,
+  deps: WaterPublishDeps = NATIVE_WATER_DEPS
+): string {
+  const id = logWater(db, date, ml);
+  void publishWaterOnLog(db, deps);
+  return id;
+}
+
+/**
+ * `logMetric`, plus: a water capture starts its publish the way
+ * {@link logWaterCapture}'s does. For the keypad, the Log tab's command line
+ * and the Coach's `log_metric`, which by the parity rule calls what the keypad
+ * calls. Every other metric is `logMetric` unchanged, so a weight still goes out
+ * on the next sync.
+ */
+export function logMetricCapture(
+  db: Database,
+  date: string,
+  metricKey: MetricKey,
+  canonical: number,
+  deps: WaterPublishDeps = NATIVE_WATER_DEPS
+): void {
+  logMetric(db, date, metricKey, canonical);
+  const target = metricByKey(metricKey)?.target;
+  if (target?.kind === 'wearable' && target.metricType === WATER_PUBLISH_METRIC.metricType) {
+    void publishWaterOnLog(db, deps);
+  }
+}
+
+// --- Where a glass cannot go yet ------------------------------------------------------
+
+/** What the water screen needs to say whether a glass logged there can go out. */
+export type WaterPublishFacts = {
+  /** The one switch, `isHealthSyncEnabled`. */
+  syncEnabled: boolean;
+  /**
+   * Settings' own classifier (`healthWriteAccess`), scoped to Water alone, so
+   * weight's August grant cannot answer for it.
+   */
+  access: HealthWriteAccess;
+};
+
+/** Water was never put to the user: the write scope arrived after he connected. */
+export const WATER_UNASKED_LINE =
+  'Not sent to Apple Health yet — allow it in Settings › Apple Health';
+/** Water was asked and refused. The fix is in iOS Settings, which that screen names. */
+export const WATER_REFUSED_LINE =
+  'Apple Health is refusing water from ARC — see Settings › Apple Health';
+
+/**
+ * The one line the water screen shows while a glass logged there cannot reach
+ * Apple Health, or null. PURE, so the show/hide rule is pinned headlessly.
+ *
+ * Shown only while sync is on: with it off nothing is sent by design, and
+ * Settings already says so. Unsupported (no module) and unknown (no status API)
+ * say nothing, because nothing honest can be said. Granted says nothing, which
+ * is how the line goes away once he taps *Allow publishing*.
+ */
+export function waterPublishPointer(facts: WaterPublishFacts): string | null {
+  if (!facts.syncEnabled) return null;
+  switch (facts.access) {
+    case 'undetermined':
+    case 'incomplete':
+      return WATER_UNASKED_LINE;
+    case 'denied':
+    case 'partial':
+      return WATER_REFUSED_LINE;
+    default:
+      return null;
+  }
+}
+
+/** The facts, read: the same switch and the same classifier Settings reads. */
+export function waterPublishFacts(db: Database): WaterPublishFacts {
+  return {
+    syncEnabled: isHealthSyncEnabled(db),
+    access: healthWriteAccess([WATER_PUBLISH_METRIC.hkIdentifier]),
+  };
 }

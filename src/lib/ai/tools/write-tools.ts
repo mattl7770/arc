@@ -27,7 +27,8 @@
  */
 import type { Database } from '@/lib/db/database';
 import { shiftISODate, todayISODate } from '@/lib/db/date';
-import { logCapture, logMetric, logNote } from '@/lib/db/repositories/logs';
+import { logCapture, logNote } from '@/lib/db/repositories/logs';
+import { logMetricCapture } from '@/lib/health/publish';
 import { exerciseMeasures, logWorkout } from '@/lib/db/repositories/exercise';
 import { exerciseLoadBases, resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
 import {
@@ -241,7 +242,9 @@ const logMetricTool: CoachTool = {
   execute: (db, input, context) => {
     const args = asRecord(input);
     const { key, canonical, display } = parseMetricInput(input, db);
-    logMetric(db, logDate(args, context.now), key, canonical);
+    // What the keypad calls (the parity rule), so a glass the Coach logs goes
+    // to Apple Health when it is logged, as a tapped one does.
+    logMetricCapture(db, logDate(args, context.now), key, canonical);
     return json({ logged: true, metric: key, value: display });
   },
 };
