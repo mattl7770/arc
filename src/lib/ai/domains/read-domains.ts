@@ -65,7 +65,7 @@ import {
   renameTemplate,
 } from '@/lib/db/repositories/meal-templates';
 import {
-  dayFiberTotal,
+  dayFiberRecorded,
   dayMicroTotals,
   getMeal,
   listMealItems,
@@ -504,7 +504,9 @@ const micronutrientsDomain: CoachDomainEntry = {
       const micros = dayMicroTotals(db, args.id);
       return {
         date: args.id,
-        fiber_g: dayFiberTotal(db, args.id),
+        // NULL, not 0, on a day no item recorded fiber (2026-09-23) — the
+        // same absence the note below states for the micros.
+        fiber_g: dayFiberRecorded(db, args.id),
         micros,
         ...(Object.keys(micros).length === 0
           ? {

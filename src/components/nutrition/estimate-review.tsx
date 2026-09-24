@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
+import { KeyMicroTail } from '@/components/nutrition/key-micro-tail';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -9,6 +10,7 @@ import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { palette } from '@/constants/theme';
 import type { EstimateQuestion } from '@/lib/nutrition/estimate';
 import { fmtAmount, fmtInt, pieceNounFor, piecesLabel, pluralNoun } from '@/lib/nutrition/format';
+import { keyMicroLabel, partsAsItem } from '@/lib/nutrition/key-micro';
 import {
   amountLabel,
   currentPortion,
@@ -286,6 +288,7 @@ function PricedRow({
   handlers: ReviewHandlers;
 }) {
   const p = currentPortion(row);
+  const macros = MACRO_LINE(p);
   return (
     <View>
       <Divider first={first} />
@@ -311,7 +314,11 @@ function PricedRow({
           </Text>
           <RemoveButton name={row.name} onPress={() => handlers.onRemove(row.key)} />
         </View>
-        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{MACRO_LINE(p)}</Text>
+        <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+          {macros}
+          {/* The one notable micro, at the live portion (2026-09-23). */}
+          <KeyMicroTail label={keyMicroLabel(p)} lead={macros !== ''} />
+        </Text>
       </View>
     </View>
   );
@@ -336,6 +343,15 @@ function CompositeRow({
   // should've changed to slices"). The grams it replaces are not lost — they
   // lead the sub-line below instead, as the secondary figure they now are.
   const count = row.pieces ? piecesLabel(row.pieces.count, row.pieces.name) : null;
+  // The dish's notable micro is its parts' sum, at their live portions — a
+  // pizza's sodium, a composite latte's caffeine.
+  const dishMicro = keyMicroLabel(partsAsItem(row.components.map((part) => currentPortion(part))));
+  const subLine = [
+    count && total.amount != null ? fmtAmount(total.amount, total.unit) : '',
+    MACRO_LINE(total),
+  ]
+    .filter(Boolean)
+    .join(' · ');
   return (
     <View>
       <Divider first={first} />
@@ -393,12 +409,8 @@ function CompositeRow({
             still the one that makes "is 90 g a slice?" checkable. Never
             converted for the oz preference, like every figure on this plate. */}
         <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-          {[
-            count && total.amount != null ? fmtAmount(total.amount, total.unit) : '',
-            MACRO_LINE(total),
-          ]
-            .filter(Boolean)
-            .join(' · ')}
+          {subLine}
+          <KeyMicroTail label={dishMicro} lead={subLine !== ''} />
         </Text>
       </View>
 

@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { CombineFooter } from '@/components/nutrition/combine-meals';
+import { DayMicrosRow } from '@/components/nutrition/day-micros';
 import { LogSheet } from '@/components/nutrition/log-sheet';
 import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider, GridCell } from '@/components/ui/block';
@@ -25,6 +26,7 @@ import { expectedDayFraction } from '@/lib/home/readiness';
 import { barFigure, macroGrade, OVERFLOW_CAP } from '@/lib/nutrition/bar';
 import { CombineRefused, planCombine } from '@/lib/nutrition/combine';
 import { fmtInt, macroCells } from '@/lib/nutrition/format';
+import { dayKeyMicros, totalsOnlyNote } from '@/lib/nutrition/key-micro';
 import {
   dayFigure,
   unguardedNote,
@@ -172,10 +174,12 @@ import type { SignalLevel } from '@/types/home';
  * spends the accent, and neither adds anything to a resting row.
  */
 
-/** The Today grid's three counted-down macros. Fiber is deliberately absent —
- *  it is summed from meal items, so a manually-entered meal contributes none by
- *  construction and it can never be honestly counted down. It lives on the
- *  micronutrients screen, read against its daily target. */
+/** The Today grid's three counted-down macros. Fiber is not one of them — it
+ *  is summed from meal items, so a manually-entered meal contributes none by
+ *  construction and it can never be honestly counted down. Since 2026-09-23 it
+ *  is READ on this screen all the same (owner: "Fiber should be more visible
+ *  too"), eaten against its target in the row under these cells, beside sodium
+ *  and caffeine — never as a remainder. See {@link DayMicrosRow}. */
 const MACROS: { metric: DayMetric; label: string }[] = [
   { metric: 'protein_g', label: 'Protein' },
   { metric: 'carbs_g', label: 'Carbs' },
@@ -548,6 +552,7 @@ const MACRO_CELL_LAST = 'flex-1';
 function MealRowItem({
   meal,
   estimatePending,
+  keyMicro,
   first,
   select,
   onPress,
@@ -555,6 +560,9 @@ function MealRowItem({
   meal: MealRow;
   /** A queued AI estimate owes this meal its numbers (0057). */
   estimatePending: boolean;
+  /** The one notable micro of the meal's items — `126 mg caffeine` — or null
+   *  (`mealKeyMicroLabels`, src/lib/nutrition/key-micro.ts). */
+  keyMicro: string | null;
   first: boolean;
   /** Set while meals are being chosen to combine; absent otherwise. */
   select?: { checked: boolean };
@@ -633,6 +641,19 @@ function MealRowItem({
                     </View>
                   ))}
                 </View>
+              ) : null}
+              {/* The owner's "caffeine on a latte", on the row he reads every
+                  day (2026-09-23): one figure at most, the same rule as an item
+                  row, in the macros' own mono voice and ink — its own line,
+                  because the fixed macro columns leave no room beside them on
+                  a narrow phone. No accent and no signal colour: a figure in a
+                  meal is not a biological state. */}
+              {keyMicro !== null ? (
+                <Text
+                  numberOfLines={1}
+                  className="mt-0.5 font-mono text-[11px] leading-4 text-ink-secondary">
+                  {keyMicro}
+                </Text>
               ) : null}
             </>
           )}
@@ -794,6 +815,8 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     overTime,
     direction,
     timezoneChanged,
+    keyMicros,
+    mealKeyMicros,
     reload,
   } = useNutrition();
   const [logOpen, setLogOpen] = useState(false);
@@ -986,6 +1009,22 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                   </GridCell>
                 ))}
               </View>
+
+              {/* Sodium, caffeine and fiber (2026-09-23) — one more row of the
+                  same grid, read against their references with no bar and no
+                  colour. Only once something is logged: on an empty day all
+                  three would read "not recorded", which is the sentence the
+                  empty grid already says. */}
+              {meals.length > 0 ? (
+                <DayMicrosRow
+                  readings={dayKeyMicros({
+                    micros: keyMicros.micros,
+                    fiberEaten: keyMicros.fiberEaten,
+                    fiberTarget: targets?.fiber_g ?? null,
+                  })}
+                  note={totalsOnlyNote(keyMicros.totalsOnlyMeals)}
+                />
+              ) : null}
             </>
           )}
 
@@ -1140,6 +1179,7 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                   key={meal.id}
                   meal={meal}
                   estimatePending={pendingEstimates.has(meal.id)}
+                  keyMicro={mealKeyMicros[meal.id] ?? null}
                   first={index === 0}
                   select={combine ? { checked: combine.chosen.has(meal.id) } : undefined}
                   onPress={() =>

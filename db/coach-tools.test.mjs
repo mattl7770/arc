@@ -3743,5 +3743,89 @@ console.log('46. a duration corrected on the session screen is what the Coach re
     : bad('coach duration', JSON.stringify(training));
 }
 
+// ===========================================================================
+// 47. The owner's three in the day payload (2026-09-23). The Eat tab now prints
+// sodium, caffeine and fiber under its macro bars; the Coach reads the same
+// figures in `get_today_snapshot.keyMicros` — PAYLOAD, never schema, so the
+// cached prefix §6 of coach-eval guards does not move.
+// ===========================================================================
+console.log('47. get_today_snapshot carries sodium, caffeine and fiber — payload only');
+{
+  const { logMeal, logMealWithItems, setNutritionTargets } =
+    await import('../src/lib/db/repositories/nutrition.ts');
+  const { db } = freshDb();
+  const before = JSON.stringify(toolByName('get_today_snapshot').inputSchema);
+
+  run('get_today_snapshot', db).keyMicros === undefined
+    ? ok('a day with no meals carries no keyMicros field at all')
+    : bad('empty day grew keyMicros');
+
+  logMealWithItems(db, {
+    date: TODAY,
+    time: '08:30',
+    name: 'Latte',
+    items: [
+      {
+        name: 'Latte',
+        amount: 360,
+        unit: 'ml',
+        kcal: 190,
+        protein_g: 10,
+        micros: JSON.stringify({ caffeine_mg: 126, sodium_mg: 130 }),
+      },
+    ],
+  });
+  let key = run('get_today_snapshot', db).keyMicros;
+  key &&
+  key.caffeine_mg === 126 &&
+  key.caffeineLimit_mg === 400 &&
+  key.sodium_mg === 130 &&
+  key.sodiumLimit_mg === 2300 &&
+  key.fiber_g === null &&
+  key.fiberTarget_g === null
+    ? ok('caffeine and sodium against their limits; fiber NULL — nothing recorded it')
+    : bad('keyMicros', JSON.stringify(key));
+  typeof key?.note === 'string' &&
+  key.note.includes('not zero') &&
+  !key.note.includes('totals only')
+    ? ok('the note says null is not zero, and names no totals-only meal on a day with none')
+    : bad('keyMicros note', String(key?.note));
+
+  setNutritionTargets(db, { effective_date: TODAY, fiber_g: 30, created_by: 'user' });
+  // Review finding (2026-09-23): with a target set and nothing recording fiber,
+  // `nutritionTargets.fiber.eaten` read 0 beside `keyMicros.fiber_g: null` in
+  // the same result. One day, one figure: both null.
+  const unrecorded = run('get_today_snapshot', db);
+  const targetFiber = unrecorded.nutritionTargets?.fiber;
+  targetFiber &&
+  targetFiber.target === 30 &&
+  targetFiber.eaten === null &&
+  targetFiber.note.includes('not recorded, not 0 g') &&
+  unrecorded.keyMicros.fiber_g === null
+    ? ok('target set, nothing recorded: nutritionTargets.fiber.eaten is null, as keyMicros is')
+    : bad('two fiber figures', JSON.stringify([targetFiber, unrecorded.keyMicros?.fiber_g]));
+  logMealWithItems(db, {
+    date: TODAY,
+    time: '12:30',
+    name: 'Lentil soup',
+    items: [{ name: 'Lentil soup', amount: 400, kcal: 320, fiber_g: 16.4 }],
+  });
+  const recordedFiber = run('get_today_snapshot', db).nutritionTargets?.fiber;
+  recordedFiber?.eaten === 16.4 && recordedFiber.note.includes('a floor, not a full day')
+    ? ok('…and 16.4 of 30 g once an item records it, still called a floor')
+    : bad('recorded fiber', JSON.stringify(recordedFiber));
+  logMeal(db, { date: TODAY, time: '18:00', name: 'Typed dinner', kcal: 700, protein_g: 45 });
+  key = run('get_today_snapshot', db).keyMicros;
+  key.fiber_g === 16.4 &&
+  key.fiberTarget_g === 30 &&
+  key.note.includes('A meal logged as totals only adds no sodium, caffeine or fiber here.')
+    ? ok('fiber against his target, and the totals-only meal named in the note')
+    : bad('keyMicros with target', JSON.stringify(key));
+
+  JSON.stringify(toolByName('get_today_snapshot').inputSchema) === before
+    ? ok('the tool’s inputSchema did not move — a payload field, not a schema one')
+    : bad('schema moved');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

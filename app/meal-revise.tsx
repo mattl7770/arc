@@ -38,8 +38,8 @@ import {
   groundMealEstimate,
   isMealEstimationAvailable,
   type MealEstimate,
+  loggedToRevisionItems,
   MealEstimationUnavailableError,
-  type MealRevisionItem,
   reviseMeal,
 } from '@/lib/nutrition/estimate';
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
@@ -97,31 +97,6 @@ import type { VolumeUnit } from '@/lib/user/types';
  * phases are exclusive.
  */
 
-/** One logged row, as the model is shown it. A composite goes as a header with
- *  its parts and, where it has one, its count of pieces (0059); nothing about
- *  the units is restated (0047's rule). */
-function toRevisionItem(node: MealItemNode): MealRevisionItem {
-  const plain = (i: MealItemWithServing): MealRevisionItem => ({
-    name: i.name,
-    amount: i.amount,
-    unit: i.unit,
-    kcal: i.kcal,
-    protein_g: i.protein_g,
-    carbs_g: i.carbs_g,
-    fat_g: i.fat_g,
-    micros: i.micros,
-  });
-  return node.kind === 'composite'
-    ? {
-        ...plain(node.item),
-        pieces:
-          node.item.serving_qty != null && node.item.piece_name != null
-            ? { name: node.item.piece_name, count: node.item.serving_qty }
-            : null,
-        components: node.components.map(plain),
-      }
-    : plain(node.item);
-}
 
 type Phase =
   | { kind: 'input' }
@@ -190,8 +165,9 @@ export default function MealReviseScreen() {
         // The meal AS A TREE (0058): a composite goes to the model as one dish
         // with its parts indented beneath it, so "that pizza had no pepperoni"
         // is a correction to a part it can see, and "leave everything else
-        // byte-identical" can mean something for the other two.
-        { name: meal.name, items: beforeTree.map(toRevisionItem) },
+        // byte-identical" can mean something for the other two. The same
+        // builder as the offline drain's, fiber included (2026-09-23).
+        { name: meal.name, items: loggedToRevisionItems(beforeTree) },
         text,
         controller.signal
       );

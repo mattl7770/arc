@@ -19,8 +19,10 @@ import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/expe
 import { weekSummary } from '@/lib/db/repositories/exercise';
 import {
   activeNutritionTargets,
-  dayFiberTotal,
+  dayFiberRecorded,
+  dayMicroTotals,
   listTodayMeals,
+  mealItemCounts,
   nutritionHistory,
   partialMealMetrics,
   todayTotals,
@@ -60,6 +62,8 @@ import {
   unguardedNote,
   type DayMetric,
 } from '@/lib/nutrition/remaining';
+import { countTotalsOnlyMeals, totalsOnlyNote } from '@/lib/nutrition/key-micro';
+import { MICROS } from '@/lib/nutrition/micros';
 import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 import type { UnitPreferences } from '@/lib/user/types';
 
@@ -464,16 +468,23 @@ function todayTargetsPayload(
   // Fiber is deliberately outside the countdown model (see remaining.ts): it is
   // summed from meal ITEMS, so a hand-typed meal contributes none by
   // construction and every mixed day would under-report. Reported as eaten-vs-
-  // target with that stated, never as a remainder.
+  // target with that stated, never as a remainder. `eaten` is NULL when no
+  // item today recorded fiber (2026-09-23) — the same figure `keyMicros.fiber_g`
+  // and the Eat tab carry, so the payload never holds a 0 beside a null for
+  // one day's fiber.
   const fiberTarget = targets.fiber_g;
+  const fiberEaten = fiberTarget != null && fiberTarget > 0 ? dayFiberRecorded(db, date) : null;
   const fiber =
     fiberTarget != null && fiberTarget > 0
       ? {
           label: 'fiber',
           target: fiberTarget,
-          eaten: round1(dayFiberTotal(db, date)),
+          eaten: fiberEaten == null ? null : round1(fiberEaten),
           remaining: null,
-          note: 'Fiber counts only itemized meals, so this total is a floor, not a full day.',
+          note:
+            fiberEaten == null
+              ? 'No item logged today recorded fiber: eaten is null, which is not recorded, not 0 g.'
+              : 'Fiber counts only itemized meals, so this total is a floor, not a full day.',
         }
       : undefined;
   const unguarded = unguardedNote(meals, targets, partial);
@@ -485,6 +496,44 @@ function todayTargetsPayload(
     progress,
     ...(fiber ? { fiber } : {}),
     ...(unguarded ? { note: unguarded } : {}),
+  };
+}
+
+/**
+ * Sodium, caffeine and fiber for the day — the three the Eat tab now prints
+ * under its macro bars (2026-09-23), from the same repository reads and the
+ * same references (`MICROS`), so the Coach and the screen cannot disagree.
+ * Payload, not schema: the tool's description and inputSchema do not move, so
+ * the cached-prefix ceilings (db/coach-eval.test.mjs §6) do not either.
+ *
+ * NULL is "nothing logged today recorded it" and never a zero, and every
+ * figure is a floor: only foods carry these, so a meal typed in as totals adds
+ * none — which the note says, on a day it is true. Undefined on a day with no
+ * meals, like the screen's row.
+ */
+function todayKeyMicrosPayload(
+  db: Database,
+  date: string,
+  meals: MealRow[]
+): Record<string, unknown> | undefined {
+  if (meals.length === 0) return undefined;
+  const micros = dayMicroTotals(db, date);
+  const fiber = dayFiberRecorded(db, date);
+  const fiberTarget = activeNutritionTargets(db, date)?.fiber_g ?? null;
+  const limit = (key: 'sodium_mg' | 'caffeine_mg') =>
+    MICROS.find((m) => m.key === key)?.reference ?? null;
+  const totalsOnly = totalsOnlyNote(countTotalsOnlyMeals(meals, mealItemCounts(db, date)));
+  return {
+    sodium_mg: micros.sodium_mg == null ? null : Math.round(micros.sodium_mg),
+    sodiumLimit_mg: limit('sodium_mg'),
+    caffeine_mg: micros.caffeine_mg == null ? null : Math.round(micros.caffeine_mg),
+    caffeineLimit_mg: limit('caffeine_mg'),
+    fiber_g: fiber == null ? null : round1(fiber),
+    fiberTarget_g: fiberTarget != null && fiberTarget > 0 ? fiberTarget : null,
+    note:
+      'Summed from logged foods only: null is not recorded, not zero, and each figure is a ' +
+      'floor. The limits are general guidance for healthy adults (FDA), not targets the user set.' +
+      (totalsOnly ? ` ${totalsOnly}` : ''),
   };
 }
 
@@ -725,6 +774,12 @@ const getTodaySnapshot: CoachTool = {
       // set with what is left of each, or an explicit `set: false` that says
       // unset, not unsupported. See todayTargetsPayload.
       nutritionTargets: todayTargetsPayload(db, date, meals),
+      // The owner's three, as the Eat tab draws them under its macro bars.
+      // Omitted on a day with no meals. See todayKeyMicrosPayload.
+      ...(() => {
+        const keyMicros = todayKeyMicrosPayload(db, date, meals);
+        return keyMicros ? { keyMicros } : {};
+      })(),
       // The two SETTINGS the day is judged by that no other field carries, and
       // both were blind spots of the `nutritionTargets` class: the Home
       // nutrition pillar grades an over-target day as a fault while cutting and

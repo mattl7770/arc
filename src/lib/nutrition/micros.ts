@@ -37,6 +37,13 @@
  * (`foods.fiber_g_100g`) because it is a macro-scale gram value with its own
  * personal target; the micros screen reads it against that target, apart from
  * these references.
+ *
+ * **Where the three are read (2026-09-23):** on the Eat tab itself, under the
+ * macro bars, and as the one notable figure on an item row (a latte's
+ * caffeine) — both through src/lib/nutrition/key-micro.ts. The estimator asks
+ * for sodium and caffeine wherever an item plausibly carries them, and for the
+ * rest of this list only where a portion gives a tenth of a day's value
+ * (src/lib/nutrition/estimate.ts, `NOTABLE_MICRO_KEYS`).
  */
 
 export type MicroKey =
@@ -158,6 +165,31 @@ export function sumMicros(payloads: Micros[]): Micros {
       const v = p[m.key];
       if (v != null) out[m.key] = (out[m.key] ?? 0) + v;
     }
+  }
+  return out;
+}
+
+/**
+ * One snapshot from two sources, decided KEY BY KEY: every key `primary`
+ * records wins, and `fill` supplies only the keys `primary` does not record
+ * (2026-09-23). `primary` is a catalog food's per-portion values; `fill` is the
+ * item's own — the model's estimate, or the snapshot a logged item already
+ * carries.
+ *
+ * Key by key rather than whole, which is what it was until this round. The old
+ * reason — "a food that records micros at all is the better source for all of
+ * them" — does not survive the seed: 0016 was authored before caffeine was a
+ * key, so a food that records its iron is silent on its caffeine, and the whole
+ * rule dropped a dark chocolate's caffeine for recording iron. Unlike macros,
+ * micros carry no arithmetic between keys (there is no kcal to disagree with
+ * its protein), so two sources on two keys is two facts, each with ONE source,
+ * rather than the half-catalog/half-model item grounding refuses for macros.
+ */
+export function mergeMicros(primary: Micros, fill: Micros): Micros {
+  const out: Micros = {};
+  for (const m of MICROS) {
+    const v = primary[m.key] ?? fill[m.key];
+    if (v != null) out[m.key] = v;
   }
   return out;
 }

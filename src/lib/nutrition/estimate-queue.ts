@@ -67,18 +67,14 @@ import {
 } from '@/lib/media/pending-estimate-store';
 import type { PhotoFileStore } from '@/lib/media/photo-file-store';
 import { assembleMealItems } from '@/lib/nutrition/composite';
-import type {
-  MealItemWithServing,
-  NewMealItem,
-  NewMealItemComponent,
-  PendingEstimateRow,
-} from '@/lib/nutrition/types';
+import type { NewMealItem, NewMealItemComponent, PendingEstimateRow } from '@/lib/nutrition/types';
 
 import {
   type EstimateInput,
   estimateMeal,
   groundMealEstimate,
   isCompositeEstimateItem,
+  loggedToRevisionItems,
   type MealEstimate,
   type MealEstimateComponent,
   type MealEstimateItem,
@@ -164,26 +160,6 @@ function toMealItems(estimate: MealEstimate): NewMealItem[] {
   );
 }
 
-/** One logged row, as the revision model is shown it. */
-function revisionRow(i: MealItemWithServing) {
-  return {
-    name: i.name,
-    amount: i.amount,
-    unit: i.unit,
-    kcal: i.kcal,
-    protein_g: i.protein_g,
-    carbs_g: i.carbs_g,
-    fat_g: i.fat_g,
-    micros: i.micros,
-    // A counted composite stays counted through an offline revision (0059): the
-    // pair is only ever non-null on a header, so this is a no-op on a part.
-    pieces:
-      i.serving_qty != null && i.piece_name != null
-        ? { name: i.piece_name, count: i.serving_qty }
-        : null,
-  };
-}
-
 /** The request a queued row represents, or null when it cannot be reconstructed
  *  (a photo row whose file is gone AND which carried no words). */
 function toEstimateInput(row: PendingEstimateRow, base64Jpeg: string | null): EstimateInput | null {
@@ -228,19 +204,15 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
         }
         // Read the items NOW — see the header. A hand-edit made while offline is
         // the "before" this correction applies to.
-        // The TREE (0058), so a composite goes to the model as one dish.
+        // The TREE (0058), so a composite goes to the model as one dish — and
+        // through the Adjust screen's own builder, so a counted composite stays
+        // counted (0059) and every item's fiber and micros are shown, whether
+        // or not the phone was online when the correction was typed.
         const before = assembleMealItems(listMealItems(db, row.meal_id));
         const revised = groundMealEstimate(
           db,
           await deps.estimators.revise(
-            {
-              name: meal.name,
-              items: before.map((node) =>
-                node.kind === 'composite'
-                  ? { ...revisionRow(node.item), components: node.components.map(revisionRow) }
-                  : revisionRow(node.item)
-              ),
-            },
+            { name: meal.name, items: loggedToRevisionItems(before) },
             instruction
           )
         );

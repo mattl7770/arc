@@ -506,8 +506,11 @@ console.log('4b. query_records: list, compute, windows and the discovery call');
     ? ok('a compute domain with no id errors, naming what it needs')
     : bad('compute without id', String(computed));
   const micros = query({ domain: 'micronutrients', id: TODAY });
-  micros.result.date === TODAY && /absence, not a set of zeroes/.test(micros.result.note ?? '')
-    ? ok('…and an empty day is an ABSENCE in words, never a panel of zeroes')
+  micros.result.date === TODAY &&
+  /absence, not a set of zeroes/.test(micros.result.note ?? '') &&
+  // Fiber too (2026-09-23): null, not 0 g, when nothing recorded it.
+  micros.result.fiber_g === null
+    ? ok('…and an empty day is an ABSENCE in words, never a panel of zeroes — fiber null too')
     : bad('micros', JSON.stringify(micros));
 
   // The cap, and ids on every row of a list domain.

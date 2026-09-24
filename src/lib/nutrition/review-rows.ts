@@ -6,7 +6,7 @@ import type {
   MealRevisionSubject,
   QuestionEffect,
 } from './estimate';
-import { parseMicros, scaleMicros, serializeMicros } from './micros';
+import { mergeMicros, parseMicros, scaleMicros, serializeMicros } from './micros';
 import { itemForPortion, rescaleLoggedItem } from './servings';
 import type {
   AmountUnit,
@@ -314,7 +314,11 @@ function toRow(
       carbs_g: grounded?.carbs_g ?? item.carbs_g,
       fat_g: grounded?.fat_g ?? item.fat_g,
       fiber_g: grounded?.fiber_g ?? item.fiber_g,
-      micros: grounded?.micros ?? item.micros,
+      // Key by key, as grounding merges them (`mergeMicros`): the food's
+      // recorded keys, the item's own for the rest.
+      micros: grounded
+        ? serializeMicros(mergeMicros(parseMicros(grounded.micros), parseMicros(item.micros)))
+        : item.micros,
     },
     amountText: item.amount != null && item.amount > 0 ? amountLabel(item.amount) : '',
   };
@@ -959,6 +963,110 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
   });
 }
 
+// --- Answering SEVERAL questions (2026-09-23) --------------------------------
+//
+// The defect this replaces: the screen froze a base PER QUESTION, the first
+// time each was answered, and re-applied a changed answer to that base alone.
+// Answer the milk, then the shots, then change the milk, and the change was
+// applied to rows from before the shots — the espresso went back to two shots
+// while its "3" chip stayed lit. A lit chip whose effect is not on the rows is
+// a claim the screen cannot back.
+//
+// So the answers are a TRAIL, in the order each question was first answered,
+// and every entry keeps the rows as they stood just before it. Changing one
+// answer rebuilds from that entry's base and re-applies every later answer on
+// top. The invariant, pinned by db/nutrition-v2.test.mjs §63: **every answered
+// question's effect is on the rows, and no other answer's is.**
+
+/** What the screen shows for a question answered by TYPING — no chip is lit,
+ *  but the tally counts it and Undo restores the rows before it. */
+export const ANSWERED_BY_TYPING = -1;
+
+/** One answer: a chip (its index, and the effect it carries), or the rows a
+ *  typed answer's text-only model call came back as. */
+export type GivenAnswer =
+  { kind: 'option'; index: number; effect: QuestionEffect } | { kind: 'typed'; rows: ReviewItem[] };
+
+/** One answered question, and the rows as they stood just before its answer. */
+export type AnsweredQuestion = { id: string; base: ReviewItem[]; answer: GivenAnswer };
+
+function applyGiven(rows: ReviewItem[], answer: GivenAnswer): ReviewItem[] {
+  return answer.kind === 'option' ? applyAnswer(rows, answer.effect) : answer.rows;
+}
+
+/**
+ * Answer (or re-answer, or — with `null` — un-answer) one question, and replay
+ * every answer given after it. Pure; the hook holds the trail and the screen's
+ * rows and does nothing else.
+ *
+ * - **A question not yet answered** is appended: its base is the rows as they
+ *   stand now, hand edits included.
+ * - **A question already answered** rebuilds from its own base, so changing an
+ *   answer never compounds on the old one ("3" then "1" is one shot, never
+ *   3 × ½), and every LATER chip answer is re-applied on top — by name, as it
+ *   was the first time — with its base re-taken as it goes.
+ * - **A later TYPED answer is withdrawn**, and the tally shows it: it was a
+ *   model reply over rows that no longer stand, and replaying it would restore
+ *   the old answer it was computed against. Asking the model again is the
+ *   user's call, one tap away.
+ *
+ * The cost, stated because it is real: a hand edit made AFTER a question was
+ * first answered is lost when that question's answer changes — it is not in
+ * any base. The same trade C5 made for one question, now true for several:
+ * a silently doubled portion is a wrong record, a re-typed figure is an
+ * annoyance. A hand edit made BEFORE the question was first answered is in its
+ * base and survives.
+ */
+export function answerQuestion(
+  trail: AnsweredQuestion[],
+  current: ReviewItem[],
+  id: string,
+  answer: GivenAnswer | null
+): { trail: AnsweredQuestion[]; rows: ReviewItem[] } {
+  const at = trail.findIndex((entry) => entry.id === id);
+  const answered = trail[at];
+  if (answered === undefined) {
+    if (answer === null) return { trail, rows: current };
+    return {
+      trail: [...trail, { id, base: current, answer }],
+      rows: applyGiven(current, answer),
+    };
+  }
+  let rows = answered.base;
+  const next = trail.slice(0, at);
+  if (answer !== null) {
+    next.push({ id, base: rows, answer });
+    rows = applyGiven(rows, answer);
+  }
+  for (const later of trail.slice(at + 1)) {
+    if (later.answer.kind === 'typed') continue;
+    next.push({ id: later.id, base: rows, answer: later.answer });
+    rows = applyGiven(rows, later.answer);
+  }
+  return { trail: next, rows };
+}
+
+/** The chips a trail lights: question id → the option index, or
+ *  {@link ANSWERED_BY_TYPING}. An unanswered question is absent. */
+export function answersOf(trail: AnsweredQuestion[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const entry of trail) {
+    out[entry.id] = entry.answer.kind === 'option' ? entry.answer.index : ANSWERED_BY_TYPING;
+  }
+  return out;
+}
+
+/** The rows a typed answer to `id` is asked over: before that question's own
+ *  answer if it has one (so the reply replaces it rather than stacking on it),
+ *  else as they stand. */
+export function rowsBeforeAnswer(
+  trail: AnsweredQuestion[],
+  current: ReviewItem[],
+  id: string
+): ReviewItem[] {
+  return trail.find((entry) => entry.id === id)?.base ?? current;
+}
+
 /**
  * The review rows as the model's view of the meal — what the ONE second call
  * this feature allows is given (backlog C5, the "Other" path).
@@ -979,6 +1087,9 @@ export function rowsToRevisionSubject(name: string, rows: ReviewItem[]): MealRev
       protein_g: p.protein_g ?? null,
       carbs_g: p.carbs_g ?? null,
       fat_g: p.fat_g ?? null,
+      // Shown so it rides back unchanged on a row the typed answer is not
+      // about (2026-09-23) — see MealRevisionItem.fiber_g.
+      fiber_g: p.fiber_g ?? null,
       micros: p.micros ?? null,
     };
   };

@@ -10,7 +10,7 @@ import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import {
   activeNutritionTargets,
-  dayFiberTotal,
+  dayFiberRecorded,
   dayMicroTotals,
 } from '@/lib/db/repositories/nutrition';
 import { fmtMicro } from '@/lib/nutrition/format';
@@ -51,8 +51,9 @@ import { MICROS, type Micros } from '@/lib/nutrition/micros';
  * summed from meal items (manual meals record none) and lives in its own plate
  * so the reference-value firewall stays intact: the micros plate's closing
  * annotation says "not personal targets", and fiber is exactly that, so it must
- * not sit under it. (The Today grid deliberately omits fiber for the same
- * reason it can't count it down; see the MACROS note in app/nutrition.tsx.)
+ * not sit under it. (The Eat tab reads fiber too since 2026-09-23 — eaten
+ * against the same target, beside sodium and caffeine under its macro bars, and
+ * never counted down: src/components/nutrition/day-micros.tsx.)
  *
  * **The plate stands whether or not a target is set** (changed 2026-09-14,
  * backlog A8 — caffeine, fiber, sodium are the three the owner named, and one
@@ -65,8 +66,10 @@ import { MICROS, type Micros } from '@/lib/nutrition/micros';
 
 type MicrosData = {
   micros: Micros;
-  /** Fiber eaten today, summed from meal items (0 when none recorded). */
-  fiberEaten: number;
+  /** Fiber eaten today, summed from meal items — NULL when no item today
+   *  recorded any, which is not a day of zero-fiber foods (2026-09-23: the Eat
+   *  tab one tap back says "not recorded" there, and this plate must agree). */
+  fiberEaten: number | null;
   /** The active fiber target in grams, or null until one is set. */
   fiberTarget: number | null;
 };
@@ -76,7 +79,7 @@ function readMicros(): MicrosData {
   const date = todayISODate();
   return {
     micros: dayMicroTotals(db, date),
-    fiberEaten: dayFiberTotal(db, date),
+    fiberEaten: dayFiberRecorded(db, date),
     fiberTarget: activeNutritionTargets(db, date)?.fiber_g ?? null,
   };
 }
@@ -89,7 +92,9 @@ export default function NutritionMicrosScreen() {
   const { micros, fiberEaten, fiberTarget } = data;
   const recorded = MICROS.filter((m) => micros[m.key] != null).length;
   const fiberPct =
-    fiberTarget !== null && fiberTarget > 0 ? Math.min(100, (fiberEaten / fiberTarget) * 100) : 0;
+    fiberEaten !== null && fiberTarget !== null && fiberTarget > 0
+      ? Math.min(100, (fiberEaten / fiberTarget) * 100)
+      : 0;
 
   return (
     <Screen scroll>
@@ -112,8 +117,8 @@ export default function NutritionMicrosScreen() {
           claimed here, and the line below already names the catalog. */}
       {recorded === 0 ? (
         <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
-          Nothing recorded yet today. Foods logged from the catalog contribute micronutrients; many
-          seeded staples carry them.
+          Nothing recorded yet today. Foods from the catalog contribute micronutrients, and an
+          estimate records the ones a food is a notable source of.
         </Text>
       ) : (
         <>
@@ -197,16 +202,22 @@ export default function NutritionMicrosScreen() {
           <View className="mt-1 py-3">
             <View className="flex-row items-baseline justify-between gap-3">
               <Text className="flex-1 font-serif text-[14px] text-ink">Eaten today</Text>
-              <View className="flex-row items-baseline gap-1">
-                <Text className="font-mono text-[14px] text-ink">{fmtMicro(fiberEaten, 0)}</Text>
-                <Text className="font-mono text-[10px] text-ink-muted">
-                  {fiberTarget !== null ? `g of ${fmtMicro(fiberTarget, 0)} g` : 'g'}
-                </Text>
-              </View>
+              {/* Nothing recorded reads as the micros above do — "not
+                  recorded", no figure and no rule — never a 0 g. */}
+              {fiberEaten !== null ? (
+                <View className="flex-row items-baseline gap-1">
+                  <Text className="font-mono text-[14px] text-ink">{fmtMicro(fiberEaten, 0)}</Text>
+                  <Text className="font-mono text-[10px] text-ink-muted">
+                    {fiberTarget !== null ? `g of ${fmtMicro(fiberTarget, 0)} g` : 'g'}
+                  </Text>
+                </View>
+              ) : (
+                <Text className="font-mono text-[10px] text-ink-muted">not recorded</Text>
+              )}
             </View>
             {/* No target, no rule: a bar with no denominator would be drawing a
                 proportion of nothing. The label carries the absence instead. */}
-            {fiberTarget !== null ? (
+            {fiberEaten !== null && fiberTarget !== null ? (
               <View className="mt-1.5 h-[3px] bg-paper-deep">
                 <View className="h-[3px] bg-ink-secondary" style={{ width: `${fiberPct}%` }} />
               </View>
