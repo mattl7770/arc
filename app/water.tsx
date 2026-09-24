@@ -1,13 +1,14 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, Pressable, Text, TextInput, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
+import { WaterPublishPointer } from '@/components/water/publish-pointer';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
@@ -15,17 +16,24 @@ import { timezoneNotesIn } from '@/lib/db/repositories/day-meta';
 import { getPreferences, getWaterTarget, setWaterTarget } from '@/lib/db/repositories/user';
 import {
   listWaterEntries,
-  logWater,
   waterDaySeries,
   waterRecordStart,
   type WaterDay,
   type WaterEntry,
 } from '@/lib/db/repositories/water';
 import { shortDate, windowLabel } from '@/lib/experiments/format';
-// Correcting or removing a capture reaches Apple Health too, since water went
-// two-way (2026-09-21). A plain module over the guarded HealthKit seam, so
-// nothing native is imported statically here.
-import { editWaterCapture, removeWaterCapture } from '@/lib/health/publish';
+// Adding, correcting or removing a capture reaches Apple Health too, since
+// water went two-way (2026-09-21), and an add goes out when it is made
+// (2026-09-23). A plain module over the guarded HealthKit seam, so nothing
+// native is imported statically here.
+import {
+  editWaterCapture,
+  logWaterCapture,
+  releaseStalledWater,
+  removeWaterCapture,
+  waterPublishFacts,
+  waterPublishPointer,
+} from '@/lib/health/publish';
 import {
   formatFigure,
   metricByKey,
@@ -63,8 +71,9 @@ import { daysBetween } from '@/lib/screenings/format';
  *     apple_health — edit it there" — a state authored below long before a
  *     device row could exist, and now the case it was authored for.
  *   - **The two sources are never reconciled.** A synced bucket and a manual
- *     capture are separate rows and the day sums both; ARC publishes no water,
- *     so the bucket does not contain what you logged here, and there is no
+ *     capture are separate rows and the day sums both. Since 2026-09-21 ARC
+ *     publishes each capture, and the read leaves ARC's own samples out, so
+ *     the bucket still does not contain what you logged here, and there is no
  *     per-drink identity in a merged total to match against. Log a glass in one
  *     place or the other. A double IS visible here — two rows, one marked — and
  *     removing the manual one is two taps.
@@ -72,6 +81,19 @@ import { daysBetween } from '@/lib/screenings/format';
  * Its `created_at` is the SYNC instant, not drink o'clock, so it sorts into the
  * day's list at sync time. A merged day total has no drink time to report; the
  * alternative would be inventing one.
+ *
+ * ## One line when a glass cannot go out (2026-09-23)
+ *
+ * Water publishes only once its write permission is granted, and on an install
+ * that connected before water went two-way it was never asked. Every capture
+ * stalled silently until he found *Allow publishing* in Settings. So while sync
+ * is on and water is unasked or refused, the Add plate ends with one ruled row
+ * pointing there (`waterPublishPointer`). It reads the same classifier
+ * Settings reads, scoped to Water, and is re-read on focus AND when the app
+ * comes back to the foreground: a refusal is lifted in the iOS Settings app,
+ * and returning from another app is not a navigation focus. So the row is gone
+ * when he comes back from granting it either way, and the glasses that stalled
+ * behind it are sent then (`releaseStalledWater`), not on the next sync.
  *
  * ## Four objects, in the order the question is asked
  *
@@ -213,6 +235,8 @@ type WaterView = {
   targetMl: number | null;
   spec: DisplaySpec;
   volumeUnit: 'oz' | 'ml';
+  /** The line saying a glass logged here cannot reach Apple Health yet, or null. */
+  publishPointer: string | null;
 };
 
 function plural(n: number, word: string): string {
@@ -254,6 +278,7 @@ function read(): WaterView {
     targetMl: getWaterTarget(db),
     spec,
     volumeUnit: units.volume === 'ml' ? 'ml' : 'oz',
+    publishPointer: waterPublishPointer(waterPublishFacts(db)),
   };
 }
 
@@ -279,6 +304,7 @@ function fmtVolume(spec: DisplaySpec, ml: number): string {
 }
 
 export default function WaterScreen() {
+  const router = useRouter();
   const [view, setView] = useState(read);
   // The day every other block follows. Held separately from `view` so a reload
   // never yanks the user back to today mid-correction.
@@ -295,9 +321,18 @@ export default function WaterScreen() {
   const [goalOpen, setGoalOpen] = useState(false);
   const [goalText, setGoalText] = useState('');
 
+  /** The Apple Health line as last drawn, so a re-read can tell that it went. */
+  const shownPointer = useRef(view.publishPointer);
+
   const refresh = useCallback((forDay: string) => {
-    setView(read());
+    const next = read();
+    const before = shownPointer.current;
+    shownPointer.current = next.publishPointer;
+    setView(next);
     setEntries(listWaterEntries(getDb(), forDay));
+    // The line just went: water was allowed while it showed. Send the glasses
+    // that stalled behind it now (docs/wearables-subapp.md §20.11).
+    void releaseStalledWater(getDb(), before, next.publishPointer);
   }, []);
 
   // op-sqlite is synchronous, so the first read already ran in the initializers
@@ -309,17 +344,25 @@ export default function WaterScreen() {
   // The no-focus case (the screen simply left open across midnight, no event to
   // run this) is handled at write time in `add`, where the log day is resolved
   // fresh — so a stale `day` can never backdate the new day's first glass.
-  useFocusEffect(
-    useCallback(() => {
-      const freshToday = todayISODate();
-      const nextDay = day === view.today ? freshToday : day;
-      if (nextDay !== day) setDay(nextDay);
-      refresh(nextDay);
-    }, [refresh, day, view.today])
-  );
+  const recheck = useCallback(() => {
+    const freshToday = todayISODate();
+    const nextDay = day === view.today ? freshToday : day;
+    if (nextDay !== day) setDay(nextDay);
+    refresh(nextDay);
+  }, [refresh, day, view.today]);
+  useFocusEffect(recheck);
+  // And on a return to the foreground, which is not a navigation focus. A
+  // refusal of water is lifted in the iOS Settings app, and without this the
+  // line saying Apple Health refuses water stayed after he had allowed it.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') recheck();
+    });
+    return () => sub.remove();
+  }, [recheck]);
 
   const { today, recordStart, daysOnRecord, days, targetMl, spec, volumeUnit } = view;
-  const { timezoneNotes } = view;
+  const { timezoneNotes, publishPointer } = view;
 
   const selectDay = (next: string) => {
     setDay(next);
@@ -337,7 +380,9 @@ export default function WaterScreen() {
     // deliberately selected past day (day !== today) is honoured as-is.
     const writeDay = day === today ? todayISODate() : day;
     try {
-      logWater(getDb(), writeDay, spec.toCanonical(displayAmount));
+      // The write, then a water-only publish behind it that never runs on this
+      // tap's time (docs/wearables-subapp.md §20.10).
+      logWaterCapture(getDb(), writeDay, spec.toCanonical(displayAmount));
       setAddText('');
       // Follow a rollover so Today/Add/Entries all show the day just written to.
       if (writeDay !== day) setDay(writeDay);
@@ -531,6 +576,19 @@ export default function WaterScreen() {
               </Text>
             </Pressable>
           </View>
+
+          {/* Where a glass logged here goes, said only while it cannot get
+              there: sync on, and water's write permission unasked or refused.
+              A ruled row of this plate, not a device of its own. */}
+          {publishPointer ? (
+            <View className="mt-3">
+              <Divider />
+              <WaterPublishPointer
+                line={publishPointer}
+                onPress={() => router.push('/settings-health')}
+              />
+            </View>
+          ) : null}
         </Block>
       </View>
 

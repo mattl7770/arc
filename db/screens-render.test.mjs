@@ -164,6 +164,8 @@ import {
 } from '../src/lib/db/repositories/user.ts';
 import { setHealthSyncLog } from '../src/lib/db/repositories/wearables.ts';
 import SettingsHealthScreen from '../app/settings-health.tsx';
+import { WaterPublishPointer } from '../src/components/water/publish-pointer.tsx';
+import { WATER_REFUSED_LINE, WATER_UNASKED_LINE } from '../src/lib/health/publish.ts';
 import { insertReport } from '../src/lib/db/repositories/reports.ts';
 import { assembleSelfReview } from '../src/lib/reports/assemble-self-review.ts';
 import { periodFromBounds } from '../src/lib/reports/period.ts';
@@ -4037,6 +4039,9 @@ const db = getDb();
   expect('settings-health (no sync yet)', never, [
     'Water (hydration)',
     'Water goes both ways.',
+    // WHEN a glass goes out (2026-09-23): it used to wait for the next sync,
+    // and this sentence did not say so.
+    'is written to Apple Health as soon as you log it',
     'undoing or correcting it here changes it there too',
     'log a glass in one place or the other, not both',
     // The audit row: the owner's device settled it (2026-09-21 checklist,
@@ -6096,6 +6101,75 @@ console.log('\n24. 2026-09-23 — Undo, Combine, and a multi-scan meal’s name'
   refute('barcode scan (fresh)', render('barcode scan (fresh)', BarcodeScanScreen), [
     'aria-label="Meal name"',
   ]);
+}
+
+console.log('\n25. 2026-09-23 — the water screen says when a glass cannot reach Apple Health');
+{
+  // Until *Allow publishing* was tapped, every glass stalled with nothing on the
+  // water screen saying so. The rule (sync on, water unasked or refused) is
+  // pinned in db/wearables.test.mjs §24b. Here: that the screen draws the line
+  // where it should, and draws nothing where it cannot help.
+  //
+  // Under node the HealthKit module is absent, so the screen itself can only
+  // show the "no line" state, which is what the web preview and a build
+  // without the module must show. The shown state is drawn by rendering the
+  // row the screen uses, with the line passed in.
+  const wdb = getDb();
+  setHealthSyncEnabled(wdb, true);
+  const water = render('water (sync on, no HealthKit module)', WaterScreen);
+  expect('water (sync on, no HealthKit module)', water, ['Add', 'Entries']);
+  refute('water (sync on, no HealthKit module)', water, [
+    WATER_UNASKED_LINE,
+    WATER_REFUSED_LINE,
+    'Not sent to Apple Health',
+    'Settings › Apple Health',
+  ]);
+  setHealthSyncEnabled(wdb, false);
+  refute('water (sync off)', render('water (sync off)', WaterScreen), [
+    'Not sent to Apple Health',
+    'Settings › Apple Health',
+  ]);
+
+  const noop = () => undefined;
+  for (const [name, line] of [
+    ['unasked', WATER_UNASKED_LINE],
+    ['refused', WATER_REFUSED_LINE],
+  ]) {
+    const html = render(
+      `water pointer (${name})`,
+      WaterPublishPointer,
+      {},
+      { line, onPress: noop }
+    );
+    expect(`water pointer (${name})`, html, [
+      line,
+      'role="button"',
+      `aria-label="${line}. Opens Settings, Apple Health."`,
+    ]);
+  }
+
+  // Where it sits, what it opens, and what it may not spend. react-native-web
+  // hashes class names out of the markup, so these are read off the source.
+  const src = readFileSync(new URL('../app/water.tsx', import.meta.url), 'utf8');
+  const add = src.slice(
+    src.indexOf('<SectionLabel label="Add"'),
+    src.indexOf('<SectionLabel label="Entries"')
+  );
+  add.includes('<WaterPublishPointer') && add.includes("router.push('/settings-health')")
+    ? ok('water: the line is a row of the Add plate, and it opens Settings › Apple Health')
+    : bad('water: the pointer is not in the Add plate, or goes somewhere else');
+  src.includes('publishPointer: waterPublishPointer(waterPublishFacts(db))')
+    ? ok(
+        'water: the line is re-read with the screen (on focus, on a return to the foreground, after every write), from the shared rule'
+      )
+    : bad('water: the pointer is not read through waterPublishPointer');
+  const row = readFileSync(
+    new URL('../src/components/water/publish-pointer.tsx', import.meta.url),
+    'utf8'
+  );
+  !/\b(bg|text|border)-pine\b|signal-/.test(row) && /min-h-\[44px\]/.test(row)
+    ? ok('water pointer: no accent, no signal colour, and a 44pt target')
+    : bad('water pointer spends the accent or a signal colour, or is under 44pt');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

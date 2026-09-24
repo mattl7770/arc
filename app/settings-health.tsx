@@ -723,12 +723,12 @@ export default function SettingsHealthScreen() {
                 same glass entered twice by hand, one door each. So the rule
                 stays behavioural, and it belongs where the doors are named. */}
             <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
-              Water goes both ways. A glass you log here is written to Apple Health, and undoing or
-              correcting it here changes it there too. Apple Health sends back one merged total per
-              day with ARC&rsquo;s own glasses left out, so nothing ARC wrote is counted twice. A
-              glass tapped on the watch and typed here is still two glasses, though — log a glass in
-              one place or the other, not both. A day that looks doubled is fixed in Data → Water,
-              where the two entries sit side by side.
+              Water goes both ways. A glass you log here is written to Apple Health as soon as you
+              log it, and undoing or correcting it here changes it there too. Apple Health sends
+              back one merged total per day with ARC&rsquo;s own glasses left out, so nothing ARC
+              wrote is counted twice. A glass tapped on the watch and typed here is still two
+              glasses, though — log a glass in one place or the other, not both. A day that looks
+              doubled is fixed in Data → Water, where the two entries sit side by side.
             </Text>
           </Block>
         </View>

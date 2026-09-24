@@ -6,7 +6,8 @@ import { Block } from '@/components/ui/block';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
-import { logMetric, logNote } from '@/lib/db/repositories/logs';
+import { logNote } from '@/lib/db/repositories/logs';
+import { logMetricCapture } from '@/lib/health/publish';
 import { isLoggableCanonical, metricByKey } from '@/lib/log/metrics';
 import { parseCommand } from '@/lib/log/parse';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
@@ -50,7 +51,8 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
     try {
       const metric = result.kind === 'metric' ? metricByKey(result.metric) : undefined;
       if (result.kind === 'metric' && metric && isLoggableCanonical(metric, result.canonical)) {
-        logMetric(db, date, result.metric, result.canonical);
+        // A parsed "water 16 oz" goes to Apple Health now, like a vessel tap.
+        logMetricCapture(db, date, result.metric, result.canonical);
       } else {
         // A plain note, or a parsed-but-out-of-range value ("weight 0",
         // "bf 150") — never lose the input; keep the raw text as a note.

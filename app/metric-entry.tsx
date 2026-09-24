@@ -8,7 +8,8 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
-import { logMetric, recentSummary } from '@/lib/db/repositories/logs';
+import { recentSummary } from '@/lib/db/repositories/logs';
+import { logMetricCapture } from '@/lib/health/publish';
 import {
   isLoggableCanonical,
   METRICS,
@@ -190,7 +191,9 @@ export default function MetricEntryScreen() {
   const log = () => {
     if (!canLog) return;
     try {
-      logMetric(getDb(), today, active.key, canonical);
+      // `logMetric`, and a water capture starts its Apple Health publish now
+      // rather than on the next sync (docs/wearables-subapp.md §20.10).
+      logMetricCapture(getDb(), today, active.key, canonical);
       router.back();
     } catch (error) {
       // canLog already gates the known cases; this is a backstop so a write

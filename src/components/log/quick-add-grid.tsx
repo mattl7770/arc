@@ -9,8 +9,8 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { getPreferences } from '@/lib/db/repositories/user';
-import { logWater, usualWaterAmount } from '@/lib/db/repositories/water';
-import { removeWaterCapture } from '@/lib/health/publish';
+import { usualWaterAmount } from '@/lib/db/repositories/water';
+import { logWaterCapture, removeWaterCapture } from '@/lib/health/publish';
 import {
   formatFigure,
   metricByKey,
@@ -312,8 +312,13 @@ export function QuickAddGrid({ onLogged }: { onLogged?: () => void }) {
     // can sit open across midnight with no focus event to roll it over, and a
     // stale day would backdate the new day's first glass (the same rule
     // app/water.tsx's `add` follows).
+    //
+    // `logWaterCapture` is `logWater` plus the start of a water-only publish,
+    // so the glass is in the Health app by the time he looks there, not after
+    // the next sync. The publish never runs on this tap's time and cannot fail
+    // it (docs/wearables-subapp.md §20.10).
     try {
-      const id = logWater(getDb(), todayISODate(), spec.toCanonical(displayAmount));
+      const id = logWaterCapture(getDb(), todayISODate(), spec.toCanonical(displayAmount));
       setUndo({ id, label: `${displayAmount} ${spec.unit}` });
       setView(readWater());
       onLogged?.();
