@@ -39,15 +39,24 @@
 import type { Database } from '@/lib/db/database';
 import {
   allMealPhotos,
-  deleteMeal,
   deleteMealPhoto,
   expiredMealPhotos,
   insertMealPhoto,
   latestMealPhoto,
-  mealPhotoFileNames,
+  listMealPhotos,
+  restoreMeal,
+  takeMeal,
+  takenPendingFileNames,
+  takenPhotoFileNames,
+  type TakenMeal,
 } from '@/lib/db/repositories/nutrition';
+import { heldFiles, holdFiles, releaseFiles } from '@/lib/media/held-files';
+import {
+  nativePendingEstimateStore,
+  removePendingEstimatePhoto,
+} from '@/lib/media/pending-estimate-store';
 import { nativeStoreIn, photoFileName, type PhotoFileStore } from '@/lib/media/photo-file-store';
-import type { MealPhotoSource } from '@/lib/nutrition/types';
+import type { MealPhotoRow, MealPhotoSource } from '@/lib/nutrition/types';
 
 export type { PhotoFileStore };
 
@@ -134,6 +143,8 @@ export function attachMealPhoto(
 
 /** What the meal screen needs to draw a photo. */
 export type MealPhotoView = {
+  /** The `meal_photos` row id — a stable key when a meal draws several. */
+  id: string;
   uri: string;
   /** True pixel dimensions, so the frame is the photo's own aspect and nothing
    *  is cropped. Null when the source could not report them. */
@@ -160,11 +171,38 @@ export function mealPhotoView(
 ): MealPhotoView | null {
   if (!store) return null;
   const row = latestMealPhoto(db, mealId);
-  if (!row) return null;
+  return row ? viewOf(row, now, store) : null;
+}
+
+/**
+ * Every photo the meal carries, newest first, ready to render — what the meal
+ * screen draws (2026-09-23). Empty is the common case and draws nothing, for
+ * {@link mealPhotoView}'s reasons; a row whose file has gone is left out, not
+ * drawn broken.
+ *
+ * Before a combine a meal holds one photo, so this reads exactly what
+ * {@link mealPhotoView} did. After one, a meal holds the photo of each
+ * photographed meal it absorbed, and the consequence line promised they move
+ * into it — so every one is drawn, rather than the newest standing in for all.
+ */
+export function mealPhotoViews(
+  db: Database,
+  mealId: string,
+  now: Date = new Date(),
+  store: PhotoFileStore | null = nativePhotoStore()
+): MealPhotoView[] {
+  if (!store) return [];
+  return listMealPhotos(db, mealId)
+    .map((row) => viewOf(row, now, store))
+    .filter((view): view is MealPhotoView => view !== null);
+}
+
+function viewOf(row: MealPhotoRow, now: Date, store: PhotoFileStore): MealPhotoView | null {
   if (!store.exists(row.file_name)) return null;
   const uri = store.uri(row.file_name);
   if (!uri) return null;
   return {
+    id: row.id,
     uri,
     width: row.width,
     height: row.height,
@@ -200,30 +238,71 @@ function daysUntilExpiry(createdAt: string, now: Date): number {
 }
 
 /**
- * Delete a meal and every file it owns.
+ * Delete a meal and every file it owns, at once — the Coach's delete
+ * (src/lib/ai/domains/read-domains.ts), which has its own confirmation card and
+ * no Undo.
  *
  * `meals` CASCADEs to `meal_photos` (0033), which takes the rows and leaves the
- * bytes — so the names are read BEFORE the delete. This is the function the
- * meal screen calls instead of `deleteMeal` directly; a caller that forgets
- * leaks the file until the sweep's orphan pass reclaims it, which is a
- * self-healing mistake rather than a permanent one.
+ * bytes — so the names are read BEFORE the delete. It is literally
+ * {@link takeMealWithPhotos} followed by {@link settleMealRemoval}: the same
+ * removal the meal screen makes, with the Undo window closed on the spot, so
+ * the two paths cannot drift apart (the parity rule, docs/coach-domains.md).
  */
 export function deleteMealWithPhotos(
   db: Database,
   mealId: string,
   store: PhotoFileStore | null = nativePhotoStore()
 ): void {
-  let names: string[] = [];
-  try {
-    names = mealPhotoFileNames(db, mealId);
-  } catch (error) {
-    // A database that predates 0033 has no such table. The meal must still
-    // delete; the photos it cannot have are not a reason to keep it.
-    console.warn('[meal-photo] could not read photo names', error);
-  }
-  deleteMeal(db, mealId);
-  if (!store) return;
-  for (const name of names) store.remove(name);
+  const taken = takeMealWithPhotos(db, mealId);
+  if (taken) settleMealRemoval(taken, store);
+}
+
+/**
+ * Delete a meal with the Undo window OPEN (owner, device, 2026-09-23: *"undo
+ * for removing a food"*): its rows go now, through `takeMeal` →
+ * `deleteMeal`, and its files stay — held, so no sweep mistakes them for
+ * orphans — until {@link settleMealRemoval} or {@link restoreMealWithPhotos}
+ * closes the window.
+ *
+ * **The rows go first, the files last, and that order is the crash story.** A
+ * process killed inside the window loses the Undo and its holds; the rows are
+ * already gone, so the next launch's sweep finds files no row claims and
+ * removes them (db/nutrition-v2.test.mjs §57). The opposite order — files
+ * first — is the one that could leave a surviving row drawing a broken frame.
+ */
+export function takeMealWithPhotos(db: Database, mealId: string): TakenMeal | null {
+  const taken = takeMeal(db, mealId);
+  if (taken) holdFiles([...takenPhotoFileNames(taken), ...takenPendingFileNames(taken)]);
+  return taken;
+}
+
+/**
+ * The Undo: the meal's rows back, verbatim (`restoreMeal`), onto files that
+ * were never removed — then the hold is released, because rows claim the
+ * files again. Throws, holding still, if the rows cannot go back; the caller
+ * then settles, which removes the files the rows will never claim.
+ */
+export function restoreMealWithPhotos(db: Database, taken: TakenMeal): void {
+  restoreMeal(db, taken);
+  releaseFiles([...takenPhotoFileNames(taken), ...takenPendingFileNames(taken)]);
+}
+
+/**
+ * The window closed without an Undo: remove the files the removal left, and
+ * release them. The queued-estimate photo goes too — the pending directory's
+ * own sweep would reclaim it on the next launch anyway (0057), but there is no
+ * reason to carry it that long.
+ */
+export function settleMealRemoval(
+  taken: TakenMeal,
+  store: PhotoFileStore | null = nativePhotoStore(),
+  pendingStore: PhotoFileStore | null = nativePendingEstimateStore()
+): void {
+  const photos = takenPhotoFileNames(taken);
+  const pending = takenPendingFileNames(taken);
+  releaseFiles([...photos, ...pending]);
+  if (store) for (const name of photos) store.remove(name);
+  for (const name of pending) removePendingEstimatePhoto(name, pendingStore);
 }
 
 /** What one sweep did — returned for the tests and the boot log, not for the UI. */
@@ -261,11 +340,19 @@ const NO_SWEEP: MealPhotoSweep = { expired: 0, dangling: 0, orphans: 0 };
  * Total and never throws — it runs on app open, where an exception has no
  * screen to land on. `now` is injectable so the headless test can age a photo
  * past the window without waiting a week.
+ *
+ * **`held` is not an orphan (2026-09-23).** A meal deleted with its Undo open
+ * has no rows and still has its files ({@link takeMealWithPhotos}); pass 3
+ * skips them. It runs once per launch today, before any Undo can exist, so
+ * this matters only if the sweep ever runs mid-session — and then it is what
+ * keeps an Undo from restoring rows onto files the sweep had just removed. A
+ * fresh launch holds nothing, which is why a killed window's files still go.
  */
 export function sweepMealPhotos(
   db: Database,
   store: PhotoFileStore | null,
-  now: Date = new Date()
+  now: Date = new Date(),
+  held: ReadonlySet<string> = heldFiles()
 ): MealPhotoSweep {
   if (!store) return NO_SWEEP;
   const cutoff = new Date(now.getTime() - MEAL_PHOTO_RETENTION_DAYS * 86_400_000).toISOString();
@@ -289,7 +376,7 @@ export function sweepMealPhotos(
     }
 
     for (const name of store.list()) {
-      if (claimed.has(name)) continue;
+      if (claimed.has(name) || held.has(name)) continue;
       if (store.remove(name)) result.orphans++;
     }
   } catch (error) {

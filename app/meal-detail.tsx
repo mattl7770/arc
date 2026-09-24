@@ -3,6 +3,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { type Dispatch, type SetStateAction, useCallback, useState } from 'react';
 import { Alert, Image, Pressable, Text, TextInput, View } from 'react-native';
 
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
@@ -10,6 +11,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
@@ -21,7 +23,6 @@ import {
   getMeal,
   listMealItems,
   relogMeal,
-  removeMealItem,
   scaleCompositeItem,
   setCompositeCount,
   updateMealItemPortion,
@@ -35,11 +36,9 @@ import {
   parseCount,
   planLoggedCount,
 } from '@/lib/nutrition/review-rows';
-import {
-  deleteMealWithPhotos,
-  mealPhotoView,
-  type MealPhotoView,
-} from '@/lib/media/meal-photo-store';
+import { mealPhotoViews, type MealPhotoView } from '@/lib/media/meal-photo-store';
+import { deleteMealWithUndo, removeItemWithUndo } from '@/lib/nutrition/undo-offers';
+import { closeUndo, onMeal, runUndo } from '@/lib/nutrition/undo-store';
 import {
   fmtInt,
   fmtQty,
@@ -132,8 +131,34 @@ const PART_FRACTIONS: { label: string; factor: number; spoken: string }[] = [
  * image it was estimated from (0033), and it is drawn here at its own aspect
  * with the retention stated under it. A meal with no photo draws NOTHING —
  * no frame, no placeholder, no "add a photo" control that this binary could not
- * honour (00-design-spec.md §5). Deleting the meal deletes the file, which is
- * why {@link deleteMealWithPhotos} stands in for `deleteMeal` here.
+ * honour (00-design-spec.md §5). A meal combined from photographed meals draws
+ * each photo it holds (2026-09-23). Deleting the meal deletes the files — once
+ * the Undo below has had its chance, which is why `deleteMealWithUndo` stands
+ * in for `deleteMeal` here.
+ *
+ * ## Undo (owner, device, 2026-09-23)
+ *
+ * *"undo for removing a food."* Both removals on this screen offer one, drawn
+ * as the Log tab's water receipt is (src/components/nutrition/undo-row.tsx),
+ * and both go through src/lib/nutrition/undo-offers.ts, which pairs each
+ * removal with its put-back:
+ *
+ * - **An item's ×** runs `removeItemWithUndo` — `removeMealItem`, having read
+ *   every row it deletes — and the receipt appears at the foot of the Items
+ *   plate, above Add food. Undo puts those rows back verbatim
+ *   (`restoreMealItems`): same ids, same snapshot, same place in the list, and
+ *   the meal's totals back to the exact figures they read before.
+ * - **Delete this meal** runs `deleteMealWithUndo` and closes the screen as it
+ *   always has; the receipt is on the list of the day the meal was logged on,
+ *   because that is where it was and where it comes back. Its photo files stay
+ *   on disk, held, until that offer closes (src/lib/media/held-files.ts).
+ *
+ * The window (src/lib/nutrition/undo-store.ts): no timer; the next removal
+ * replaces it; any other write on this screen, or leaving it, closes it — an
+ * item put back beside an edit made since would be a meal nobody logged. A
+ * write this screen did not make (a queued revision drained on return to the
+ * foreground) does not close it, so the repository refuses that put-back
+ * itself, and the row then says it could not.
  *
  * ## Conformed Set surface system
  *
@@ -170,9 +195,10 @@ const PART_FRACTIONS: { label: string; factor: number; spoken: string }[] = [
 type MealState = {
   meal: MealRow | undefined;
   items: MealItemWithServing[];
-  /** The meal's photo, or null — which is both "no photo" and "the file is
-   *  gone", because a broken frame is worse than no frame (0033). */
-  photo: MealPhotoView | null;
+  /** The meal's photos, newest first, or none — which is both "no photo" and
+   *  "the file is gone", because a broken frame is worse than no frame (0033).
+   *  One, except on a meal combined from photographed meals (2026-09-23). */
+  photos: MealPhotoView[];
 };
 
 /** The inline portion-editor's state for one item. `food` is the catalog food
@@ -226,9 +252,9 @@ function readMeal(id: string): MealState {
     meal: getMeal(db, id),
     items: listMealItems(db, id),
     // Native-guarded and total: on a runtime with no file system module (the
-    // web logic-check preview, the headless render suite) this is null and the
+    // web logic-check preview, the headless render suite) this is empty and the
     // screen simply has no photo section.
-    photo: mealPhotoView(db, id),
+    photos: mealPhotoViews(db, id),
   };
 }
 
@@ -332,7 +358,11 @@ export default function MealDetailScreen() {
   // The count-of-pieces editor's draft for one composite, or null (0059).
   const [countEdit, setCountEdit] = useState<CountEdit | null>(null);
 
-  const reload = useCallback(() => {
+  // Re-read the meal and reset every draft — everything a reload does except
+  // closing the item Undo. The Undo's own two moments (an item just removed,
+  // an Undo just tried) re-read through this, so the offer they just made, or
+  // the refusal they just drew, survives the re-read.
+  const reread = useCallback(() => {
     setState(readMeal(mealId));
     // Regaining focus disarms a pending delete — a confirm must be two taps in
     // a row, not one tap now and a fatal one after a detour through Add food.
@@ -349,9 +379,20 @@ export default function MealDetailScreen() {
     setNameEdit(null);
     setCountEdit(null);
   }, [mealId]);
+  const reload = useCallback(() => {
+    reread();
+    // Every other write on this screen reloads, and each one is "the next
+    // write" that closes an open item Undo — putting a row back beside a scale
+    // or a count made since would rebuild a meal nobody logged (and the
+    // repository would refuse it: `restoreMealItems`).
+    closeUndo(onMeal);
+  }, [reread]);
   useFocusEffect(reload);
+  // An item removed here, while it can still be put back. Closed when this
+  // screen is left (src/hooks/use-undo-offer.ts).
+  const undo = useUndoOffer('meal', mealId);
 
-  const { meal, items, photo } = state;
+  const { meal, items, photos } = state;
   const today = todayISODate();
 
   /** Open the inline portion editor for a logged item, prefilled from its
@@ -447,10 +488,19 @@ export default function MealDetailScreen() {
 
   const removeItem = (itemId: string) => {
     // Removing a composite takes its parts (the 0058 cascade); removing the
-    // LAST part takes the composite (invariant 4). Both live in the repository,
-    // so this screen just re-reads.
-    removeMealItem(getDb(), itemId);
-    reload();
+    // LAST part takes the composite (invariant 4). Both live in the repository;
+    // `removeItemWithUndo` removes through it and offers the Undo — replacing,
+    // and so closing, any older one — then this screen re-reads WITHOUT the
+    // close `reload` makes, which would shut the offer just made.
+    removeItemWithUndo(getDb(), itemId);
+    reread();
+  };
+
+  /** Put back the last removal; the repository did the work, so re-read. A
+   *  refused Undo stays on the row, saying so, until the next write. */
+  const undoRemoval = () => {
+    runUndo();
+    reread();
   };
 
   /** The one-level tree the plate draws (0058). */
@@ -610,8 +660,10 @@ export default function MealDetailScreen() {
       return;
     }
     // NOT `deleteMeal`: the 0033 CASCADE takes the photo ROWS and leaves the
-    // bytes on disk forever. This is the one call that clears both.
-    deleteMealWithPhotos(getDb(), meal.id);
+    // bytes on disk. The rows go now; the bytes go when the Undo offered on the
+    // list of the meal's own day closes without being taken — a removed file
+    // is the one thing an Undo could not bring back.
+    deleteMealWithUndo(getDb(), meal.id);
     router.back();
   };
 
@@ -805,7 +857,14 @@ export default function MealDetailScreen() {
       {/* The photo the estimate was made from (0033). Drawn at its own aspect —
           no crop, no guessed square — and only when there is one: a meal
           without a photo draws nothing at all rather than an empty frame. */}
-      {photo ? <MealPhoto photo={photo} name={meal.name} /> : null}
+      {photos.map((photo, index) => (
+        <MealPhoto
+          key={photo.id}
+          photo={photo}
+          name={meal.name}
+          place={photos.length > 1 ? { index, of: photos.length } : null}
+        />
+      ))}
 
       {/* Totals — the meal's own columns: item sums when itemized, the typed
           numbers when free-form. */}
@@ -988,6 +1047,10 @@ export default function MealDetailScreen() {
             </View>
           )}
 
+          {/* The receipt for the item just removed — a ruled row of this same
+              plate, where the item was, above the way to add one. */}
+          {undo ? <UndoRow offer={undo} onUndo={undoRemoval} /> : null}
+
           <View className="mt-1">
             <ActionRow
               icon="add"
@@ -1113,8 +1176,23 @@ export default function MealDetailScreen() {
  * The caption states the retention out loud. An image that silently disappears
  * in a week is a surprise; one that says when it goes is a policy the user can
  * plan around — and it is a measured value, so it is mono.
+ *
+ * **A combined meal draws each photo it holds** (2026-09-23), newest first, one
+ * under the other: each is the evidence for its own part of the meal, and the
+ * combine's consequence line promised they move into it. `place` numbers them
+ * for VoiceOver only; each keeps its own retention caption, because each keeps
+ * its own clock.
  */
-function MealPhoto({ photo, name }: { photo: MealPhotoView; name: string }) {
+function MealPhoto({
+  photo,
+  name,
+  place,
+}: {
+  photo: MealPhotoView;
+  name: string;
+  /** Its position when the meal holds several; null when it is the only one. */
+  place: { index: number; of: number } | null;
+}) {
   const ratio = photo.width != null && photo.height != null ? photo.width / photo.height : 4 / 3;
   const clears =
     photo.clearsInDays <= 0
@@ -1130,7 +1208,9 @@ function MealPhoto({ photo, name }: { photo: MealPhotoView; name: string }) {
           resizeMode="cover"
           // VoiceOver gets what the picture IS, not "image". The meal's own name
           // is the only thing on this screen that describes it.
-          accessibilityLabel={`Photo of ${name}`}
+          accessibilityLabel={
+            place ? `Photo ${place.index + 1} of ${place.of}, ${name}` : `Photo of ${name}`
+          }
           style={{ width: '100%', aspectRatio: ratio }}
         />
       </View>

@@ -28,6 +28,7 @@ import {
   deletePendingEstimate,
   pendingEstimateFileNames,
 } from '@/lib/db/repositories/pending-estimates';
+import { heldFiles } from '@/lib/media/held-files';
 import { nativeStoreIn, photoFileName, type PhotoFileStore } from '@/lib/media/photo-file-store';
 
 export type { PhotoFileStore };
@@ -82,17 +83,19 @@ export type PendingEstimateSweep = { orphanFilesRemoved: number };
  * row CASCADEd away and left the JPEG behind.
  *
  * One direction only, by design (see the header): a row whose file is missing
- * keeps its row.
+ * keeps its row. And a file an open Undo holds (src/lib/media/held-files.ts) is
+ * not an orphan yet: its meal was deleted a moment ago and may be put back.
  */
 export function sweepPendingEstimatePhotos(
   db: Database,
-  store: PhotoFileStore | null
+  store: PhotoFileStore | null,
+  held: ReadonlySet<string> = heldFiles()
 ): PendingEstimateSweep {
   if (!store) return { orphanFilesRemoved: 0 };
   const claimed = new Set(pendingEstimateFileNames(db));
   let orphanFilesRemoved = 0;
   for (const name of store.list()) {
-    if (claimed.has(name)) continue;
+    if (claimed.has(name) || held.has(name)) continue;
     if (store.remove(name)) orphanFilesRemoved++;
   }
   return { orphanFilesRemoved };

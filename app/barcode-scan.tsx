@@ -27,6 +27,7 @@ import {
 } from '@/lib/media/camera';
 import { fmtAmount, fmtInt, fmtQty, mealNameForProduct } from '@/lib/nutrition/format';
 import { lookupOffProduct, normalizeBarcode, OffLookupError } from '@/lib/nutrition/openfoodfacts';
+import { commitScanMealName, offersScanMealName } from '@/lib/nutrition/scan-meal-name';
 import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
 import type { VolumeUnit } from '@/lib/user/types';
@@ -77,6 +78,24 @@ import type { VolumeUnit } from '@/lib/user/types';
  * (`mealNameForProduct`); a second scan into the same meal leaves the title
  * alone, and a meal arriving by `mealId` is never retitled. The day part
  * survives as the fallback, because `meals.name` is NOT NULL.
+ *
+ * ## …and a meal of several scans can be named before it is left (2026-09-23)
+ *
+ * The owner, from the device: *"meal name for scanning multiple foods."* A
+ * session that logs a second food into the meal it created has stopped being
+ * "the oat milk" and become breakfast, and the title A4 gave it is the first
+ * product's. So once this screen has put TWO foods into a meal it created, a
+ * **Name** field sits above Done, holding the name the meal has — the one it
+ * would have kept anyway.
+ *
+ * - **It never blocks a quick save.** The field is prefilled and not focused;
+ *   Done works untouched, and an untouched or emptied field writes nothing
+ *   (`mealNameToSave`), so the default stands without a write.
+ * - **What is typed is kept however the screen is left** — Done, the return
+ *   key, the field losing focus, or the back chevron (an unmount commit), all
+ *   through the one `updateMealName` the meal screen's rename uses.
+ * - **Only a meal this session created.** A meal arriving by `mealId` is someone
+ *   else's record (A4's rule) and is renamed on its own screen, as before.
  *
  * ## The `code` param — the merged camera's handoff
  *
@@ -205,6 +224,57 @@ function RecentBarcodeRow({
   );
 }
 
+/**
+ * The name of a meal this session has built from several scans (owner, device,
+ * 2026-09-23: *"meal name for scanning multiple foods"*).
+ *
+ * Form (b) of the capture rule, as the meal screen's rename is: a
+ * `SectionLabel` and a field wearing `border-paper-deep bg-paper-dim` itself,
+ * no device around it — a form is controls, not content. Serif, because a
+ * meal's name is speech. The note is the count it names, in mono.
+ *
+ * **Not focused, and prefilled with the name the meal has**, so the quick path
+ * — scan, scan, Done — never stops here: Done writes nothing unless something
+ * was typed. The field commits when editing ends; the screen also commits on
+ * Done and when it goes. No Save button of its own, and so no accent: there is
+ * nothing to confirm that Done does not already confirm.
+ *
+ * Exported so the headless render suite can draw it — the screen only mounts
+ * it after two adds, which a server render cannot make.
+ */
+export function ScanMealName({
+  value,
+  current,
+  count,
+  onChange,
+  onCommit,
+}: {
+  value: string;
+  /** The name the meal has now — the placeholder once the field is emptied. */
+  current: string;
+  /** How many foods this session has put into the meal. */
+  count: number;
+  onChange: (text: string) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <View className="mt-7">
+      <SectionLabel label="Meal name" note={`${count} foods`} />
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        onEndEditing={onCommit}
+        placeholder={current}
+        placeholderTextColor={palette.inkMuted}
+        autoCapitalize="sentences"
+        returnKeyType="done"
+        accessibilityLabel="Meal name"
+        className="mt-2 border border-paper-deep bg-paper-dim px-3 py-2.5 font-serif text-[15px] text-ink"
+      />
+    </View>
+  );
+}
+
 export default function BarcodeScanScreen() {
   const router = useRouter();
   const { mealId, code: incomingCode } = useLocalSearchParams<{
@@ -233,6 +303,11 @@ export default function BarcodeScanScreen() {
   // Display-only: whether a millilitre portion READS as ml or oz.
   const { units } = useUnitPreferences();
   const [targetMealId, setTargetMealId] = useState<string | null>(mealId ?? null);
+  // The name of the meal THIS session created, as it stands — null when the
+  // meal arrived by `mealId`, or none has been created yet. And the name typed
+  // over it, null while the field is untouched (2026-09-23).
+  const [createdName, setCreatedName] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
   // Portion editor state (mirrors food search's). The typed amount is always in
   // the FOOD'S own unit (g or ml) — the oz/ml preference governs read-only
   // figures, never an entry box (see app/food-search.tsx's Portion type).
@@ -361,13 +436,15 @@ export default function BarcodeScanScreen() {
         addMealItem(db, targetMealId, item);
       } else {
         const now = new Date();
+        const name = mealNameForProduct(food, daypartName(now));
         const { mealId: created } = logMealWithItems(db, {
           date: todayISODate(),
           time: clockFromISO(now.toISOString()),
-          name: mealNameForProduct(food, daypartName(now)),
+          name,
           items: [item],
         });
         setTargetMealId(created);
+        setCreatedName(name);
       }
       setAdded((n) => n + 1);
       resumeScanning();
@@ -387,6 +464,40 @@ export default function BarcodeScanScreen() {
       addItem(itemForPortion(food, { amount }), food);
     }
   };
+
+  /**
+   * Write the typed name when it changes anything, through the meal screen's
+   * own `updateMealName` (`commitScanMealName`, src/lib/nutrition/
+   * scan-meal-name.ts). Runs on Done, when the field stops being edited, and
+   * when the screen goes — so a name typed and then left by the back chevron is
+   * kept too. The helper compares with the name the DATABASE holds, so Done
+   * and the unmount right after it write once, not twice.
+   */
+  const commitName = () => {
+    if (targetMealId === null || createdName === null) return;
+    try {
+      const written = commitScanMealName(getDb(), targetMealId, nameDraft);
+      if (written === null) return;
+      setCreatedName(written);
+      setNameDraft(null);
+    } catch (error) {
+      console.warn('[barcode] rename failed', error);
+    }
+  };
+  // The unmount commit reads the LATEST closure, not the first render's.
+  const commitNameRef = useRef(commitName);
+  useEffect(() => {
+    commitNameRef.current = commitName;
+  });
+  useEffect(() => () => commitNameRef.current(), []);
+
+  const done = () => {
+    commitName();
+    router.back();
+  };
+  // The name the field holds when it is offered — two foods in a meal this
+  // session made (`offersScanMealName`) — else null, and no field.
+  const nameable = offersScanMealName(createdName, added) ? createdName : null;
 
   const amountPreview =
     phase.kind === 'portion'
@@ -659,11 +770,23 @@ export default function BarcodeScanScreen() {
         </View>
       ) : null}
 
+      {/* Two foods in a meal this session made: it can be named before it is
+          left. Prefilled with the name it has; nothing waits on it. */}
+      {nameable !== null ? (
+        <ScanMealName
+          value={nameDraft ?? nameable}
+          current={nameable}
+          count={added}
+          onChange={setNameDraft}
+          onCommit={commitName}
+        />
+      ) : null}
+
       {added > 0 ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Done"
-          onPress={() => router.back()}
+          onPress={done}
           className="mt-6 min-h-[44px] items-center justify-center active:opacity-60">
           <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
             Done

@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { DayPicker } from '@/components/ui/day-picker';
 import { Screen } from '@/components/ui/screen';
@@ -9,6 +10,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
 import { StackHeader } from '@/components/ui/stack-header';
 import { readNutritionDay, type NutritionDayView } from '@/hooks/use-nutrition';
+import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { timezoneNotesIn } from '@/lib/db/repositories/day-meta';
@@ -22,6 +24,7 @@ import {
   type DayMetric,
 } from '@/lib/nutrition/remaining';
 import type { MealRow, NutritionHistoryDay, NutritionTargetsRow } from '@/lib/nutrition/types';
+import { runUndo } from '@/lib/nutrition/undo-store';
 import { dayLabel, dayPhrase, type DayBounds } from '@/lib/utils/day-cursor';
 
 /**
@@ -290,6 +293,16 @@ export default function NutritionHistoryScreen() {
     setTimezoneNotes(timezoneNotesFor(nextDays, next, fresh));
   }, [window, day, today]);
   useFocusEffect(reload);
+  // A meal deleted from a past day's list comes back to that list (2026-09-23):
+  // the same receipt row the Eat tab draws, closed when this screen is left.
+  // Keyed by the day DRAWN (`view.date`), so stepping the picker to another
+  // day hides it there and stepping back shows it again — never an Undo under
+  // a day it would not put anything back on.
+  const undo = useUndoOffer('list', view.date);
+  const undoLast = () => {
+    runUndo();
+    reload();
+  };
 
   const selectDay = (next: string) => {
     setDay(next);
@@ -435,7 +448,15 @@ export default function NutritionHistoryScreen() {
                 />
               ))}
             </View>
+            {undo ? <UndoRow offer={undo} onUndo={undoLast} /> : null}
           </Block>
+        </View>
+      ) : undo ? (
+        // The day's only meal, just deleted: no plate to close, but its Undo
+        // still belongs under the day it came off.
+        <View className="mt-7">
+          <SectionLabel label="Meals" />
+          <UndoRow offer={undo} onUndo={undoLast} first />
         </View>
       ) : null}
 

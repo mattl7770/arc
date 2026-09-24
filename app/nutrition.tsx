@@ -1,9 +1,11 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
+import { CombineFooter } from '@/components/nutrition/combine-meals';
 import { LogSheet } from '@/components/nutrition/log-sheet';
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -16,8 +18,12 @@ import {
   type KitchenCounts,
   type OverTime,
 } from '@/hooks/use-nutrition';
+import { useUndoOffer } from '@/hooks/use-undo-offer';
+import { getDb } from '@/lib/db/client';
+import { todayISODate } from '@/lib/db/date';
 import { expectedDayFraction } from '@/lib/home/readiness';
 import { barFigure, macroGrade, OVERFLOW_CAP } from '@/lib/nutrition/bar';
+import { CombineRefused, planCombine } from '@/lib/nutrition/combine';
 import { fmtInt, macroCells } from '@/lib/nutrition/format';
 import {
   dayFigure,
@@ -26,6 +32,8 @@ import {
   type DayMetric,
 } from '@/lib/nutrition/remaining';
 import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
+import { combineWithUndo } from '@/lib/nutrition/undo-offers';
+import { runUndo } from '@/lib/nutrition/undo-store';
 import type { SignalLevel } from '@/types/home';
 
 /**
@@ -150,6 +158,18 @@ import type { SignalLevel } from '@/types/home';
  * gauges a row, twenty rows deep, is the data dump CLAUDE.md §5 exists to
  * prevent — and the bars here replace bare numbers rather than adding a second
  * dashboard.
+ *
+ * ## Undo and Combine (owner, device, 2026-09-23)
+ *
+ * *"undo for removing a food"* — a meal deleted on its own screen comes back
+ * from here: the receipt is the last ruled row of Eaten today (the water
+ * receipt's anatomy, src/components/nutrition/undo-row.tsx), because this is
+ * where the meal was and where it returns. *"some way to easily combine
+ * multiple food logs that are the same meal"* — `Combine` on the plate's label
+ * line turns the rows into checkboxes, and the plate's foot names the result,
+ * states the consequence and confirms it (src/components/nutrition/
+ * combine-meals.tsx). A combine is undone from the same receipt row. Neither
+ * spends the accent, and neither adds anything to a resting row.
  */
 
 /** The Today grid's three counted-down macros. Fiber is deliberately absent —
@@ -514,30 +534,62 @@ const MACRO_CELL_LAST = 'flex-1';
  * both fit on a narrow phone. It is still on the meal's own screen, under Items.
  *
  * No bar here, deliberately — see the boundary in this file's header.
+ *
+ * ## Choosing it, to combine (2026-09-23)
+ *
+ * With `select` set the row is a CHECKBOX, not a door: a tap chooses it and a
+ * square at the leading edge says so — `square-outline`, then `checkbox`, in
+ * ink, never the accent. A meal still waiting on its estimate is drawn
+ * disabled, because the combine would refuse it (src/lib/nutrition/combine.ts)
+ * and its own line already says why. Nothing else about the row moves: the
+ * time, the name, the macros and the kcal stay in their columns, so the list
+ * being chosen from is the list that was being read.
  */
 function MealRowItem({
   meal,
   estimatePending,
   first,
+  select,
   onPress,
 }: {
   meal: MealRow;
   /** A queued AI estimate owes this meal its numbers (0057). */
   estimatePending: boolean;
   first: boolean;
+  /** Set while meals are being chosen to combine; absent otherwise. */
+  select?: { checked: boolean };
   onPress: () => void;
 }) {
   const cells = macroCells(meal);
   const hasMacros = cells.some((cell) => cell.text !== null);
   const unrecorded = meal.kcal == null;
+  const choosing = select !== undefined;
+  const locked = choosing && estimatePending;
   return (
     <View>
       <Divider first={first} />
       <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${meal.name}, details`}
+        accessibilityRole={choosing ? 'checkbox' : 'button'}
+        accessibilityLabel={
+          !choosing
+            ? `${meal.name}, details`
+            : locked
+              ? `${meal.name}, waiting on its estimate, cannot be combined yet`
+              : meal.name
+        }
+        accessibilityState={choosing ? { checked: select.checked, disabled: locked } : undefined}
+        disabled={locked}
         onPress={onPress}
         className="min-h-[46px] flex-row gap-3 py-3 active:opacity-60">
+        {choosing ? (
+          <View className="pt-0.5">
+            <Ionicons
+              name={select.checked ? 'checkbox' : 'square-outline'}
+              size={18}
+              color={locked ? palette.inkMuted : palette.ink}
+            />
+          </View>
+        ) : null}
         <Text className="w-12 pt-0.5 font-mono text-[12px] text-ink-secondary">
           {meal.time ?? '—'}
         </Text>
@@ -745,6 +797,22 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     reload,
   } = useNutrition();
   const [logOpen, setLogOpen] = useState(false);
+  // A meal deleted from today, or a combine made on it, while it can still be
+  // put back — drawn at the foot of Eaten today, closed when this screen is
+  // left. Keyed by today: a meal deleted from a past day is offered on that
+  // day's history view, not here.
+  const undo = useUndoOffer('list', todayISODate());
+  // The meals being chosen to combine, the name typed for the result (null
+  // while untouched), and why the last Combine tap was refused (null when it
+  // was not); null when not combining.
+  const [combine, setCombine] = useState<{
+    chosen: ReadonlySet<string>;
+    name: string | null;
+    refused: string | null;
+  } | null>(null);
+  // A choice made and walked away from is not resumed on the way back: the
+  // day may have changed under it.
+  useFocusEffect(useCallback(() => () => setCombine(null), []));
 
   const targetFor = (metric: DayMetric): number | null => {
     if (targets === null) return null;
@@ -789,6 +857,52 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
   const recipes = recipeDetail(kitchen);
   const grocery = groceryDetail(kitchen);
   const openHistory = () => router.push('/nutrition-history');
+
+  // COMBINE (owner, device, 2026-09-23). The control shows only on a day with
+  // two meals that could become one — a meal waiting on its estimate cannot —
+  // and the plan it draws is the one `combineMeals` runs.
+  const combinable = meals.filter((meal) => !pendingEstimates.has(meal.id)).length >= 2;
+  const plan = planCombine(
+    combine ? meals.filter((meal) => combine.chosen.has(meal.id)) : [],
+    pendingEstimates
+  );
+  const toggleCombine = () =>
+    setCombine((prev) => (prev ? null : { chosen: new Set(), name: null, refused: null }));
+  // A change to the choice or the name is a new attempt: the last refusal no
+  // longer describes it.
+  const toggleChosen = (id: string) =>
+    setCombine((prev) => {
+      if (!prev) return prev;
+      const chosen = new Set(prev.chosen);
+      if (chosen.has(id)) chosen.delete(id);
+      else chosen.add(id);
+      return { ...prev, chosen, refused: null };
+    });
+  const combineChosen = () => {
+    if (!combine || plan.kind !== 'ok') return;
+    try {
+      // `combineWithUndo` combines through the repository and offers the Undo
+      // (src/lib/nutrition/undo-offers.ts); the plan it runs is this one.
+      combineWithUndo(getDb(), [plan.keep.id, ...plan.absorb.map((meal) => meal.id)], combine.name);
+      setCombine(null);
+    } catch (error) {
+      // Refused, writing nothing — most likely the day moved under a stale
+      // screen (an estimate queued, a meal deleted). Stay in combine mode and
+      // say why at the foot, over the fresh day the reload reads.
+      console.warn('[nutrition] combine refused', error);
+      const refused =
+        error instanceof CombineRefused
+          ? error.message
+          : 'These meals could not be combined. Nothing was changed.';
+      setCombine((prev) => (prev ? { ...prev, refused } : prev));
+    }
+    reload();
+  };
+  /** Put back the last deletion or combine, then re-read the day. */
+  const undoLast = () => {
+    runUndo();
+    reload();
+  };
 
   return (
     <Screen scroll>
@@ -991,10 +1105,35 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
             <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
               Nothing logged yet today.
             </Text>
+            {/* The only meal of the day, just deleted: its Undo still belongs
+                here, under the sentence its absence produced. */}
+            {undo ? <UndoRow offer={undo} onUndo={undoLast} first /> : null}
           </View>
         ) : (
           <Block device="plate">
-            <SectionLabel label="Eaten today" note={`${fmtInt(kcal.eaten)} kcal`} />
+            {/* The label line carries the one control that acts on the list as
+                a whole — the Today corner's anatomy: label and tally left, a
+                label-voice control right. */}
+            <View className="flex-row items-baseline gap-3">
+              <View className="flex-1">
+                <SectionLabel label="Eaten today" note={`${fmtInt(kcal.eaten)} kcal`} />
+              </View>
+              {combine || combinable ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    combine ? 'Stop combining meals' : 'Combine meals that were one meal'
+                  }
+                  accessibilityState={{ expanded: combine !== null }}
+                  hitSlop={16}
+                  onPress={toggleCombine}
+                  className="active:opacity-60">
+                  <Text className="font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary">
+                    {combine ? 'Cancel' : 'Combine'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
             <View className="mt-1">
               {meals.map((meal, index) => (
                 <MealRowItem
@@ -1002,10 +1141,27 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                   meal={meal}
                   estimatePending={pendingEstimates.has(meal.id)}
                   first={index === 0}
-                  onPress={() => router.push({ pathname: '/meal-detail', params: { id: meal.id } })}
+                  select={combine ? { checked: combine.chosen.has(meal.id) } : undefined}
+                  onPress={() =>
+                    combine
+                      ? toggleChosen(meal.id)
+                      : router.push({ pathname: '/meal-detail', params: { id: meal.id } })
+                  }
                 />
               ))}
             </View>
+            {combine ? (
+              <CombineFooter
+                plan={plan}
+                name={combine.name}
+                refused={combine.refused}
+                onName={(name) =>
+                  setCombine((prev) => (prev ? { ...prev, name, refused: null } : prev))
+                }
+                onCombine={combineChosen}
+              />
+            ) : null}
+            {undo ? <UndoRow offer={undo} onUndo={undoLast} /> : null}
           </Block>
         )}
       </View>
