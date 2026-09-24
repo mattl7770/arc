@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, LinearTransition, ZoomIn } from 'react-native-reanimated';
 
+import { DurationField } from '@/components/exercise/duration-field';
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
@@ -37,6 +38,7 @@ import {
   pairIngestedWorkouts,
   unlinkIngestedWorkout,
 } from '@/lib/db/repositories/workout-ingest';
+import { secondsToClock } from '@/lib/exercise/clock-entry';
 import { restSecFor } from '@/lib/exercise/constants';
 import {
   DRAFT_VERSION,
@@ -420,7 +422,9 @@ function blocksFromWorkout(detail: WorkoutDetail, units: UnitPreferences): LiveB
       weight: weightText,
       reps: s.reps == null ? '' : String(s.reps),
       rpe: s.rpe == null ? '' : String(s.rpe),
-      time: s.durationSec == null ? '' : formatClock(s.durationSec),
+      // The clock field's own normal form (h:mm:ss from the hour), so a stored
+      // set opens as its digits and a focus-and-blur leaves it untouched.
+      time: s.durationSec == null ? '' : secondsToClock(s.durationSec),
       distance: s.distanceM == null ? '' : String(displayDistance(s.distanceM, units)),
       setType: s.setType,
       done: true,
@@ -1599,24 +1603,22 @@ function ExerciseBlock({
                   </View>
                 ) : null}
 
-                {/* The clock. `numbers-and-punctuation` rather than a number pad
-                    because mm:ss needs a colon and no iOS pad has one; it is a
-                    full keyboard, so it already carries a return key, and
-                    KEYPAD_DONE is set anyway so the rule reads the same at every
-                    numeric field on the screen. `parseClock` is tolerant enough
-                    that a bare "60" is a minute. */}
+                {/* The clock (owner, 2026-09-23: *"plank time should not require
+                    me to put in a colon"*). A plain number pad whose digits fill
+                    from the right — 1 3 0 draws 1:30 — so the colon is drawn,
+                    never typed. The well is the same 36pt well as its
+                    neighbours; the field inside it overhangs to a 44pt target
+                    (src/components/exercise/duration-field.tsx). `set.time`
+                    stays the m:ss text `finish()` reads with `parseClock`. */}
                 {cols.time ? (
                   <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
-                    <TextInput
+                    <DurationField
                       value={set.time}
                       onChangeText={(time) => onPatch(block.key, set.key, { time })}
                       placeholder={
-                        prev?.durationSec != null ? formatClock(prev.durationSec) : '0:00'
+                        prev?.durationSec != null ? secondsToClock(prev.durationSec) : '0:00'
                       }
-                      placeholderTextColor={palette.inkMuted}
-                      keyboardType="numbers-and-punctuation"
-                      returnKeyType={KEYPAD_DONE}
-                      className="py-1.5 text-center font-mono text-[15px] text-ink"
+                      centered
                       accessibilityLabel={`Time for set ${i + 1}, minutes and seconds`}
                     />
                   </View>

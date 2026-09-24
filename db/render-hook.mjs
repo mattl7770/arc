@@ -7,11 +7,12 @@
  *    node's built-in type stripping cannot parse JSX),
  *  - 'react-native' → 'react-native-web' (installed; the repo's web target),
  *  - stubs for the native/runtime modules a server render can't load:
- *    expo-router (params/router/focus-effect), expo-keep-awake, Ionicons,
+ *    expo-router (params/router/focus-effect/navigation), expo-keep-awake, Ionicons,
  *    react-native-safe-area-context, expo-constants, '@/lib/db/client'
  *    (swapped for a node:sqlite-backed database running the REAL migrations),
  *    and react-native-svg (the body figure's `<Path>` elements, mapped to real
- *    DOM SVG tags — see the stub for why not the package's own web build).
+ *    DOM SVG tags — see the stub for why not the package's own web build),
+ *    and react-native-reanimated (the set grid's spring; the settled frame).
  *
  * Test-harness only — app source is untouched.
  */
@@ -47,6 +48,12 @@ const STUBS = {
   // (the figure's only `mode: 'muscles'` consumer) on the render walk.
   '@/lib/exercise/images.generated': pathToFileURL(
     path.join(HERE, 'render-stubs', 'exercise-images.mjs')
+  ).href,
+  // The real package loads react-native-worklets, whose ESM build resolves
+  // native initializers that exist only in a binary. Stubbing it is what puts
+  // app/workout-live.tsx — the set grid and the session editor — on the walk.
+  'react-native-reanimated': pathToFileURL(
+    path.join(HERE, 'render-stubs', 'react-native-reanimated.mjs')
   ).href,
 };
 
