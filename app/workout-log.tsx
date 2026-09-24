@@ -160,6 +160,12 @@ function draftSetLine(set: ManualDraftSet, units: UnitPreferences): string {
  * The margin note under the entry row: what is optional, and what the units
  * are. It changes with the fields on screen, because the old line ("Reps and
  * weight are optional… Stored in kg") describes a row a plank does not have.
+ *
+ * What is optional and what the units are — never how a field is typed into
+ * (slop pass 4, docs/ai-slop-candidates-2026-09.md §11). The clock field draws
+ * its own colon as the digits arrive, its placeholder reads `Time (mm:ss)`,
+ * and VoiceOver hears the mechanism from the field's own hint
+ * (src/components/exercise/duration-field.tsx).
  */
 function entryMeasuresNote(
   reps: boolean,
@@ -168,10 +174,10 @@ function entryMeasuresNote(
   distance: boolean
 ): string {
   if (time && distance) {
-    return 'Time and distance are optional — log either, or both. Distance is stored in metres.';
+    return 'Time and distance are optional. Distance is stored in metres.';
   }
   if (time) {
-    return 'Time is optional. Type the digits and they fill from the right — 1 3 0 is 1:30.';
+    return 'Time is optional.';
   }
   if (weight && distance) {
     return 'Load and distance are optional. Weight is entered in lb and stored in kg; distance in metres.';

@@ -236,7 +236,7 @@ export function StatusControl({
               }}
             />
             <Text className="px-5 pt-3 font-serif text-[11px] leading-4 text-ink-muted">
-              Anything else, just tell the Coach. Skips on these days stop counting against you;
+              For anything else, tell the Coach. Skips on these days stop counting against you;
               their readings sit out of your 30-day baselines.
             </Text>
           </ScrollView>

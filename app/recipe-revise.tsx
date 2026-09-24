@@ -250,7 +250,7 @@ export default function RecipeReviseScreen() {
               Editing a recipe in words needs a model key — the same one the Coach uses.
             </Text>
             <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-muted">
-              Add one in Settings › Coach, then come back. The recipe editor works offline.
+              Add one in Settings › Coach. The recipe editor works offline.
             </Text>
           </Block>
         </View>

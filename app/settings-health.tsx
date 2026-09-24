@@ -377,8 +377,8 @@ export default function SettingsHealthScreen() {
                 Rides the next build
               </Text>
               <Text className="mt-1 font-serif text-[12.5px] leading-5 text-ink-secondary">
-                The HealthKit module is installed but not in this dev build yet. Run the next EAS
-                build (docs/dev-build.md) and this screen goes live — nothing else to set up.
+                The HealthKit module isn&rsquo;t in this build yet. Run the next EAS build
+                (docs/dev-build.md).
               </Text>
             </>
           ) : !enabled ? (
@@ -648,8 +648,7 @@ export default function SettingsHealthScreen() {
               <View className="mt-4">
                 <Block device="margin">
                   <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-                    Each row reads: measurements Apple Health returned → measurements ARC kept. A
-                    gap between the two is always explained on the line beneath it.
+                    Each row reads: measurements Apple Health returned → measurements ARC kept.
                   </Text>
                   <Text className="mt-2 font-mono text-[11px] text-ink-muted">
                     {`${log.rowsWritten} rows changed`}
@@ -721,14 +720,19 @@ export default function SettingsHealthScreen() {
                 glasses are kept out of what comes back (docs §20), so nothing
                 ARC wrote is counted twice; what cannot be reconciled is the
                 same glass entered twice by hand, one door each. So the rule
-                stays behavioural, and it belongs where the doors are named. */}
+                stays behavioural, and it belongs where the doors are named.
+
+                Slop pass 4 (docs/ai-slop-candidates-2026-09.md §11): "Water
+                goes both ways." restated the Both tag on the scope row above,
+                and the side-by-side clause narrated a screen the route already
+                names. The timing, the corrections, the echo, the rule and the
+                route all stay. */}
             <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
-              Water goes both ways. A glass you log here is written to Apple Health as soon as you
-              log it, and undoing or correcting it here changes it there too. Apple Health sends
-              back one merged total per day with ARC&rsquo;s own glasses left out, so nothing ARC
-              wrote is counted twice. A glass tapped on the watch and typed here is still two
-              glasses, though — log a glass in one place or the other, not both. A day that looks
-              doubled is fixed in Data → Water, where the two entries sit side by side.
+              A glass you log here is written to Apple Health as soon as you log it, and undoing or
+              correcting it here changes it there too. Apple Health sends back one total per day
+              with ARC&rsquo;s own glasses left out, so none is counted twice. A glass tapped on the
+              watch and typed here is two glasses — log it in one place. A doubled day is fixed in
+              Data → Water.
             </Text>
           </Block>
         </View>
@@ -782,8 +786,8 @@ export default function SettingsHealthScreen() {
           <Block device="margin">
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
               Sends — Garmin Connect writes it to Apple Health, so ARC can read it. Never — it stays
-              in Garmin Connect, and no amount of waiting will change that. Unverified — Garmin
-              publishes no answer either way and this has not been checked against a device.
+              in Garmin Connect, and a later sync will not bring it. Unverified — Garmin publishes
+              no answer either way and this has not been checked against a device.
             </Text>
             {GARMIN_ONLY_METRICS.map((metric) => (
               <Text

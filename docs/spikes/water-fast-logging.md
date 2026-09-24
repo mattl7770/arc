@@ -339,7 +339,7 @@ They are recommended **together** because they cover the two genuinely different
 1. `STATISTIC_METRICS` gains `{ metricType: 'water_ml', hkIdentifier: 'HKQuantityTypeIdentifierDietaryWater', hkUnit: <verified>, unit: 'ml', decimals: 0 }`.
    ⚠️ **The HKUnit string is the load-bearing detail and must be checked against the library's generated `QuantityUnitByIdentifierMap` before shipping**, exactly as every other unit in this file was (`mapping.ts:616–620`). Litres where millilitres were meant is a factor of a thousand into a health record, silently — the same class of bug as the body-fat percent trap documented at `mapping.ts:635–643`, which is why that note exists.
 2. `METRIC_COVERAGE` gains a `dietaryWater` row: `use: "The Water record's day total"`, `garmin: 'unverified'` with a note saying what was and was not checked, `verdictDays: null`.
-3. One sentence in Settings › Apple Health: ARC **reads** hydration and does not write it. *(Rewritten 2026-09-21: "Water goes both ways." — `app/settings-health.tsx`.)*
+3. One sentence in Settings › Apple Health: ARC **reads** hydration and does not write it. *(Rewritten 2026-09-21: "Water goes both ways." — `app/settings-health.tsx`. That opening sentence was cut on 2026-09-23 by the fourth slop walk, because the scope row's `Both` tag above it already says it; the paragraph now opens on when a glass goes out — `docs/ai-slop-candidates-2026-09.md` §11.C.)*
 
 **Voice.** Nothing new anywhere. The Entries row reads in mono (`16 oz`) with a serif provenance line — both already authored.
 

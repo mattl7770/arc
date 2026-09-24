@@ -630,7 +630,10 @@ database and the user can delete them — so the 90-day first sync applies. The 
 **Every read reports itself** (2026-08-26). `readQuantitySamples` returns the samples *plus*
 which exclusion predicate survived and any native error, and the per-sample guards return their
 rejections by reason. Settings › Apple Health renders both under **Last sync** as
-`returned → rows` with the gap explained on the line beneath it. This exists because this
+`returned → rows`, with a line beneath wherever a guard, a refused predicate or an error accounts
+for the gap. (A bucketed metric's samples folding into fewer daily rows gets no line, which is
+why the screen's legend no longer promises one for every gap: `docs/ai-slop-candidates-2026-09.md`
+§11.C.) This exists because this
 direction failed on the first device that ever ran it and nothing in the app could say where —
 see §14.
 

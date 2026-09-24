@@ -1,5 +1,7 @@
 # AI-slop candidates — September 2026
 
+**Status, 2026-09-23 (later): a fourth walk (§11), before the next build, applied 14 entries covering 19 string sites: the round-1 and round-2 builds, three screens no walk had read whole, and four key gates that still carried a tail the walk cut elsewhere. It confirmed all five lines an independent verifier flagged. Same approval, same fact-keeping rule; 13 of the 14 kept a fact. 3 more are held for the owner (§11.G).**
+
 **Status, 2026-09-23: a third walk (§10) applied 28 more entries covering 39 string sites the first two walks could not reach, most of them built in `src/lib` rather than written in a screen. The same blanket approval and the same fact-keeping rule applied. 4 are held for the owner (§10.G).** The 2026-09-19 status below still describes §0–§9.
 
 **Status: FULLY APPLIED, 2026-09-19, by owner approval of the WHOLE list** (Matt: *"Execute the full AI slop candidate list, we can always add stuff back later if we need to."*). This supersedes the partial approval below.
@@ -670,6 +672,156 @@ This is §0's shape exactly: "How it is going" became "Adherence". A section lab
 
 ---
 
+## §11 — The fourth walk: the round-1 and round-2 builds (2026-09-23)
+
+The owner, again, before the next build: *"there is still plenty of slop in the app. another anti ai slop search should be conducted prior to the next build."*
+
+**Scope.** Every user-visible string added or changed by `git diff 05e39d7..a3d1bcf` on `app/`, `src/components/`, `src/hooks/` and `src/lib/`: the Coach's delete cards, the plank clock, water both ways and its pointer, the status door and its sheet, slices (ATE / OF), the logger (leave, resume, reorder, duration), lifts (load basis, records, trends, PR stamps, the Exercises list), the blank-HRV sync cell, food Undo / Combine / the scan name, micros (the Eat-tab row, the key micro), and the gap fixes. **Plus two merges no walk had read:** the protocol time wheel (`70557b0`) and the macro bars (`8045c03`) landed on main after the third walk's branch was cut from `6f3acf1` and before it merged, so they sit *inside* `05e39d7` and outside that diff. The bars carry no copy; the wheel carried one line (§11.A). **Plus five lines an independent verifier flagged** as breaking this list's own rules. All five are confirmed and applied below, and two of them showed that a screen had never been read whole: Settings › Apple Health, and Compare. Both were then read top to bottom, and so was the status sheet the brief names. **Plus four lines outside the range** (§11.F): an independent review of this branch found that the walk had cut a "come back" tail from Compare and a "meanwhile" from the time wheel, and left the same tail standing on four key-gate screens older than the range. The rule does not change with the diff, so they are cut too.
+
+**Why three walks missed the flagged five.** Three are new: the micros empty state was rewritten by the micros build (`aad8b18`), the plank-clock note by the clock build (`7ac1f48`), and the water paragraph by the two-way build (`d825787`), which took it from three sentences to five before the gap fix (`d481865`) added when a glass goes out. The other two were never on anyone's list. The sync-log legend (`settings-health.tsx:651`, 2026-08-26) predates the first walk and was read and passed each time, because it reads like a caption. Compare's empty state is drawn only when the pair the screen was handed no longer resolves and no pose has two photos, and all three walks read screens in the states their fixtures reached.
+
+**Method.** The diff was parsed with comments stripped, and every JSX text node and every string literal of three or more words on an added line was extracted by script and read: about 300 strings in 54 files. Each string built in `src/lib` or `src/hooks` was traced to the screen that prints it. That covers Alert titles, bodies and buttons, accessibility labels and hints, the Coach's delete-card lines, Undo rows, receipts and pointers. The same six tags, the same three shapes and the same rule applied: never take a fact with the cut, keep consequence lines of irreversible acts, and leave the owner's held lines alone (§10.G). **Out of scope, as the brief requires:** text addressed to the model rather than the user. That means tool descriptions, the system prompt, the domain refusal reasons (they say "read-only *to you*" and name `edit_record`), the state block's revert cue in `turn-context.ts`, and the read tools' notes about `null`. The Coach's token ceilings do not move.
+
+**Counts.** **14 entries, 19 string sites, all applied**: **13 `applied, fact kept`**, **1 `applied`** (the cut carried no fact). **Where they were:** in the diff, **6** (the micros empty state, the water paragraph, the clock note, the combine foot, the day refusal, the anchor card). In the gap between the third walk's branch and its merge, **1** (the wheel). On screens the diff touched but no walk had read whole, **8** (Settings › Apple Health ×3, Settings › Backups ×1, Compare ×2, the logger's other optional-field note, the status sheet). Outside the diff, the same tail the walk cut inside it, **4** (the key gates, §11.F). **3 held for the owner** (§11.G).
+
+### §11.A — The time wheel, merged between the third walk's branch and its merge
+
+**`src/components/protocols/time-wheel.tsx:140`** · `chatty-helper` · **confident**
+> "The wheel arrives with the next app build. **Type it here meanwhile.**"
+
+The fallback field is directly above the sentence, holding the stored time. The second sentence pointed at it. This is the archetype §8 cut from `water.tsx:397` ("Tap an amount below…").
+**Now:** "The wheel arrives with the next app build."
+**Outcome:** applied, **fact kept: the build gate**. Refuted on `protocol-item (edit, no wheel)`, whose existing expect already pins the kept sentence.
+
+### §11.B — Nutrition: the micros screen, and the combine foot
+
+**`app/nutrition-micros.tsx:120`** · `feature-explainer` (shape 1) · **confident** · *flagged*
+> "Nothing recorded yet today. Foods from the catalog contribute micronutrients, **and an estimate records the ones a food is a notable source of.**"
+
+§3 left this empty state with a second sentence *because it carried a fact*: this screen is empty on a day whose logged meals carry no micros, and the sentence says why. The micros build kept that fact and added the estimator's selection rule to it. The rule was the explainer.
+**Now:** "Nothing recorded yet today — only catalog foods and estimates carry micronutrients."
+**Outcome:** applied, **fact kept: where micronutrients come from**, and it is now one sentence. How the estimator chooses what to record is its prompt's business. The caveat that governs a populated day ("Only foods with recorded micronutrients contribute, so these totals can run low") is untouched. Pinned and refuted on `nutrition-micros (no fiber recorded)`: three meals are logged in that fixture and none carries micros, which is the day this sentence exists for.
+
+**`src/components/nutrition/combine-meals.tsx:75`** · `chatty-helper` · **confident**
+> "Tap the meals that were **really** one meal."
+
+**Now:** "Tap the meals that were one meal."
+**Outcome:** applied. The toggle that opens combine mode is already labelled "Combine meals that were one meal", without the "really". Pinned on a new `combine foot (none chosen)` render. The existing resting-state refutation now uses the new wording, because the wording changed.
+
+**`src/lib/nutrition/combine.ts:100`** · `restates-obvious` · **confident**
+> "These were logged on different days. A meal belongs to one day, **so only meals from the same day combine.**"
+
+The rule was stated twice, the second time as its own consequence.
+**Now:** "These were logged on different days, and a meal belongs to one day."
+**Outcome:** applied, **fact kept: what went wrong, and the rule**. The recipe refusal next to it has the same shape. `db/nutrition-v2.test.mjs`'s `includes('different days')` still holds. The Eat tab lists one day, so this branch is defensive. It is pinned from the planner itself on a new `combine foot (two days)` render.
+
+### §11.C — Settings, read whole
+
+**`app/settings-health.tsx:726–731`** · `feature-explainer` + `restates-obvious` · **confident** · *flagged*
+> "**Water goes both ways.** A glass you log here is written to Apple Health as soon as you log it, and undoing or correcting it here changes it there too. Apple Health sends back one **merged** total per day with ARC's own glasses left out, so **nothing ARC wrote** is counted twice. A glass tapped on the watch and typed here is **still** two glasses, **though** — log a glass in one place **or the other, not both**. A day that looks doubled is fixed in Data → Water, **where the two entries sit side by side.**"
+
+**Now:** "A glass you log here is written to Apple Health as soon as you log it, and undoing or correcting it here changes it there too. Apple Health sends back one total per day with ARC's own glasses left out, so none is counted twice. A glass tapped on the watch and typed here is two glasses — log it in one place. A doubled day is fixed in Data → Water."
+**Outcome:** applied, **fact kept: every one of them.** That covers when a glass goes out (a render pins it, since it used to wait for a sync), that corrections follow, that ARC's own glasses are kept out, the pick-one-door rule, and the route. The opening sentence restated the `Both` tag on the scope row directly above it, and that tag has its own assertion. The last clause narrated a screen the route already names. The rest was filler inside facts. Five sentences became four. Two expects changed because their wording changed, each old phrase is now refuted, and the new sentences are pinned. `docs/spikes/water-fast-logging.md` quoted the old opening sentence as history, and a dated note now says it went.
+
+**`app/settings-health.tsx:651–652`** · `restates-obvious` · **confident** · *flagged*
+> "Each row reads: measurements Apple Health returned → measurements ARC kept. **A gap between the two is always explained on the line beneath it.**"
+
+The legend is needed, because the arrow is not self-evident. The second sentence promised something about the rows, and the promise was false: `metricNote` returns nothing for a bucketed metric whose samples fold into fewer daily rows. The render suite's own fixture shows it, with `hrv` at `40 → 14` and no line beneath.
+**Now:** the first sentence alone.
+**Outcome:** applied, **fact kept: how to read the arrow**. Pinned and refuted on `settings-health (logged)`.
+
+**`app/settings-health.tsx:380–381`** and **`app/settings-backups.tsx:479–481`** · `chatty-helper` (shape 3) · **confident**
+> "The HealthKit module **is installed but** not in this **dev** build yet. Run the next EAS build (docs/dev-build.md) **and this screen goes live — nothing else to set up.**"
+> "…so there is nowhere to write a snapshot. Run the next EAS build (docs/dev-build.md) **and this screen goes live — nothing else to set up.**"
+
+The same tail on both Settings screens with a build gate. It narrated the screen coming to life, the shape-3 family. It was also untrue: after the build, Apple Health still has *Enable* and a permission sheet, and Backups still has its first snapshot. On Apple Health, "dev build" named a client the owner does not run (his phone takes TestFlight builds), and "installed" was a fact about `package.json`.
+**Now:** "The HealthKit module isn't in this build yet. Run the next EAS build (docs/dev-build.md)." / "…nowhere to write a snapshot. Run the next EAS build (docs/dev-build.md)."
+**Outcome:** applied, **fact kept: what is missing, and the way out**. Apple Health is pinned and refuted on `settings-health (no sync yet)`, which takes this branch under node. Backups has no render here, so it is source-scanned: all 72 screens are refuted and the kept sentence is positively pinned.
+
+**`app/settings-health.tsx:785`** · `chatty-helper` · **confident**
+> "Never — it stays in Garmin Connect, **and no amount of waiting will change that.**"
+
+**Now:** "Never — it stays in Garmin Connect, and a later sync will not bring it."
+**Outcome:** applied, **fact kept: "Never" is not a sync delay**, which is the reason the coverage table exists. The idiom went. Pinned and refuted on `settings-health (no sync yet)`.
+
+### §11.D — Training and photos
+
+**`app/workout-log.tsx:174`** (and **`:171`** in the same four-line function) · `feature-explainer` · **confident** · *flagged*
+> "Time is optional. **Type the digits and they fill from the right — 1 3 0 is 1:30.**"
+> "Time and distance are optional **— log either, or both.** Distance is stored in metres."
+
+The first narrated how the new clock field works, under a field that draws its own colon as the digits arrive and whose placeholder reads `Time (mm:ss)`. The second restated "optional".
+**Now:** "Time is optional." / "Time and distance are optional. Distance is stored in metres."
+**Outcome:** applied, **fact kept: what is optional, and the unit**. The function's docblock now says the note never describes how a field is typed into. VoiceOver still hears the mechanism from the field's own hint (§11.H), which is source-pinned beside the render because react-native-web drops `accessibilityHint`. On `workout-log (resumed on a plank)` the expect changed from the narration to `>Time is optional.<`, and the narration is refuted.
+
+**`app/progress-photo-compare.tsx:155`** · `ai-label`/aphorism + `chatty-helper` · **confident** · *flagged, never walked*
+> "Two photos of the same pose are what makes a comparison worth looking at. Import a second one and come back."
+
+**Now:** "Pick two photos in the gallery to compare them."
+**Outcome:** applied, **fact kept: a comparison is two photos, and the gallery is where they are picked**. The "Back to photos" button under it goes there. The same-pose advice is not lost. The gallery says "Same pose reads best." at the moment of the choice (§9's ruling), and this screen states the different-poses caveat whenever a pair differs. **Not** "A comparison needs two photos of the same pose.", this entry's first draft, which the independent review of the branch caught. The gallery compares any two photos, and this screen draws a front-vs-side pair with its own caveat (the next entry). `pickDefaultPair`'s same-pose rule only chooses a fallback when the pair the screen was handed no longer resolves. It is not a rule of comparing, so "sharpening" the line to it stated a rule the app does not have. The §8 shape (`exercise-detail.tsx:312`) only holds when the gate named is the code's real gate. Pinned and refuted on a new `progress photo compare (nothing to pair)` render: the old sentence, and the same-pose claim.
+
+**`app/progress-photo-compare.tsx:238`** · `chatty-helper` · **confident**
+> "These are different poses, so most of what looks like a change is the angle. **Compare like with like where you can.**"
+
+**Now:** the first sentence alone.
+**Outcome:** applied, **fact kept: the caveat**. §9 cites this line as "the full caveat", and that part is the one kept. The advice pointed at the *Compare against* plate directly below, which lists the same pose by default. Pinned and refuted on a new `progress photo compare (front vs side)` render.
+
+### §11.E — The Coach and the status sheet
+
+**`src/lib/ai/domains/write-domains.ts:597`** · vocabulary drift · **confident**
+> The muscle anchor's delete card: "Delete muscle anchor "chest" — freshness 70; **the engine's** own reading returns"
+
+"The engine" is the code's word for the training model. A card is read by the user.
+**Now:** "…freshness 70; ARC's own reading returns"
+**Outcome:** applied, **fact kept: what removing the anchor does**. "ARC's reading" is the app's word for a derived value: the exercise screen says "ARC's reading of this movement is per hand". The exact card line in `db/coach-domains.test.mjs` changed because its wording changed, and it is an exact match, so the old word cannot come back.
+
+**`src/components/status/status-control.tsx:239`** · `chatty-helper` · **confident**
+> "Anything else, **just** tell the Coach. Skips on these days stop counting against you; their readings sit out of your 30-day baselines."
+
+**Now:** "For anything else, tell the Coach. Skips on these days…" (the consequence sentence is untouched)
+**Outcome:** applied, **fact kept: a status can be anything the user types**, and only the five have chips. The sheet is a native Modal that draws nothing until it is opened, so the pin is a source scan that checks both halves.
+
+### §11.F — The same tail outside the range: the key gates
+
+The walk did not find these. The independent review of this branch did. The walk cut "Import a second one and come back" from Compare and "Type it here meanwhile" from the time wheel, and four key-gate screens older than `05e39d7` still ended the same way. The brief's scope excused them, but a rule applied to one "come back" and not to four is not applied, and the owner's note was about the app.
+
+**`app/meal-estimate.tsx:392`**, **`app/lab-import.tsx:279`**, **`app/meal-revise.tsx:229`**, **`app/recipe-revise.tsx:253`** · `chatty-helper` (shape 3) · **confident**
+> "Add a key in the Coach tab**, then come back. Meanwhile,** Add food and **Manual entry** work offline."
+> "Add a key in Settings › Coach**, then come back. It’s** the only part of this that goes online; matching, reviewing and storing all happen on your phone."
+> "Add one in Settings › Coach**, then come back.** Editing items by hand works offline."
+> "Add one in Settings › Coach**, then come back.** The recipe editor works offline."
+
+"Then come back" narrates the round trip. "Meanwhile" framed the offline paths as something to do while waiting, when they are simply the other ways to log. The house form was already on two sibling gates: "Set one in Settings › Coach. Writing an entry yourself needs nothing at all." (`knowledge-import.tsx`) and "Add one in the Coach tab. Everything else on this screen works offline." (the photo reading panel).
+**Now:** "Add a key in the Coach tab. Add food and manual entry work offline." / "Add a key in Settings › Coach. Reading the PDF is the only part of this that goes online; matching, reviewing and storing all happen on your phone." / "Add one in Settings › Coach. Editing items by hand works offline." / "Add one in Settings › Coach. The recipe editor works offline."
+**Outcome:** applied, **fact kept: the route to a key, and what works without one**, on all four. Two small corrections rode along, both to facts. On meal estimate, "Manual entry" named a Log-sheet row that is now "Enter it manually", so it is lower-case and names the act rather than a label that no longer exists. On lab import, the cut left "It’s" pointing at adding a key, so it now says what it meant: reading the PDF is the one step that goes online. The privacy clause after it is the reason the line exists, and it is untouched. Meal estimate's route stays "the Coach tab", which is true: that tab's key panel saves the same Keychain key Settings › Coach manages. Pinned and refuted on `meal-estimate (no key)` and `recipe-revise (no key)`, and on two new renders, `meal-revise (no key)` and `lab-import (no key)`, which the suite had not drawn before.
+
+### §11.G — Held for the owner
+
+- **`src/components/coach/pending-write-card.tsx:142`**: "This row is deleted from your on-device record **for good. There is no undo.**" This says the irreversibility twice. It is the consequence line of a permanent delete, which the method keeps, and §22 pins its exact wording. **Proposal if wanted:** "This row is deleted from your on-device record. There is no undo."
+- **`app/settings-health.tsx:494`**: the heart-rate ask. "**ARC can read the heart rate recorded during a workout and show it on the session.** It was added after you connected, so it has to be asked for on its own. If nothing appears, turn Heart Rate on under…, then tap this again." The first sentence is a small pitch, but it is also the only place that says where the result appears. It shows only while the scope is unasked, and the owner's phone has probably answered it. **Proposal if wanted:** "Heart rate during workouts shows on each session. It was added after you connected…"
+- **`app/settings-health.tsx:712`**: "…and water from the first sync **after it was added**". The "it" is the water write scope, and the user cannot know when that shipped. This is not slop. It is a fact stated in build history. Since the gap fixes, a glass also goes out when it is logged, not at a sync. Rewording it means stating a boundary the code does not record, so it is held rather than guessed at.
+
+### §11.H — Read on this walk and deliberately not cut
+
+- `src/components/exercise/duration-field.tsx:155`, the clock field's `accessibilityHint` "Type the digits; they fill from the right.": this is the VoiceOver half of what sighted users see as the drawn colon, and a hint describing input is what that slot is for. Pinned as kept.
+- The Order plate's line (`app/workout-live.tsx:2325`, `src/components/exercise/exercise-order.tsx:58`) "A superset moves as one. To move one of its exercises on its own, split it at the seam first.": a rule the user cannot otherwise discover, and the way out. It is shown only when a superset is on the list.
+- Both loggers' leave and discard sheets ("Leave without a saved copy?" / "ARC could not store this workout for later, so leaving now loses it.", "Discard this workout?" / "…Discarding deletes the sets you have typed."), the editor's "Discard these changes?" / "The session stays as it was.", and the Train hub's "Anything typed in it will be deleted. This cannot be undone.": consequence lines of irreversible acts.
+- The meal screen's count editor ("On save: …", "A count is more than 0 and at most 100.", "Type how many were eaten."): consequence lines before a write, plus one imperative at a live choice. This follows §9's ruling on `progress-photos.tsx:349`.
+- The load basis (`LOAD_BASIS_MEANING` in `src/lib/exercise/load-basis.ts`, "Changing it relabels every set already logged. No number changes.", "Set by you"): a unit's definition, a consequence before a write, and provenance.
+- `src/lib/exercise/records.ts`'s empty and trend notes ("A top-set trend needs two sessions with a weight logged.", "Only away sessions so far, and they set no records."): preconditions, already in §8's shape.
+- The combine consequence ("On combine: these 2 become one meal, "Porridge", at 07:40 — 323 kcal, so the day's total does not change. Their items and photos move into it.") and the recipe refusal: a consequence line, and a refusal naming its rule.
+- `src/lib/home/metric-sync.ts` (the blank cell's "never synced", "Garmin never sends this to Apple Health"), `waterPublishPointer`, `statusLine`, `openSessionLine`, `dayKeyMicros` and `totalsOnlyNote`, and the Undo words ("Removed Greek yogurt · 150 kcal", "Could not put … back — the meal has changed since."): measurements, routes and consequences throughout.
+- `src/lib/health/log.ts:238`, "…so no water was read rather than risk counting it twice.": a failure that states its safe outcome, deliberately. `publishNote`'s "Armed —" is §10.H's keep. Only its tail changed, and the change was to a fact.
+- The status sheet's "Says what kind of day this is, then asks the Coach to adjust it." is the one operative sentence, argued in its own comment. The consequence sentence after "For anything else, tell the Coach." is also kept.
+- The status chips' end sentences (`src/lib/status/chips.ts`): rewritten in this range on the owner's own device note. Their shared tail is §10.G's held sentence.
+- `src/lib/health/coverage.ts`'s `use` strings, including "since 2026-09-21": no screen renders them.
+
+**Assertions.** Changed: **5**, each because its wording changed and each with the old phrase now refuted. In `settings-health (no sync yet)`, two water expects: "Water goes both ways." is refuted and the two-way fact stays pinned on the scope row's `Both` tag, and the pick-one-door phrase is expected in its new words. In `workout-log (resumed on a plank)`, the narration expect became `>Time is optional.<`. The resting Eat tab's refutation of the foot's first sentence changed. So did the anchor card's exact line in `db/coach-domains.test.mjs`. **Added: 58 checks** in `db/screens-render.test.mjs` (1,605 → 1,663). That includes six new renders: Compare with nothing to pair, Compare front vs side, the combine foot with none chosen and across two days, and the no-key states of meal revise and lab import. It also adds a new §27 for the two source scans. With the base copy (`a3d1bcf`) of all fourteen changed source files swapped back in, **42 checks fail**: 41 in `screens-render` and 1 in `coach-domains`. The seventeen new checks that still pass are the six renders themselves and keep-the-fact pins: the legend's first sentence, the build-gate title, the kept caveat, *Compare against*, "0 days apart", the disabled Combine button, "Back to photos", the clock field's hint, and the two key gates' opening lines. The last is a refutation of the first draft's same-pose claim, which the base copy never made.
+
+**A correction to the three shapes' Outcome (2026-09-19).** Its first rule says *"Every remaining empty state in the app is now one authored statement."* After the micros build it was not true (§11.B), and it had never been true of Compare (§11.D). Both are one sentence now.
+
+---
+
 ## The three shapes, if you want to decide by rule instead of line by line
 
 1. **The empty state that grew a second paragraph.** Nine of these. The first line names the absence (correct, keep); the paragraph under it explains the feature (`meal-templates`, `protocols`, `reports`, `exercise`, `knowledge` ×2, `recipe-folders`, `food-search`, `experiments`). A rule that says *an empty state gets one sentence* would settle all nine.
@@ -678,7 +830,7 @@ This is §0's shape exactly: "How it is going" became "Adherence". A section lab
 
 **Outcome (2026-09-19) — the three shapes, applied as rules.** The owner's blanket approval turned all three from suggestions into the pass's working rule, and the second walk found each still live somewhere the first walk had not looked:
 
-1. *An empty state gets ONE sentence.* Nine cases in the first round. The second walk found five more and applied the rule to every one: `progress-photos:304` (the kept entry), `water:397`, `water:535`, `exercise:530`, `workout-live:1209`. Every remaining empty state in the app is now one authored statement — **none was left blank**, which `00-design-spec.md` §5 forbids.
+1. *An empty state gets ONE sentence.* Nine cases in the first round. The second walk found five more and applied the rule to every one: `progress-photos:304` (the kept entry), `water:397`, `water:535`, `exercise:530`, `workout-live:1209`. Every remaining empty state in the app is now one authored statement — **none was left blank**, which `00-design-spec.md` §5 forbids. *(Corrected 2026-09-23: not so of `nutrition-micros`, once the micros build grew its sentence back, nor of `progress-photo-compare`, which no walk had reached. Both are one sentence as of §11.)*
 2. *A mechanism is stated once, nearest the action.* Two new cases. The Coach-memory length rule was stated on the Knowledge hub and on the editor; the hub's copy went and the editor's — stated where the line is being written — stayed. The ended-protocol rule was stated on the Protocols hub and on the protocol's own detail screen; the hub's went and the detail screen's, which carries the date and sits beside the control that extends a phase, stayed. In both cases the **fact was already in the right place**; the cut removed the copy, not the information.
 3. *A flow is not narrated before it is taken.* Four new cases, all of the "…and it fills in here" family: `metrics-strip:116`, `nutrition-history:474`, `exercise-detail:312`, `water:397`. In three of the four the sentence carried a real precondition (the route in, meals needing calories, two weighted sessions) and only the narration was cut.
 

@@ -96,8 +96,10 @@ export function planCombine<M extends CombinableMeal>(
   if (ordered.some((m) => m.date !== keep.date)) {
     return {
       kind: 'refused',
-      reason:
-        'These were logged on different days. A meal belongs to one day, so only meals from the same day combine.',
+      // The fact and the rule, once each. It used to state the rule twice, the
+      // second time as its own consequence; slop pass 4,
+      // docs/ai-slop-candidates-2026-09.md §11.
+      reason: 'These were logged on different days, and a meal belongs to one day.',
     };
   }
 

@@ -1043,7 +1043,11 @@ console.log('4d. removal: parity with the screens, behind a card that names what
     appointments:
       `Delete appointment "Annual physical" — 2026-10-01 ${clockFromISO('2026-10-01T16:00:00.000Z')}` +
       ' · with Dr Reyes · scheduled',
-    muscle_anchors: 'Delete muscle anchor "chest" — freshness 70; the engine’s own reading returns',
+    // Slop pass 4 (docs/ai-slop-candidates-2026-09.md §11.E): "the engine" is
+    // the code's word for the training model, never the card reader's. The
+    // app says "ARC's reading" for a derived value (the exercise screen's load
+    // basis), and the exact match here fails if the old word comes back.
+    muscle_anchors: 'Delete muscle anchor "chest" — freshness 70; ARC’s own reading returns',
   };
   const smoke = Object.entries(seeded).filter(([key, id]) => {
     const { line, result } = approve(key, id);

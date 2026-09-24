@@ -135,9 +135,11 @@ export function TimeWheel({
           </View>
           {/* Authored, never blank: the slot says why the control it would
               otherwise hold is not here — the same sentence shape the camera
-              screens use for their absent branch. */}
+              screens use for their absent branch. The build fact only: the
+              field it would have pointed at is directly above (slop pass 4,
+              docs/ai-slop-candidates-2026-09.md §11). */}
           <Text className="mt-1.5 font-serif text-[12px] leading-4 text-ink-muted">
-            The wheel arrives with the next app build. Type it here meanwhile.
+            The wheel arrives with the next app build.
           </Text>
         </View>
       )}

@@ -389,8 +389,7 @@ export default function MealEstimateScreen() {
               AI meal estimation needs a model key — the same one the Coach uses.
             </Text>
             <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-muted">
-              Add a key in the Coach tab, then come back. Meanwhile, Add food and Manual entry work
-              offline.
+              Add a key in the Coach tab. Add food and manual entry work offline.
             </Text>
           </Block>
         </View>
