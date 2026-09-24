@@ -1082,7 +1082,7 @@ Because the effect travels with the estimate, **answering is pure on-device arit
 
 ### The prompt rules, and why each is shaped that way
 
-- **Materiality as a magnitude** — "~15% of its energy or ~10 g of protein" — not a list of askable topics, which would be wrong the first time he eats something not on it.
+- **Materiality as a magnitude** — "~15% of its energy or ~10 g of protein" — not a list of askable topics, which would be wrong the first time he eats something not on it. *(Widened on 2026-09-23 to every figure the reply carries — energy, caffeine or sodium by ~15%, protein by ~10 g — after it ruled out the shots question on a latte. See "Device finding" below.)*
 - **Knowability as a place** — *"what the person was there for"* vs *"a kitchen they did not stand in"* — with the owner's restaurant example verbatim.
 - **"USUALLY ABSENT" and "an empty list is the norm", twice.** A model handed a `questions` field will fill it; saying zero is normal is the cheapest defence there is, and the existing prompt already uses it for the same class of problem.
 - **"the items you return must already assume it."** This is what makes a skipped question safe: the estimate on screen is already the most-likely-answer estimate, so skipping every question leaves a coherent record rather than a half-specified one.
@@ -1126,10 +1126,93 @@ The negatives are pinned **at the source** (`db/nutrition-v2.test.mjs` §40): th
 
 ### What only a device can judge
 
-- **Whether the model asks at all, and asks the right thing.** Every rule here is a criterion, and the estimator is tested against a mock harness — no real call is made on this branch. The first latte is the test: does it come back with "How many shots?", or with three weak questions about a sandwich?
+- **Whether the model asks at all, and asks the right thing.** Every rule here is a criterion, and the estimator is tested against a mock harness — no real call is made on this branch. The first latte is the test: does it come back with "How many shots?", or with three weak questions about a sandwich? **Answered on 2026-09-23: it came back asking about the milk and not the shots.** See "Device finding" below.
 - **Whether "Questions" above the table reads as help or as an interrogation** at 375 pt, particularly with three questions and four chips each.
 - **Whether watching the rows re-price is enough confirmation**, or whether the change needs saying out loud after all.
 - **The "Other" round trip in the hand** — a second or two of `Working…` on a screen the user thought was finished.
+
+### Device finding, 2026-09-23 — it asked about the milk, never the shots
+
+The owner, on the 0061 build (the first on his phone to carry C5): *"asked me what milk was in the latte- this is a good question, but it did not ask about how many shots and therefore doesn't have good caffeination data"*.
+
+**The prompt did what it was told.** The materiality bar read *"~15% of its energy or ~10 g of protein"*, the two figures the spike measured materiality in. One espresso shot is about 2.5 kcal on a ~190 kcal latte (**~1% of its energy**, no protein) and about 63 mg of a two-shot latte's 126 mg (**~50% of its caffeine**). So by the prompt's own rule the shots question was never worth asking. Whole milk against skim moves the same drink's energy by roughly 40%, which is why the milk question cleared the bar easily. The knowability bullet had named *"how many shots"* as its first example since the build, and the materiality bullet one line above ruled that example out. The milk question was a good question under the rules as written. The rules could not see caffeine.
+
+**The fix is to the criterion, not a latte rule.** Nothing says "if coffee, ask shots". Judgment stays in the model. His latte is how the gap was found, not what the rule is about, and `db/nutrition-v2.test.mjs` §53 asserts that neither question block names a drink. Both prompts get three clauses:
+
+| clause | as written in the estimation prompt | what it does |
+| --- | --- | --- |
+| the bar | *"Ask nothing unless an answer would change a figure, not just a name: the meal's energy, caffeine or sodium by ~15%, or its protein by ~10 g."* | Materiality now counts every figure the reply carries: the two micros ARC tracks, beside energy and protein. It also says outright that making an item's name more exact is not a reason to ask. |
+| the ranking | *"At most 3, biggest change first; one good question beats three weak ones."* | When the model holds itself to one question, it keeps the one that moves a figure most. Three slots still hold milk **and** shots. The prompt does not spell that out, because "one good question beats three weak ones" is about weak questions and neither of these is weak. |
+| the assumed answer | *"the items you return, micros included, must already assume it."* | Covers the other half, below. |
+
+The revision prompt carries the same three. Its bar has never named protein, and that is unchanged.
+
+### The other half: an answer scales a figure and cannot create one
+
+The question: *when the answer that sets caffeine is unknown, does the estimator return caffeine as a guess, or omit it?*
+
+**The prompts do not settle it.** The estimation prompt gives sodium and caffeine *"for any item that plausibly carries them"* (coffee is a listed example) and says *"OMIT the key when you would be guessing"*. The revision prompt takes both *"on the same terms as an estimate"*: *"only where the item plausibly carries them, omitted where you would be guessing"*. Neither said which rule wins when the unknown is the very thing that sets the caffeine: the shot count. On the prompt alone it is the model's call, and it can go either way.
+
+**The code does settle it.** Every answer is arithmetic over the figure the item already carries. `scale_item` multiplies through `scaleMicros`. `set_amount` re-prices through `rescaleLoggedItem`'s proportional branch. Both **skip an absent key**, and `add_item` carries no micros at all. So if the estimator had omitted the espresso's caffeine, tapping "3" would move the espresso from 5 to 7.5 kcal and record **no caffeine, whatever was tapped** (§54 pins exactly this). In that case the question is not "the only path to a caffeine figure". It is **no path at all**.
+
+That is why the third clause exists. The question block's own rule (the items already assume the most likely answer) now says **micros included**. An item that a question is about carries its caffeine *for the answer the items assume*. That is an estimate with a stated basis, not a guess, and the omit-a-guess rule still governs everything else. The question is then the path from an **assumed** caffeine figure to a **stated** one. Skipping it keeps the assumed figure (two shots, 126 mg). That loses accuracy but never coherence, the same trade C5 already made for portions.
+
+### Paid for inside the ceiling
+
+`ESTIMATOR_PROMPT_CEILING` stays at 1,000:
+
+| | tok |
+| --- | --- |
+| estimation prompt, where "slices" left it | 967 |
+| + the bar: "a figure, not just a name", with caffeine and sodium beside energy and protein | +10 |
+| + "biggest change first" | +5 |
+| + "micros included" on the assumed answer | +6 |
+| − **the cut the constant itself named**: the confidence bullet's three definitions become two plus `else "medium"`. What it cost is the anchor *"typical mixed dishes"*. `high` (the only level gate 2 reads) and `low` are unchanged, word for word | −6 |
+| − the per-portion line after the schema, folded into the micros bullet (*"in milligrams for the portion, not per 100"*). This is the revision prompt's own shape, and no rule is lost | −9 |
+| **after** | **973**, 27 of headroom |
+| revision prompt, with the same three clauses | 834 → **855** |
+
+The constant names what is left to cut. First the micros bullet's closing *"and they are not the same claim"* (~12). Then *"Most meals need no question at all;"* (~10), which goes last because this round leaned on it as the guard when it widened the bar.
+
+### Verification (2026-09-23)
+
+`db/nutrition-v2.test.mjs` §53 pins the criterion at the source:
+- the figure-not-name bar and its four figures;
+- the old energy-only phrase, pinned as **absent**;
+- the ranking;
+- "micros included", beside the unchanged omit rule;
+- the revision prompt's parity;
+- no drink named in either question block;
+- both trims.
+
+The suite was run against `main`'s `estimate.ts` to prove that a revert fails it: 9 of 312 fail.
+
+§54 runs the owner's latte through the screen's own path, with the model's reply mocked: parse → ground → review rows → answer → save.
+- A `set_amount` "3" takes the espresso from 60 to 90 ml, from 5 to 7.5 kcal, **and from 126 to 189 mg**.
+- The milk keeps its 300 ml and its sodium.
+- "1" reads 63 mg from the same base.
+- A skip keeps 126 mg.
+- The `scale_item` spelling of the same answer lands on the same 189 mg.
+- The saved day reads **189 mg**.
+- The energy share is asserted (1.3%, against caffeine's 50%), so the reason the old bar never asked is checked as arithmetic, not just stated.
+- The same reply with the caffeine omitted records none after "3".
+
+§36 reads 973 and 855. No model was called.
+
+### What only the phone can settle (2026-09-23)
+
+- **Whether the next latte asks about the shots.** Every clause above is a criterion, and the model decides. The test is a latte, photographed or described, with no shot count given.
+- **Whether it asks both.** Milk *and* shots is the good outcome. Shots *instead of* milk would trade one gap for another. If it only ever asks one, the fix is a sentence in the cap bullet, not a rule.
+- **Whether the espresso carries caffeine when the question is asked.** "Micros included" is what lets an answer reach the figure. The failure to look for is a reply that asks the question but has no caffeine on the item the question is about. The micros screen shows it after saving.
+- **Whether the wider bar over-asks.** Sodium can now make a question material too, and ~15% of a small figure is a small number. A square of dark chocolate's caffeine is exactly the trivia that the knowability rule and "most meals need no question at all" have to keep out.
+
+### Found on the way, recorded and not fixed in this round
+
+Each of these was reproduced headless. Each bears on the same caffeine and sodium figures:
+
+- **A composite carries no micros.** The parser drops a header's micros (invariant 2), and the `components` clause on the schema line does not ask for any. So a latte (or a pizza's sodium) that comes back as a C4 composite records none, whatever a question does. The fix is `micros` on that clause, about +7 tok.
+- **An AI item grounded to a catalog food that records no micros loses the model's sodium and caffeine at review.** Grounding keeps them, which is what §21 asserts. The review rows' `currentPortion` then re-prices through `rescaleLoggedItem` from the food alone. That affects 77 of the 187 seed foods, and `meal-detail`'s portion edit shares the path.
+- **Two answered questions do not compose.** `use-estimate-questions` freezes a base per question. So answering milk, then shots, then changing milk re-applies milk to the pre-shots rows. The espresso drops back to two shots while its "3" chip stays lit.
 
 ---
 

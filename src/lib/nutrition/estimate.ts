@@ -287,26 +287,28 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '  never convert it to grams.',
   '- Give kcal and protein/carbs/fat grams per item; fiber grams when inferable, else null.',
   '  Those are always grams of macronutrient, whatever the portion unit is.',
-  '- Set per-item confidence: "high" for clearly identified packaged/simple foods, "medium"',
-  '  for typical mixed dishes, "low" when the food or portion is genuinely uncertain.',
+  '- Set per-item confidence: "high" for clearly identified packaged/simple foods, "low" when',
+  '  the food or portion is genuinely uncertain, else "medium".',
   '- Account for likely hidden fats (cooking oil, butter, dressing), say so in notes when they',
   '  matter, and prefer underestimating an unknown over inventing precision.',
-  '- Give sodium and caffeine in milligrams, under "micros", for any item that plausibly',
-  '  carries them (salted, cured or restaurant-made; coffee, tea, cola, dark chocolate).',
-  '  OMIT the key when you would be guessing — an absent key means "not recorded" and a 0',
-  '  means "measured none", and they are not the same claim.',
+  '- Give sodium and caffeine in milligrams for the portion, not per 100, under "micros", for',
+  '  any item that plausibly carries them (salted, cured or restaurant-made; coffee, tea, cola,',
+  '  dark chocolate). OMIT the key when you would be guessing — an absent key means',
+  '  "not recorded" and a 0 means "measured none", and they are not the same claim.',
   '',
   'Questions (optional, and USUALLY ABSENT):',
-  '- Ask nothing unless an answer would move the estimate by more than ~15% of its energy or',
-  '  ~10 g of protein. Most meals need no question at all; an empty list is the norm.',
+  '- Ask nothing unless an answer would change a figure, not just a name:',
+  "  the meal's energy, caffeine or sodium by ~15%, or its protein by ~10 g. Most meals need",
+  '  no question at all; an empty list is the norm.',
   '- Ask only what the person was there for — how many shots, how big the glass, how much was',
   "  left. Never what happened in a kitchen they did not stand in (a restaurant's oil, the",
   '  butter under a steak). Never what the photo already answers.',
-  '- At most 3, and one good question beats three weak ones. Each carries 2-4 button answers,',
-  '  and each answer carries the EFFECT of choosing it, as one of:',
+  '- At most 3, biggest change first; one good question beats three weak ones. Each carries',
+  '  2-4 button answers, and each answer carries the EFFECT of choosing it, as one of:',
   '  {"scale_item": name, "factor": n} · {"set_amount": name, "amount": n} ·',
   '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g}}',
-  '- Name the most likely answer first; the items you return must already assume it.',
+  '- Name the most likely answer first; the items you return, micros included, must already',
+  '  assume it.',
   '',
   'Respond with ONLY a JSON object, no prose, matching:',
   '{"title": string, "items": [{"name": string, "amount": number|null, "unit": "g"|"ml",',
@@ -320,7 +322,6 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   ' "notes": string|null,',
   ' "questions": [{"id": string, "ask": string, "allow_other": boolean,',
   '   "options": [{"label": string, "effect": <one of the four above>}]}]}',
-  'Micro amounts are for the portion you estimated, not per 100.',
 ].join('\n');
 
 /**
@@ -369,9 +370,39 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
  * (the schema clause, and one rail telling the model to keep a count it was
  * not asked to change). It is the looser of the two and always has been.
  *
+ * THE ROUND AFTER THAT (device feedback, "shots", 2026-09-23) — and it paid
+ * the rule too. The owner's latte was asked what milk was in it and never how
+ * many shots, "and therefore doesn't have good caffeination data". The bar the
+ * questions were given counted energy and protein only, and one shot is ~1%
+ * of a latte's energy and ~50% of its caffeine — so by the prompt's own rule
+ * the one question that set a figure he tracks was not worth asking.
+ *
+ *   967  where "slices" left it
+ *   +10  the bar names every figure the reply carries — energy, caffeine,
+ *        sodium, protein — as "a figure, not just a name"
+ *   +5   "biggest change first", on the cap
+ *   +6   "micros included" on the assumed answer. An answer SCALES a figure
+ *        an item already carries and cannot create one, so an item a question
+ *        is about must carry its caffeine for the answer the items assume, or
+ *        tapping "3 shots" moves 2.5 kcal and records nothing else.
+ *   −6   TRIMMED IN THE SAME ROUND, the cut this note named: the confidence
+ *        bullet's three definitions are two plus "else medium". The anchor
+ *        "typical mixed dishes" is what it cost; "high" (the only level the
+ *        questions' confidence gate reads) and "low" are word for word.
+ *   −9   TRIMMED: the per-portion line after the schema is folded into the
+ *        micros bullet ("for the portion, not per 100") — the revision
+ *        prompt's own shape, and no rule lost.
+ *   ---
+ *   973, against 1,000. **27 tokens of headroom.**
+ *
+ * The revision prompt carries the same three clauses: 834 → **855**.
+ *
  * What is left to cut, when that runs out and it is genuinely needed: the
- * confidence bullet's three definitions could become two. That is a real rule,
- * so it is not free — which is the point of a ceiling.
+ * micros bullet's closing "and they are not the same claim" (~−12 — the two
+ * definitions before it ARE the rule), then "Most meals need no question at
+ * all;" (~−10 — "USUALLY ABSENT" and "an empty list is the norm" would still
+ * say it twice, but it is the guard this round leaned on when it widened the
+ * bar, so it goes last). Neither is free — which is the point of a ceiling.
  */
 export const ESTIMATOR_PROMPT_CEILING = 1000;
 
@@ -806,13 +837,16 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '- Use the notes field to say what you changed, in one short sentence.',
   '',
   'Questions (optional, and USUALLY ABSENT):',
-  '- Only when the correction itself left something ambiguous that would move the estimate by',
-  '  more than ~15% of its energy, and only what the person was there for — never what',
-  '  happened in a kitchen they did not stand in. An empty list is the norm.',
-  '- At most 3, each with 2-4 button answers, and each answer carrying the EFFECT of choosing',
-  '  it: {"scale_item": name, "factor": n} · {"set_amount": name, "amount": n} ·',
+  '- Only when the correction itself left something ambiguous that would change a figure, not',
+  "  just a name (the meal's energy, caffeine or sodium by ~15%), and only what the person was",
+  '  there for — never what happened in a kitchen they did not stand in.',
+  '  An empty list is the norm.',
+  '- At most 3, biggest change first, each with 2-4 button answers, and each answer carrying',
+  '  the EFFECT of choosing it:',
+  '  {"scale_item": name, "factor": n} · {"set_amount": name, "amount": n} ·',
   '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g}}',
-  '- Name the most likely answer first; the items you return must already assume it.',
+  '- Name the most likely answer first; the items you return, micros included, must already',
+  '  assume it.',
   '',
   'Respond with ONLY a JSON object, no prose, matching:',
   '{"title": string, "items": [{"name": string, "amount": number|null, "unit": "g"|"ml",',
