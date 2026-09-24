@@ -10,9 +10,9 @@ import type { DayStatusRow } from '@/lib/db/repositories/statuses';
  * Same shape as use-readiness: a synchronous first
  * read in the useState initializer (op-sqlite is sync), a re-read on focus, and
  * a subscription for in-place changes. The subscription is the one that matters
- * — the rail is ON the Coach screen and Home's sheet is presented OVER Home, so
- * in both cases the screen never loses focus and `useFocusEffect` alone would
- * leave the chips and the line stale after a tap.
+ * — the sheet is presented OVER whichever screen opened it, Home or the Coach
+ * tab, so neither loses focus and `useFocusEffect` alone would leave the door
+ * naming what was on before the tap.
  */
 export function useStatuses(): { open: DayStatusRow[]; reload: () => void } {
   const [open, setOpen] = useState<DayStatusRow[]>(currentStatuses);

@@ -1,10 +1,10 @@
 /**
  * The status rail's five chips, and the sentence each one sends.
  *
- * **One table, two surfaces.** The rail on the Coach screen and the sheet Home
- * opens beside the date both read this file, because the owner asked for both
- * (his Q5(c)) and two copies of a five-word vocabulary is how the two start
- * offering different words. Pure values — no React, no database, no clock — so
+ * **One table, two surfaces.** The sheet behind the status door — the same
+ * sheet on Home and on the Coach tab — and the store that sends these
+ * sentences both read this file, because two copies of a five-word vocabulary
+ * is how two surfaces start offering different words. Pure values — no React, no database, no clock — so
  * db/statuses.test.mjs can assert on it headlessly.
  *
  * ## The five, and why these five
@@ -32,6 +32,23 @@
  * `chat-input.tsx` seeding rule): ending is bookkeeping that may not warrant a
  * turn. The other two are SENT — the empty-thread plate is the precedent, and a
  * quick-button that needs a second tap on send is not a quick-button.
+ *
+ * ## The end sentences were rewritten (2026-09-23)
+ *
+ * The owner, on the device: *"the message for unchecking a status feels weird
+ * but otherwise this is ok."* They read *"Over the bug — back to normal.
+ * Re-check today and put back what you took out."* — a phrase he would not
+ * type, then the MECHANISM narrated back at the Coach, presuming it had taken
+ * something out. Each is now what he would actually say ("I'm feeling
+ * better."), ending in the same sentence of his the other two gestures end in.
+ *
+ * That sentence stays on the end, rather than being trimmed for terseness,
+ * because on the day a status ends the seeded line is the Coach's ONLY cue:
+ * the × sets `ended`, so the state block stops listing the status at once, and
+ * its *"ended yesterday"* revert cue does not print until tomorrow — and not
+ * at all while another status is still running, because it prints only when
+ * none is (src/lib/ai/turn-context.ts). A bare "I'm feeling better." asks for
+ * nothing.
  */
 
 /** A status the rail draws as a fixed button. */
@@ -50,12 +67,15 @@ export type StatusChipSpec = {
   prompt: string;
   /** Sent when an already-on chip is tapped — the re-ask. */
   again: string;
-  /** Seeded, never sent, when the × ends it. */
+  /**
+   * Seeded, never sent, when the × ends it. Off day and Night out carry one
+   * too, but no × is drawn on a status with no tomorrow (status-rail.tsx), so
+   * today nothing seeds theirs.
+   */
   ended: string;
 };
 
 const ADJUST = "Check what's up and adjust accordingly.";
-const PUT_BACK = 'Re-check today and put back what you took out.';
 
 export const STATUS_CHIPS: readonly StatusChipSpec[] = [
   {
@@ -64,7 +84,7 @@ export const STATUS_CHIPS: readonly StatusChipSpec[] = [
     endsTonight: false,
     prompt: `I'm sick right now. ${ADJUST}`,
     again: `Still sick. ${ADJUST}`,
-    ended: `Over the bug — back to normal. ${PUT_BACK}`,
+    ended: `I'm feeling better. ${ADJUST}`,
   },
   {
     label: 'traveling',
@@ -72,7 +92,7 @@ export const STATUS_CHIPS: readonly StatusChipSpec[] = [
     endsTonight: false,
     prompt: `I'm traveling right now. ${ADJUST}`,
     again: `Still traveling. ${ADJUST}`,
-    ended: `Home again. ${PUT_BACK}`,
+    ended: `I'm back home. ${ADJUST}`,
   },
   {
     label: 'injured',
@@ -80,7 +100,7 @@ export const STATUS_CHIPS: readonly StatusChipSpec[] = [
     endsTonight: false,
     prompt: `I'm injured right now. ${ADJUST}`,
     again: `Still injured. ${ADJUST}`,
-    ended: `The injury has settled. ${PUT_BACK}`,
+    ended: `My injury's better. ${ADJUST}`,
   },
   {
     label: 'off day',
@@ -88,7 +108,7 @@ export const STATUS_CHIPS: readonly StatusChipSpec[] = [
     endsTonight: true,
     prompt: `Taking today off. ${ADJUST}`,
     again: `Still taking today off. ${ADJUST}`,
-    ended: `Back on it. ${PUT_BACK}`,
+    ended: `I'm back on it. ${ADJUST}`,
   },
   {
     label: 'night out',
@@ -96,7 +116,7 @@ export const STATUS_CHIPS: readonly StatusChipSpec[] = [
     endsTonight: true,
     prompt: `Night out tonight. ${ADJUST}`,
     again: `Still out tonight. ${ADJUST}`,
-    ended: `That's me done for the night. ${PUT_BACK}`,
+    ended: `I'm home for the night. ${ADJUST}`,
   },
 ];
 
@@ -105,10 +125,10 @@ export const STATUS_CHIPS: readonly StatusChipSpec[] = [
  *
  * Two, and then it stops. A status the Coach recorded from a sentence
  * ("jet-lagged", "work crunch") deserves a chip — otherwise the one control
- * that shows what is on would be silent about half of it — but the rail sits
- * above the composer and a rail that grows without bound stops being chrome and
- * becomes a wall. Anything past two is still on Home's line, still in the
- * Coach's state block, and still endable by asking.
+ * that shows what is on would be silent about half of it — but a rail that
+ * grows without bound becomes a wall, even inside the sheet it lives in now. Anything past two is still counted on the door, still named
+ * in the sheet's header, still in the Coach's state block, and still endable
+ * by asking.
  */
 export const MAX_EXTRA_CHIPS = 2;
 
@@ -134,9 +154,16 @@ export function reaskFor(label: string): string {
   return chipFor(label)?.again ?? `Still ${label}. ${ADJUST}`;
 }
 
-/** What to SEED when a status ends. Never sent. */
+/**
+ * What to SEED when a status ends. Never sent.
+ *
+ * A label the Coach recorded is free text — "jet-lagged", "work crunch", "on
+ * call" — so the generic line cannot be conjugated into the first person the
+ * five are in. "X is over." is the one shape that reads for an adjective and a
+ * noun alike.
+ */
 export function endPromptFor(label: string): string {
-  return chipFor(label)?.ended ?? `${displayStatus(label)} is over. ${PUT_BACK}`;
+  return chipFor(label)?.ended ?? `${displayStatus(label)} is over. ${ADJUST}`;
 }
 
 /** One chip as a surface draws it: the five, then up to two the user has open. */

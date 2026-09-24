@@ -20,9 +20,7 @@ import { useReadiness } from '@/hooks/use-readiness';
 import { useStatuses } from '@/hooks/use-statuses';
 import { useTimezoneNote } from '@/hooks/use-timezone-note';
 import { useTodayMission } from '@/hooks/use-today-mission';
-import { todayISODate } from '@/lib/db/date';
-import { reaskFor, type RailChip } from '@/lib/status/chips';
-import { statusLine } from '@/lib/status/line';
+import type { RailChip } from '@/lib/status/chips';
 import { endOpenStatus, toggleStatus } from '@/lib/status/store';
 
 /**
@@ -66,25 +64,32 @@ import { endOpenStatus, toggleStatus } from '@/lib/status/store';
  * Each component still declares its own device, so nothing here nests one
  * inside another; the Views below are layout and spacing only.
  *
- * ## The day's status (2026-09-19, replacing the mode banner)
+ * ## The day's status (2026-09-19, replacing the mode banner; revised 2026-09-23)
  *
- * When a status is open, ONE MONO LINE sits between the folio line and the
- * hero: what is on, since when, and what it is doing to the numbers. On every
- * other day it renders nothing and costs no vertical space, so the default Home
- * is byte-for-byte the screen above.
+ * The control beside the date is the status door
+ * (src/components/status/status-control.tsx): `STATUS` on an ordinary day, and
+ * the status itself — `SICK`, `TRAVELING` — while one is running. Nothing else
+ * on Home mentions a status.
  *
- * It replaces a `field` block that printed a DIRECTIVE a registry had written
- * ("Recover: sleep, fluids, rest. No training today.") — the hardcoded clinical
- * layer migration 0061 exists to remove. A status carries no directive, because
- * what a sick day should contain is the Coach's call on the day. So what is left
- * is a fact, and it takes the timezone line's register rather than a device of
- * its own.
+ * From 2026-09-19 a mono line also sat between the folio row and the hero:
+ * what was on, since when, and what it was doing to the numbers (the owner's
+ * Q5(c): the line and a control, not one or the other). It went on 2026-09-23,
+ * the owner on the device: *"the message is there, but i think it would be
+ * better if the status button just changed to say 'Sick' or whatever the
+ * currently active status is."* The door now carries the name, which is what
+ * keeps a running status visible without opening anything; the age, the
+ * excusal and the baseline count moved into the header of the sheet the door
+ * opens.
  *
- * The control beside the date opens the Coach rail's OWN five chips in a sheet
- * (the owner's Q5(c): the line and a control, not one or the other). Home never
- * sends a turn — it writes the row and carries the canned prompt to the Coach
- * tab, seeded. A status Home wrote that no prompt followed would be the old
- * Modes failure with a new name.
+ * Neither ever printed a DIRECTIVE. The mode banner they replaced was a `field`
+ * printing one a registry had written ("Recover: sleep, fluids, rest. No
+ * training today.") — the hardcoded clinical layer migration 0061 exists to
+ * remove. A status carries no directive, because what a sick day should contain
+ * is the Coach's call on the day.
+ *
+ * Home never sends a turn — a tap in the sheet writes the row and carries the
+ * canned prompt to the Coach tab, seeded. A status Home wrote that no prompt
+ * followed would be the old Modes failure with a new name.
  *
  * Two things hold the design to its principles:
  *   - The hero is *derived* from the mission, not authored separately, so
@@ -185,17 +190,11 @@ export default function HomeScreen() {
   const mission = useTodayMission();
   const brief = useDailyBrief();
   const readiness = useReadiness();
-  // What the user has SAID about today (0061). The line below the folio row
-  // states it; the control on that row opens the five chips in a sheet — the
-  // same control, and the same sheet, the Coach screen opens (2026-09-21, when
-  // its own docked rail went behind a door).
+  // What the user has SAID about today (0061). The control on the folio row
+  // names it and opens the five chips in a sheet — the same control, and the
+  // same sheet, the Coach screen opens (2026-09-21, when its own docked rail
+  // went behind a door).
   const statuses = useStatuses();
-  const statusNote = statusLine({
-    open: statuses.open,
-    today: todayISODate(),
-    excludedStatusDays: readiness.excludedStatusDays,
-    recoveryPausedByStatus: readiness.recoveryPausedByStatus,
-  });
   // Home never sends. Setting a status from here does exactly what the rail
   // does — writes the row FIRST — and then carries the canned prompt to the
   // Coach tab, seeded (app/protocols.tsx's seam). A status Home wrote that no
@@ -247,39 +246,6 @@ export default function HomeScreen() {
       */}
       {timezoneNote ? (
         <Text className="mt-3 font-mono text-[11px] leading-4 text-ink-muted">{timezoneNote}</Text>
-      ) : null}
-
-      {/*
-          The open status, its age, and what it is doing to the numbers (0061).
-
-          It takes the retired ModeBanner's place and deliberately not its
-          shape: the banner was a `field` printing a DIRECTIVE a registry had
-          written ("Recover: sleep, fluids, rest."), which is the hardcoded
-          clinical layer the retirement exists to remove. What is left is a
-          FACT, so it takes the timezone line's device — mono, 11px, muted, zero
-          height on every ordinary day — because a fact about the calendar and a
-          fact about the person's own declaration belong in the same register.
-
-          This is what keeps information-architecture.md's "never silently on"
-          rule true without an expiry rule: no automatic timeout, but the one
-          screen he opens every morning says what is on and for how long.
-
-          Pressable, to the Coach tab with the re-ask seeded — so the second
-          morning of a trip is two taps from a re-check rather than a sentence
-          he has to type again.
-      */}
-      {statusNote ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`${statusNote}. Ask the Coach to re-check today`}
-          // The RE-ASK for the newest open status, carried straight to the
-          // composer. It writes nothing — the row is already there — so this
-          // goes to `carryToCoach` directly rather than through `toggleStatus`,
-          // which would read a bare line tap as a new declaration.
-          onPress={() => carryToCoach({ prompt: reaskFor(statuses.open[0]!.label) })}
-          className="mt-3 active:opacity-60">
-          <Text className="font-mono text-[11px] leading-4 text-ink-muted">{statusNote}</Text>
-        </Pressable>
       ) : null}
 
       <View className="mt-5">

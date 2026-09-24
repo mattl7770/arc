@@ -10,6 +10,12 @@ note, and where the two disagree, this note wins.**
 docks above the Coach's composer is gone from that band; the five chips live behind Home's own
 door. §3's rail design is superseded on WHERE the chips are drawn and on nothing else.
 
+**Amended 2026-09-23 — two more device notes (item 0b, below).** The door names the running
+status, so §3.6's mono line above Home's hero is gone — its age, excusal and baseline count are
+the sheet's header now — and the Coach tab's open chip went with it. §3.2's end sentence (*"Over
+the bug — back to normal. Re-check today and put back what you took out."*) is rewritten in the
+owner's own voice.
+
 ---
 
 ## What departed from this plan, and why
@@ -51,6 +57,72 @@ What changed, on branch `claude/fb-status`, no migration:
 - **Gate, as run:** `npx tsc --noEmit` exit 0 · `npm run db:validate` 20 passed · `npm run db:test`
   **57 suites, 0 failed** · `npm run lint` 0 errors (3 pre-existing warnings) · `npx expo export
   --platform ios --clear` exit 0. Still not verified on a device.
+
+### 0b. THE DOOR NAMES THE STATUS, AND THE × SEEDS HIS OWN WORDS (2026-09-23)
+
+Two more notes from the owner on the device, verbatim. Of Home: *"the message is there, but i
+think it would be better if the status button just changed to say 'Sick' or whatever the
+currently active status is."* Of the Coach tab: *"the message for unchecking a status feels weird
+but otherwise this is ok."*
+
+What changed, on branch `claude/fb-statusname`, no migration:
+
+- **The door reads the status.** `STATUS ⌄` with nothing on; `SICK ⌄`, `TRAVELING ⌄` with one;
+  `SICK +1 ⌄` with several — the newest by name, the rest as a count in mono. Filled when on,
+  outlined when not. One face on both surfaces: `showOpen` is renamed `docked` and now only
+  places the door. Spoken: *"Status: Sick. Re-check or change"* / *"Status: none set. Set one"*.
+- **§3.6's mono line above Home's hero is gone**, and with it the one-tap re-ask it carried. What
+  only it said — each status's age, the excusal, the excluded baseline days, and the *"no
+  recovery verdict until it ends"* escalation — is the **header of the sheet**, in mono, in
+  `src/lib/status/line.ts`'s unchanged wording (`StatusFacts`, which derives the readiness view on
+  the tap that opens the sheet, so the Coach tab gets it too). Neither the age nor the count
+  stayed on Home: the NAME on the door is what catches a forgotten status, and the count is a
+  consequence one tap away — so Q3(a)'s *"Home and the Coach say how many days are excluded"* is
+  now met through Home's door rather than on its face — a reading of his note, which names the
+  button and not the count, so worth confirming with him.
+- **The Coach tab's open chip is gone.** The re-ask and the × live only on the sheet's rail. Not
+  on the door: with two on, a × on `SICK +1` could not say which one it ends, and the same
+  component on Home would put a permanent end target beside the date. On the Coach tab the re-ask
+  and the × are each one tap further in (the door, then the chip); on Home the × is where it
+  always was, and the re-ask the line carried is one tap longer.
+- **The end sentences, old → new** — still seeded, never sent (`src/lib/status/chips.ts`):
+  - Sick: *"Over the bug — back to normal. Re-check today and put back what you took out."* →
+    *"I'm feeling better. Check what's up and adjust accordingly."*
+  - Traveling: *"Home again. Re-check today…"* → *"I'm back home. Check what's up…"*
+  - Injured: *"The injury has settled. Re-check today…"* → *"My injury's better. Check what's
+    up…"*
+  - Off day: *"Back on it. Re-check today…"* → *"I'm back on it. Check what's up…"* — never
+    seeded today: it ends tonight, so no × is drawn on it.
+  - Night out: *"That's me done for the night. Re-check today…"* → *"I'm home for the night.
+    Check what's up…"* — likewise.
+  - A status the Coach recorded: *"X is over. Re-check today…"* → *"X is over. Check what's up…"*
+    — free text cannot be conjugated into the first person.
+
+  The mechanism sentence went; his own ask stayed, because on the day a status ends the seeded
+  line is the Coach's only cue — the state block drops the status at once and prints *"ended
+  yesterday"* tomorrow, and never while another status is still running (it prints only when
+  none is — a gap in `turn-context.ts` that predates this change).
+- **Two consequences, both deliberate.** The Coach tab re-reads the open statuses after every
+  turn: a `set_status` write never passes through the status store's broadcast, and the door is
+  now the one place that screen says a status is on. And `useReadiness` no longer subscribes to
+  status changes — it did so only for the line, and nothing Home still draws from it moves when a
+  status starts or ends today (`db/statuses.test.mjs` §6(e) pins that, with a control proving the
+  comparison can see a status that reaches back a day).
+- **`db/screens-render.test.mjs` §7c-ii** asserts the door's visible word (`>Status</div>`,
+  `>Traveling</div>`, `>Sick</div>` + `>+1</div>`) and its spoken label, that Home renders none of
+  the line's words, that no chip sits beside the Coach's door while the sheet's on-chip keeps its
+  re-ask target paired with its ×, that `StatusFacts` states the age, the excusal and *"readiness
+  baselines exclude 4 status days"* against the real database, that the sheet's source mounts
+  `StatusFacts` inside its `ModalScreen` (the Modal renders nothing server-side, so Home's refutes
+  alone could not tell), and pins every end sentence.
+- **What only the device can settle:** whether a filled `SICK` reads as a state rather than a
+  button label; whether `SICK +1` is legible at 10px, and where a long typed label truncates on
+  Home's folio row; whether the mono header sits right under the sheet's title; whether one more
+  tap to re-ask or end is a price he notices; and whether the Coach, sent *"I'm feeling better.
+  Check what's up and adjust accordingly."*, actually puts back what it took out.
+- **Gate, as run:** `npx tsc --noEmit` exit 0 · `npm run db:validate` 20 passed · `npm run db:test`
+  **57 suites, 5,854 passed, 0 failed** · `npm run lint` 0 errors (3 pre-existing warnings) · `npx
+  expo export --platform ios --clear` exit 0. Not verified on a device.
 
 ### 1. THE OWNER DIVERGED ON TWO OF THE FIVE QUESTIONS (§9)
 

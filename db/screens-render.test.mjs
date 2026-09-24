@@ -130,9 +130,11 @@ import ProtocolItemScreen from '../app/protocol-item.tsx';
 import { MissionItemRow } from '../src/components/home/mission-item.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
 import HomeScreen from '../app/(tabs)/index.tsx';
-import { StatusControl } from '../src/components/status/status-control.tsx';
+import { StatusControl, StatusFacts } from '../src/components/status/status-control.tsx';
 import { StatusRail } from '../src/components/status/status-rail.tsx';
-import { startStatus } from '../src/lib/db/repositories/statuses.ts';
+import { openStatuses, startStatus } from '../src/lib/db/repositories/statuses.ts';
+import { endPromptFor, STATUS_CHIPS } from '../src/lib/status/chips.ts';
+import { shortDate } from '../src/lib/experiments/format.ts';
 import LogScreen from '../app/(tabs)/log.tsx';
 
 import { deleteWaterEntry, logWater } from '../src/lib/db/repositories/water.ts';
@@ -1332,13 +1334,14 @@ const db = getDb();
       "Today's mode",
       'No training today',
     ]);
-    // …and with no status open, Home says nothing about one. The line costs no
-    // vertical space on the ordinary day, which is most of them.
+    // …and with no status open, the door beside the date reads STATUS and
+    // nothing else on Home mentions one — which is most days.
+    expect('home (no status)', homeRender, ['>Status</div>', 'Status: none set. Set one']);
     refute('home (no status)', homeRender, ['skips excused', 'readiness baselines exclude']);
   }
 
   // -------------------------------------------------------------------------
-  console.log('7c-ii. Home states an open status; the Coach gets a door, the sheet the five');
+  console.log('7c-ii. The door names the status; its sheet holds age, baselines, the five');
   {
     const today = todayISODate();
     startStatus(getDb(), {
@@ -1347,15 +1350,27 @@ const db = getDb();
       source: 'user',
     });
 
+    // HOME (2026-09-23). The owner, on the device: "the message is there, but i
+    // think it would be better if the status button just changed to say 'Sick'
+    // or whatever the currently active status is." So the door beside the date
+    // reads the status itself, and the mono line that sat above the hero is
+    // GONE: the door is what keeps a running status visible without opening
+    // anything now.
     const withStatus = render('home (traveling)', HomeScreen);
     expect('home (traveling)', withStatus, [
-      // The FACT, its age, and what it is doing to the numbers — no directive,
-      // which is the whole difference from the banner it replaces.
-      'Traveling since',
-      'skips excused',
-      'Status',
+      // The door's visible word is the status, not "Status"…
+      '>Traveling</div>',
+      // …and its spoken label names it and says what a tap does.
+      'Status: Traveling. Re-check or change',
     ]);
     refute('home (traveling)', withStatus, [
+      '>Status</div>',
+      // The line's own words and its re-ask target. Its facts moved into the
+      // sheet's header (asserted on StatusFacts below).
+      'Traveling since',
+      'skips excused',
+      'readiness baselines exclude',
+      'Ask the Coach to re-check today',
       // A status carries no heroFocus and no tone. Nothing writes a sentence
       // on the owner's behalf about what a travel day should contain.
       'Adjust to the new time zone',
@@ -1366,24 +1381,24 @@ const db = getDb();
     // this suite's screen list (it needs a KeyboardAvoidingView and a live chat
     // hook), so pure props are the only way its chrome gets covered at all.
     //
-    // THE DOOR (2026-09-21). The owner used the build and said the five chips
-    // on the Coach tab *"need to be moved and put behind another button"*, so
-    // the docked rail became one control opening Home's own sheet. What the
-    // Coach screen shows with nothing set is the door and NOTHING ELSE — the
-    // five words are behind it.
+    // THE DOOR. Since 2026-09-21 the Coach tab reaches the five through the
+    // door Home already had (the owner: they "need to be moved and put behind
+    // another button"); since 2026-09-23 the door names what is on. With
+    // nothing set it reads STATUS and NOTHING ELSE — the five words are behind
+    // it.
     const doorOff = render(
       'status-control (Coach, nothing set)',
       StatusControl,
       {},
       {
         open: [],
-        showOpen: true,
+        docked: true,
         onToggle() {},
         onEnd() {},
       }
     );
     expect('status-control (Coach, nothing set)', doorOff, [
-      'Status',
+      '>Status</div>',
       // The authored empty state, spoken: the door says there is nothing set
       // and that it is the way to set one, rather than going silent.
       'Status: none set. Set one',
@@ -1396,46 +1411,63 @@ const db = getDb();
       'Night out',
     ]);
 
-    // …and with one running, the door plus THAT ONE CHIP, carrying the same x
-    // and the same re-ask tap it carried on the rail. A status the user has
-    // declared stays visible without opening anything; the other four do not
-    // come back with it.
+    // …and with one running, the door IS the status. The chip that stood beside
+    // it until 2026-09-23 is gone, and with it the x and the re-ask target it
+    // carried — both live on the sheet's rail now (asserted on StatusRail
+    // below). The other four do not come back either.
     const doorOn = render(
       'status-control (Coach, traveling)',
       StatusControl,
       {},
       {
         open: [{ id: 's1', label: 'traveling', end_date: null }],
-        showOpen: true,
+        docked: true,
         onToggle() {},
         onEnd() {},
       }
     );
     expect('status-control (Coach, traveling)', doorOn, [
-      'Status',
-      'Traveling',
-      // The x is a target, so it is found by its spoken label rather than by a
-      // glyph the renderer does not emit.
-      'End Traveling',
-      // The chip's own press target is the re-ask (its onPress is the rail's
-      // `onToggle`); a server render cannot tap it, so what is pinned here is
-      // that the target exists under its own spoken name…
-      'aria-label="Traveling"',
-      // …and that the door names the running status too, so the state reaches
-      // a VoiceOver user without opening anything either.
-      'Status: Traveling. Change',
+      '>Traveling</div>',
+      // Named in the spoken label too, so the state reaches a VoiceOver user
+      // without opening anything either.
+      'Status: Traveling. Re-check or change',
     ]);
     refute('status-control (Coach, traveling)', doorOn, [
+      '>Status</div>',
+      // No chip beside the door: neither its x nor its own re-ask target.
+      'End Traveling',
+      'aria-label="Traveling"',
       'Sick',
       'Injured',
       'Off day',
       'Night out',
     ]);
 
-    // HOME's face of the same component: no chip, ever. Its line above the hero
-    // names the status, and the same fact twice is what CLAUDE.md §5 forbids —
-    // so the x, which only a chip carries, is the thing that must be absent.
-    // ("Sick" itself is in the door's spoken label on both faces.)
+    // Several at once: the NEWEST by name (rows arrive newest-first) and the
+    // rest as a count — a door that grew a word per status would be the rail
+    // again. The spoken label names every one.
+    const doorTwo = render(
+      'status-control (two open)',
+      StatusControl,
+      {},
+      {
+        open: [
+          { id: 's1', label: 'sick', end_date: null },
+          { id: 's2', label: 'traveling', end_date: null },
+        ],
+        onToggle() {},
+        onEnd() {},
+      }
+    );
+    expect('status-control (two open)', doorTwo, [
+      '>Sick</div>',
+      '>+1</div>',
+      'Status: Sick, Traveling. Re-check or change',
+    ]);
+    refute('status-control (two open)', doorTwo, ['>Traveling</div>', '>Status</div>']);
+
+    // HOME's face is now the same face — and still never a chip, so the x,
+    // which only a chip carries, is the thing that must be absent.
     const homeFace = render(
       'status-control (Home, sick)',
       StatusControl,
@@ -1446,8 +1478,13 @@ const db = getDb();
         onEnd() {},
       }
     );
-    expect('status-control (Home, sick)', homeFace, ['Status']);
-    refute('status-control (Home, sick)', homeFace, ['End Sick', 'Off day', 'Night out']);
+    expect('status-control (Home, sick)', homeFace, ['>Sick</div>']);
+    refute('status-control (Home, sick)', homeFace, [
+      '>Status</div>',
+      'End Sick',
+      'Off day',
+      'Night out',
+    ]);
 
     // A pending write suppresses the whole control, as it suppresses the
     // activity line: the loop is suspended on one decision.
@@ -1457,13 +1494,50 @@ const db = getDb();
       {},
       {
         open: [{ id: 's1', label: 'sick', end_date: null }],
-        showOpen: true,
+        docked: true,
         hidden: true,
         onToggle() {},
         onEnd() {},
       }
     );
     refute('status-control (pending write)', hidden, ['Status', 'Sick']);
+
+    // THE SHEET'S HEADER — what only Home's line used to say: each status's
+    // age, whether its skips count, and what it is doing to the baselines.
+    // RN's `Modal` returns null without a DOM, so it is rendered directly, as
+    // the rail is; and it reads the REAL database the way the sheet does, so
+    // the count is the derivation's rather than a prop's. Traveling since three
+    // days ago is four status days in the window, today included.
+    const facts = render(
+      'status-facts (the sheet header, traveling)',
+      StatusFacts,
+      {},
+      {
+        open: openStatuses(getDb(), today),
+      }
+    );
+    expect('status-facts (the sheet header, traveling)', facts, [
+      `Traveling since ${shortDate(shiftISODate(today, -3))}`,
+      'skips excused',
+      'readiness baselines exclude 4 status days',
+    ]);
+    // …and the sheet really mounts it. RN's Modal renders nothing server-side,
+    // so Home's refutes above would pass whether or not the header were in the
+    // sheet at all; the source is the one place that fact is visible here.
+    const controlSource = readFileSync(
+      new URL('../src/components/status/status-control.tsx', import.meta.url),
+      'utf8'
+    );
+    /<ModalScreen>[\s\S]*<StatusFacts [^>]*open=\{open\}[^>]*\/>[\s\S]*<\/ModalScreen>/.test(
+      controlSource
+    )
+      ? ok('the sheet mounts StatusFacts inside its ModalScreen')
+      : bad('StatusFacts is not mounted inside the sheet');
+    // An ordinary day prints nothing at all — not an empty line.
+    const noFacts = render('status-facts (nothing open)', StatusFacts, {}, { open: [] });
+    noFacts === ''
+      ? ok('status-facts (nothing open) renders nothing')
+      : bad('status-facts (nothing open) renders nothing', String(noFacts));
 
     // THE SHEET PATH. RN's `Modal` returns null without a DOM, so what the door
     // opens cannot be server-rendered from the control itself — the rail IS the
@@ -1508,17 +1582,56 @@ const db = getDb();
       'Sick',
       'Jet-lagged',
       'Work crunch',
+      // The x lives HERE now, and only here.
       'End Sick',
     ]);
+    // …and so does the re-ask: the on-chip's own press target, under its own
+    // spoken name, sharing an outline with its x. RNW emits no selected state
+    // for a button, so ON is proved by the pairing — only an on-chip draws an x
+    // beside its target. A server render cannot tap it; `toggleStatus` reads a
+    // tap on a chip that has an openId as the re-ask.
+    /aria-label="Sick"[^>]*>(?:(?!<\/button>)[\s\S])*<\/button><button aria-label="End Sick"/.test(
+      sheetOn ?? ''
+    )
+      ? ok('status-rail (the sheet, five open): the on-chip keeps its re-ask target beside its x')
+      : bad('status-rail (the sheet, five open): no re-ask target paired with the x');
     refute('status-rail (the sheet, five open)', sheetOn, [
-      // MAX_EXTRA_CHIPS is two: the third typed status is on Home's line and in
-      // the Coach's state block, and the rail stops rather than becoming a wall
-      // inside the sheet.
+      // MAX_EXTRA_CHIPS is two: the third typed status is counted on the door,
+      // named in the sheet's header and in the Coach's state block, and the
+      // rail stops rather than becoming a wall inside the sheet.
       'Deadline week',
       // Night out ends tonight by construction, so an x on it would be a
       // control that does nothing.
       'End Night out',
     ]);
+
+    // THE END PROMPTS (2026-09-23). The owner: "the message for unchecking a
+    // status feels weird but otherwise this is ok." The x SEEDS one of these
+    // into the composer, and a server render cannot tap it, so the table is
+    // pinned here. Each is what he would type — first person, ending in his own
+    // sentence — never the mechanism narrated back at the Coach.
+    const ADJUST = "Check what's up and adjust accordingly.";
+    const endPrompts = {
+      sick: `I'm feeling better. ${ADJUST}`,
+      traveling: `I'm back home. ${ADJUST}`,
+      injured: `My injury's better. ${ADJUST}`,
+      // These two end tonight and no x is drawn on them, so nothing seeds them
+      // today — pinned anyway, so the table cannot rot where nobody looks.
+      'off day': `I'm back on it. ${ADJUST}`,
+      'night out': `I'm home for the night. ${ADJUST}`,
+      // A status the Coach recorded is free text, so "X is over." — the one
+      // shape that reads for an adjective and a noun alike.
+      'jet-lagged': `Jet-lagged is over. ${ADJUST}`,
+      'work crunch': `Work crunch is over. ${ADJUST}`,
+    };
+    for (const [label, want] of Object.entries(endPrompts)) {
+      const got = endPromptFor(label);
+      got === want ? ok(`end prompt (${label}): "${got}"`) : bad(`end prompt (${label})`, got);
+    }
+    const unpinned = STATUS_CHIPS.filter((chip) => !(chip.label in endPrompts));
+    unpinned.length === 0
+      ? ok('every chip carries a pinned end prompt')
+      : bad('end prompts not pinned', unpinned.map((chip) => chip.label).join(', '));
 
     getDb().run('DELETE FROM day_statuses');
   }

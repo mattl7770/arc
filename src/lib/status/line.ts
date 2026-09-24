@@ -1,19 +1,33 @@
 /**
- * Home's status line — one sentence, or nothing.
+ * The status sheet's header — one sentence, or nothing.
  *
  * *"Traveling since Sep 12 · Sick since today — skips excused · readiness
  * baselines exclude 4 status days"*
  *
- * ## Why Home says anything at all
+ * ## Why it is said at all
  *
  * The forgotten open status is the failure mode the retired Modes system
  * actually shipped: a mode set once from a picker, open-ended, quietly
  * excusing every day for a month. This build answers it with **visibility
  * gated on the consequence, not on an expiry** — there is no automatic
- * timeout (a rule with a number about biology), so instead the one screen the
- * owner opens every morning states what is on, how long it has been on, and
- * what it is doing to his numbers. `information-architecture.md`'s *"never
- * silently on"* rule is kept by this line.
+ * timeout (a rule with a number about biology). `information-architecture.md`'s
+ * *"never silently on"* rule is kept in two halves:
+ *
+ *   - **What is on** is on the status door itself, on Home and on the Coach
+ *     tab, without opening anything (src/components/status/status-control.tsx).
+ *   - **How long, and what it is doing to his numbers** is this sentence, the
+ *     header of the sheet that door opens.
+ *
+ * ## Why it moved off Home (2026-09-23)
+ *
+ * Until then it was a mono line above Home's hero. The owner, on the device:
+ * *"the message is there, but i think it would be better if the status button
+ * just changed to say 'Sick' or whatever the currently active status is."* Once
+ * the door names the status, a line naming it again just beneath the door is
+ * the same fact twice, which CLAUDE.md §5 forbids — so the name went to the door
+ * and the rest of the line came here, unchanged in wording. The sentence still
+ * names every status, because the sheet holds more than one and each age has to
+ * say whose it is.
  *
  * ## The last clause REPLACES, it does not accumulate
  *
@@ -41,7 +55,7 @@ export type StatusLineInput = {
   recoveryPausedByStatus: boolean;
 };
 
-/** The line, or null on an ordinary day — when it costs no vertical space. */
+/** The sentence, or null on an ordinary day — when the sheet prints nothing. */
 export function statusLine(input: StatusLineInput): string | null {
   if (input.open.length === 0) return null;
 

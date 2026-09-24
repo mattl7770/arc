@@ -90,7 +90,8 @@ export type ReadinessView = {
    * merely applied: the owner's Q3(a) is "yes, while open — **and Home and the
    * Coach say how many days are excluded**", because a baselines change nobody
    * can see is the forgotten-open-status failure mode wearing a new hat. Zero
-   * on the ordinary day, and Home's line prints the clause only above zero.
+   * on the ordinary day, and the status sheet's header (Home's line until
+   * 2026-09-23) prints the clause only above zero.
    *
    * It counts every status day, excusing or not — see
    * src/lib/home/baseline-exclusions.ts for why those are different questions.
