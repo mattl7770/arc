@@ -21,8 +21,11 @@ import { deriveReadiness, type HealthLink, type ReadinessView } from '@/lib/home
  * build". It was always the latter until the owner's EAS rebuild (2026-08-25)
  * put the HealthKit module in the binary; `isHealthKitSupported()` is the only
  * authority on which it is, and is left to answer for itself on every read.
+ *
+ * Exported for `useMetricSync`, which has to agree with this hook about the
+ * link or a cell could offer a sync the pillars say cannot run.
  */
-function healthLink(db: ReturnType<typeof getDb>): HealthLink {
+export function healthLink(db: ReturnType<typeof getDb>): HealthLink {
   if (!isHealthKitSupported()) return 'unsupported';
   return isHealthSyncEnabled(db) ? 'connected' : 'disconnected';
 }

@@ -72,6 +72,13 @@ function reportingNote(rows: WearableMetricRow[]): string {
 }
 
 function MetricRow({ row, first }: { row: WearableMetricRow; first: boolean }) {
+  // "Garmin never sends this to Apple Health" / "Apple Health sent none in 14
+  // days" when the last pass says so, rather than a "No data yet" that implies
+  // something is on its way (2026-09-23 — the same words, from the same
+  // function, as Home's metrics strip). The ledger gets the statement and NOT
+  // the sync control: an empty row here means NEVER, and the pass that could
+  // answer that has already run and answered it. Home is where the tap lives.
+  const emptyText = row.emptyNote ?? 'No data yet';
   return (
     <View>
       <Divider first={first} />
@@ -79,7 +86,7 @@ function MetricRow({ row, first }: { row: WearableMetricRow; first: boolean }) {
         accessible
         accessibilityLabel={
           row.empty
-            ? `${row.name}. No data yet.`
+            ? `${row.name}. ${emptyText}.`
             : `${row.name}. ${row.value} ${row.unit}${row.qualifier ? ', ' + row.qualifier : ''}.`
         }
         className="min-h-[44px] flex-row items-center gap-3 py-3">
@@ -88,7 +95,7 @@ function MetricRow({ row, first }: { row: WearableMetricRow; first: boolean }) {
           {/* Authored empty in the descriptor slot, so the value slot stays a
             value slot and never has to carry a sentence. */}
           <Text className="mt-0.5 font-serif text-[11px] leading-4 text-ink-muted">
-            {row.empty ? 'No data yet' : row.sub}
+            {row.empty ? emptyText : row.sub}
           </Text>
         </View>
 

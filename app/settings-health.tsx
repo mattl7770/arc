@@ -34,7 +34,7 @@ import {
   unaskedReadScopes,
   WATER_PUBLISH_METRIC,
 } from '@/lib/health/mapping';
-import { FIRST_SYNC_DAYS, syncHealthData } from '@/lib/health/sync';
+import { FIRST_SYNC_DAYS, requestFreshHealthSync, startHealthSync } from '@/lib/health/sync';
 
 /**
  * Settings › Apple Health — the wearables hub toggle (docs/wearables-subapp.md §7).
@@ -234,7 +234,7 @@ export default function SettingsHealthScreen() {
       // Lazy permission ask — the whole sheet, first time only; iOS shows it
       // only for types the user hasn't answered yet, so repeats are no-ops.
       await askForScopes();
-      const result = await syncHealthData(db);
+      const result = await startHealthSync(db);
       if (result.status === 'synced') {
         setLastRows(result.rowsWritten);
         setLastPublished(result.samplesPublished);
@@ -264,7 +264,7 @@ export default function SettingsHealthScreen() {
     setBusy('allowing');
     try {
       await askForScopes();
-      const result = await syncHealthData(getDb());
+      const result = await startHealthSync(getDb());
       if (result.status === 'synced') {
         setLastRows(result.rowsWritten);
         setLastPublished(result.samplesPublished);
@@ -291,7 +291,7 @@ export default function SettingsHealthScreen() {
     setBusy('heartRate');
     try {
       await askForScopes();
-      const result = await syncHealthData(getDb(), new Date(), { windowDays: FIRST_SYNC_DAYS });
+      const result = await startHealthSync(getDb(), new Date(), { windowDays: FIRST_SYNC_DAYS });
       if (result.status === 'synced') {
         setLastRows(result.rowsWritten);
         setLastPublished(result.samplesPublished);
@@ -313,7 +313,13 @@ export default function SettingsHealthScreen() {
     if (busy) return;
     setBusy('syncing');
     try {
-      const result = await syncHealthData(getDb());
+      // A pass that reads from THIS tap on: never a second one beside a pass
+      // already running (the foreground sync, or a blank cell on Home), and
+      // never that pass either, which may have started before whatever the user
+      // just pushed into Apple Health — it queues one follow-up behind it. The
+      // three setup flows above use `startHealthSync`: their pass has to read
+      // AFTER the permission sheet they have just shown, some with a wider window.
+      const result = await requestFreshHealthSync(getDb());
       if (result.status === 'synced') {
         setLastRows(result.rowsWritten);
         setLastPublished(result.samplesPublished);

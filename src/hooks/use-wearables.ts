@@ -6,14 +6,17 @@ import { todayISODate } from '@/lib/db/date';
 import {
   dailyMetricSeries,
   deviceLabel,
+  getHealthSyncLog,
   getHealthSyncState,
   latestMetric,
+  recentSourceDevices,
   recentWearableWorkouts,
   type WearableWorkout,
 } from '@/lib/db/repositories/wearables';
 import { getPreferences, isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { isHealthKitSupported } from '@/lib/health/healthkit';
-import { subscribeHealthSync } from '@/lib/health/sync';
+import { subscribeHealthSync, SYNC_WINDOW_DAYS } from '@/lib/health/sync';
+import { ledgerEmptyNote } from '@/lib/home/metric-sync';
 
 /**
  * The Data-tab wearable history view model (docs/wearables-subapp.md §7):
@@ -40,6 +43,15 @@ export interface WearableMetricRow {
   /** Source + date qualifier ("Apple Watch · Jul 29"), or null. */
   qualifier: string | null;
   empty: boolean;
+  /**
+   * What an EMPTY row says in its descriptor slot instead of "No data yet",
+   * when the last Apple Health pass establishes it — "Garmin never sends this to
+   * Apple Health" where that is the cause, "Apple Health sent none in 14 days"
+   * otherwise (`ledgerEmptyNote` in src/lib/home/metric-sync.ts, the same words
+   * Home's metrics strip uses). Null when the row has data, when sync is off, or
+   * when the log cannot speak for this metric (the sleep-stage rows).
+   */
+  emptyNote: string | null;
 }
 
 export interface WearableSection {
@@ -160,6 +172,13 @@ function read(): Omit<WearablesOverview, 'reload'> {
   const db = getDb();
   const today = todayISODate();
   const fahrenheit = getPreferences(db).units.temperature === 'F';
+  const supported = isHealthKitSupported();
+  const enabled = isHealthSyncEnabled(db);
+  // Read only while sync is on — `ledgerEmptyNote` ignores them otherwise, and
+  // there is no reason to query for evidence that will not be used.
+  const live = supported && enabled;
+  const log = live ? getHealthSyncLog(db) : null;
+  const sources = live ? recentSourceDevices(db, today, SYNC_WINDOW_DAYS) : [];
 
   const buildRow = (spec: MetricSpec): WearableMetricRow => {
     const series = dailyMetricSeries(db, spec.key, 30, today);
@@ -182,6 +201,7 @@ function read(): Omit<WearablesOverview, 'reload'> {
       unit,
       qualifier,
       empty,
+      emptyNote: ledgerEmptyNote({ supported, enabled, empty, log, metric: spec.key, sources }),
     };
   };
 
@@ -195,8 +215,8 @@ function read(): Omit<WearablesOverview, 'reload'> {
   const allEmpty = workouts.length === 0 && sections.every((s) => s.rows.every((r) => r.empty));
 
   return {
-    supported: isHealthKitSupported(),
-    enabled: isHealthSyncEnabled(db),
+    supported,
+    enabled,
     lastSyncedAt: getHealthSyncState(db).lastSyncedAt,
     sections,
     workouts,
