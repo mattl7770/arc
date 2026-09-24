@@ -42,6 +42,8 @@
  * the next removal replaces it.
  */
 
+import { fmtInt } from './format';
+
 /** Where an offer is drawn. */
 export type UndoScope =
   /** A day's meal list — the Eat tab (today), or that day in history. A
@@ -73,6 +75,31 @@ export type UndoOffer = {
    *  and offers nothing. Never set by a caller. */
   refused?: true;
 };
+
+/** What an Undo row draws — the words of an offer, without its scope or its
+ *  closures. A logged removal's offer is one; so is the estimate review's
+ *  draft removal (src/lib/nutrition/review-undo.ts), which lives in the
+ *  screen's own state and never in this slot. */
+export type UndoWords = Pick<UndoOffer, 'icon' | 'said' | 'figure' | 'spoken'> &
+  Partial<Pick<UndoOffer, 'refusal' | 'refused'>>;
+
+/**
+ * The words for one food removed — "Removed Greek yogurt · 150 kcal", and
+ * "Undo removing Greek yogurt" for VoiceOver. One function, so a logged item's
+ * × on the meal screen and a draft row's × on the estimate review say it the
+ * same way, word for word.
+ */
+export function removalWords(
+  name: string,
+  kcal: unknown
+): Pick<UndoOffer, 'icon' | 'said' | 'figure' | 'spoken'> {
+  return {
+    icon: 'restaurant-outline',
+    said: `Removed ${name}`,
+    figure: typeof kcal === 'number' ? `${fmtInt(kcal)} kcal` : null,
+    spoken: `Undo removing ${name}`,
+  };
+}
 
 type Listener = () => void;
 

@@ -13,7 +13,8 @@
  * Unit handling is conservative on purpose (research §1: branded/label data is
  * unreliable for magnesium, omega-3, and most vitamins): only the values OFF
  * reliably normalizes are mapped — macros/fiber in grams, and sodium /
- * potassium / calcium / iron converted from OFF's grams to milligrams. Every
+ * potassium / calcium / iron / caffeine converted from OFF's grams to
+ * milligrams (caffeine since 2026-09-23, under a tighter ceiling of its own). Every
  * value is range-checked — macros/kcal to the schema's bounds, micros to a
  * physical ceiling (a contributor who types 500 into the grams field of a
  * per-100 g sodium would otherwise cache 500,000 mg and blow up the day's
@@ -70,14 +71,36 @@ function per100(nutriments: OffNutriments, key: string): number | null {
  */
 const MG_CEILING_PER_100G = 50000;
 
-/** OFF stores sodium/potassium/calcium/iron per-100 g in GRAMS → milligrams,
- * dropping anything past the physical ceiling. */
-function mgFromGrams(nutriments: OffNutriments, key: string): number | undefined {
+/** OFF stores sodium/potassium/calcium/iron/caffeine per-100 g in GRAMS →
+ * milligrams, dropping anything past `ceiling` (the physical one by default). */
+function mgFromGrams(
+  nutriments: OffNutriments,
+  key: string,
+  ceiling: number = MG_CEILING_PER_100G
+): number | undefined {
   const g = offNum(nutriments, key);
   if (g == null) return undefined;
   const mg = g * 1000;
-  return mg <= MG_CEILING_PER_100G ? mg : undefined;
+  return mg <= ceiling ? mg : undefined;
 }
+
+/**
+ * Caffeine's own ceiling, per 100 of the product's basis: a tenth of it.
+ *
+ * OFF's label field for caffeine is entered in milligrams and normalised into
+ * `caffeine_100g` in GRAMS, like every other mass nutrient — so an energy
+ * drink's 32 mg per 100 ml arrives as `0.032`. The error this guards against is
+ * a contributor typing the milligram figure into the grams field: that same
+ * drink then reads 32,000 mg, which the generic 50,000 ceiling above would let
+ * through, and one can would put 80,000 mg on the day's Caffeine cell.
+ *
+ * Nothing sold as food is a tenth caffeine. The densest foods in USDA FoodData
+ * Central are the instant coffee and tea powders, a few per cent (instant
+ * coffee, NDB 14214: 3,142 mg per 100 g); a caffeinated drink concentrate runs
+ * to about 3,000 mg per 100 ml. Above 10,000 is a unit error or a supplement,
+ * and either way it is dropped rather than cached.
+ */
+const CAFFEINE_MG_CEILING_PER_100 = 10000;
 
 /**
  * What a scanned product is measured in (0047).
@@ -143,6 +166,7 @@ export function parseOffProduct(response: unknown, barcode: string): NewFood | n
   const fromSalt = saltG != null ? (saltG / 2.5) * 1000 : undefined;
   const sodiumRaw = mgFromGrams(nutriments, 'sodium_100g') ?? fromSalt;
   const sodium_mg = sodiumRaw != null && sodiumRaw <= MG_CEILING_PER_100G ? sodiumRaw : undefined;
+  const caffeine_mg = mgFromGrams(nutriments, 'caffeine_100g', CAFFEINE_MG_CEILING_PER_100);
 
   const micros = serializeMicros({
     ...(sodium_mg != null ? { sodium_mg } : {}),
@@ -155,6 +179,10 @@ export function parseOffProduct(response: unknown, barcode: string): NewFood | n
     ...(mgFromGrams(nutriments, 'iron_100g') != null
       ? { iron_mg: mgFromGrams(nutriments, 'iron_100g') }
       : {}),
+    // The owner's example was a latte, and a scanned energy drink or cold
+    // brew is the same fact (2026-09-23). Per 100 of the product's basis, like
+    // every figure here — OFF's `_100g` is per 100 ml on a `100ml` product.
+    ...(caffeine_mg != null ? { caffeine_mg } : {}),
   });
 
   // Serving: pair-or-none — only set both when the quantity is usable.

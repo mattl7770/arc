@@ -15,8 +15,11 @@ import {
   createFood,
   deleteFood,
   getFood,
+  listFavoriteFoods,
   listRecentBarcodeFoods,
   listRecentFoods,
+  searchFoods,
+  setFoodFavorite,
 } from '../src/lib/db/repositories/foods.ts';
 import { createRecipe, deleteRecipe } from '../src/lib/db/repositories/recipes.ts';
 import {
@@ -110,6 +113,7 @@ import {
   offerUndo,
   onList,
   onMeal,
+  removalWords,
   runUndo,
   subscribeUndo,
 } from '../src/lib/nutrition/undo-store.ts';
@@ -172,6 +176,7 @@ import {
 import {
   countTotalsOnlyMeals,
   dayKeyMicros,
+  KEY_CAFFEINE_MG,
   KEY_FIBER_G,
   KEY_SODIUM_SHARE,
   keyMicro,
@@ -180,6 +185,16 @@ import {
   totalsOnlyNote,
 } from '../src/lib/nutrition/key-micro.ts';
 import { lookupOffProduct, OffLookupError } from '../src/lib/nutrition/openfoodfacts.ts';
+import {
+  draftUndoStands,
+  draftUndoWords,
+  EMPTY_DRAFT,
+  editDraft,
+  removeRowWithUndo,
+  replaceDraft,
+  replaceDraftRows,
+  undoDraftRemoval,
+} from '../src/lib/nutrition/review-undo.ts';
 import { itemForPortion, rescaleLoggedItem } from '../src/lib/nutrition/servings.ts';
 
 let pass = 0;
@@ -1145,7 +1160,8 @@ console.log('\n21. caffeine and sodium: from an estimated item to the day’s to
 
   const { db } = freshDb();
   // A catalog coffee with macros but NO micros row — the seeded "Coffee, black"
-  // is exactly this (0016). Grounding re-prices the macros and must leave the
+  // was exactly this until 0063 gave it caffeine, and a user's own coffee still
+  // can be. Grounding re-prices the macros and must leave the
   // model's caffeine standing, or the most caffeinated food in the catalog
   // would be the one that loses its caffeine.
   createFood(db, {
@@ -2317,6 +2333,11 @@ console.log('36. C4/C5: the estimator prompts have a ceiling now');
   // That round's review moved the revision prompt only, 895 → 925: "fiber" in
   // the restraint rule (+2) and the 10% bound scoped to added or re-estimated
   // items (+28). §68 pins both. The estimation prompt stayed at 995.
+  //
+  // The gap round (2026-09-23) put "micros" on the add_item effect in both
+  // prompts (+3; §72): an ADDED shot had no figure to scale, so it carried no
+  // caffeine. 998, 2 of headroom; the revision prompt 925 → 928. Nothing was
+  // trimmed, because it fits — so the next addition takes a named cut first.
   //
   // The rule the Coach's own budget note states applies verbatim: **the next
   // addition trims rather than raises this.** What is left to cut is named on
@@ -5128,9 +5149,11 @@ console.log('62. defect: a matched food with no micros keeps the model’s figur
     : bad('day after re-portion', JSON.stringify(dayMicroTotals(db, TODAY)));
 
   // PER KEY, the catalog wins what it records and the model fills the rest.
-  // The seeded 'Dark chocolate, 70-85%' records iron and magnesium and, like
-  // every seed row (0016 predates caffeine), no caffeine. The model's caffeine
-  // used to be dropped whole because the food recorded SOMETHING.
+  // The seeded 'Dark chocolate, 70-85%' records iron and magnesium — and, since
+  // 0063, its USDA caffeine (80 mg per 100 g) — but no zinc. The model's micros
+  // used to be dropped whole because the food recorded SOMETHING. The model's
+  // zinc is the key it still fills; its caffeine (30, not the food's 16 for
+  // 20 g) is the key the food now wins, which is what 0063 is for.
   const choc = groundMealEstimate(
     db,
     parseMealEstimate(
@@ -5145,7 +5168,7 @@ console.log('62. defect: a matched food with no micros keeps the model’s figur
             protein_g: 2,
             carbs_g: 9,
             fat_g: 9,
-            micros: { caffeine_mg: 16, iron_mg: 99 },
+            micros: { caffeine_mg: 30, zinc_mg: 1.5, iron_mg: 99 },
             confidence: 'high',
           },
         ],
@@ -5154,16 +5177,18 @@ console.log('62. defect: a matched food with no micros keeps the model’s figur
   ).items[0];
   const chocMicros = parseMicros(choc.micros);
   choc.foodId !== null &&
-  near(chocMicros.caffeine_mg, 16) &&
+  near(chocMicros.zinc_mg, 1.5) &&
+  near(chocMicros.caffeine_mg, 80 * 0.2) &&
   near(chocMicros.iron_mg, 11.9 * 0.2) &&
   near(chocMicros.magnesium_mg, 228 * 0.2)
-    ? ok('grounding merges by key: the seed’s iron and magnesium, the model’s caffeine')
+    ? ok('grounding merges by key: the seed’s iron, magnesium and caffeine, the model’s zinc')
     : bad('per-key merge at grounding', choc.micros);
   const chocRows = rowsFromEstimate(db, { ...estimate, items: [choc] });
   const chocRow = currentPortion(setRowAmount(chocRows, chocRows[0].key, '40')[0]);
   near(parseMicros(chocRow.micros).caffeine_mg, 32) &&
+  near(parseMicros(chocRow.micros).zinc_mg, 3) &&
   near(parseMicros(chocRow.micros).iron_mg, 11.9 * 0.4)
-    ? ok('…and the review row keeps the same split through an amount edit (40 g: 32 mg)')
+    ? ok('…and the review row keeps the same split through an amount edit (40 g: 32 mg, 3 mg zinc)')
     : bad('per-key merge at review', chocRow.micros);
 }
 
@@ -5532,7 +5557,7 @@ console.log('65. the estimator asks for the shortlist where a portion is a notab
 // 66. The one notable micro on an item row (owner: "displaying caffeine on a
 // latte"). One pure function, keyMicro (src/lib/nutrition/key-micro.ts).
 // ===========================================================================
-console.log('66. keyMicro: caffeine whenever present, sodium above a fifth, fiber above 5 g');
+console.log('66. keyMicro: caffeine from 20 mg, sodium above a fifth, fiber above 5 g, then any caffeine');
 {
   const row = (micros, fiber_g = null) =>
     keyMicro({ micros: micros ? JSON.stringify(micros) : null, fiber_g });
@@ -5540,9 +5565,21 @@ console.log('66. keyMicro: caffeine whenever present, sodium above a fifth, fibe
   latte && latte.key === 'caffeine_mg' && latte.label === '126 mg caffeine'
     ? ok('a latte shows its caffeine: “126 mg caffeine”')
     : bad('latte', JSON.stringify(latte));
-  row({ caffeine_mg: 12, sodium_mg: 900 }, 8)?.key === 'caffeine_mg'
-    ? ok('caffeine wins the slot at any size — one figure per row')
+  KEY_CAFFEINE_MG === 20 &&
+  row({ caffeine_mg: 20, sodium_mg: 900 }, 8)?.key === 'caffeine_mg' &&
+  row({ caffeine_mg: 28, sodium_mg: 1800 })?.label === '28 mg caffeine'
+    ? ok('caffeine from 20 mg wins the slot over sodium and fiber — one figure per row')
     : bad('caffeine priority');
+  // Review finding on 0063: the seed's chocolate now records caffeine, and a
+  // square of it must not hide a dinner's sodium or a bowl's fiber.
+  row({ caffeine_mg: 8, sodium_mg: 1800 })?.label === '1,800 mg sodium' &&
+  row({ caffeine_mg: 12, sodium_mg: 900 }, 8)?.key === 'sodium_mg' &&
+  row({ caffeine_mg: 19.9 }, 9)?.label === '9 g fiber'
+    ? ok('under 20 mg, caffeine yields to sodium over its line and fiber over its own')
+    : bad('small caffeine priority', JSON.stringify(row({ caffeine_mg: 8, sodium_mg: 1800 })));
+  row({ caffeine_mg: 8, sodium_mg: 300 }, 2)?.label === '8 mg caffeine'
+    ? ok('…and still prints when neither earns the row: a square of chocolate says “8 mg caffeine”')
+    : bad('small caffeine fallback', JSON.stringify(row({ caffeine_mg: 8, sodium_mg: 300 }, 2)));
   row({ caffeine_mg: 0 }) === null && row({ caffeine_mg: 0.4 }) === null
     ? ok('a caffeine that rounds to 0 mg is not printed')
     : bad('zero caffeine printed');
@@ -5922,6 +5959,727 @@ console.log('69. a meal row on the Eat tab reads the one notable micro of its it
       ? ok('from the day: the latte, the pizza’s parts summed, nothing for a typed meal or another day')
       : bad('day read', JSON.stringify(read));
   }
+}
+
+// ===========================================================================
+// 70. The estimate review's × has an Undo (2026-09-23). Every removal of a
+// LOGGED food had one (§56–§61); the review sheet, where Photo and Describe
+// land, did not. Driven through the same pure functions the screens' hook
+// calls (src/hooks/use-review-draft.ts → src/lib/nutrition/review-undo.ts).
+// ===========================================================================
+const UNDO_REPLY = JSON.stringify({
+  title: 'Breakfast',
+  items: [
+    {
+      name: 'Orange juice',
+      amount: 250,
+      unit: 'ml',
+      kcal: 112,
+      protein_g: 2,
+      carbs_g: 26,
+      fat_g: 0,
+      micros: { potassium_mg: 500 },
+      confidence: 'high',
+    },
+    {
+      name: 'Almond croissant',
+      amount: 90,
+      unit: 'g',
+      kcal: 380,
+      protein_g: 8,
+      carbs_g: 38,
+      fat_g: 22,
+      fiber_g: 2.5,
+      micros: { sodium_mg: 320 },
+      confidence: 'medium',
+    },
+    {
+      name: 'Latte',
+      confidence: 'medium',
+      components: [
+        {
+          name: 'Espresso',
+          amount: 60,
+          unit: 'ml',
+          kcal: 5,
+          protein_g: 0,
+          carbs_g: 1,
+          fat_g: 0,
+          micros: { caffeine_mg: 126 },
+        },
+        {
+          name: 'Whole milk',
+          amount: 300,
+          unit: 'ml',
+          kcal: 186,
+          protein_g: 10,
+          carbs_g: 14,
+          fat_g: 10,
+          micros: { sodium_mg: 130 },
+        },
+      ],
+    },
+    {
+      name: 'Toast',
+      confidence: 'medium',
+      components: [
+        {
+          name: 'Sourdough',
+          amount: 50,
+          unit: 'g',
+          kcal: 130,
+          protein_g: 5,
+          carbs_g: 25,
+          fat_g: 1,
+        },
+        { name: 'Butter', amount: 10, unit: 'g', kcal: 72, protein_g: 0, carbs_g: 0, fat_g: 8 },
+      ],
+    },
+  ],
+  notes: null,
+  questions: [
+    {
+      id: 'shots',
+      ask: 'How many shots?',
+      allow_other: false,
+      options: [
+        { label: '2', effect: { set_amount: 'Espresso', amount: 60 } },
+        { label: '3', effect: { set_amount: 'Espresso', amount: 90 } },
+        { label: '1', effect: { set_amount: 'Espresso', amount: 30 } },
+      ],
+    },
+  ],
+});
+
+console.log('70. the estimate review’s × has an Undo — exact, in place, and closed by an answer');
+{
+  const { db } = freshDb();
+  const estimate = parseMealEstimate(UNDO_REPLY);
+  const start = rowsFromEstimate(db, estimate);
+  const json = (rows) => JSON.stringify(rows);
+  const saved = (rows) => JSON.stringify(rowsToMealItems(rows));
+  const [oj, croissant, latte, toast] = start;
+  const draft0 = { ...EMPTY_DRAFT, rows: start };
+
+  // THE SLOT IS NOT TOUCHED. A draft × must never settle a LOGGED removal's
+  // offer (a deleted meal's photo files are held until it closes).
+  closeUndo();
+  let settled = 0;
+  offerUndo({
+    scope: { on: 'meal', mealId: 'elsewhere' },
+    ...removalWords('Logged thing', 100),
+    refusal: 'x',
+    undo: () => {},
+    settle: () => {
+      settled++;
+    },
+  });
+
+  // --- A plain row -----------------------------------------------------------
+  const a = removeRowWithUndo(draft0, croissant.key);
+  a.rows.length === 3 && !a.rows.some((r) => r.key === croissant.key)
+    ? ok('× removes the croissant from the rows')
+    : bad('plain removal', json(a.rows.map((r) => r.name)));
+  const words = draftUndoWords(a);
+  words &&
+  words.said === 'Removed Almond croissant' &&
+  words.figure === '380 kcal' &&
+  words.spoken === 'Undo removing Almond croissant' &&
+  words.icon === 'restaurant-outline'
+    ? ok(
+        'the row says “Removed Almond croissant · 380 kcal”, spoken “Undo removing Almond croissant”'
+      )
+    : bad('words', JSON.stringify(words));
+  JSON.stringify(words) === JSON.stringify(removalWords('Almond croissant', 380))
+    ? ok('…in the words the meal screen’s receipt uses, from the same function')
+    : bad('words drift from removalWords');
+  const aBack = undoDraftRemoval(a);
+  json(aBack.rows) === json(start) && aBack.removed === null && draftUndoWords(aBack) === null
+    ? ok('Undo puts it back in the middle, where it was, and the offer closes')
+    : bad('plain undo', json(aBack.rows.map((r) => r.name)));
+  saved(aBack.rows) === saved(start)
+    ? ok('…and Save would write exactly what it would have written had it never gone')
+    : bad('saved after undo differs');
+
+  // An edit to ANOTHER row keeps the offer: a row's figures are its own.
+  const aEdited = editDraft(a, (rows) => setRowAmount(rows, oj.key, '330'));
+  draftUndoStands(aEdited) && draftUndoWords(aEdited) !== null
+    ? ok('retyping the orange juice keeps the croissant’s Undo open')
+    : bad('an edit elsewhere closed it');
+  const aEditedBack = undoDraftRemoval(aEdited);
+  aEditedBack.rows[1].key === croissant.key &&
+  json(aEditedBack.rows[1]) === json(croissant) &&
+  aEditedBack.rows[0].amountText === '330'
+    ? ok('…and Undo then brings the croissant back at index 1 beside the 330 ml juice')
+    : bad(
+        'undo after an edit elsewhere',
+        json(aEditedBack.rows.map((r) => [r.name, r.amountText]))
+      );
+
+  // A key that names nothing removes nothing and leaves the offer as it was.
+  removeRowWithUndo(a, 'no-such-row') === a
+    ? ok('a × on a key that is gone changes nothing, the open offer included')
+    : bad('phantom removal');
+
+  // --- A part ----------------------------------------------------------------
+  const open = editDraft(draft0, (rows) => toggleExpanded(rows, latte.key));
+  const [espresso, milk] = latte.components;
+  const b = removeRowWithUndo(open, espresso.key);
+  const bLatte = b.rows.find((r) => r.key === latte.key);
+  bLatte.components.length === 1 && draftUndoWords(b)?.said === 'Removed Espresso'
+    ? ok('× on a part takes the espresso and offers “Removed Espresso · 5 kcal”')
+    : bad('part removal', JSON.stringify(draftUndoWords(b)));
+  keyMicroLabel(partsAsItem(bLatte.components.map(currentPortion))) === null
+    ? ok('…the latte reads no caffeine without it')
+    : bad('caffeine still on the dish');
+  const bBack = undoDraftRemoval(b);
+  const bBackLatte = bBack.rows.find((r) => r.key === latte.key);
+  bBackLatte.components[0] === espresso &&
+  bBackLatte.components[1] === milk &&
+  bBackLatte.expanded === true &&
+  keyMicroLabel(partsAsItem(bBackLatte.components.map(currentPortion))) === '126 mg caffeine'
+    ? ok('Undo puts the very espresso back FIRST, the dish still open, 126 mg caffeine again')
+    : bad('part undo', json(bBackLatte.components.map((c) => c.name)));
+  saved(bBack.rows) === saved(open.rows)
+    ? ok('…and the save is byte-for-byte the pre-× save')
+    : bad('part undo save differs');
+
+  // The DISH moving closes a part's offer: halved, the latte is a different
+  // dish, and a full-size espresso back beside half a milk is a drink nobody had.
+  const bHalved = editDraft(b, (rows) => scaleComposite(rows, latte.key, 0.5));
+  bHalved.removed === null && draftUndoWords(bHalved) === null
+    ? ok('halving the latte after the × closes the espresso’s Undo')
+    : bad('dish moved, offer stayed');
+  json(undoDraftRemoval(bHalved).rows) === json(bHalved.rows)
+    ? ok('…and an Undo then puts nothing back')
+    : bad('undo after the dish moved wrote something');
+  const bSibling = editDraft(b, (rows) => setRowAmount(rows, milk.key, '250'));
+  bSibling.removed === null
+    ? ok('re-portioning its milk closes it too — the dish is not the one the part left')
+    : bad('sibling edit kept a part offer');
+  const bElsewhere = editDraft(b, (rows) => setRowAmount(rows, oj.key, '200'));
+  draftUndoStands(bElsewhere)
+    ? ok('an edit to another row entirely keeps the part’s offer')
+    : bad('an edit elsewhere closed a part offer');
+  // A blur on the dish itself moves no figure, and keeps it.
+  const bBlur = editDraft(b, (rows) => endCountEdit(rows, latte.key));
+  draftUndoStands(bBlur)
+    ? ok('a field leaving focus on the dish (no figure moved) keeps it')
+    : bad('a blur closed the offer');
+
+  // --- The last part takes the dish, and the dish comes back -----------------
+  // The butter already gone (and its Undo replaced), the sourdough is the last.
+  const [sourdough, butter] = toast.components;
+  const oneLeft = removeRowWithUndo(draft0, butter.key);
+  const c = removeRowWithUndo(oneLeft, sourdough.key);
+  !c.rows.some((r) => r.key === toast.key) && draftUndoWords(c)?.said === 'Removed Sourdough'
+    ? ok('× on the toast’s last part takes the toast (invariant 4), and says the part')
+    : bad('last part', JSON.stringify(draftUndoWords(c)));
+  const cBack = undoDraftRemoval(c);
+  json(cBack.rows) === json(oneLeft.rows) && cBack.rows[3].components.length === 1
+    ? ok('Undo brings the whole toast back, last, with the part it had then')
+    : bad('last-part undo', json(cBack.rows.map((r) => r.name)));
+
+  // --- A whole dish ----------------------------------------------------------
+  const d = removeRowWithUndo(draft0, latte.key);
+  draftUndoWords(d)?.figure === '191 kcal'
+    ? ok('× on the latte’s header offers “Removed Latte · 191 kcal” — its parts summed')
+    : bad('dish kcal', JSON.stringify(draftUndoWords(d)));
+  json(undoDraftRemoval(d).rows) === json(start)
+    ? ok('…and Undo returns the dish with both parts, third of four')
+    : bad('dish undo');
+
+  // --- The next × replaces the offer -----------------------------------------
+  const e = removeRowWithUndo(a, oj.key);
+  const eBack = undoDraftRemoval(e);
+  eBack.rows.map((r) => r.name).join('|') === 'Orange juice|Latte|Toast' && eBack.removed === null
+    ? ok('a second × replaces the first offer: Undo returns the juice, the croissant stays gone')
+    : bad('replace', json(eBack.rows.map((r) => r.name)));
+
+  // --- Answers and the Undo ---------------------------------------------------
+  const answerQuestion = reviewRowsModule.answerQuestion;
+  const answersOf = reviewRowsModule.answersOf;
+  const shots = estimate.questions.find((q) => q.id === 'shots');
+  const three = { kind: 'option', index: 1, effect: shots.options[1].effect };
+  const one = { kind: 'option', index: 2, effect: shots.options[2].effect };
+  const espressoMg = (rows) =>
+    parseMicros(
+      currentPortion(
+        rows.find((r) => r.name === 'Latte').components.find((p) => p.name === 'Espresso')
+      ).micros
+    ).caffeine_mg;
+
+  // ANSWER, THEN ×, THEN UNDO — the answer's effect is on the row that returns.
+  const answered = answerQuestion([], start, 'shots', three);
+  const f = removeRowWithUndo({ rows: answered.rows, removed: null }, latte.key);
+  const fBack = undoDraftRemoval(f);
+  json(fBack.rows) === json(answered.rows) &&
+  near(espressoMg(fBack.rows), 189) &&
+  answersOf(answered.trail).shots === 1
+    ? ok('answered “3”, × the latte, Undo: it returns at 189 mg with the “3” chip lit over it')
+    : bad('answer then undo', String(espressoMg(fBack.rows)));
+  const changed = answerQuestion(answered.trail, fBack.rows, 'shots', one);
+  near(espressoMg(changed.rows), 63) && changed.rows.length === 4
+    ? ok('…and changing the answer to “1” then rebuilds onto the latte: 63 mg, nothing lost')
+    : bad('answer change after undo', json(changed.rows.map((r) => r.name)));
+
+  // ×, THEN AN ANSWER — the answer closes the Undo. Its entry's base has no
+  // latte, so a latte put back would carry none of it under a lit chip, and the
+  // next change to the answer would drop it again.
+  const g = removeRowWithUndo(draft0, latte.key);
+  const gAnswered = answerQuestion([], g.rows, 'shots', three);
+  const gAfter = replaceDraftRows(gAnswered.rows);
+  gAfter.removed === null && draftUndoWords(gAfter) === null
+    ? ok('an answer after the × closes its Undo (the hook is handed the closing setter)')
+    : bad('answer left the Undo open');
+  json(undoDraftRemoval(gAfter).rows) === json(gAnswered.rows)
+    ? ok('…so no Undo can bring back a latte its lit chip never touched')
+    : bad('undo after an answer put a row back');
+  // Even an answer that moved NOTHING closes it — the chip still lit.
+  gAnswered.rows === g.rows && answersOf(gAnswered.trail).shots === 1
+    ? ok('(that answer was a no-op on the rows, which is why identity could not decide this)')
+    : bad('expected a no-op answer', json(gAnswered.rows.map((r) => r.name)));
+
+  // A new estimate closes it too.
+  replaceDraftRows(start).removed === null
+    ? ok('a fresh estimate replaces the rows and closes any Undo')
+    : bad('fresh estimate kept an Undo');
+
+  // THE HOOK'S OWN SETTER. `replace` is `replaceDraft` (screens-render §25 pins
+  // the wiring), driven here the way the question hook calls it: an UPDATER
+  // over the rows as they stand. × the croissant, then answer "3 shots" on the
+  // latte. The answer only SCALES a part, so the top-level keys are exactly the
+  // ones the × left — the case a table edit keeps open. The answer must close it.
+  const h = removeRowWithUndo(draft0, croissant.key);
+  const scaleShots = (rows) => answerQuestion([], rows, 'shots', three).rows;
+  const hScaled = scaleShots(h.rows);
+  hScaled.map((r) => r.key).join('|') === h.rows.map((r) => r.key).join('|') &&
+  near(espressoMg(hScaled), 189)
+    ? ok('(the “3” answer scales the latte and keeps every top-level key)')
+    : bad('expected a keys-only-unchanged answer', json(hScaled.map((r) => r.name)));
+  draftUndoStands(editDraft(h, scaleShots))
+    ? ok('(as a TABLE edit, that change would keep the croissant’s Undo open)')
+    : bad('editDraft closed on unchanged keys');
+  const hAnswered = replaceDraft(h, scaleShots);
+  hAnswered.removed === null &&
+  draftUndoWords(hAnswered) === null &&
+  near(espressoMg(hAnswered.rows), 189) &&
+  json(undoDraftRemoval(hAnswered).rows) === json(hAnswered.rows)
+    ? ok('the hook’s setter, given the answer as an updater, applies it and closes the Undo')
+    : bad('replaceDraft left the Undo open', JSON.stringify(draftUndoWords(hAnswered)));
+  const hValue = replaceDraft(h, hScaled);
+  hValue.removed === null && json(hValue.rows) === json(hScaled)
+    ? ok('…and given the rows as a value, the same')
+    : bad('replaceDraft value form');
+
+  // THE SLOT, AFTER ALL OF IT: untouched, the logged offer never settled.
+  currentUndo()?.said === 'Removed Logged thing' && settled === 0
+    ? ok('none of this touched the logged-food Undo slot, or settled its offer')
+    : bad('the draft Undo reached the module slot', String(settled));
+  closeUndo();
+
+  // Save with the offer open is just a save of the rows on screen.
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '07:40',
+    name: 'Breakfast',
+    source: 'ai_suggested',
+    items: rowsToMealItems(a.rows),
+  });
+  listMealItems(db, mealId).every((i) => i.name !== 'Almond croissant')
+    ? ok('Save with an Undo still open writes the rows as they stand — nothing is held')
+    : bad('save wrote the removed row');
+}
+
+// ===========================================================================
+// 71. A latte from the CATALOG carries caffeine (0063). 0 of the 187 seed foods
+// recorded it, the app's own 'Latte, whole milk' included, so a latte logged
+// from search, recents or favorites printed none and the day undercounted.
+// ===========================================================================
+console.log('71. a latte logged from the catalog carries caffeine to the day and its row');
+{
+  const { db } = freshDb();
+  const LATTE = 'bb7b36af-e57e-44fd-9062-37a158612e02';
+  const found = searchFoods(db, 'latte')[0];
+  found?.id === LATTE && near(parseMicros(found.micros).caffeine_mg, 37.4)
+    ? ok('search finds the seeded latte, and it records 37.4 mg per 100 g')
+    : bad('seeded latte', JSON.stringify(found));
+
+  // Logged at its own serving, the way the food search's portion sheet does.
+  const item = itemForPortion(found, { servingQty: 1 });
+  near(item.amount, 340) && near(parseMicros(item.micros).caffeine_mg, 127.16)
+    ? ok('one 12 oz serving (340 g) snapshots 127.16 mg')
+    : bad('portion', JSON.stringify(item));
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:10',
+    name: 'Latte',
+    items: [item],
+  });
+  const logged = listMealItems(db, mealId)[0];
+  keyMicroLabel(logged) === '127 mg caffeine'
+    ? ok('the meal screen’s row reads “127 mg caffeine”')
+    : bad('row key micro', String(keyMicroLabel(logged)));
+  keyMicroModule.mealKeyMicroLabels(nutritionRepoModule.dayMealItemMicros(db, TODAY))[mealId] ===
+  '127 mg caffeine'
+    ? ok('…and so does the Eat tab’s meal row')
+    : bad('meal row');
+  const cell = dayKeyMicros({
+    micros: dayMicroTotals(db, TODAY),
+    fiberEaten: null,
+    fiberTarget: null,
+  }).find((r) => r.key === 'caffeine_mg');
+  cell.figure === '127' && cell.against === 'of ~400 limit'
+    ? ok('the day’s Caffeine cell reads 127 of ~400 limit, not “not recorded”')
+    : bad('caffeine cell', JSON.stringify(cell));
+
+  // Recents and favorites hand back the same live row, so a re-log carries it.
+  const recent = listRecentFoods(db).find((r) => r.food.id === LATTE);
+  setFoodFavorite(db, LATTE, true);
+  const favorite = listFavoriteFoods(db).find((f) => f.id === LATTE);
+  recent &&
+  favorite &&
+  near(
+    parseMicros(itemForPortion(recent.food, { amount: recent.lastAmount }).micros).caffeine_mg,
+    127.16
+  ) &&
+  near(parseMicros(itemForPortion(favorite, { servingQty: 2 }).micros).caffeine_mg, 254.32)
+    ? ok('a re-log from recents carries 127 mg, and two from favorites 254 mg')
+    : bad(
+        'recents / favorites',
+        JSON.stringify({ recent: recent?.food.micros, favorite: favorite?.micros })
+      );
+
+  // The other four, at their own servings.
+  const at = (id, qty) =>
+    parseMicros(itemForPortion(getFood(db, id), { servingQty: qty }).micros).caffeine_mg;
+  near(at('a1cef987-d928-48db-a726-e9b98b742263', 1), 96) &&
+  near(at('c458157a-1d0c-42b4-833c-d36cc8ef994c', 1), 28.4) &&
+  near(at('8ec296da-6053-4ccd-8fbb-a94fedc0ef08', 1), 8) &&
+  near(at('0cf7bd11-58bb-4105-a346-f095009e613e', 1), 8.8)
+    ? ok('a cup of coffee 96 mg, a can of cola 28 mg, a square of dark chocolate 8, a milk bar 9')
+    : bad('other servings');
+}
+
+// ===========================================================================
+// 72. An ADDED item can carry micros (2026-09-23). `add_item` had none, so
+// "add a shot" put 30 ml on the plate and no caffeine on the day: an answer
+// scales a figure an item carries and cannot create one (§54), and an added
+// item has no figure to scale.
+// ===========================================================================
+console.log('72. an add_item answer carries its own micros — “add a shot” adds caffeine');
+{
+  const addLine = (p) =>
+    p.slice(p.indexOf('{"add_item"'), p.indexOf('}}', p.indexOf('{"add_item"')));
+  addLine(MEAL_ESTIMATION_SYSTEM_PROMPT).includes('micros') &&
+  addLine(MEAL_REVISION_SYSTEM_PROMPT).includes('micros')
+    ? ok('both prompts put "micros" on the add_item effect')
+    : bad('add_item schema', addLine(MEAL_ESTIMATION_SYSTEM_PROMPT));
+  const proseTok = (s) => Math.round(s.length / 3.6);
+  proseTok(MEAL_ESTIMATION_SYSTEM_PROMPT) < ESTIMATOR_PROMPT_CEILING &&
+  ESTIMATOR_PROMPT_CEILING === 1000
+    ? ok(`inside the unmoved ceiling (~${proseTok(MEAL_ESTIMATION_SYSTEM_PROMPT)} of 1,000)`)
+    : bad('over the ceiling', String(proseTok(MEAL_ESTIMATION_SYSTEM_PROMPT)));
+
+  const reply = JSON.stringify({
+    title: 'Americano',
+    items: [
+      {
+        name: 'Americano',
+        amount: 350,
+        unit: 'ml',
+        kcal: 10,
+        protein_g: 0,
+        carbs_g: 2,
+        fat_g: 0,
+        micros: { caffeine_mg: 126 },
+        confidence: 'medium',
+      },
+    ],
+    notes: null,
+    questions: [
+      {
+        id: 'extra',
+        ask: 'An extra shot?',
+        allow_other: false,
+        options: [
+          { label: 'No', effect: { scale_item: 'Americano', factor: 1 } },
+          {
+            label: 'Yes',
+            effect: {
+              add_item: {
+                name: 'Extra shot',
+                amount: 30,
+                unit: 'ml',
+                kcal: 3,
+                protein_g: 0,
+                carbs_g: 0,
+                fat_g: 0,
+                micros: { caffeine_mg: 63, made_up_mg: 5 },
+              },
+            },
+          },
+          {
+            label: 'Bare',
+            effect: {
+              add_item: {
+                name: 'Bare shot',
+                amount: 30,
+                unit: 'ml',
+                kcal: 3,
+                protein_g: 0,
+                carbs_g: 0,
+                fat_g: 0,
+              },
+            },
+          },
+        ],
+      },
+    ],
+  });
+  const { db } = freshDb();
+  const estimate = groundMealEstimate(db, parseMealEstimate(reply));
+  const yes = estimate.questions[0]?.options[1]?.effect;
+  yes?.kind === 'add_item' && yes.micros === '{"caffeine_mg":63}'
+    ? ok('the parser keeps the added item’s caffeine and drops a key off the vocabulary')
+    : bad('parsed add_item', JSON.stringify(yes));
+  const bare = estimate.questions[0]?.options[2]?.effect;
+  bare?.kind === 'add_item' && bare.micros === null
+    ? ok('an added item with no micros is NULL — not recorded, never {}')
+    : bad('bare add_item', JSON.stringify(bare));
+
+  const rows = applyAnswer(rowsFromEstimate(db, estimate), yes);
+  const shot = rows.find((r) => r.name === 'Extra shot');
+  near(parseMicros(currentPortion(shot).micros).caffeine_mg, 63) &&
+  keyMicroLabel(currentPortion(shot)) === '63 mg caffeine'
+    ? ok('“Yes” adds a row reading “63 mg caffeine” on the review')
+    : bad('added row', JSON.stringify(shot?.base));
+  near(
+    parseMicros(
+      currentPortion(setRowAmount(rows, shot.key, '60').find((r) => r.key === shot.key)).micros
+    ).caffeine_mg,
+    126
+  )
+    ? ok('…and a double typed over it scales it to 126 mg, like any row')
+    : bad('added row did not scale');
+  logMealWithItems(db, {
+    date: TODAY,
+    time: '10:00',
+    name: 'Americano',
+    source: 'ai_suggested',
+    items: rowsToMealItems(rows),
+  });
+  near(dayMicroTotals(db, TODAY).caffeine_mg, 189)
+    ? ok('saved, the day reads 189 mg — the Americano’s 126 and the shot’s 63')
+    : bad('day caffeine', JSON.stringify(dayMicroTotals(db, TODAY)));
+}
+
+// ===========================================================================
+// 73. Review finding on 0063: a REPEAT log reaches the catalog's caffeine.
+// "Log again" and a template copied the old snapshot, so a latte logged before
+// 0063 — `{"calcium_mg":272}` — stayed without caffeine through every copy of
+// it. `repeatMicros` fills, at log time, each micro key the linked food records
+// and the snapshot does not, for the snapshot's own amount; it never changes a
+// key the snapshot has, and never writes the meal or template it copies.
+// ===========================================================================
+console.log('73. Log again and a template fill the caffeine an old latte never recorded');
+{
+  const { db } = freshDb();
+  const LATTE = 'bb7b36af-e57e-44fd-9062-37a158612e02';
+  const repeatMicros = nutritionRepoModule.repeatMicros;
+  typeof repeatMicros === 'function'
+    ? ok('repeatMicros exists')
+    : bad('repeatMicros missing', typeof repeatMicros);
+  // The latte as the owner's 0061 build logged it: the seed had no caffeine.
+  const oldLatte = {
+    food_id: LATTE,
+    name: 'Latte, whole milk',
+    amount: 340,
+    unit: 'g',
+    kcal: 149.6,
+    protein_g: 7.82,
+    carbs_g: 11.9,
+    fat_g: 8.16,
+    fiber_g: 0,
+    micros: '{"calcium_mg":272}',
+  };
+  const { mealId: old } = logMealWithItems(db, {
+    date: '2000-01-01',
+    time: '08:00',
+    name: 'Latte',
+    items: [oldLatte],
+  });
+  const oldItemBefore = JSON.stringify(listMealItems(db, old));
+
+  // LOG AGAIN.
+  const again = relogMeal(db, old, TODAY, '08:05');
+  const copied = listMealItems(db, again)[0];
+  const copiedMicros = parseMicros(copied.micros);
+  copiedMicros.calcium_mg === 272 && near(copiedMicros.caffeine_mg, 127.16)
+    ? ok('Log again keeps the logged calcium and fills 127.16 mg of caffeine from the seed latte')
+    : bad('relog micros', copied.micros);
+  keyMicroLabel(copied) === '127 mg caffeine' &&
+  keyMicroModule.mealKeyMicroLabels(nutritionRepoModule.dayMealItemMicros(db, TODAY))[again] ===
+    '127 mg caffeine' &&
+  near(dayMicroTotals(db, TODAY).caffeine_mg, 127.16)
+    ? ok('…so its row, the Eat tab’s meal row and the day’s Caffeine cell all read 127')
+    : bad('relog reach', String(keyMicroLabel(copied)));
+  near(copied.kcal, 149.6) && near(copied.protein_g, 7.82) && copied.amount === 340
+    ? ok('…and the macros and the portion are the snapshot’s, untouched')
+    : bad('relog macros', JSON.stringify(copied));
+  JSON.stringify(listMealItems(db, old)) === oldItemBefore
+    ? ok('the meal it copied keeps its snapshot — history is not rewritten')
+    : bad('source meal rewritten');
+  // A copy of the copy is already whole: nothing to add, the text goes through.
+  const third = listMealItems(db, relogMeal(db, again, TODAY, '15:00'))[0];
+  third.micros === copied.micros
+    ? ok('a Log again of a snapshot that already records it copies the stored text byte for byte')
+    : bad('second relog', `${third.micros} vs ${copied.micros}`);
+
+  // A TEMPLATE saved from the old latte, before 0063.
+  const templateId = saveMealAsTemplate(db, old, 'Morning latte');
+  const templateItemsBefore = JSON.stringify(listTemplateItems(db, templateId));
+  listTemplateItems(db, templateId)[0].micros === '{"calcium_mg":272}'
+    ? ok('(the template holds the old snapshot, as it was saved)')
+    : bad('template snapshot', listTemplateItems(db, templateId)[0].micros);
+  const fromTemplate = listMealItems(db, logMealFromTemplate(db, templateId, TODAY, '09:00'))[0];
+  parseMicros(fromTemplate.micros).calcium_mg === 272 &&
+  near(parseMicros(fromTemplate.micros).caffeine_mg, 127.16) &&
+  keyMicroLabel(fromTemplate) === '127 mg caffeine'
+    ? ok('logging the “Morning latte” template reads “127 mg caffeine” too')
+    : bad('template micros', fromTemplate.micros);
+  JSON.stringify(listTemplateItems(db, templateId)) === templateItemsBefore
+    ? ok('…and the template itself is not written by logging from it')
+    : bad('template rewritten');
+
+  // FILL, NEVER RE-PRICE: a key the snapshot records is the figure it keeps.
+  const relogOne = (item) => {
+    const { mealId } = logMealWithItems(db, {
+      date: '2000-01-02',
+      time: '08:00',
+      name: 'Probe',
+      items: [item],
+    });
+    return listMealItems(db, relogMeal(db, mealId, '2000-01-03', '08:00'))[0];
+  };
+  const single = relogOne({ ...oldLatte, micros: '{"calcium_mg":272,"caffeine_mg":63}' });
+  const decaf = relogOne({ ...oldLatte, micros: '{"caffeine_mg":0}' });
+  near(parseMicros(single.micros).caffeine_mg, 63) &&
+  parseMicros(decaf.micros).caffeine_mg === 0 &&
+  parseMicros(decaf.micros).calcium_mg === 272
+    ? ok('a single-shot 63 mg stays 63, a decaf’s 0 stays 0 (and gains the calcium it lacked)')
+    : bad('re-priced', `${single.micros} / ${decaf.micros}`);
+
+  // ONLY WHERE THE ARITHMETIC IS THE FOOD'S OWN.
+  const inMl = relogOne({ ...oldLatte, unit: 'ml' });
+  const noAmount = relogOne({ ...oldLatte, amount: null });
+  const unlinked = relogOne({ ...oldLatte, food_id: null });
+  inMl.micros === '{"calcium_mg":272}' &&
+  noAmount.micros === '{"calcium_mg":272}' &&
+  unlinked.micros === '{"calcium_mg":272}'
+    ? ok('no fill in ml against a gram food, without an amount, or with no linked food')
+    : bad('guards', JSON.stringify([inMl.micros, noAmount.micros, unlinked.micros]));
+  const bare = parseMicros(repeatMicros(db, { food_id: LATTE, amount: 340, unit: 'g', micros: null }));
+  Object.keys(bare).length === 2 && near(bare.calcium_mg, 272) && near(bare.caffeine_mg, 127.16)
+    ? ok('a snapshot with no micros at all takes every key the food records')
+    : bad('null snapshot', JSON.stringify(bare));
+
+  // A PART of a composite is an item like any other; the header stays empty.
+  const { mealId: brunch } = logMealWithItems(db, {
+    date: '2000-01-04',
+    time: '10:00',
+    name: 'Brunch',
+    items: [
+      {
+        name: 'Café breakfast',
+        unit: 'g',
+        components: [
+          { ...oldLatte },
+          { name: 'Croissant', amount: 60, unit: 'g', kcal: 250, micros: '{"sodium_mg":200}' },
+        ],
+      },
+    ],
+  });
+  const brunchAgain = assembleMealItems(
+    listMealItems(db, relogMeal(db, brunch, '2000-01-05', '10:00'))
+  );
+  const partLatte = brunchAgain[0]?.components?.find((p) => p.name === 'Latte, whole milk');
+  const partCroissant = brunchAgain[0]?.components?.find((p) => p.name === 'Croissant');
+  brunchAgain[0]?.kind === 'composite' &&
+  brunchAgain[0].item.micros === null &&
+  near(parseMicros(partLatte?.micros).caffeine_mg, 127.16) &&
+  partCroissant?.micros === '{"sodium_mg":200}'
+    ? ok('a relogged dish fills its linked part; the header and an unlinked part are as they were')
+    : bad('composite relog', JSON.stringify(brunchAgain[0]?.components?.map((p) => p.micros)));
+
+  // A FOOD DELETED since: its items lost the link (ON DELETE SET NULL), so
+  // there is nothing to fill from — and nothing breaks.
+  const { mealId: mocha } = logMealWithItems(db, {
+    date: '2000-01-06',
+    time: '08:00',
+    name: 'Latte',
+    items: [oldLatte],
+  });
+  deleteFood(db, LATTE);
+  listMealItems(db, relogMeal(db, mocha, '2000-01-07', '08:00'))[0].micros ===
+  '{"calcium_mg":272}'
+    ? ok('once the seed latte is deleted, a Log again copies the snapshot as it was')
+    : bad('deleted food relog');
+}
+
+// ===========================================================================
+// 74. Review finding on 0063: the seed's chocolate now records caffeine, and
+// under the old rule a square of it took the meal row from the sodium that
+// earned it. Caffeine under 20 mg now yields to sodium and fiber over their
+// lines, and still prints when neither is there.
+// ===========================================================================
+console.log('74. a square of seed chocolate does not hide a dinner’s sodium on its meal row');
+{
+  const { db } = freshDb();
+  const DARK = '8ec296da-6053-4ccd-8fbb-a94fedc0ef08';
+  const square = itemForPortion(getFood(db, DARK), { servingQty: 1 });
+  near(parseMicros(square.micros).caffeine_mg, 8)
+    ? ok('(a 10 g square of the seed dark chocolate records 8 mg of caffeine)')
+    : bad('square', square.micros);
+  const { mealId: dinner } = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:00',
+    name: 'Dinner',
+    items: [
+      { name: 'Tonkotsu ramen', amount: 600, unit: 'g', kcal: 900, micros: '{"sodium_mg":1800}' },
+      square,
+    ],
+  });
+  const { mealId: snack } = logMealWithItems(db, {
+    date: TODAY,
+    time: '15:00',
+    name: 'Snack',
+    items: [square],
+  });
+  const { mealId: coffee } = logMealWithItems(db, {
+    date: TODAY,
+    time: '07:00',
+    name: 'Breakfast',
+    items: [
+      itemForPortion(getFood(db, 'a1cef987-d928-48db-a726-e9b98b742263'), { servingQty: 1 }),
+      { name: 'Bacon roll', amount: 150, unit: 'g', kcal: 450, micros: '{"sodium_mg":1100}' },
+    ],
+  });
+  const labels = keyMicroModule.mealKeyMicroLabels(
+    nutritionRepoModule.dayMealItemMicros(db, TODAY)
+  );
+  labels[dinner] === '1,800 mg sodium'
+    ? ok('ramen and a square of chocolate read “1,800 mg sodium”, not “8 mg caffeine”')
+    : bad('dinner', String(labels[dinner]));
+  labels[snack] === '8 mg caffeine'
+    ? ok('the square on its own still reads “8 mg caffeine”')
+    : bad('snack', String(labels[snack]));
+  labels[coffee] === '96 mg caffeine'
+    ? ok('a cup of coffee beside a salty roll still reads “96 mg caffeine”')
+    : bad('breakfast', String(labels[coffee]));
+  near(dayMicroTotals(db, TODAY).caffeine_mg, 112)
+    ? ok('the day’s Caffeine cell counts all of it: 96 + 8 + 8 = 112 mg')
+    : bad('day caffeine', JSON.stringify(dayMicroTotals(db, TODAY)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

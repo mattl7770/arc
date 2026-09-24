@@ -157,6 +157,14 @@ export type QuestionEffect =
       protein_g: number;
       carbs_g: number;
       fat_g: number;
+      /**
+       * The added item's micros for its portion, as stored JSON, or null
+       * (2026-09-23). An answer that ADDS a shot has no item to scale a figure
+       * from, so without its own micros "add a shot" put 30 ml on the plate and
+       * no caffeine on the day. Through the same vocabulary filter as every
+       * other micros the model returns (`coerceMicros`).
+       */
+      micros: string | null;
     }
   /** Drop an item — "did you eat the bun?" → no. */
   | { kind: 'remove_item'; name: string };
@@ -325,7 +333,8 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '- At most 3, biggest change first; one good question beats three weak ones. Each carries',
   '  2-4 button answers, and each answer carries the EFFECT of choosing it, as one of:',
   '  {"scale_item": name, "factor": n} · {"set_amount": name, "amount": n} ·',
-  '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g}}',
+  '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g,',
+  '  micros}}',
   '- Name the most likely answer first; the items you return, micros included, must already',
   '  assume it.',
   '',
@@ -454,6 +463,20 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
  *        the model was told to leave alone, and nothing would restore it.
  *
  * The estimation prompt did not move: 995.
+ *
+ * THE GAP ROUND (2026-09-23), which added three tokens and trimmed none,
+ * because it fits and the cuts below are not free:
+ *
+ *   995  where the micros round left it
+ *   +3   "micros" on the `add_item` effect, in both prompts. An answer that
+ *        ADDS an item has no figure to scale, so "add a shot" logged 30 ml and
+ *        no caffeine — the one answer shape "micros included" could not reach
+ *   ---
+ *   998, against 1,000. **2 tokens of headroom.** The revision prompt:
+ *   925 → 928.
+ *
+ * The next addition to the estimation prompt therefore takes one of the cuts
+ * below first.
  *
  * What is left to cut, when that runs out and it is genuinely needed: "Estimate
  * a drink in millilitres directly;" (~−12 — the unit rule before it and "never
@@ -639,6 +662,7 @@ function parseEffect(raw: unknown, known: Set<string>): QuestionEffect | null {
       protein_g: num(a.protein_g) ?? 0,
       carbs_g: num(a.carbs_g) ?? 0,
       fat_g: num(a.fat_g) ?? 0,
+      micros: serializeMicros(coerceMicros(a.micros)),
     };
   }
   // An unknown effect key is dropped — the vocabulary is closed on purpose.
@@ -949,7 +973,8 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '- At most 3, biggest change first, each with 2-4 button answers, and each answer carrying',
   '  the EFFECT of choosing it:',
   '  {"scale_item": name, "factor": n} · {"set_amount": name, "amount": n} ·',
-  '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g}}',
+  '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g,',
+  '  micros}}',
   '- Name the most likely answer first; the items you return, micros included, must already',
   '  assume it.',
   '',
@@ -1346,8 +1371,9 @@ export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEs
       // (2026-09-23): every key the food records wins, and the model's own fill
       // the keys it does not. A food with no micros row therefore leaves the
       // model's sodium/caffeine standing, as before; a food that records iron
-      // no longer erases the model's caffeine for it (the seed predates the
-      // caffeine key, so it is silent on caffeine everywhere). Macros stay
+      // no longer erases the model's caffeine for it (0016 predates the
+      // caffeine key; 0063 filled it on the five seed rows that carry
+      // caffeine, and every other seed row is still silent on it). Macros stay
       // whole-or-nothing above — they carry arithmetic between them, micros do
       // not. See `mergeMicros`.
       micros: serializeMicros(mergeMicros(parseMicros(priced.micros), parseMicros(item.micros))),

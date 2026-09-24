@@ -849,7 +849,9 @@ console.log('10. 0060 adds the seasonal pair and leaves every 0053 row unable to
 // `day_modes` gains exactly one row — 0061's `modes-retired`, which is the
 // whole reason that migration writes a row at all (the owner's modes were
 // stored open-ended and the picker is gone, so nothing else could ever end
-// them). Anything else that moved is a defect.
+// them). Anything else that moved is a defect. Since 0063, one more is
+// intended and asserted per ROW: five seed foods gain `caffeine_mg` (and their
+// `updated_at` stamp); the other foods are held byte-identical as before.
 // ===========================================================================
 console.log("11. A device at 44 — the owner's real stamp — upgrades to head with its data intact");
 {
@@ -1069,6 +1071,20 @@ console.log("11. A device at 44 — the owner's real stamp — upgrades to head 
   const TRIGGER_TOUCHED = { exercises: ['updated_at'], workouts: ['updated_at'] };
   // day_modes legitimately GAINS exactly one row: 0061's retirement reset.
   const EXPECT_NEW_ROWS = { day_modes: ['modes-retired'] };
+  // 0063 is a catalog update: it adds `caffeine_mg` to FIVE seed foods, by id,
+  // and the UPDATE fires the AFTER UPDATE trigger on those five. Allowed per ROW
+  // rather than per table, so every other food — the other 182 seed rows and the
+  // owner's own 'f-1' — is still held byte-identical; asserted in (d).
+  const SEED_CAFFEINE = {
+    'a1cef987-d928-48db-a726-e9b98b742263': 40,
+    'bb7b36af-e57e-44fd-9062-37a158612e02': 37.4,
+    'c458157a-1d0c-42b4-833c-d36cc8ef994c': 8,
+    '8ec296da-6053-4ccd-8fbb-a94fedc0ef08': 80,
+    '0cf7bd11-58bb-4105-a346-f095009e613e': 20,
+  };
+  const ROW_TOUCHED = {
+    foods: { ids: Object.keys(SEED_CAFFEINE), cols: ['micros', 'updated_at'] },
+  };
 
   for (const t of DATA_TABLES) {
     const map = RENAMED[t] || {};
@@ -1084,6 +1100,7 @@ console.log("11. A device at 44 — the owner's real stamp — upgrades to head 
       continue;
     }
     const allowed = TRIGGER_TOUCHED[t] || [];
+    const rowAllowed = ROW_TOUCHED[t];
     const diffs = [];
     const touched = new Set();
     for (let i = 0; i < prev.length; i++) {
@@ -1091,6 +1108,10 @@ console.log("11. A device at 44 — the owner's real stamp — upgrades to head 
         if (JSON.stringify(prev[i][c]) === JSON.stringify(rowsNow[i][c])) continue;
         if (allowed.includes(c)) {
           touched.add(c);
+          continue;
+        }
+        if (rowAllowed && rowAllowed.ids.includes(prev[i].id) && rowAllowed.cols.includes(c)) {
+          touched.add(`${c} on ${rowAllowed.ids.length} seed rows (0063)`);
           continue;
         }
         diffs.push(
@@ -1162,6 +1183,16 @@ console.log("11. A device at 44 — the owner's real stamp — upgrades to head 
   f.serving_amount === 244 && f.basis === 'g'
     ? ok("0047: foods.serving_amount = 244 carried through the rename, basis backfilled to 'g'")
     : bad('food backfill', JSON.stringify(f));
+  // 0063: each of the five gained exactly its caffeine and kept every key it had.
+  const filledWrong = Object.entries(SEED_CAFFEINE).filter(([id, mg]) => {
+    const was = before.foods.find((r) => r.id === id);
+    const now = db.prepare('SELECT micros FROM foods WHERE id = ?').get(id);
+    const expected = { ...(was.micros ? JSON.parse(was.micros) : {}), caffeine_mg: mg };
+    return JSON.stringify(JSON.parse(now.micros)) !== JSON.stringify(expected);
+  });
+  filledWrong.length === 0
+    ? ok('0063: the five seed foods gained their caffeine, every other micro key kept')
+    : bad('0063 fill', filledWrong.map(([id]) => id).join(', '));
   const ex = db.prepare("SELECT measures, source FROM exercises WHERE id = 'ex-custom'").get();
   ex.measures === 'reps,load' && ex.source === null
     ? ok(
@@ -1227,6 +1258,213 @@ console.log("11. A device at 44 — the owner's real stamp — upgrades to head 
     : bad('modes-retired duplicated', String(dmCount));
 
   db.close();
+}
+
+// ===========================================================================
+// 12. 0063 — caffeine on the seed foods that carry it, on a device at 62.
+//
+// Two databases. A PRISTINE catalog proves the fill is exactly the five rows
+// named, by id, with exactly their values, and nothing else in `foods` moves.
+// A HOSTILE one proves a row the user changed is left as he left it: a caffeine
+// he typed (a 0 included) is never overwritten, a key he added survives beside
+// the new one, a renamed or re-based row is his food now, a deleted row is no
+// error, a user food that happens to be called 'Cola' is not a seed row, and a
+// latte already logged keeps the snapshot it was logged with. An EDITED one
+// (review finding) proves a row the Coach re-priced, branded or re-fatted is
+// his food even with its name kept, while a star or a write-back of unchanged
+// figures is not an edit.
+// ===========================================================================
+console.log('12. 0063 fills caffeine on five seed foods, and leaves every changed row alone');
+{
+  const FILL = {
+    'a1cef987-d928-48db-a726-e9b98b742263': ['Coffee, black', 40],
+    'bb7b36af-e57e-44fd-9062-37a158612e02': ['Latte, whole milk', 37.4],
+    'c458157a-1d0c-42b4-833c-d36cc8ef994c': ['Cola', 8],
+    '8ec296da-6053-4ccd-8fbb-a94fedc0ef08': ['Dark chocolate, 70-85%', 80],
+    '0cf7bd11-58bb-4105-a346-f095009e613e': ['Milk chocolate', 20],
+  };
+  const caffeineOf = (db, id) => {
+    const row = db.prepare('SELECT micros FROM foods WHERE id = ?').get(id);
+    return row?.micros ? JSON.parse(row.micros).caffeine_mg : undefined;
+  };
+
+  // --- PRISTINE ------------------------------------------------------------
+  const db = new DatabaseSync(':memory:');
+  stageAt(db, 62) === 62
+    ? ok('staged at 62 — main’s head before this migration, the seed present')
+    : bad('stage at 62');
+  const seeded = db.prepare("SELECT count(*) c FROM foods WHERE source = 'seed'").get().c;
+  const withCaffeine = db
+    .prepare("SELECT count(*) c FROM foods WHERE json_extract(micros, '$.caffeine_mg') IS NOT NULL")
+    .get().c;
+  seeded >= 180 && withCaffeine === 0
+    ? ok(`the ${seeded}-row seed is there, and records caffeine on none of them`)
+    : bad('seed before', `${seeded} seed rows, ${withCaffeine} with caffeine`);
+  const beforeFoods = db.prepare('SELECT * FROM foods ORDER BY id').all();
+
+  const result = migrate(executor(db), MIGRATIONS);
+  result.applied.includes('0063_seed_caffeine') &&
+  db.prepare('PRAGMA user_version').get().user_version === LATEST
+    ? ok(`0063 applied, user_version = ${LATEST}`)
+    : bad('0063 not applied', JSON.stringify(result.applied));
+
+  const nowFoods = db.prepare('SELECT * FROM foods ORDER BY id').all();
+  const moved = nowFoods.filter((row, i) => JSON.stringify(row) !== JSON.stringify(beforeFoods[i]));
+  const movedIds = moved.map((r) => r.id).sort();
+  JSON.stringify(movedIds) === JSON.stringify(Object.keys(FILL).sort())
+    ? ok('exactly the five named rows changed — no other food moved')
+    : bad('rows changed', movedIds.join(', '));
+  const wrongValue = Object.entries(FILL).filter(([id, [name, mg]]) => {
+    const row = nowFoods.find((r) => r.id === id);
+    return row.name !== name || caffeineOf(db, id) !== mg;
+  });
+  wrongValue.length === 0
+    ? ok('each carries its USDA figure: coffee 40, latte 37.4, cola 8, dark 80, milk chocolate 20')
+    : bad('values', wrongValue.map(([id]) => id).join(', '));
+  const columnsMoved = new Set();
+  for (const row of moved) {
+    const was = beforeFoods.find((r) => r.id === row.id);
+    for (const c of Object.keys(row)) {
+      if (JSON.stringify(row[c]) !== JSON.stringify(was[c])) columnsMoved.add(c);
+    }
+  }
+  // `updated_at` moves too unless the fill lands in the very millisecond the
+  // seed did, so it is allowed rather than required.
+  columnsMoved.has('micros') && [...columnsMoved].every((c) => c === 'micros' || c === 'updated_at')
+    ? ok('on those five only `micros` moved, and `updated_at` with it (the 0014 trigger)')
+    : bad('columns moved', [...columnsMoved].join(', '));
+  const latte = JSON.parse(nowFoods.find((r) => r.id.startsWith('bb7b36af')).micros);
+  latte.calcium_mg === 80 && latte.caffeine_mg === 37.4
+    ? ok('the latte keeps the calcium 0016 gave it, beside the new key')
+    : bad('latte micros', JSON.stringify(latte));
+  // Name-substring would have caught these; the id match does not.
+  const lookalikes = ['chocolate chip cookie', 'kombucha', 'trail mix'].filter(
+    (name) =>
+      db
+        .prepare("SELECT json_extract(micros, '$.caffeine_mg') AS c FROM foods WHERE name_norm = ?")
+        .get(name)?.c != null
+  );
+  lookalikes.length === 0
+    ? ok('the cookie, the kombucha and the trail mix stay unrecorded — absent beats guessed')
+    : bad('lookalikes filled', lookalikes.join(', '));
+  migrate(executor(db), MIGRATIONS).applied.length === 0
+    ? ok('a second launch applies nothing')
+    : bad('relaunch applied something');
+  db.close();
+
+  // --- HOSTILE -------------------------------------------------------------
+  const h = new DatabaseSync(':memory:');
+  stageAt(h, 62);
+  h.exec(`
+    -- The coffee: he added its sodium. The key survives beside the caffeine.
+    UPDATE foods SET micros = '{"sodium_mg":5}' WHERE id = 'a1cef987-d928-48db-a726-e9b98b742263';
+    -- The latte: he recorded it as decaf, 0 mg. A typed 0 is a figure.
+    UPDATE foods SET micros = '{"calcium_mg":80,"caffeine_mg":0}' WHERE id = 'bb7b36af-e57e-44fd-9062-37a158612e02';
+    -- The cola: renamed. It is his food now.
+    UPDATE foods SET name = 'Cola zero', name_norm = 'cola zero' WHERE id = 'c458157a-1d0c-42b4-833c-d36cc8ef994c';
+    -- The dark chocolate: switched to millilitres (0047). Per 100 g is not per 100 ml.
+    UPDATE foods SET basis = 'ml' WHERE id = '8ec296da-6053-4ccd-8fbb-a94fedc0ef08';
+    -- The milk chocolate: deleted.
+    DELETE FROM foods WHERE id = '0cf7bd11-58bb-4105-a346-f095009e613e';
+    -- A user food that merely shares a seed name.
+    INSERT INTO foods (id, name, name_norm, kcal_100g, source)
+      VALUES ('f-my-cola', 'Cola', 'cola', 40, 'user');
+    -- A latte logged before the migration: its snapshot is the record.
+    INSERT INTO meals (id, date, name) VALUES ('m-am', '2026-09-20', 'Morning');
+    INSERT INTO meal_items (id, meal_id, food_id, name, amount, unit, kcal, micros)
+      VALUES ('mi-latte', 'm-am', 'bb7b36af-e57e-44fd-9062-37a158612e02', 'Latte, whole milk', 340, 'g', 150, '{"calcium_mg":272}');
+  `);
+  const hostileBefore = h.prepare('SELECT * FROM foods ORDER BY id').all();
+  const itemBefore = h.prepare("SELECT * FROM meal_items WHERE id = 'mi-latte'").get();
+  let threw = null;
+  try {
+    migrate(executor(h), MIGRATIONS);
+  } catch (e) {
+    threw = e;
+  }
+  threw === null && h.prepare('PRAGMA user_version').get().user_version === LATEST
+    ? ok('0063 applies over a catalog the user has edited and pruned')
+    : bad('0063 on the hostile catalog', String(threw));
+
+  const coffee = JSON.parse(
+    h.prepare("SELECT micros FROM foods WHERE id = 'a1cef987-d928-48db-a726-e9b98b742263'").get()
+      .micros
+  );
+  coffee.sodium_mg === 5 && coffee.caffeine_mg === 40
+    ? ok('the coffee gains its caffeine and keeps the sodium he added')
+    : bad('coffee', JSON.stringify(coffee));
+  const hostileNow = h.prepare('SELECT * FROM foods ORDER BY id').all();
+  const untouched = hostileNow.filter((row) => row.id !== 'a1cef987-d928-48db-a726-e9b98b742263');
+  const drift = untouched.filter(
+    (row) => JSON.stringify(row) !== JSON.stringify(hostileBefore.find((r) => r.id === row.id))
+  );
+  drift.length === 0 && hostileNow.length === hostileBefore.length
+    ? ok('the decaf latte keeps his 0, the renamed cola and the ml chocolate are untouched')
+    : bad('rows the user changed were written', drift.map((r) => r.id).join(', '));
+  caffeineOf(h, 'bb7b36af-e57e-44fd-9062-37a158612e02') === 0 &&
+  caffeineOf(h, 'c458157a-1d0c-42b4-833c-d36cc8ef994c') === undefined &&
+  caffeineOf(h, '8ec296da-6053-4ccd-8fbb-a94fedc0ef08') === undefined &&
+  caffeineOf(h, 'f-my-cola') === undefined
+    ? ok('…read back: latte 0, renamed cola none, ml chocolate none, his own Cola none')
+    : bad('hostile values');
+  h.prepare("SELECT count(*) c FROM foods WHERE id = '0cf7bd11-58bb-4105-a346-f095009e613e'").get()
+    .c === 0
+    ? ok('the deleted milk chocolate stays deleted — an UPDATE by id matches nothing')
+    : bad('deleted row came back');
+  JSON.stringify(h.prepare("SELECT * FROM meal_items WHERE id = 'mi-latte'").get()) ===
+  JSON.stringify(itemBefore)
+    ? ok('a latte logged before 0063 keeps its snapshot — history is not rewritten')
+    : bad('logged latte rewritten');
+  h.close();
+
+  // --- EDITED THROUGH THE COACH (review finding) ----------------------------
+  // No screen edits a catalog food; the Coach's `edit_record` over
+  // `food_catalog` rewrites name, brand, the four per-100 macros and basis, and
+  // stars. A row whose NAME survived an edit can still be a different food.
+  const e = new DatabaseSync(':memory:');
+  stageAt(e, 62);
+  e.exec(`
+    -- The latte re-priced as his café's single-shot oat latte, name kept.
+    UPDATE foods SET kcal_100g = 38, protein_g_100g = 1.1, carbs_g_100g = 5.2, fat_g_100g = 1.6
+      WHERE id = 'bb7b36af-e57e-44fd-9062-37a158612e02';
+    -- The coffee given his café's name as its brand.
+    UPDATE foods SET brand = 'Blue Bottle' WHERE id = 'a1cef987-d928-48db-a726-e9b98b742263';
+    -- The milk chocolate: one macro nudged, everything else as seeded.
+    UPDATE foods SET fat_g_100g = 30 WHERE id = '0cf7bd11-58bb-4105-a346-f095009e613e';
+    -- The dark chocolate: starred. That stamps updated_at and changes no figure.
+    UPDATE foods SET is_favorite = 1 WHERE id = '8ec296da-6053-4ccd-8fbb-a94fedc0ef08';
+    -- The cola: an edit that wrote back exactly what it read (read-modify-write
+    -- with nothing asked of it). Every figure is still 0016's.
+    UPDATE foods SET name = 'Cola', name_norm = 'cola', brand = NULL, kcal_100g = 42,
+      protein_g_100g = 0, carbs_g_100g = 10.6, fat_g_100g = 0, basis = 'g'
+      WHERE id = 'c458157a-1d0c-42b4-833c-d36cc8ef994c';
+  `);
+  const editedBefore = e.prepare('SELECT * FROM foods ORDER BY id').all();
+  migrate(executor(e), MIGRATIONS);
+  e.prepare('PRAGMA user_version').get().user_version === LATEST
+    ? ok('0063 applies over a catalog the Coach has edited')
+    : bad('0063 on the edited catalog');
+  const editedNow = e.prepare('SELECT * FROM foods ORDER BY id').all();
+  const editedMoved = editedNow
+    .filter((row, i) => JSON.stringify(row) !== JSON.stringify(editedBefore[i]))
+    .map((row) => row.id)
+    .sort();
+  JSON.stringify(editedMoved) ===
+  JSON.stringify(
+    ['8ec296da-6053-4ccd-8fbb-a94fedc0ef08', 'c458157a-1d0c-42b4-833c-d36cc8ef994c'].sort()
+  )
+    ? ok('only the starred chocolate and the written-back cola were filled')
+    : bad('edited rows filled', editedMoved.join(', '));
+  caffeineOf(e, 'bb7b36af-e57e-44fd-9062-37a158612e02') === undefined &&
+  caffeineOf(e, 'a1cef987-d928-48db-a726-e9b98b742263') === undefined &&
+  caffeineOf(e, '0cf7bd11-58bb-4105-a346-f095009e613e') === undefined
+    ? ok('a re-priced latte, a branded coffee and a re-fatted milk chocolate get no seed figure')
+    : bad('edited rows got caffeine');
+  caffeineOf(e, '8ec296da-6053-4ccd-8fbb-a94fedc0ef08') === 80 &&
+  caffeineOf(e, 'c458157a-1d0c-42b4-833c-d36cc8ef994c') === 8
+    ? ok('a star is not an edit (80 mg), and neither is a figure written back unchanged (8 mg)')
+    : bad('starred / written-back rows');
+  e.close();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

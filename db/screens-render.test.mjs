@@ -6374,5 +6374,128 @@ console.log('\n25. 2026-09-23 — the water screen says when a glass cannot reac
     : bad('water pointer spends the accent or a signal colour, or is under 44pt');
 }
 
+console.log('\n26. 2026-09-23 — the estimate review’s × has an Undo');
+{
+  // The plate draws the receipt from its own export, as §7c2 and §20 do: the
+  // screens show the review only once a model has answered, which a server
+  // render never reaches. The screens' wiring is pinned by source below.
+  const noop = () => {};
+  const handlers = {
+    onAmountChange: noop,
+    onRemove: noop,
+    onToggle: noop,
+    onScale: noop,
+    onScaleTo: noop,
+    onScaleBegin: noop,
+    onScaleEnd: noop,
+    onCountChange: noop,
+    onWholeChange: noop,
+    onCountBegin: noop,
+    onCountEnd: noop,
+    onPiecesName: noop,
+  };
+  const juice = {
+    key: '0-Orange juice',
+    name: 'Orange juice',
+    foodId: null,
+    food: undefined,
+    confidence: 'high',
+    unit: 'ml',
+    base: {
+      amount: 250,
+      kcal: 112,
+      protein_g: 2,
+      carbs_g: 26,
+      fat_g: 0,
+      fiber_g: null,
+      micros: null,
+    },
+    amountText: '250',
+    components: [],
+    expanded: false,
+    scaleFrom: null,
+    pieces: null,
+    wholeCount: null,
+    countText: null,
+    wholeText: null,
+    countFrom: null,
+  };
+  const words = {
+    icon: 'restaurant-outline',
+    said: 'Removed Almond croissant',
+    figure: '380 kcal',
+    spoken: 'Undo removing Almond croissant',
+  };
+  const plate = (label, rows, undo) =>
+    render(
+      label,
+      ReviewItemsPlate,
+      {},
+      { rows, label: 'Items', emptyNote: 'No items left.', handlers, undo }
+    );
+
+  const offered = plate('review plate (Undo offered)', [juice], { offer: words, onUndo: noop });
+  expect('review plate (Undo offered)', offered, [
+    'Removed Almond croissant',
+    // The figure in mono after the sentence, as the meal screen's receipt.
+    ' · 380 kcal',
+    'aria-label="Undo removing Almond croissant"',
+    '>Undo<',
+  ]);
+  (offered ?? '').indexOf('Orange juice') < (offered ?? '').indexOf('Removed Almond croissant')
+    ? ok('review plate (Undo offered): the receipt is the foot of the same plate, under the rows')
+    : bad('receipt placement');
+
+  // The last row removed: the empty note, and the way back under it.
+  const emptied = plate('review plate (emptied, Undo offered)', [], { offer: words, onUndo: noop });
+  expect('review plate (emptied, Undo offered)', emptied, [
+    'No items left.',
+    'Removed Almond croissant',
+    'aria-label="Undo removing Almond croissant"',
+  ]);
+
+  // Nothing offered: no row, no button.
+  refute('review plate (no Undo)', plate('review plate (no Undo)', [juice], null), [
+    'Removed ',
+    'Undo removing',
+  ]);
+
+  // THE WIRING, by source. Both screens hold the rows in the one hook, route
+  // the × through it (it is in `draft.handlers`, never a bare removeRow), pass
+  // the offer to the plate, and hand the question hook the CLOSING setter so an
+  // answer closes an open Undo.
+  const src = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+  for (const file of ['app/meal-estimate.tsx', 'app/meal-revise.tsx']) {
+    const s = src(file);
+    s.includes('const draft = useReviewDraft();') &&
+    s.includes('handlers={draft.handlers}') &&
+    s.includes('undo={draft.offer ? { offer: draft.offer, onUndo: draft.undo } : null}') &&
+    s.includes('setRows: draft.replace,') &&
+    s.includes('draft.replace(rowsFromEstimate(') &&
+    !s.includes('removeRow') &&
+    !s.includes('useState<ReviewItem[]>')
+      ? ok(`${file}: rows, ×, Undo and answers all go through useReviewDraft`)
+      : bad(`${file}: review wiring`);
+  }
+  const hook = src('src/hooks/use-review-draft.ts');
+  hook.includes('onRemove: (key) => setDraft((d) => removeRowWithUndo(d, key))') &&
+  !/onRemove:[^\n]*edit\(/.test(hook)
+    ? ok('the hook’s × is the one that remembers what it took')
+    : bad('hook onRemove');
+  // The setter the screens hand the question hook must be the CLOSING one:
+  // `replaceDraft`, which nutrition-v2 §70 drives with an answer that keeps
+  // every key (the case `editDraft` would leave open). Pinned by its body, so a
+  // `replace` rebuilt on `editDraft` fails here rather than on a lit chip.
+  const replaceBody = hook.slice(
+    hook.indexOf('const replace = useCallback'),
+    hook.indexOf('const undo = useCallback')
+  );
+  replaceBody.includes('setDraft((d) => replaceDraft(d, next))') &&
+  !replaceBody.includes('editDraft') &&
+  !replaceBody.includes('removed:')
+    ? ok('the hook’s replace is replaceDraft — every answer and fresh estimate closes the Undo')
+    : bad('hook replace', replaceBody);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

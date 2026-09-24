@@ -3,7 +3,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { Divider } from '@/components/ui/block';
 import { palette } from '@/constants/theme';
-import type { UndoOffer } from '@/lib/nutrition/undo-store';
+import type { UndoWords } from '@/lib/nutrition/undo-store';
 
 /**
  * The Undo row — what food logging says back after a removal or a combine
@@ -30,13 +30,17 @@ import type { UndoOffer } from '@/lib/nutrition/undo-store';
  *
  * `first` drops the rule when the row opens a list of its own — the Eat tab's
  * empty day, where the meal just deleted was the only one.
+ *
+ * It takes an offer's WORDS, not the offer: the estimate review's draft Undo
+ * (src/lib/nutrition/review-undo.ts) says the same sentence about a row that
+ * was never saved, and holds no scope, no closures and nothing to refuse.
  */
 export function UndoRow({
   offer,
   onUndo,
   first = false,
 }: {
-  offer: UndoOffer;
+  offer: UndoWords;
   onUndo: () => void;
   first?: boolean;
 }) {

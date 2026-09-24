@@ -17,7 +17,7 @@ import { newId } from '../id';
 import { normalizeFoodName } from './foods';
 import { leafMealItems } from '@/lib/nutrition/composite';
 
-import { listMealItems, logMealWithItems } from './nutrition';
+import { listMealItems, logMealWithItems, repeatMicros } from './nutrition';
 import type {
   MealTemplateItemRow,
   MealTemplateRow,
@@ -163,8 +163,10 @@ export function deleteTemplate(db: Database, id: string): void {
  * Log a real meal from a template onto `date` at `time`. The template's items
  * are copied as fresh meal_items (snapshots, not links), so the logged meal
  * stands on its own and later template edits never touch it. The meal is named
- * after the template. Returns the new meal id, or null if the template is gone
- * or empty.
+ * after the template. A template is a plan, and a micro key its item never
+ * recorded is filled from the linked food as it stands now (`repeatMicros`):
+ * the 'Morning latte' saved before 0063 logs with its caffeine. Returns the new
+ * meal id, or null if the template is gone or empty.
  */
 export function logMealFromTemplate(
   db: Database,
@@ -191,7 +193,7 @@ export function logMealFromTemplate(
       carbs_g: i.carbs_g,
       fat_g: i.fat_g,
       fiber_g: i.fiber_g,
-      micros: i.micros,
+      micros: repeatMicros(db, i),
     })),
   }).mealId;
 }

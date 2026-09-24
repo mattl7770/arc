@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import { KeyMicroTail } from '@/components/nutrition/key-micro-tail';
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -20,6 +21,7 @@ import {
   reviewKcal,
   rolled,
 } from '@/lib/nutrition/review-rows';
+import type { UndoWords } from '@/lib/nutrition/undo-store';
 
 /**
  * The estimator's editable review table — the DRAWING half. Its rows, its tree
@@ -455,17 +457,26 @@ function CompositeRow({
  * The review table. `emptyNote` is the screen's own sentence for a table the
  * user has emptied — the two screens say different things there, because
  * discarding an estimate and abandoning a revision are different acts.
+ *
+ * `undo` is the receipt for the row just removed with its × (2026-09-23,
+ * src/lib/nutrition/review-undo.ts): the meal screen's Undo row, drawn again as
+ * a ruled row at the foot of this same plate — where the removed row was, and
+ * under the empty note when it was the last one. Nothing is saved yet, so
+ * there is nothing it can fail to put back; it is simply not drawn once
+ * putting the row back would no longer be exact.
  */
 export function ReviewItemsPlate({
   rows,
   label,
   emptyNote,
   handlers,
+  undo = null,
 }: {
   rows: ReviewItem[];
   label: string;
   emptyNote: string;
   handlers: ReviewHandlers;
+  undo?: { offer: UndoWords; onUndo: () => void } | null;
 }) {
   const kcal = reviewKcal(rows);
   return (
@@ -492,6 +503,7 @@ export function ReviewItemsPlate({
           )}
         </View>
       )}
+      {undo ? <UndoRow offer={undo.offer} onUndo={undo.onUndo} /> : null}
     </Block>
   );
 }

@@ -19,7 +19,10 @@ import { CombineRefused, combinedName, planCombine } from '@/lib/nutrition/combi
 import { assembleMealItems } from '@/lib/nutrition/composite';
 import { isValidClock } from '@/lib/nutrition/meal-time';
 import {
+  type MicroKey,
   type Micros,
+  mergeMicros,
+  microsForAmount,
   parseMicros,
   scaleMicros,
   serializeMicros,
@@ -799,12 +802,60 @@ export function deleteMeal(db: Database, id: string): void {
 }
 
 /**
+ * The micros a REPEAT log writes: "Log again" ({@link relogMeal}) and a
+ * template (`logMealFromTemplate`, meal-templates.ts). Review finding on 0063,
+ * 2026-09-23.
+ *
+ * Every key the snapshot records is copied as it was logged. A key it does NOT
+ * record is filled from the linked catalog food as the food stands now, for the
+ * snapshot's own amount. Without this a catalog update never reached a repeat
+ * meal: 0063 gave the seed latte its caffeine, but a latte logged before it
+ * carried `{"calcium_mg":272}` into every Log again and every template saved
+ * from it, and each copy handed the gap on to the next.
+ *
+ * **Fill, never re-price.** A figure the snapshot has is the figure it keeps (a
+ * 0 included), so this adds what was never recorded and changes nothing that
+ * was: key by key, the snapshot first (`mergeMicros`). It is the figure a fresh
+ * log of the same food at the same amount would write for that key, and only
+ * where that arithmetic is the food's own: the item is linked, it has an amount,
+ * and it is in the food's basis (0047 converts nothing, so an item logged in ml
+ * against a food now measured in grams gets nothing). Micros only: the macros
+ * are the snapshot's arithmetic and are copied untouched.
+ *
+ * The meal or template being copied is not written. History keeps its snapshot.
+ */
+export function repeatMicros(
+  db: Database,
+  item: {
+    food_id: string | null;
+    amount: number | null;
+    unit?: 'g' | 'ml' | null;
+    micros: string | null;
+  }
+): string | null {
+  if (item.food_id == null || item.amount == null || !(item.amount > 0)) return item.micros;
+  const food = db.get<{ basis: string; micros: string | null }>(
+    'SELECT basis, micros FROM foods WHERE id = ?',
+    [item.food_id]
+  );
+  if (!food || food.micros == null || food.basis !== (item.unit ?? 'g')) return item.micros;
+  const own = parseMicros(item.micros);
+  const fromFood = microsForAmount(food.micros, item.amount);
+  const fills = (Object.keys(fromFood) as MicroKey[]).some((key) => own[key] == null);
+  // Nothing to add: the stored text goes through byte for byte.
+  if (!fills) return item.micros;
+  return serializeMicros(mergeMicros(own, fromFood));
+}
+
+/**
  * "Log again": duplicate a past meal (items and all) onto `date` at `time` —
  * the copy-from-yesterday loop. Snapshots are copied, not re-priced: you get
  * the meal as it was logged — including AI provenance, so a duplicated
  * estimate still reads as an estimate ('ai_suggested' survives; every other
  * source becomes 'manual', because re-logging a synced/imported meal by hand
- * IS a manual act). Returns the new meal id, or null if the source is gone.
+ * IS a manual act). The one addition is a micro key the snapshot never
+ * recorded and its food now does ({@link repeatMicros}). Returns the new meal
+ * id, or null if the source is gone.
  */
 export function relogMeal(
   db: Database,
@@ -858,7 +909,8 @@ export function relogMeal(
     fat_g: i.fat_g,
     fiber_g: i.fiber_g,
     confidence: i.confidence,
-    micros: i.micros,
+    // As logged, plus any key the food records now and the snapshot never did.
+    micros: repeatMicros(db, i),
     // A re-logged pizza is a counted pizza (0059). The noun rides with the count
     // it names; on a part or a plain item both are already what they were.
     piece_name: i.piece_name,
