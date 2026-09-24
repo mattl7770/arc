@@ -895,6 +895,24 @@ export function dayFiberTotal(db: Database, date: string): number {
 }
 
 /**
+ * The day's fiber as {@link dayFiberTotal} sums it — but NULL, not 0, when no
+ * item today recorded any (2026-09-23). The Eat tab now prints fiber under its
+ * macro bars on every day, and a 0 there would claim a day of zero-fiber foods
+ * when the truth is that nothing logged carried a fiber figure at all. The
+ * older reader keeps its 0 for the callers that already frame it.
+ */
+export function dayFiberRecorded(db: Database, date: string): number | null {
+  const row = db.get<{ fiber: number | null }>(
+    `SELECT sum(mi.fiber_g) AS fiber
+     FROM meal_items mi
+     JOIN meals m ON m.id = mi.meal_id
+     WHERE m.date = ?`,
+    [date]
+  );
+  return row?.fiber ?? null;
+}
+
+/**
  * The day's micronutrient totals, summed from item snapshots (0014). Micros
  * are per-portion JSON, so this reads the day's item payloads and folds them in
  * JS (sumMicros skips absent keys). Only itemized/catalog-linked or AI meals

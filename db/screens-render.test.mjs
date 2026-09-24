@@ -1386,6 +1386,141 @@ const db = getDb();
     refute('nutrition-micros (fiber target)', withTarget, ['no target set']);
   }
 
+  console.log('7c2. The owner’s three on the Eat tab, and the one notable micro on a row');
+  {
+    // Owner, 2026-09-23: "Sodium and caffeine more accessible", "Fiber should
+    // be more visible too", "Important micro should show on key items; i.e.,
+    // displaying caffeine on a latte". The day §7c left: the Flat white (145 mg
+    // caffeine, 90 mg sodium), the Lentil soup (1,150 mg sodium, 21 g fiber),
+    // a 34 g fiber target, and the free-form meals logged earlier in the walk.
+    const hub = render('nutrition hub (key micros)', NutritionScreen);
+    expect('nutrition hub (key micros)', hub, [
+      // Under the macro bars, without opening the micronutrients screen.
+      '>Sodium<',
+      '>1,240<',
+      'of ~2,300 limit',
+      '>Caffeine<',
+      '>145<',
+      'of ~400 limit',
+      '>Fiber<',
+      '>21<',
+      'of 34 g',
+      // Each cell speaks as one sentence.
+      'Sodium, 1,240 milligrams of about 2,300 limit',
+      'Fiber, 21 of 34 grams',
+      // The walk's free-form meals record none of the three, and it is said.
+      'logged as totals only add no sodium, caffeine or fiber here.',
+      // The rest of the shortlist is still one tap away, where it was.
+      'Micronutrients',
+    ]);
+    // In order: the three sit UNDER the macro cells, inside the Today grid,
+    // ahead of the capture buttons.
+    if (hub !== null) {
+      const at = (s) => hub.indexOf(s);
+      at('Fat') < at('>Sodium<') &&
+      at('>Sodium<') < at('>Caffeine<') &&
+      at('>Caffeine<') < at('>Fiber<') &&
+      at('>Fiber<') < at('Photograph a meal')
+        ? ok('nutrition hub: sodium, caffeine, fiber — under the macros, above Photo/Describe')
+        : bad('key micro row order');
+    }
+    // No colour, by source: the row's file names no signal token and no accent.
+    // (A server render carries no NativeWind classes, so the source is where
+    // the firewall can be checked.)
+    const rowSource = readFileSync(
+      new URL('../src/components/nutrition/day-micros.tsx', import.meta.url),
+      'utf8'
+    );
+    const tailSource = readFileSync(
+      new URL('../src/components/nutrition/key-micro-tail.tsx', import.meta.url),
+      'utf8'
+    );
+    const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    !/signal-|bg-pine|text-pine|border-pine/.test(code(rowSource)) &&
+    !/signal-|bg-pine|text-pine|border-pine/.test(code(tailSource))
+      ? ok('the micro row and the item tail use no signal colour and no accent')
+      : bad('a micro surface took a colour');
+
+    // The latte's caffeine, on its row in the meal screen.
+    const flatWhite = db.get(`SELECT id FROM meals WHERE name = 'Flat white'`);
+    const fw = render('meal-detail (key micro)', MealDetailScreen, { id: flatWhite.id });
+    expect('meal-detail (key micro)', fw, ['145 mg caffeine']);
+    // Sodium over a fifth of its limit, when there is no caffeine to show —
+    // and one figure only: the soup's 21 g of fiber is not printed beside it.
+    const soup = db.get(`SELECT id FROM meals WHERE name = 'Lentil soup'`);
+    const soupHtml = render('meal-detail (key micro, sodium)', MealDetailScreen, { id: soup.id });
+    expect('meal-detail (key micro, sodium)', soupHtml, ['1,150 mg sodium']);
+    refute('meal-detail (key micro, sodium)', soupHtml, ['21 g fiber']);
+  }
+  {
+    // The estimator's review table: the same tail at the live portion, and a
+    // composite's header reading its parts' sum.
+    const noop = () => {};
+    const handlers = {
+      onAmountChange: noop,
+      onRemove: noop,
+      onToggle: noop,
+      onScale: noop,
+      onScaleTo: noop,
+      onScaleBegin: noop,
+      onScaleEnd: noop,
+      onCountChange: noop,
+      onWholeChange: noop,
+      onCountBegin: noop,
+      onCountEnd: noop,
+      onPiecesName: noop,
+    };
+    const row = (key, name, amount, micros, extra = {}) => ({
+      key,
+      name,
+      foodId: null,
+      food: undefined,
+      confidence: 'medium',
+      unit: 'g',
+      base: {
+        amount,
+        kcal: 100,
+        protein_g: 5,
+        carbs_g: 5,
+        fat_g: 5,
+        fiber_g: null,
+        micros: micros === null ? null : JSON.stringify(micros),
+      },
+      amountText: String(amount),
+      ...extra,
+    });
+    const top = (r, components = []) => ({
+      ...r,
+      components,
+      expanded: false,
+      scaleFrom: null,
+      pieces: null,
+      wholeCount: null,
+      countText: null,
+      wholeText: null,
+      countFrom: null,
+    });
+    const plate = render(
+      'review plate (key micros)',
+      ReviewItemsPlate,
+      {},
+      {
+        rows: [
+          top(row('latte', 'Latte', 360, { caffeine_mg: 126, sodium_mg: 130 }, { unit: 'ml' })),
+          top(row('pizza', 'Pizza', 0, null), [
+            row('crust', 'Crust', 200, { sodium_mg: 300 }),
+            row('cheese', 'Cheese', 100, { sodium_mg: 250 }),
+          ]),
+        ],
+        label: 'Items',
+        emptyNote: 'x',
+        handlers,
+      }
+    );
+    expect('review plate (key micros)', plate, ['126 mg caffeine', '550 mg sodium']);
+    refute('review plate (key micros)', plate, ['130 mg sodium']);
+  }
+
   console.log('8. Check-off state renders');
   const milk = db.get(`SELECT id FROM grocery_items WHERE name = 'Milk'`);
   checkGroceryItem(db, milk.id);

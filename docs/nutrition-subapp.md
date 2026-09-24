@@ -1,7 +1,7 @@
 # Nutrition sub-app — design & build spec
 
 **Status:** **Round 5 (2026-08-11) shipped — the hub was rebuilt as the Eat TAB ROOT.** What is left leads (guarded per metric), one accent button reading `Log` opens a full-screen sheet holding every entry path, **Kitchen** carries the recipe book and grocery list with live counts, **Over time** carries 14-day energy + protein, and `Set daily targets` is a first-class control that retires once satisfied. The macro cells are boxed by owner call. Photo-library upload landed on the estimator in the same pass. Spec: `docs/information-architecture.md` › *The Eat tab, redrawn*; mockup: `docs/design-research/eat-tab-redesign.html`; the four ADRs are in `docs/decisions.md` (2026-08-11). Round 3 shipped the acquisition + editing gaps. Barcode scanning (live, with OFF lookup), inline portion editing, and AI photo/describe estimation are all wired; the only remaining online paths are barcode-OFF and AI, both gated. **Round 4 (2026-08-08) shipped as its own spec: the recipe book, grocery list, AI recipe import, and Coach integration live in `docs/recipes-grocery.md`** (migrations 0030/0031). **Weekly macro charts remain open** — a Data-tab/nutrition-history visualization, consciously deferred out of round 4 and tracked in `docs/project-status.md` §1 (Data tab).
-**Last updated:** 2026-08-14
+**Last updated:** 2026-09-23 (§12n — micros round 2)
 
 > ### Round 6 — the capture round (owner, 2026-08-14). Four requests off the device; **no migration**.
 >
@@ -480,7 +480,7 @@ The owner's note after two weeks on the TestFlight build was three words and a q
 
 The reply goes through the same vocabulary filter as stored JSON (`coerceMicros`, split out of `parseMicros` for exactly this caller), so an invented key or a stringy number is dropped at the seam, and an item that returned nothing usable serialises back to `NULL` rather than `{}`.
 
-**Precedence at grounding** (`groundMealEstimate`): a matched catalog food's own snapshot wins whole; a food that records **no** micros leaves the model's sodium/caffeine standing. That is what lets the seeded `Coffee, black` — macros but no micros row — still log its caffeine. It is not merged key by key: a food that records micros at all is the better source for all of them, and half-catalog/half-model is the shape that function exists to avoid.
+**Precedence at grounding** (`groundMealEstimate`) — *superseded 2026-09-23 by a key-by-key merge, §12n; kept here as the A8 record:* a matched catalog food's own snapshot wins whole; a food that records **no** micros leaves the model's sodium/caffeine standing. That is what lets the seeded `Coffee, black` — macros but no micros row — still log its caffeine. It is not merged key by key: a food that records micros at all is the better source for all of them, and half-catalog/half-model is the shape that function exists to avoid.
 
 **A revision no longer strips them.** `buildMealRevisionRequest` prints each item's sodium and caffeine in the row it shows the model (`- Flat white — 240 g, 120 kcal, …, sodium 90 mg, caffeine 145 mg`), and the prompt's restraint rule now says *name, grams, macros and micros* come back unchanged on anything the correction did not touch. Without that, correcting one item would quietly empty the others.
 
@@ -1208,7 +1208,7 @@ The suite was run against `main`'s `estimate.ts` to prove that a revert fails it
 
 ### Found on the way, recorded and not fixed in this round
 
-Each of these was reproduced headless. Each bears on the same caffeine and sodium figures:
+Each of these was reproduced headless. Each bears on the same caffeine and sodium figures. **All three were fixed in §12n (2026-09-23)**, and the second had a twin in fiber.
 
 - **A composite carries no micros.** The parser drops a header's micros (invariant 2), and the `components` clause on the schema line does not ask for any. So a latte (or a pizza's sodium) that comes back as a C4 composite records none, whatever a question does. The fix is `micros` on that clause, about +7 tok.
 - **An AI item grounded to a catalog food that records no micros loses the model's sodium and caffeine at review.** Grounding keeps them, which is what §21 asserts. The review rows' `currentPortion` then re-prices through `rescaleLoggedItem` from the food alone. That affects 77 of the 187 seed foods, and `meal-detail`'s portion edit shares the path.
@@ -1417,6 +1417,120 @@ The saved count is still the one eaten (`serving_qty`). The review holds the dis
 - **The fields' height.** Both keep the parts' `AmountField` anatomy, ≈31 pt tall inside a 44 pt row — as the old field did.
 - **Whether the chips are missed on a counted dish**; whether `ate [3] slices` on the record (and on Adjust), beside the fresh review's `ate [3] of [8] slices`, reads as honest or as something lost; and whether two Saves to re-declare a counted record is ever felt.
 - **A plate photographed after eating** — three slices, priced as three — reads `ate [3] of [3] slices` on the fresh review, which is true; typing the pizza's eight into OF there re-declares those three as eight. The Adjust screen and the meal screen cannot do this (no OF on a record's count); the fresh review can, and only the hand says whether it is ever tried.
+
+## 12n. Micros, round 2 — the three on the Eat tab, a key micro on a row, the shortlist where it counts (2026-09-23, no migration)
+
+Three owner notes from the device, on the 0061 build, verbatim:
+
+1. *"Sodium and caffeine more accessible, other micronutrients should start getting something probably"*
+2. *"Fiber should be more visible too"*
+3. *"Important micro should show on key items; i.e., displaying caffeine on a latte"*
+
+Plus the three defects the shots round reproduced headless and left for this change (§12l, "Found on the way"). **No migration** — head stays `0061`. Every figure here already had a column or a key; what was missing was where they were read and what dropped them on the way.
+
+### The three, under the macro bars
+
+`app/nutrition.tsx`'s Today grid gains **one more row of the same grid**: Sodium · Caffeine · Fiber, three `GridCell`s under the macro cells, drawn by `src/components/nutrition/day-micros.tsx` from `dayKeyMicros` (`src/lib/nutrition/key-micro.ts`).
+
+```
+SODIUM            CAFFEINE          FIBER
+1,240 mg          145 mg            21 g
+of ~2,300 limit   of ~400 limit     of 34 g
+```
+
+- **Sodium and caffeine against their ceilings**, the references `micros.ts` sources (FDA). The tilde says what they are: general guidance, not a target he set.
+- **Fiber against his own target** (`nutrition_targets.fiber_g`), the value the micros screen and the Coach read. **Read, never counted down**: fiber is summed from items, so a typed-totals meal contributes none by construction and a remainder would be a lie. With no target the figure stands alone over `no target set` (00-design-spec.md §5).
+- **Nothing recorded is an em-dash and `not recorded`, never a 0.** `dayFiberRecorded` (new, `repositories/nutrition.ts`) is NULL when no item today recorded fiber. `dayFiberTotal` keeps its 0 for the callers that already frame it.
+- **The caveat, only when it is true.** A meal logged as totals only (typed kcal and macros, no items) adds none of the three, and the grid says so in one line: *"A meal logged as totals only adds no sodium, caffeine or fiber here."* Items with no micros record (most seed foods) are the everyday case, and the micronutrients screen's own caveat covers them. Putting that sentence here would put it on every day.
+- **Drawn only once something is logged.** On an empty day all three would read `not recorded`, which the empty grid already says.
+
+**Conformed Set.** One more row of the Today `grid` device, so the rule above it is the grid's own rule between rows, with nothing nested. A step below the macros in every voice: a 10px label against their 11px, a 15px mono figure against their 20px, and **no bar**. A bar would be a gauge beside the macro gauges, and it would ask for the colour the firewall refuses. A daily micro total is not a biological state, and the macro bars' signal fills are an owner override for macros only (docs/project-status.md §3). **No signal colour and no accent**, pinned by source in `db/screens-render.test.mjs` §7c2. The unit sits on the figure line so `of ~2,300 limit` (15 characters of 10px mono, ~90 pt) fits a 375 pt phone's third of the grid (~92 pt). Each cell speaks as one sentence to VoiceOver.
+
+The rest of the shortlist stays on the micronutrients screen, reached from Over time as before.
+
+### One notable micro on an item row
+
+`keyMicro` (`src/lib/nutrition/key-micro.ts`) is the whole rule, one pure function. **One figure per row at most**, in this order:
+
+| | shown when | why the line is there |
+| --- | --- | --- |
+| **caffeine** | the item records it, and it rounds to ≥ 1 mg | the owner's own example; and it matters at any size, because it is a question about the next few hours, not only the day's sum |
+| **sodium** | ≥ 460 mg, a fifth of the 2,300 mg limit (`KEY_SODIUM_SHARE`) | the FDA's "high in" line (21 CFR 101.54(b), 20% DV). Below it sodium is on every savoury item and saying so would be noise |
+| **fiber** | ≥ 5 g (`KEY_FIBER_G`) | roughly a fifth of the 28 g DV, the same share, and a round number |
+
+Nothing else on the shortlist competes for the slot. The three are the owner's. It prints as `145 mg caffeine`, a nested Text at the end of the row's own mono sub-line (`src/components/nutrition/key-micro-tail.tsx`), one step up the ink ladder (`ink-secondary` on `ink-muted`). No accent, no signal colour.
+
+Where it is drawn: **meal-detail** (each item, and a composite's header, which reads its parts' sum through `partsAsItem`) and the **estimator's review table** (at the live portion, so an amount edit or an answered question moves it). The Eat tab's day list shows meal rows, not item lines, so it carries none. See "What only the phone can settle" below.
+
+### "Other micronutrients should start getting something" — the step taken, and why it is the smallest honest one
+
+Why most of the shortlist reads `not recorded`: only catalog and label foods carry it, and the estimator asked for sodium and caffeine only. The owner logs mostly by Photo and Describe, so his day was sodium and caffeine plus whatever a grounded catalog food brought. Grounding needs a confident name match, and a model writes `Grilled salmon fillet`, not `Salmon, cooked`, so that is rare. The brief offered three options:
+
+| option | cost | reach | verdict |
+| --- | --- | --- | --- |
+| **(a)** the estimator returns more of the shortlist | prompt tokens, and output tokens per notable item | every AI-logged meal, which is his main path | **taken, bounded** |
+| **(b)** a matched catalog food's micros fill an AI item | none | only items that ground, which is rare with model-written names | **taken, key by key** (it half-existed) |
+| **(c)** an on-demand "estimate micros for this meal" action | a second model call per meal, a new prompt, and a button on meal-detail (where another branch is working) | only meals he remembers to ask about | **not taken** |
+
+**(b) alone does not reach him**, and (c) is a new surface that asks him to remember something. So both of the cheap ones:
+
+- **(a), bounded by the FDA's own "good source" line.** Both prompts now name the rest of the shortlist, *"only where the portion gives 10%+ of a day's value"* (21 CFR 101.54(c), 10–19% DV). That is the same bar the seed catalog was authored to ("present only where the source is confident"). A salmon fillet records its omega-3, vitamin D and B12. A bowl of rice records none of them. **The data stays sparse on purpose**, and the doc's rule, *honest sparse data over fake completeness*, holds. The omit-a-guess rule is unchanged: absent is `not recorded` and 0 is `measured none`. The key list is read off `MICROS` (`NOTABLE_MICRO_KEYS`), so a vocabulary key and a prompt key cannot drift apart. **The totals it feeds still run low**, and the micros screen still says so. The output cost is a few keys on a notable item and none on the rest.
+- **(b), key by key.** `groundMealEstimate` used to take a matched food's micros **whole**: *"a food that records micros at all is the better source for all of them."* The seed breaks that reasoning. 0016 predates the caffeine key, so a food that records its iron is silent on its caffeine, and the whole rule dropped a dark chocolate's caffeine for recording iron. `mergeMicros` (`micros.ts`) now decides per key: every key the food records wins, and the model's fill the rest. Macros stay whole-or-nothing, because kcal and protein carry arithmetic between them and micros do not. Two sources on two keys is two facts, each with one source.
+- **A revision no longer strips them.** `buildMealRevisionRequest` prints **every** recorded micro (`omega3_g 3.7`, one decimal finer than the screen, so a 0.44 mcg B12 is not handed back as 0). Before, it printed sodium and caffeine only, and the restraint rule, *an untouched item comes back with the micros it went in with*, can only hold for what the model is shown.
+
+**The foods catalog prompt (Add food, C2) is unchanged.** It still asks for sodium and caffeine per 100. Giving it the shortlist is the natural next step for (b), since an AI-described catalog food would then ground with more. It is a separate decision about catalog entries and was left out of this round.
+
+### Paid for inside the ceiling
+
+`ESTIMATOR_PROMPT_CEILING` stays at **1,000**. The dated note beside it has the full accounting:
+
+| | tok |
+| --- | --- |
+| where "shots" left it | 973 |
+| + the shortlist, only where the portion gives 10%+ of a day's value | +41 |
+| + `"micros"` on a composite's parts (defect 5) | +10 |
+| − the micros bullet rewritten around its keys, taking the cut the note named first (*"and they are not the same claim"*) and "cured" | −13 |
+| − the micros schema is `{<key>: number}`, so the keys are named once, in the bullet | −9 |
+| − *"Those are always grams of macronutrient, whatever the portion unit is."* becomes *"Always grams, whatever the portion unit."* | −9 |
+| **after** | **995**, 5 of headroom |
+| revision prompt, with the same shortlist and components clause | 855 → **895** |
+
+The note names what is left to cut. The Coach's ceilings (`db/coach-eval.test.mjs` §6) did not move: the Coach's new figures ride its day **payload**, never a tool schema (below).
+
+### The three defects
+
+Each was fixed with a failing test first, through the screen's own path: model reply → parse → ground → review rows → edit or answer → `rowsToMealItems` → `logMealWithItems` → the day's totals. §21 walked grounding straight to a save and skipped the review rows, which is exactly where the first defect lived.
+
+1. **An AI item grounded to a micro-less catalog food lost the model's sodium/caffeine at review** (and at meal-detail's re-portion, which shares the path). `rescaleLoggedItem` re-derived *every* figure from the food when one was present. It now re-derives what the food records and **scales the item's own snapshot for everything else**. That covers micro keys (through `mergeMicros`) and fiber, the same defect one column over: the seeded Tempeh records no fiber, and the model's 9 g went the same way. `review-rows.ts`' `toRow` merges key by key as grounding does. Pinned by §56 (chicken breast at 480 mg through review, an amount edit, save, and meal-detail's re-portion; tempeh's fiber; dark chocolate's caffeine beside the seed's iron and magnesium).
+2. **A composite could carry no sodium or caffeine.** The parser always kept a part's micros, but the `components` clause never asked for any. Both prompts now do (+10 tok). Pinned by §58: three of eight pizza slices, through the review's own ATE field, save three eighths of the parts' sodium.
+3. **Two answered questions did not compose.** The hook froze a base per question and re-applied a changed answer to that base alone. The whole of the logic now lives in `answerQuestion` (`review-rows.ts`, pure). Answers are a **trail** in the order first given, each with the rows before it. Changing one rebuilds from its base and **replays every later answer on top**, re-taking their bases as it goes. The invariant: *every lit chip's effect is on the rows, and no other answer's is.* The hook (`use-estimate-questions.ts`) holds the trail and nothing else. Pinned by §57: large milk, then three shots, then small milk keeps 90 ml and 189 mg with the chips reading Small and 3. The other order gives the same record. Undo on the milk keeps the shots. "1" then "3" is three. A hand edit made before a question was answered survives a change to it, and a source pin shows the hook keeps no bases of its own.
+   - **A later typed answer is withdrawn, visibly.** It was a model reply over rows that no longer stand. Replaying it would restore the very answer it was computed against, so it is dropped from the trail and the tally shows it. Asking again is one tap.
+   - **A chip tapped while a typed answer is in flight is ignored.** The reply was asked over the rows as they stood.
+   - **The cost, stated:** a hand edit made *after* a question was first answered is lost when that answer changes. It was true of one question before, and it is now true of several. A silently doubled portion is a wrong record, and a re-typed figure is an annoyance.
+
+### The Coach
+
+`get_today_snapshot` gains **`keyMicros`**: `sodium_mg` / `sodiumLimit_mg`, `caffeine_mg` / `caffeineLimit_mg`, `fiber_g` / `fiberTarget_g`, and a note that null is not zero, each figure is a floor, and the limits are guidance, not targets. When it is true, the note also carries the totals-only sentence. It uses the same repository reads and references as the screen, and it is omitted on a day with no meals. **Payload only**: the tool's description and `inputSchema` do not move (pinned), so the cached-prefix ceilings are untouched. The full shortlist was already readable through `query_records` → `micronutrients`.
+
+### Verification
+
+- `db/nutrition-v2.test.mjs` §56–§61 are new. §56–§58 are the three defects, and each failed before its fix (10 failures on the unfixed tree). §59: the shortlist bullet names every `MICROS` key, the 10% bound in both prompts, the omit rule, the named cut taken, the ceiling unmoved, a salmon's three micros kept with an off-list key dropped and rice recording none, half a fillet saving half its omega-3, and the revision request printing every micro at one decimal finer. §60: `keyMicro`'s order, both thresholds at their edges, one figure only, a parsed object read as its JSON, and a composite's summed parts. §61: `dayKeyMicros` in all three states, `countTotalsOnlyMeals`, the caveat's wording, and `dayFiberRecorded`'s NULL.
+- §21 and §53 were updated where the wording they pinned was rewritten, and both are **stronger**: §21 now requires every vocabulary key in both prompts.
+- `db/coach-tools.test.mjs` §46: `keyMicros` absent on an empty day; caffeine and sodium against their limits with fiber NULL; fiber against a target and the totals-only note; the `inputSchema` unchanged.
+- `db/screens-render.test.mjs` §7c2: the Eat tab shows `1,240` `of ~2,300 limit`, `145` `of ~400 limit`, `21` `of 34 g`, the spoken sentences and the totals-only caveat, all under the macros and above Photo/Describe. Neither new component uses a signal colour or the accent (by source). meal-detail shows `145 mg caffeine` on the flat white, and `1,150 mg sodium` without `21 g fiber` on the soup. The review plate shows `126 mg caffeine` on a latte and `550 mg sodium` on a composite's summed parts.
+
+No model was called.
+
+### What only the phone can settle
+
+- **Whether the row reads as part of Today or as a second dashboard.** It is quieter than the macros in every voice, and only the hand says whether that is quiet enough, or too quiet for "more accessible".
+- **`of ~2,300 limit` at 375 pt.** ~90 pt of text in a ~92 pt cell. It is `numberOfLines={1}`, so a font that runs wider truncates rather than wraps.
+- **Whether the estimator actually records the shortlist sparsely.** "10%+ of a day's value" is a criterion and the model decides. To look for: a salmon with omega-3 and vitamin D and a rice with nothing (good), or every item carrying ten keys (the bound failed; tighten the sentence, not a rule).
+- **Whether the key micro is missed on the Eat tab's meal rows.** A one-item latte meal shows its caffeine on the meal screen and not on the day list. The brief scoped the tail to item rows, and a meal row has no micros column to read it from without a new query.
+- **The question plate while a typed answer is in flight.** Chip taps are ignored for the second or two of `Working…`, and the chips do not dim.
+
+---
+
 
 ## 13. Round 7 — two logging papercuts (2026-09-14, backlog A3 + A4)
 

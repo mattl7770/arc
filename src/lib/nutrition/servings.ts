@@ -12,7 +12,14 @@
  * is carried onto the item so it can be PRINTED, never so it can be converted —
  * there is no ml↔g factor here or anywhere else.
  */
-import { microsForAmount, parseMicros, scaleMicros, serializeMicros } from './micros';
+import {
+  mergeMicros,
+  type Micros,
+  microsForAmount,
+  parseMicros,
+  scaleMicros,
+  serializeMicros,
+} from './micros';
 import type { FoodRow, MealItemRow, NewMealItem } from './types';
 
 /** The per-100 columns portion math reads — satisfied by a full FoodRow. */
@@ -89,7 +96,10 @@ export type PortionUpdate = Pick<
  * meal-detail's inline editor feeds updateMealItemPortion.
  *
  * When the catalog food is still present it RE-DERIVES from the food's per-100
- * values (accurate, and the only way to honour a serving stepper). When the food
+ * values (accurate, and the only way to honour a serving stepper) — every figure
+ * the food records. A figure it does NOT record (fiber, or a micro key) keeps
+ * the item's own value, scaled by the same ratio, so an AI item's sodium and
+ * caffeine survive a food with no micros row (2026-09-23). When the food
  * is gone or the item was never linked (a free-form or AI item), it scales the
  * item's own snapshot PROPORTIONALLY by amount — the best that can be done from a
  * snapshot alone. Returns null when neither basis exists (a food-less item
@@ -113,15 +123,32 @@ export function rescaleLoggedItem(
 ): PortionUpdate | null {
   if (food) {
     const next = itemForPortion(food, portion);
+    // What the FOOD does not record, the item's own snapshot still does — an
+    // AI item grounded to a seed food with no micros row carries the model's
+    // sodium and caffeine, and one grounded to a food with no fiber figure
+    // carries the model's fiber (grounding keeps both: `groundMealEstimate`).
+    // Re-deriving from the food alone threw them away on the first re-price,
+    // which the review screen does on every render (2026-09-23 — 77 of the 187
+    // seed foods). So the food's figures win where it has them, and the item's
+    // own scale proportionally everywhere else: each figure keeps the one
+    // source it had.
+    const oldAmount = item.amount;
+    const newAmount = next.amount ?? null;
+    const ratio =
+      oldAmount != null && oldAmount > 0 && newAmount != null && newAmount > 0
+        ? newAmount / oldAmount
+        : null;
+    const own: Micros = ratio === null ? {} : scaleMicros(parseMicros(item.micros), ratio);
     return {
-      amount: next.amount ?? null,
+      amount: newAmount,
       serving_qty: next.serving_qty ?? null,
       kcal: next.kcal ?? null,
       protein_g: next.protein_g ?? null,
       carbs_g: next.carbs_g ?? null,
       fat_g: next.fat_g ?? null,
-      fiber_g: next.fiber_g ?? null,
-      micros: next.micros ?? null,
+      fiber_g:
+        next.fiber_g ?? (ratio === null || item.fiber_g == null ? null : item.fiber_g * ratio),
+      micros: serializeMicros(mergeMicros(parseMicros(next.micros), own)),
     };
   }
   // No catalog food: a serving stepper is impossible, and proportional scaling

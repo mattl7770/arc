@@ -28,7 +28,7 @@ import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
 
 import { countLabel } from './format';
-import { coerceMicros, parseMicros, serializeMicros } from './micros';
+import { coerceMicros, MICROS, mergeMicros, parseMicros, serializeMicros } from './micros';
 import { itemForPortion } from './servings';
 import type { AmountUnit, EstimateConfidence, FoodRow } from './types';
 
@@ -268,6 +268,23 @@ export type MealEstimationRequest = {
  * visual cues, itemize, own the hidden-fat uncertainty, and return JSON only so
  * {@link parseMealEstimate} can consume it deterministically.
  */
+/**
+ * The shortlist past sodium and caffeine, as the model is asked for it — read
+ * off the vocabulary (src/lib/nutrition/micros.ts), so a key added there is a
+ * key asked for here, and the prompt ceiling (§36) notices the cost.
+ *
+ * Asked for ONLY where the portion gives at least a tenth of a day's value
+ * (2026-09-23): the FDA's own "good source" line (21 CFR 101.54(c), 10–19% of
+ * the Daily Value), and the same bar the seed catalog was authored to — "present
+ * only where the source is confident". A salmon fillet records its omega-3,
+ * vitamin D and B12; a bowl of rice records none of them. Sparse by
+ * construction, which is the point: an absent key is "not recorded", and the
+ * micros screen already says its totals can run low.
+ */
+const NOTABLE_MICRO_KEYS = MICROS.map((m) => m.key)
+  .filter((key) => key !== 'sodium_mg' && key !== 'caffeine_mg')
+  .join(', ');
+
 export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   'You estimate the nutrition of a meal from a photo and/or a text description for a',
   'longevity-focused food logger. Be precise and calibrated, never confident beyond the',
@@ -286,15 +303,16 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '  a smoothie), "g" for everything eaten. Estimate a drink in millilitres directly;',
   '  never convert it to grams.',
   '- Give kcal and protein/carbs/fat grams per item; fiber grams when inferable, else null.',
-  '  Those are always grams of macronutrient, whatever the portion unit is.',
+  '  Always grams, whatever the portion unit.',
   '- Set per-item confidence: "high" for clearly identified packaged/simple foods, "low" when',
   '  the food or portion is genuinely uncertain, else "medium".',
   '- Account for likely hidden fats (cooking oil, butter, dressing), say so in notes when they',
   '  matter, and prefer underestimating an unknown over inventing precision.',
-  '- Give sodium and caffeine in milligrams for the portion, not per 100, under "micros", for',
-  '  any item that plausibly carries them (salted, cured or restaurant-made; coffee, tea, cola,',
-  '  dark chocolate). OMIT the key when you would be guessing — an absent key means',
-  '  "not recorded" and a 0 means "measured none", and they are not the same claim.',
+  '- "micros" are for the portion, not per 100: sodium_mg and caffeine_mg on any item that',
+  '  plausibly carries them (salted or restaurant-made; coffee, tea, cola, dark chocolate);',
+  `  ${NOTABLE_MICRO_KEYS} only where the portion`,
+  "  gives 10%+ of a day's value. OMIT the key when you would be guessing — absent means",
+  '  "not recorded", 0 means "measured none".',
   '',
   'Questions (optional, and USUALLY ABSENT):',
   '- Ask nothing unless an answer would change a figure, not just a name:',
@@ -313,12 +331,12 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   'Respond with ONLY a JSON object, no prose, matching:',
   '{"title": string, "items": [{"name": string, "amount": number|null, "unit": "g"|"ml",',
   ' "kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number,',
-  ' "fiber_g": number|null,',
-  ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
+  ' "fiber_g": number|null, "micros": {<key>: number}|null,',
   ' "confidence": "high"|"medium"|"low",',
   ' "pieces": {"name": string, "count": number}|null,',
   ' "components": [{"name": string, "amount": number|null, "unit": "g"|"ml", "kcal": number,',
-  '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null}]|null}],',
+  '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null,',
+  '   "micros": {<key>: number}|null}]|null}],',
   ' "notes": string|null,',
   ' "questions": [{"id": string, "ask": string, "allow_other": boolean,',
   '   "options": [{"label": string, "effect": <one of the four above>}]}]}',
@@ -397,12 +415,38 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
  *
  * The revision prompt carries the same three clauses: 834 → **855**.
  *
- * What is left to cut, when that runs out and it is genuinely needed: the
- * micros bullet's closing "and they are not the same claim" (~−12 — the two
- * definitions before it ARE the rule), then "Most meals need no question at
- * all;" (~−10 — "USUALLY ABSENT" and "an empty list is the norm" would still
- * say it twice, but it is the guard this round leaned on when it widened the
- * bar, so it goes last). Neither is free — which is the point of a ceiling.
+ * THE ROUND AFTER THAT (micros, 2026-09-23) — paid inside the ceiling again,
+ * which was NOT raised. The owner: "other micronutrients should start getting
+ * something", and a composite could carry no sodium at all.
+ *
+ *   973  where "shots" left it
+ *   +41  the rest of the shortlist, ONLY where the portion gives 10%+ of a
+ *        day's value (the FDA's "good source" line) — what makes a salmon
+ *        record its omega-3 on the path he actually logs by
+ *   +10  "micros" on a composite's parts: a pizza's sodium, a latte that came
+ *        back as a composite. The parser always kept them; nothing asked
+ *   −13  TRIMMED: the micros bullet rewritten around its keys — including the
+ *        cut this note named first, "and they are not the same claim" (the
+ *        two definitions before it ARE the rule), and "cured" (salted covers
+ *        it)
+ *   −9   the item's micros schema is `{<key>: number}` — the keys are named
+ *        once, in the bullet, instead of twice
+ *   −9   TRIMMED: "Those are always grams of macronutrient, whatever the
+ *        portion unit is." is "Always grams, whatever the portion unit." —
+ *        the same rule, a third the length
+ *   ---
+ *   995, against 1,000. **5 tokens of headroom.**
+ *
+ * The revision prompt takes the same shortlist and the same components clause:
+ * 855 → **895**.
+ *
+ * What is left to cut, when that runs out and it is genuinely needed: "Estimate
+ * a drink in millilitres directly;" (~−12 — the unit rule before it and "never
+ * convert it to grams" after it, which a test pins, already carry it), then
+ * "Most meals need no question at all;" (~−10 — "USUALLY ABSENT" and "an empty
+ * list is the norm" would still say it twice, but it is the guard the shots
+ * round leaned on when it widened the bar, so it goes last). Neither is free —
+ * which is the point of a ceiling.
  */
 export const ESTIMATOR_PROMPT_CEILING = 1000;
 
@@ -831,9 +875,10 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '  of oil as there was butter) unless the user gave an amount.',
   '- Keep per-item confidence honest: an item the user has just corrected is usually more',
   '  certain, not less; one you had to infer is "low".',
-  '- Give sodium and caffeine in milligrams, under "micros", on the same terms as an',
-  '  estimate: only where the item plausibly carries them, omitted where you would be',
-  '  guessing, and for the portion stated rather than per 100 g.',
+  '- "micros" on the same terms as an estimate, for the portion stated rather than per 100:',
+  '  sodium_mg and caffeine_mg where the item plausibly carries them;',
+  `  ${NOTABLE_MICRO_KEYS} only where the portion`,
+  "  gives 10%+ of a day's value; omitted where you would be guessing.",
   '- Use the notes field to say what you changed, in one short sentence.',
   '',
   'Questions (optional, and USUALLY ABSENT):',
@@ -851,12 +896,12 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   'Respond with ONLY a JSON object, no prose, matching:',
   '{"title": string, "items": [{"name": string, "amount": number|null, "unit": "g"|"ml",',
   ' "kcal": number, "protein_g": number, "carbs_g": number, "fat_g": number,',
-  ' "fiber_g": number|null,',
-  ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null,',
+  ' "fiber_g": number|null, "micros": {<key>: number}|null,',
   ' "confidence": "high"|"medium"|"low",',
   ' "pieces": {"name": string, "count": number}|null,',
   ' "components": [{"name": string, "amount": number|null, "unit": "g"|"ml", "kcal": number,',
-  '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null}]|null}],',
+  '   "protein_g": number, "carbs_g": number, "fat_g": number, "fiber_g": number|null,',
+  '   "micros": {<key>: number}|null}]|null}],',
   ' "notes": string|null,',
   ' "questions": [{"id": string, "ask": string, "allow_other": boolean,',
   '   "options": [{"label": string, "effect": <one of the four above>}]}]}',
@@ -868,9 +913,14 @@ export function buildMealRevisionRequest(
   instruction: string
 ): MealEstimationRequest {
   const line = (item: MealRevisionItem, indent: string): string[] => {
-    // Only the two micros the model is asked for. The rest of the vocabulary
-    // comes off the catalog food at grounding time, so showing it here would
-    // invite the model to restate numbers it never estimated.
+    // EVERY micro the item records, by the key the model answers in (sodium
+    // and caffeine keep the words they have always been printed in). Until
+    // 2026-09-23 only those two were shown, because only those two were asked
+    // for; the estimator now also returns the shortlist where a portion is a
+    // notable source, and the restraint rule — an untouched item comes back
+    // with the micros it went in with — can only hold for what the model is
+    // shown. A key left off this line would be stripped by the first
+    // correction to anything else in the meal.
     const micros = parseMicros(item.micros);
     const parts = [
       // The stored unit, printed as it stands. The model is shown the meal in
@@ -883,6 +933,14 @@ export function buildMealRevisionRequest(
       item.fat_g === null ? null : `F ${Math.round(item.fat_g)}`,
       micros.sodium_mg == null ? null : `sodium ${Math.round(micros.sodium_mg)} mg`,
       micros.caffeine_mg == null ? null : `caffeine ${Math.round(micros.caffeine_mg)} mg`,
+      ...MICROS.filter((m) => m.key !== 'sodium_mg' && m.key !== 'caffeine_mg').map((m) => {
+        const value = micros[m.key];
+        if (value == null) return null;
+        // One decimal more than the screen shows, so a 0.4 mcg B12 is not
+        // printed as a 0 the model would faithfully hand back.
+        const rounded = Math.round(value * 10 ** (m.decimals + 1)) / 10 ** (m.decimals + 1);
+        return `${m.key} ${rounded}`;
+      }),
     ].filter(Boolean);
     // A composite header carries no numbers of its own (0058): it says how many
     // parts it has, and the parts are printed beneath it. "no numbers recorded"
@@ -1218,14 +1276,16 @@ export function groundMealEstimate(db: Database, estimate: MealEstimate): MealEs
       fat_g: priced.fat_g ?? item.fat_g,
       // Fiber may be genuinely absent on the food; keep the model's when so.
       fiber_g: priced.fiber_g ?? item.fiber_g,
-      // Carry the food's per-portion micros snapshot too, so a grounded item is
-      // as complete as one added by hand (servings.ts). A food that records
-      // none leaves the model's own sodium/caffeine standing rather than
-      // erasing them — which is how a catalog coffee with no micros row still
-      // logs its caffeine. Not merged key by key: a food that records micros at
-      // all is the better source for all of them, and half-catalog/half-model
-      // is the one shape this function exists to avoid.
-      micros: priced.micros ?? item.micros,
+      // Carry the food's per-portion micros too, so a grounded item is as
+      // complete as one added by hand (servings.ts) — merged KEY BY KEY
+      // (2026-09-23): every key the food records wins, and the model's own fill
+      // the keys it does not. A food with no micros row therefore leaves the
+      // model's sodium/caffeine standing, as before; a food that records iron
+      // no longer erases the model's caffeine for it (the seed predates the
+      // caffeine key, so it is silent on caffeine everywhere). Macros stay
+      // whole-or-nothing above — they carry arithmetic between them, micros do
+      // not. See `mergeMicros`.
+      micros: serializeMicros(mergeMicros(parseMicros(priced.micros), parseMicros(item.micros))),
       foodId: match.id,
     };
   };

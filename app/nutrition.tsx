@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
+import { DayMicrosRow } from '@/components/nutrition/day-micros';
 import { LogSheet } from '@/components/nutrition/log-sheet';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
@@ -19,6 +20,7 @@ import {
 import { expectedDayFraction } from '@/lib/home/readiness';
 import { barFigure, macroGrade, OVERFLOW_CAP } from '@/lib/nutrition/bar';
 import { fmtInt, macroCells } from '@/lib/nutrition/format';
+import { dayKeyMicros, totalsOnlyNote } from '@/lib/nutrition/key-micro';
 import {
   dayFigure,
   unguardedNote,
@@ -152,10 +154,12 @@ import type { SignalLevel } from '@/types/home';
  * dashboard.
  */
 
-/** The Today grid's three counted-down macros. Fiber is deliberately absent —
- *  it is summed from meal items, so a manually-entered meal contributes none by
- *  construction and it can never be honestly counted down. It lives on the
- *  micronutrients screen, read against its daily target. */
+/** The Today grid's three counted-down macros. Fiber is not one of them — it
+ *  is summed from meal items, so a manually-entered meal contributes none by
+ *  construction and it can never be honestly counted down. Since 2026-09-23 it
+ *  is READ on this screen all the same (owner: "Fiber should be more visible
+ *  too"), eaten against its target in the row under these cells, beside sodium
+ *  and caffeine — never as a remainder. See {@link DayMicrosRow}. */
 const MACROS: { metric: DayMetric; label: string }[] = [
   { metric: 'protein_g', label: 'Protein' },
   { metric: 'carbs_g', label: 'Carbs' },
@@ -742,6 +746,7 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     overTime,
     direction,
     timezoneChanged,
+    keyMicros,
     reload,
   } = useNutrition();
   const [logOpen, setLogOpen] = useState(false);
@@ -872,6 +877,22 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                   </GridCell>
                 ))}
               </View>
+
+              {/* Sodium, caffeine and fiber (2026-09-23) — one more row of the
+                  same grid, read against their references with no bar and no
+                  colour. Only once something is logged: on an empty day all
+                  three would read "not recorded", which is the sentence the
+                  empty grid already says. */}
+              {meals.length > 0 ? (
+                <DayMicrosRow
+                  readings={dayKeyMicros({
+                    micros: keyMicros.micros,
+                    fiberEaten: keyMicros.fiberEaten,
+                    fiberTarget: targets?.fiber_g ?? null,
+                  })}
+                  note={totalsOnlyNote(keyMicros.totalsOnlyMeals)}
+                />
+              ) : null}
             </>
           )}
 

@@ -3,6 +3,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { type Dispatch, type SetStateAction, useCallback, useState } from 'react';
 import { Alert, Image, Pressable, Text, TextInput, View } from 'react-native';
 
+import { KeyMicroTail } from '@/components/nutrition/key-micro-tail';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
@@ -49,6 +50,7 @@ import {
   pluralNoun,
   portionLabel,
 } from '@/lib/nutrition/format';
+import { keyMicroLabel, partsAsItem } from '@/lib/nutrition/key-micro';
 import { mealDayLabel, parseClockParts, partsFromClock, shiftDay } from '@/lib/nutrition/meal-time';
 import { amountForQty, rescaleLoggedItem } from '@/lib/nutrition/servings';
 import type { AmountUnit, FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/types';
@@ -538,6 +540,9 @@ export default function MealDetailScreen() {
   const renderItemRow = (item: MealItemWithServing, first: boolean) => {
     const portion = portionLabel(item, units.volume);
     const line = macroLine(item);
+    const subLine = [portion, line].filter(Boolean).join(' · ');
+    // The one notable micro (2026-09-23) — caffeine on a latte.
+    const micro = keyMicroLabel(item);
     // Editable when there's something to re-scale from: a catalog food
     // (re-derive) or an existing amount (proportional).
     const canEdit = item.food_id != null || item.amount != null;
@@ -567,7 +572,8 @@ export default function MealDetailScreen() {
                 ) : null}
               </Text>
               <Text className="mt-0.5 font-mono text-[10px] leading-4 text-ink-muted">
-                {[portion, line].filter(Boolean).join(' · ') || '—'}
+                {subLine !== '' ? subLine : micro === null ? '—' : ''}
+                <KeyMicroTail label={micro} lead={subLine !== ''} />
               </Text>
             </View>
             <Text className="font-mono text-[13px] text-ink-secondary">
@@ -917,6 +923,11 @@ export default function MealDetailScreen() {
                             ]
                               .filter(Boolean)
                               .join(' · ') || '—'}
+                            {/* The dish's notable micro is its parts' sum. */}
+                            <KeyMicroTail
+                              label={keyMicroLabel(partsAsItem(node.components))}
+                              lead
+                            />
                           </Text>
                         </View>
                         <Text className="font-mono text-[13px] text-ink-secondary">

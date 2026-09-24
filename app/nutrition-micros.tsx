@@ -51,8 +51,9 @@ import { MICROS, type Micros } from '@/lib/nutrition/micros';
  * summed from meal items (manual meals record none) and lives in its own plate
  * so the reference-value firewall stays intact: the micros plate's closing
  * annotation says "not personal targets", and fiber is exactly that, so it must
- * not sit under it. (The Today grid deliberately omits fiber for the same
- * reason it can't count it down; see the MACROS note in app/nutrition.tsx.)
+ * not sit under it. (The Eat tab reads fiber too since 2026-09-23 — eaten
+ * against the same target, beside sodium and caffeine under its macro bars, and
+ * never counted down: src/components/nutrition/day-micros.tsx.)
  *
  * **The plate stands whether or not a target is set** (changed 2026-09-14,
  * backlog A8 — caffeine, fiber, sodium are the three the owner named, and one
@@ -112,8 +113,8 @@ export default function NutritionMicrosScreen() {
           claimed here, and the line below already names the catalog. */}
       {recorded === 0 ? (
         <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
-          Nothing recorded yet today. Foods logged from the catalog contribute micronutrients; many
-          seeded staples carry them.
+          Nothing recorded yet today. Foods from the catalog contribute micronutrients, and an
+          estimate records the ones a food is a notable source of.
         </Text>
       ) : (
         <>
