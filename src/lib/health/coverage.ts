@@ -106,8 +106,7 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     label: 'Steps',
     use: "Home's metrics strip and the Wearables ledger",
     garmin: 'yes',
-    garminNote:
-      'Syncs — Garmin publishes a dedicated FAQ about step counts DIFFERING between the two apps, which presupposes it.',
+    garminNote: "Syncs. Garmin's own FAQ says the step counts in the two apps can differ.",
     verdictDays: null,
   },
   {
@@ -125,7 +124,7 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     use: "The paired session's line and the Coach's training summary; never a daily figure",
     garmin: 'unverified',
     garminNote:
-      'Nothing in this repository establishes that Garmin Connect writes in-workout heart-rate samples to Apple Health at all, at what cadence, or whether it associates them with the session — none of the three was checked. A blank can also mean the read grant was declined — iOS never tells ARC. Check Settings → Privacy & Security → Health → ARC → Heart Rate before reading a zero as a Garmin fact.',
+      'Unconfirmed whether Garmin Connect writes in-workout heart rate to Apple Health at all, at what cadence, or tied to the session. A blank can also mean the read grant was declined — iOS never tells ARC. Check Settings → Privacy & Security → Health → ARC → Heart Rate before reading a zero as a Garmin fact.',
     verdictDays: null,
   },
   {
