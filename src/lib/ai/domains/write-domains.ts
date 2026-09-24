@@ -594,7 +594,10 @@ const musclesDomain: CoachDomainEntry = {
       if (row.values.freshness === null) {
         throw new Error(`There is no anchor on ${row.name}, so there is nothing to clear.`);
       }
-      return `freshness ${String(row.values.freshness)}; the engine’s own reading returns`;
+      // "ARC's own reading", the app's word for a derived value (the exercise
+      // screen's load basis says it too) — not "the engine's", which is this
+      // file's word and never the card reader's (slop pass 4, §11).
+      return `freshness ${String(row.values.freshness)}; ARC’s own reading returns`;
     },
     run: (db, row) => clearMuscleAnchor(db, row.id as never),
   },

@@ -477,8 +477,7 @@ export default function SettingsBackupsScreen() {
               </Text>
               <Text className="mt-1 font-serif text-[12.5px] leading-5 text-ink-secondary">
                 The file-system module isn&rsquo;t in this binary yet, so there is nowhere to write
-                a snapshot. Run the next EAS build (docs/dev-build.md) and this screen goes live —
-                nothing else to set up.
+                a snapshot. Run the next EAS build (docs/dev-build.md).
               </Text>
             </>
           ) : (

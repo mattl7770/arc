@@ -72,7 +72,7 @@ export function CombineFooter({
         {plan.kind === 'too-few' ? (
           <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
             {plan.count === 0
-              ? 'Tap the meals that were really one meal.'
+              ? 'Tap the meals that were one meal.'
               : 'Tap at least one more.'}
           </Text>
         ) : plan.kind === 'refused' ? (

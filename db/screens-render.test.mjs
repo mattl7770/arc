@@ -1350,6 +1350,17 @@ const db = getDb();
     const bare = render('nutrition-micros (no fiber recorded)', NutritionMicrosScreen);
     expect('nutrition-micros (no fiber recorded)', bare, ['Fiber', 'Eaten today', 'not recorded']);
     refute('nutrition-micros (no fiber recorded)', bare, ['>0<', 'g of ']);
+    // The empty state, on the day it matters most: three meals are logged and
+    // none carries micros. Slop pass 4 (§11.B) made it one sentence — the
+    // absence and where micronutrients come from, which is why these three
+    // record none — and cut the estimator's rule it had grown.
+    expect('nutrition-micros (no fiber recorded)', bare, [
+      'Nothing recorded yet today — only catalog foods and estimates carry micronutrients.',
+    ]);
+    refute('nutrition-micros (no fiber recorded)', bare, [
+      'notable source of',
+      'Foods from the catalog contribute micronutrients',
+    ]);
     logMealWithItems(db, {
       date: today,
       time: '15:10',
@@ -2798,6 +2809,20 @@ const db = getDb();
     'Three poses on the same morning',
   ]);
 
+  // Compare, with nothing to compare. No walk before the fourth had read this
+  // screen's empty state (slop pass 4, docs/ai-slop-candidates-2026-09.md
+  // §11.D): it said a comparison was "worth looking at" and told the user to
+  // come back. What is left is the precondition `pickDefaultPair` enforces.
+  const noPair = render('progress photo compare (nothing to pair)', ProgressPhotoCompareScreen);
+  expect('progress photo compare (nothing to pair)', noPair, [
+    'A comparison needs two photos of the same pose.',
+    'Back to photos',
+  ]);
+  refute('progress photo compare (nothing to pair)', noPair, [
+    'worth looking at',
+    'come back',
+  ]);
+
   expect('progress photo add', render('progress photo add', ProgressPhotoAddScreen), [
     'Add photos',
     'From your library',
@@ -2932,6 +2957,22 @@ const db = getDb();
     }),
     ['185.6 lb', 'weighed 2 days later']
   );
+
+  // Two poses side by side: the caveat stands, and the advice after it went
+  // (§11.D) — the Compare against plate under it lists the same pose by
+  // default, which is how like is compared with like.
+  const mixed = render('progress photo compare (front vs side)', ProgressPhotoCompareScreen, {
+    a: photoIds[1],
+    b: photoIds[2],
+  });
+  expect('progress photo compare (front vs side)', mixed, [
+    // Same day, so which of the two leads is the id tiebreak — "0 days apart"
+    // holds either way, where "front vs side" would be a coin toss.
+    '0 days apart',
+    'These are different poses, so most of what looks like a change is the angle.',
+    'Compare against',
+  ]);
+  refute('progress photo compare (front vs side)', mixed, ['like with like']);
 }
 
 {
@@ -3977,6 +4018,10 @@ const db = getDb();
   // The six anchor chips are gone from this control. (They live on in
   // MoveControl, a mission row's Move to…, which is not on this screen.)
   refute('protocol-item (edit, no wheel)', itemEdit, ['>09:00<', '>15:00<', '>18:00<']);
+  // Slop pass 4 (§11.A): the build fact stays; "Type it here meanwhile" pointed
+  // at the field directly above it. The time wheel merged after the third
+  // walk's branch was cut and before it landed, so no walk had read it.
+  refute('protocol-item (edit, no wheel)', itemEdit, ['Type it here meanwhile']);
 
   const itemAdd = render('protocol-item (add)', ProtocolItemScreen, { id: sheetProtocol });
   expect('protocol-item (add)', itemAdd, ['New item', 'Save as']);
@@ -4238,14 +4283,23 @@ const db = getDb();
   // on. "Pick one door" survives the change: ARC's own glasses are kept out of
   // what comes back, but the same glass typed here AND tapped on the watch is
   // still two entries, and only the user can know that.
+  //
+  // Slop pass 4 (docs/ai-slop-candidates-2026-09.md §11.C): the paragraph ran
+  // five sentences. "Water goes both ways." restated the scope row's Both tag
+  // — pinned on its own just below, so the two-way fact is still asserted —
+  // and the route's "where the two entries sit side by side" narrated the
+  // water screen. Every fact survives: when a glass goes out, that corrections
+  // follow, that ARC's own glasses are kept out of what comes back, the
+  // pick-one-door rule, and where a doubled day is fixed.
   expect('settings-health (no sync yet)', never, [
     'Water (hydration)',
-    'Water goes both ways.',
     // WHEN a glass goes out (2026-09-23): it used to wait for the next sync,
     // and this sentence did not say so.
     'is written to Apple Health as soon as you log it',
     'undoing or correcting it here changes it there too',
-    'log a glass in one place or the other, not both',
+    'with ARC’s own glasses left out, so none is counted twice',
+    'A glass tapped on the watch and typed here is two glasses — log it in one place.',
+    'A doubled day is fixed in Data → Water.',
     // The audit row: the owner's device settled it (2026-09-21 checklist,
     // confirmed 2026-09-23), so the verdict is no longer `unverified`.
     'Confirmed on your phone: hydration logged in Garmin Connect arrives',
@@ -4254,6 +4308,28 @@ const db = getDb();
   refute('settings-health (no sync yet)', never, [
     'Water is read, never written.',
     'Nothing in this repository establishes that Garmin writes hydration',
+    // §11.C: the restatement of the tag, and the narration of the water screen.
+    'Water goes both ways.',
+    'where the two entries sit side by side',
+    'log a glass in one place or the other, not both',
+  ]);
+  // §11.C, the rest of the screen read whole. Under node there is no HealthKit
+  // module, so the status plate takes its build-gate branch: the fact and the
+  // way out, without "this screen goes live — nothing else to set up" (after
+  // the build there IS something to set up: Enable, and the permission sheet),
+  // and without "dev build" — the owner's phone runs TestFlight builds. The
+  // coverage legend keeps what "Never" means — not a sync delay — without the
+  // idiom it was said in.
+  expect('settings-health (no sync yet)', never, [
+    'Rides the next build',
+    'The HealthKit module isn’t in this build yet. Run the next EAS build (docs/dev-build.md).',
+    'Never — it stays in Garmin Connect, and a later sync will not bring it.',
+  ]);
+  refute('settings-health (no sync yet)', never, [
+    'this screen goes live',
+    'nothing else to set up',
+    'this dev build',
+    'no amount of waiting',
   ]);
   // The scope row's own direction tag. `Both` alone proves nothing (the body
   // rows carry it too), so the check is scoped to the markup between the water
@@ -4339,6 +4415,13 @@ const db = getDb();
   // The armed pass attempted nothing, so no type may appear claiming it was
   // refused — a fabricated finding is worse than a missing one.
   refute('settings-health (logged)', logged, ['Waist circumference. 0 / 0']);
+  // Slop pass 4 (§11.C): the legend says how to read the arrow, and stops. Its
+  // second sentence promised a note under every gap, which the rows either
+  // show or do not — the note itself is the evidence, not a promise about it.
+  expect('settings-health (logged)', logged, [
+    'Each row reads: measurements Apple Health returned → measurements ARC kept.',
+  ]);
+  refute('settings-health (logged)', logged, ['always explained on the line beneath it']);
 
   // D3b. Four things, and all four are on this screen or nowhere: the scope
   // row, the honest audit verdict, the log row's sentence, and the control
@@ -5463,9 +5546,25 @@ console.log(
     entryDirty: true,
   });
   const freeForm = render('workout-log (resumed on a plank)', WorkoutLogScreen, { resume: '1' });
-  expect('workout-log (resumed on a plank)', freeForm, ['they fill from the right']);
+  // The margin note says what is optional, and stops (slop pass 4, §11.D). It
+  // had narrated the new field — "Type the digits and they fill from the right
+  // — 1 3 0 is 1:30" — on a field that draws its own colon as the digits
+  // arrive, under a `Time (mm:ss)` placeholder. The mechanism is still spoken
+  // to VoiceOver by the field's own hint, pinned by source below, because
+  // react-native-web drops accessibilityHint and a render cannot see it.
+  expect('workout-log (resumed on a plank)', freeForm, ['>Time is optional.<']);
   // The margin note described the old field; it must not come back.
-  refute('workout-log (resumed on a plank)', freeForm, ['A bare number is seconds']);
+  refute('workout-log (resumed on a plank)', freeForm, [
+    'A bare number is seconds',
+    'they fill from the right',
+    '1 3 0 is 1:30',
+  ]);
+  readFileSync(
+    new URL('../src/components/exercise/duration-field.tsx', import.meta.url),
+    'utf8'
+  ).includes('accessibilityHint="Type the digits; they fill from the right."')
+    ? ok('the clock field still tells VoiceOver how its digits fill')
+    : bad('duration-field: the accessibility hint went with the margin note');
   clockPad(
     'workout-log (resumed on a plank)',
     inputsFor(freeForm, 'Time in minutes and seconds')[0],
@@ -6078,7 +6177,8 @@ console.log('\n24. 2026-09-23 — Undo, Combine, and a multi-scan meal’s name'
   ]);
   refute('nutrition hub (combine available)', resting, [
     'role="checkbox"',
-    'Tap the meals that were really one meal.',
+    // The foot's opening sentence, worded as slop pass 4 left it (§11.B).
+    'Tap the meals that were one meal.',
     'Undo',
   ]);
 
@@ -6212,6 +6312,33 @@ console.log('\n24. 2026-09-23 — Undo, Combine, and a multi-scan meal’s name'
   );
   expect('combine foot (one chosen)', few, ['Tap at least one more.', 'aria-disabled="true"']);
   refute('combine foot (one chosen)', few, ['Name of the combined meal', 'On combine']);
+  // Slop pass 4 (§11.B). The foot's first sentence lost its "really" — the
+  // toggle it opens from already says "Combine meals that were one meal" —
+  // and the day refusal states its rule once instead of twice.
+  const none = render(
+    'combine foot (none chosen)',
+    CombineFooter,
+    {},
+    { plan: planCombine([]), name: null, onName: noop, onCombine: noop }
+  );
+  expect('combine foot (none chosen)', none, ['>Tap the meals that were one meal.<']);
+  refute('combine foot (none chosen)', none, ['really']);
+  const twoDays = render(
+    'combine foot (two days)',
+    CombineFooter,
+    {},
+    {
+      plan: planCombine([porridge, { ...coffee, date: shiftISODate(coffee.date, -1) }]),
+      name: null,
+      onName: noop,
+      onCombine: noop,
+    }
+  );
+  expect('combine foot (two days)', twoDays, [
+    'These were logged on different days, and a meal belongs to one day.',
+    'aria-disabled="true"',
+  ]);
+  refute('combine foot (two days)', twoDays, ['only meals from the same day combine']);
   const refused = render(
     'combine foot (refused)',
     CombineFooter,
@@ -6495,6 +6622,52 @@ console.log('\n26. 2026-09-23 — the estimate review’s × has an Undo');
   !replaceBody.includes('removed:')
     ? ok('the hook’s replace is replaceDraft — every answer and fresh estimate closes the Undo')
     : bad('hook replace', replaceBody);
+}
+
+// ---------------------------------------------------------------------------
+// 27. Slop pass 4 (docs/ai-slop-candidates-2026-09.md §11) — the two cuts no
+// page render here reaches. Every other §11 cut is pinned beside the render
+// that draws it (settings-health, nutrition-micros, progress photo compare,
+// protocol-item, workout-log, the combine foot) or in its own suite (the
+// Coach's delete card, db/coach-domains.test.mjs).
+//
+// Settings › Backups is not rendered by this suite, and the status sheet is a
+// native Modal that draws nothing until it is opened. Both are read as source,
+// with whitespace collapsed so a sentence wrapped across JSX lines is one
+// string — and each scan must find its file, or it fails rather than passing
+// over nothing.
+console.log('\n27. Slop pass 4 — the retired lines no render here reaches');
+{
+  const flat = (file) =>
+    readFileSync(new URL(`../${file}`, import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const screens = readdirSync(new URL('../app', import.meta.url), { recursive: true })
+    .map((entry) => `app/${String(entry).replace(/\\/g, '/')}`)
+    .filter((file) => file.endsWith('.tsx'));
+
+  // "…and this screen goes live — nothing else to set up." closed the
+  // build-gate sentence on BOTH Settings screens that have one. It narrated
+  // the screen, and it was not even true: after the build, Apple Health still
+  // has Enable and a permission sheet, and Backups still has its first snapshot.
+  const live = screens.filter((file) => /this screen goes live|nothing else to set up/.test(flat(file)));
+  screens.length > 0 && live.length === 0
+    ? ok(`slop scan (${screens.length} screens): "this screen goes live" stays cut`)
+    : bad('slop scan: the build-gate tail is back', live.join(', ') || 'no screens read');
+  flat('app/settings-backups.tsx').includes(
+    'there is nowhere to write a snapshot. Run the next EAS build (docs/dev-build.md).'
+  )
+    ? ok('Settings › Backups still says why there is no snapshot, and the way out')
+    : bad('settings-backups: the build-gate fact went with its tail');
+
+  // The status sheet's closing note: "just" was the tell. The sentence keeps
+  // the fact that a free-text status exists, and the consequence line after it
+  // is untouched.
+  const sheet = flat('src/components/status/status-control.tsx');
+  !sheet.includes('just tell the Coach') &&
+  sheet.includes(
+    'For anything else, tell the Coach. Skips on these days stop counting against you; their readings sit out of your 30-day baselines.'
+  )
+    ? ok('the status sheet: "just" cut, the route and the consequence line kept')
+    : bad('status sheet closing note');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

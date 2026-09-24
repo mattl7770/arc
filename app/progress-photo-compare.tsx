@@ -149,11 +149,13 @@ export default function ProgressPhotoCompareScreen() {
         <View className="pt-2">
           <StackHeader title="Compare" parent="Photos" />
         </View>
+        {/* The precondition, stated once (slop pass 4, docs/ai-slop-candidates-
+            2026-09.md §11) — `pickDefaultPair` returns nothing until one pose
+            holds two photos. The button under it is the way back. */}
         <View className="mt-6">
           <Block device="margin">
             <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
-              Two photos of the same pose are what makes a comparison worth looking at. Import a
-              second one and come back.
+              A comparison needs two photos of the same pose.
             </Text>
           </Block>
         </View>
@@ -234,9 +236,11 @@ export default function ProgressPhotoCompareScreen() {
       {earlier.pose !== later.pose ? (
         <View className="mt-3">
           <Block device="margin">
+            {/* The caveat, and not the advice that followed it ("Compare like
+                with like where you can"): the Compare against plate below
+                lists the same pose by default, and that is how it is done. */}
             <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
-              These are different poses, so most of what looks like a change is the angle. Compare
-              like with like where you can.
+              These are different poses, so most of what looks like a change is the angle.
             </Text>
           </Block>
         </View>

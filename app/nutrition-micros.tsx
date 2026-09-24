@@ -114,11 +114,16 @@ export default function NutritionMicrosScreen() {
           the data cannot support (00-design-spec.md §5), so the numerator
           caveat is restored below, next to the figures it governs rather than
           in the closing annotation. Not on this empty branch: nothing is
-          claimed here, and the line below already names the catalog. */}
+          claimed here, and the line below already names the catalog.
+
+          One sentence (slop pass 4, docs/ai-slop-candidates-2026-09.md §11):
+          the absence, and where micronutrients come from — the fact that
+          explains a day whose meals are logged and still record none. How an
+          estimate chooses which micros to record is the estimator's rule, not
+          this screen's. */}
       {recorded === 0 ? (
         <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
-          Nothing recorded yet today. Foods from the catalog contribute micronutrients, and an
-          estimate records the ones a food is a notable source of.
+          Nothing recorded yet today — only catalog foods and estimates carry micronutrients.
         </Text>
       ) : (
         <>
