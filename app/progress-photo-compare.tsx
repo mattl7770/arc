@@ -149,13 +149,17 @@ export default function ProgressPhotoCompareScreen() {
         <View className="pt-2">
           <StackHeader title="Compare" parent="Photos" />
         </View>
-        {/* The precondition, stated once (slop pass 4, docs/ai-slop-candidates-
-            2026-09.md §11) — `pickDefaultPair` returns nothing until one pose
-            holds two photos. The button under it is the way back. */}
+        {/* How a pair is made, in one sentence (slop pass 4, docs/ai-slop-
+            candidates-2026-09.md §11.D). NOT "a comparison needs two photos of
+            the same pose": the gallery compares any two photos, and this screen
+            draws a front-vs-side pair with its own caveat. `pickDefaultPair`
+            is only the fallback for a pair that no longer resolves, so its
+            same-pose rule is not a rule of comparing. The button under it is
+            the way back. */}
         <View className="mt-6">
           <Block device="margin">
             <Text className="font-serif text-[14px] leading-6 text-ink-secondary">
-              A comparison needs two photos of the same pose.
+              Pick two photos in the gallery to compare them.
             </Text>
           </Block>
         </View>

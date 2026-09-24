@@ -730,9 +730,9 @@ export default function SettingsHealthScreen() {
             <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
               A glass you log here is written to Apple Health as soon as you log it, and undoing or
               correcting it here changes it there too. Apple Health sends back one total per day
-              with ARC&rsquo;s own glasses left out, so none is counted twice. A glass tapped on
-              the watch and typed here is two glasses — log it in one place. A doubled day is fixed
-              in Data → Water.
+              with ARC&rsquo;s own glasses left out, so none is counted twice. A glass tapped on the
+              watch and typed here is two glasses — log it in one place. A doubled day is fixed in
+              Data → Water.
             </Text>
           </Block>
         </View>

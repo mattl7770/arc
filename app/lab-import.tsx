@@ -276,7 +276,7 @@ export default function LabImportScreen() {
         <View className="mt-4">
           <Block device="margin">
             <Text className="font-serif text-[13px] leading-5 text-ink-muted">
-              Add a key in Settings › Coach, then come back. It’s the only part of this that goes
+              Add a key in Settings › Coach. Reading the PDF is the only part of this that goes
               online; matching, reviewing and storing all happen on your phone.
             </Text>
           </Block>

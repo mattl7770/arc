@@ -226,7 +226,7 @@ export default function MealReviseScreen() {
               Adjusting a meal in words needs a model key — the same one the Coach uses.
             </Text>
             <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-muted">
-              Add one in Settings › Coach, then come back. Editing items by hand works offline.
+              Add one in Settings › Coach. Editing items by hand works offline.
             </Text>
           </Block>
         </View>

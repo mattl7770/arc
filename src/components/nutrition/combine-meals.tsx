@@ -71,9 +71,7 @@ export function CombineFooter({
       <View className="py-3">
         {plan.kind === 'too-few' ? (
           <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
-            {plan.count === 0
-              ? 'Tap the meals that were one meal.'
-              : 'Tap at least one more.'}
+            {plan.count === 0 ? 'Tap the meals that were one meal.' : 'Tap at least one more.'}
           </Text>
         ) : plan.kind === 'refused' ? (
           <Text className="font-serif text-[13px] leading-5 text-ink-secondary">{plan.reason}</Text>

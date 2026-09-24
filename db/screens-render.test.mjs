@@ -116,7 +116,8 @@ import { OVERFLOW_CAP } from '../src/lib/nutrition/bar.ts';
 import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
 import NutritionHistoryScreen from '../app/nutrition-history.tsx';
 import MealDetailScreen from '../app/meal-detail.tsx';
-import { AsLoggedPlate } from '../app/meal-revise.tsx';
+import MealReviseScreen, { AsLoggedPlate } from '../app/meal-revise.tsx';
+import LabImportScreen from '../app/lab-import.tsx';
 import { QuestionsPlate, ReviewItemsPlate } from '../src/components/nutrition/estimate-review.tsx';
 // The two camera screens. They could not be imported here until `expo-camera`
 // moved behind the guarded seam (src/lib/media/camera.ts) — a static native
@@ -1605,10 +1606,36 @@ const db = getDb();
     refute('barcode-scan', scan, ['5060000000000', 'Render chicken']);
 
     // b. The estimator with no model key — unchanged behaviour, now covered.
-    expect('meal-estimate (no key)', render('meal-estimate (no key)', MealEstimateScreen), [
+    //    Slop pass 4 (docs/ai-slop-candidates-2026-09.md §11.F): the key gates
+    //    said "…, then come back. Meanwhile, …" — the tail §11 cut from Compare
+    //    and the time wheel. The route and what works offline are kept, and
+    //    "Manual entry", a row the Log sheet now calls "Enter it manually", is
+    //    lower-case: it names the act, not a label that no longer exists.
+    const estimateNoKey = render('meal-estimate (no key)', MealEstimateScreen);
+    expect('meal-estimate (no key)', estimateNoKey, [
       'Describe or snap',
       'AI meal estimation needs a model key',
+      'Add a key in the Coach tab. Add food and manual entry work offline.',
     ]);
+    refute('meal-estimate (no key)', estimateNoKey, ['come back', 'Meanwhile', 'Manual entry']);
+
+    // The same gate on the meal's Adjust screen and on lab import. Neither was
+    // rendered here before; both draw the no-key state from the first render,
+    // because node has no key.
+    const reviseNoKey = render('meal-revise (no key)', MealReviseScreen, { id: mealId });
+    expect('meal-revise (no key)', reviseNoKey, [
+      'Adjusting a meal in words needs a model key',
+      'Add one in Settings › Coach. Editing items by hand works offline.',
+    ]);
+    refute('meal-revise (no key)', reviseNoKey, ['come back']);
+    const labNoKey = render('lab-import (no key)', LabImportScreen);
+    expect('lab-import (no key)', labNoKey, [
+      'Reading a lab PDF needs a model key',
+      // The privacy fact is the kept half, and "It’s" now names what it was:
+      // the read is the one step that goes online.
+      'Add a key in Settings › Coach. Reading the PDF is the only part of this that goes online; matching, reviewing and storing all happen on your phone.',
+    ]);
+    refute('lab-import (no key)', labNoKey, ['come back']);
 
     // c. With a key, the input phase — and `start=camera` (the Eat tab's Photo
     //    button) opening straight into the viewfinder. The key is an in-memory
@@ -2065,9 +2092,12 @@ const db = getDb();
       'Edit in words',
       'needs a model key',
       'Settings › Coach',
+      // Slop pass 4 (§11.F): the route and the offline fact, without ", then
+      // come back".
+      'Add one in Settings › Coach. The recipe editor works offline.',
     ]);
     // And nothing may look like a write is pending.
-    refute('recipe-revise (no key)', html, ['Save changes', 'Apply']);
+    refute('recipe-revise (no key)', html, ['Save changes', 'Apply', 'come back']);
   }
 
   // -------------------------------------------------------------------------
@@ -2812,15 +2842,19 @@ const db = getDb();
   // Compare, with nothing to compare. No walk before the fourth had read this
   // screen's empty state (slop pass 4, docs/ai-slop-candidates-2026-09.md
   // §11.D): it said a comparison was "worth looking at" and told the user to
-  // come back. What is left is the precondition `pickDefaultPair` enforces.
+  // come back. What is left is how a pair is made. It must NOT say a
+  // comparison needs the same pose: the gallery compares any two photos, and
+  // the front-vs-side render below draws exactly such a pair. `pickDefaultPair`
+  // is only the fallback for a pair that no longer resolves.
   const noPair = render('progress photo compare (nothing to pair)', ProgressPhotoCompareScreen);
   expect('progress photo compare (nothing to pair)', noPair, [
-    'A comparison needs two photos of the same pose.',
+    'Pick two photos in the gallery to compare them.',
     'Back to photos',
   ]);
   refute('progress photo compare (nothing to pair)', noPair, [
     'worth looking at',
     'come back',
+    'needs two photos of the same pose',
   ]);
 
   expect('progress photo add', render('progress photo add', ProgressPhotoAddScreen), [
@@ -6628,8 +6662,9 @@ console.log('\n26. 2026-09-23 — the estimate review’s × has an Undo');
 // 27. Slop pass 4 (docs/ai-slop-candidates-2026-09.md §11) — the two cuts no
 // page render here reaches. Every other §11 cut is pinned beside the render
 // that draws it (settings-health, nutrition-micros, progress photo compare,
-// protocol-item, workout-log, the combine foot) or in its own suite (the
-// Coach's delete card, db/coach-domains.test.mjs).
+// protocol-item, workout-log, the combine foot, and the four key gates:
+// meal-estimate, meal-revise, lab-import, recipe-revise) or in its own suite
+// (the Coach's delete card, db/coach-domains.test.mjs).
 //
 // Settings › Backups is not rendered by this suite, and the status sheet is a
 // native Modal that draws nothing until it is opened. Both are read as source,
@@ -6648,7 +6683,9 @@ console.log('\n27. Slop pass 4 — the retired lines no render here reaches');
   // build-gate sentence on BOTH Settings screens that have one. It narrated
   // the screen, and it was not even true: after the build, Apple Health still
   // has Enable and a permission sheet, and Backups still has its first snapshot.
-  const live = screens.filter((file) => /this screen goes live|nothing else to set up/.test(flat(file)));
+  const live = screens.filter((file) =>
+    /this screen goes live|nothing else to set up/.test(flat(file))
+  );
   screens.length > 0 && live.length === 0
     ? ok(`slop scan (${screens.length} screens): "this screen goes live" stays cut`)
     : bad('slop scan: the build-gate tail is back', live.join(', ') || 'no screens read');
