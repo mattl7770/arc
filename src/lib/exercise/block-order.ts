@@ -148,3 +148,71 @@ export function removeBlockKeepingBinds<T extends Bindable>(
   }
   return next;
 }
+
+/** What {@link storedBlockRuns} needs from a stored set. */
+export type StoredSetRef = {
+  exerciseId: string | null;
+  /** The display name — what a free-text set (null id) is grouped on. */
+  exercise: string;
+  supersetGroup: number | null;
+};
+
+/** One block as read back from stored sets: a run, and its bind to the next. */
+export type StoredRun<T extends StoredSetRef> = {
+  exerciseId: string | null;
+  name: string;
+  supersetGroup: number | null;
+  linkedToNext: boolean;
+  sets: T[];
+};
+
+/**
+ * A stored session's flat set list, cut back into the editor's blocks — the
+ * inverse of what Finish / Save write (sets in block order, each carrying its
+ * block's `supersetGroup`).
+ *
+ * **A run continues only on the same movement AND the same group.** Grouping on
+ * the movement alone (as the editor did until 2026-09-23) merged a lone block
+ * into a superset that began with the same movement: Bench, then Bench + Row,
+ * stored as `bench(–) bench(1) row(1)`, reopened as one Bench block — and the
+ * bind, read from the FIRST group seen for Bench (none), vanished with it. The
+ * next Save then wrote every group as NULL. A reorder makes that order easy to
+ * reach, which is how it was found.
+ *
+ * **The bind comes from each run's own group**, not from a per-movement map:
+ * two neighbouring runs are one superset exactly when they carry the same
+ * non-null group. That also restores a bind on a free-text block, which Save
+ * has always written a group for and the old map never read back.
+ *
+ * Two runs of the same movement with the same group (or both ungrouped) still
+ * merge into one block when they are neighbours; nothing is lost, since the
+ * block writes every set back with the same group.
+ */
+export function storedBlockRuns<T extends StoredSetRef>(sets: readonly T[]): StoredRun<T>[] {
+  const runs: StoredRun<T>[] = [];
+  for (const s of sets) {
+    const group = s.supersetGroup ?? null;
+    const last = runs[runs.length - 1];
+    const sameMovement =
+      last != null &&
+      (s.exerciseId == null
+        ? last.exerciseId == null && last.name === s.exercise
+        : last.exerciseId === s.exerciseId);
+    if (last != null && sameMovement && last.supersetGroup === group) {
+      last.sets.push(s);
+      continue;
+    }
+    runs.push({
+      exerciseId: s.exerciseId,
+      name: s.exercise,
+      supersetGroup: group,
+      linkedToNext: false,
+      sets: [s],
+    });
+  }
+  for (let i = 0; i < runs.length - 1; i++) {
+    const group = runs[i]!.supersetGroup;
+    if (group != null && group === runs[i + 1]!.supersetGroup) runs[i]!.linkedToNext = true;
+  }
+  return runs;
+}

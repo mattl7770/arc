@@ -11,7 +11,6 @@ import {
   type IngestedWorkout,
 } from '@/lib/db/repositories/workout-ingest';
 import {
-  liveDraftHasData,
   parseLiveDraft,
   parseManualDraft,
   type LiveDraft,
@@ -92,9 +91,11 @@ const readDrafts = (): Omit<WorkoutDrafts, 'reload'> => {
   const manualRow = readWorkoutDraft(db, 'manual');
   const live = liveRow ? parseLiveDraft(liveRow.value) : null;
   const manual = manualRow ? parseManualDraft(manualRow.value) : null;
-  // A live draft with structure but nothing typed is not worth resuming — the
-  // same test the logger applies, so the card and the screen cannot disagree.
-  const resumableLive = live && liveDraftHasData(live) ? live : null;
+  // Any live draft that parses is a session to come back to, typed into or not
+  // (`liveSessionOpen`, 2026-09-23: leaving the logger keeps a session from its
+  // first exercise). `parseLiveDraft` is the same gate the logger's Resume
+  // reads through, so the card and the screen cannot disagree.
+  const resumableLive = live;
   const stamps = [
     resumableLive ? liveRow?.updatedAt : null,
     manual ? manualRow?.updatedAt : null,

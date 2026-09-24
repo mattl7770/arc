@@ -21,6 +21,7 @@ import {
 import { pairIngestedWorkouts } from '@/lib/db/repositories/workout-ingest';
 import {
   DRAFT_VERSION,
+  leaveGuard,
   parseManualDraft,
   type ManualDraft,
   type ManualDraftSet,
@@ -71,6 +72,17 @@ import type { UnitPreferences } from '@/lib/user/types';
  * entry row is persisted too, not just the added sets, because this screen
  * deliberately saves a typed-but-never-Added row on Finish — that half-typed
  * row is real data here.
+ *
+ * ## Leaving is not discarding (owner, 2026-09-23)
+ *
+ * *"confirm in progress workouts not getting cleared, should be same for going
+ * to rest of the app."* The same rule as the live logger, through the same
+ * `leaveGuard`: backing out keeps the draft in its slot, and the Train hub's
+ * Session in progress card offers it back. Until then the back chevron asked
+ * "Discard this workout?" — stay or throw it away, with no way to leave and
+ * keep it. Throwing it away is now its own muted control under Save. The one
+ * question left on the way out is the live logger's: a draft write that THREW
+ * means the slot does not hold what is on screen, and leaving would lose it.
  */
 const KINDS: { key: WorkoutKind; label: string }[] = [
   { key: 'strength', label: 'Strength' },
@@ -310,10 +322,11 @@ export default function WorkoutLogScreen() {
     setSets((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // An accidental back tap must not vaporise a logged workout: if anything is
-  // drafted and unsaved, confirm before leaving. savedRef lets the post-save
-  // router.back() through without re-prompting.
+  // Anything drafted and unsaved: the test for writing a draft, for offering
+  // Discard, and for the one question the way out can still ask.
   const hasDraft = sets.length > 0 || !entryBlank || durationText !== '';
+  // The last draft write threw — leaving would then lose what is on screen.
+  const writeFailedRef = useRef(false);
 
   /** Drop the stored draft — on Save, and on an explicit Discard. */
   const discardDraft = () => {
@@ -359,10 +372,15 @@ export default function WorkoutLogScreen() {
       };
       const serialised = JSON.stringify(payload);
       if (serialised === lastWrittenRef.current) return;
-      lastWrittenRef.current = serialised;
       saveWorkoutDraft(getDb(), 'manual', payload);
+      // Recorded only once the write lands, so a write that threw is retried
+      // on the next change rather than remembered as made.
+      lastWrittenRef.current = serialised;
+      writeFailedRef.current = false;
     } catch (error) {
-      // A failed draft write must never break the screen being typed into.
+      // A failed draft write must never break the screen being typed into. It
+      // does change what leaving costs, which is why it is remembered.
+      writeFailedRef.current = true;
       console.warn('[exercise] draft write failed', error);
     }
   }, [
@@ -381,31 +399,60 @@ export default function WorkoutLogScreen() {
     entryDirty,
   ]);
 
+  // The way out keeps the draft (2026-09-23) — see the docblock. savedRef lets
+  // the post-save and post-discard router.back() through without a question.
   useEffect(() => {
     const unsubscribe = navigation.addListener('beforeRemove', (e) => {
-      if (savedRef.current || !hasDraft) return;
+      if (savedRef.current) return;
+      const guard = leaveGuard({
+        editing: false,
+        dirty: false,
+        open: hasDraft,
+        writeFailed: writeFailedRef.current,
+      });
+      if (guard === 'leave') return;
       e.preventDefault();
       Alert.alert(
-        'Discard this workout?',
-        'It has not been saved to your training history. Discarding deletes what you have typed.',
+        'Leave without a saved copy?',
+        'ARC could not store this workout for later, so leaving now loses it.',
         [
-          { text: 'Keep logging', style: 'cancel' },
+          { text: 'Stay', style: 'cancel' },
           {
-            text: 'Discard',
+            text: 'Leave',
             style: 'destructive',
-            onPress: () => {
-              // Discard means discard: the stored draft goes too, or the hub
-              // would offer to resume a session the user just threw away.
-              savedRef.current = true;
-              discardDraft();
-              navigation.dispatch(e.data.action);
-            },
+            onPress: () => navigation.dispatch(e.data.action),
           },
         ]
       );
     });
     return unsubscribe;
   }, [navigation, hasDraft]);
+
+  /**
+   * Throw the draft away — the control that took over from the back chevron's
+   * old "Discard this workout?". The same words and the same two taps, because
+   * the draft is the only copy of what was typed.
+   */
+  const confirmDiscard = () => {
+    Alert.alert(
+      'Discard this workout?',
+      'It has not been saved to your training history. Discarding deletes what you have typed.',
+      [
+        { text: 'Keep logging', style: 'cancel' },
+        {
+          text: 'Discard',
+          style: 'destructive',
+          onPress: () => {
+            // Discard means discard: the stored draft goes too, or the hub
+            // would offer to resume a session the user just threw away.
+            savedRef.current = true;
+            discardDraft();
+            router.back();
+          },
+        },
+      ]
+    );
+  };
 
   const save = () => {
     if (!canSave) return;
@@ -729,6 +776,22 @@ export default function WorkoutLogScreen() {
             {mode === 'live' ? 'Finish workout' : 'Save session'}
           </Text>
         </Pressable>
+
+        {/* Throwing the draft away — its own control since leaving stopped
+            doing it (2026-09-23). Muted ink, the live logger's Discard
+            workout: not the accent, which is Save's alone, and not a signal
+            colour, which marks biology only. Shown once there is a draft. */}
+        {hasDraft ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={mode === 'live' ? 'Discard this workout' : 'Discard this session'}
+            onPress={confirmDiscard}
+            className="mt-3 min-h-[44px] items-center justify-center active:opacity-60">
+            <Text className="font-label text-[13px] text-ink-muted">
+              {mode === 'live' ? 'Discard workout' : 'Discard session'}
+            </Text>
+          </Pressable>
+        ) : null}
       </ScrollView>
     </Screen>
   );

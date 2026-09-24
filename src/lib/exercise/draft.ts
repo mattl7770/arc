@@ -195,6 +195,23 @@ export type LiveDraft = {
   ingestId: string | null;
   restEndsAt: number | null;
   /**
+   * The id iOS gave the queued "Rest complete" alert for `restEndsAt`
+   * (2026-09-23), so whichever screen holds the session next can cancel or
+   * replace it.
+   *
+   * Leaving the logger keeps the session AND its queued alert — the owner who
+   * steps out mid-rest still wants the buzz, and an iOS kill leaves it queued
+   * anyway. Without the id a resumed screen could not reach that alert: a
+   * dismissed rest, a ±15, the next set's rest, a Finish or a Discard would each
+   * leave the old one to fire at its original time, mid-set or after the
+   * workout had gone. With it, the resumed screen adopts the alert as its own.
+   *
+   * Optional and NOT a version bump, for the reason `sessionId` is not one: a
+   * draft without it has no alert the next screen can reach, which is exactly
+   * what every draft written before it was.
+   */
+  restAlertId?: string;
+  /**
    * The away-gym flag as the user set it on this session (0055). It rides on
    * the draft for the same reason `restEndsAt` does: it is state of the session
    * in progress, and a resume that quietly dropped it would turn an away
@@ -342,6 +359,10 @@ export function parseLiveDraft(raw: unknown): LiveDraft | null {
     routineId: typeof raw.routineId === 'string' ? raw.routineId : null,
     ingestId: typeof raw.ingestId === 'string' ? raw.ingestId : null,
     restEndsAt: asFiniteNumber(raw.restEndsAt),
+    // Only when present — the same byte-for-byte rule as `sessionId` above.
+    ...(typeof raw.restAlertId === 'string' && raw.restAlertId !== ''
+      ? { restAlertId: raw.restAlertId }
+      : {}),
     away: asBool(raw.away),
     blocks,
   };
@@ -381,17 +402,34 @@ export function parseManualDraft(raw: unknown): ManualDraft | null {
 }
 
 /**
- * Does this session hold anything the user would mind losing? A set marked
- * done, or a rep/weight typed. Structure alone does not count: blocks loaded
- * from a saved workout and then abandoned untouched are reproducible by
- * starting that saved workout again, and a Resume card offering them would be
- * noise on the hub for something nobody entered.
+ * Is there a session at all? One exercise block is enough (2026-09-23).
  *
- * The logger calls this on its live blocks and the hub calls it on the stored
- * draft, through {@link liveDraftHasData}. One function, because "is there
- * anything here" decides three different things — whether a draft is written,
- * whether backing out prompts, and whether Resume is offered — and those three
- * must never disagree.
+ * This decides whether a draft is written, whether the hub and Home offer
+ * Resume, and whether another session in the slot is protected — three things
+ * that must never disagree, so they all ask this one function (the stored side
+ * needs no call: {@link parseLiveDraft} already refuses a draft with no blocks).
+ *
+ * Until 2026-09-23 the bar was {@link draftBlocksHaveData}: structure alone did
+ * not count, because blocks loaded from a saved workout and abandoned untouched
+ * could be rebuilt by starting that workout again. That stopped being true when
+ * leaving the logger stopped discarding (owner: *"confirm in progress workouts
+ * not getting cleared, should be same for going to rest of the app"*). A
+ * session started from a saved workout, warmed up for, and left to check Home
+ * came back as nothing — and starting it again restarts the clock, so the
+ * start instant was lost with it. An untouched session left open now costs one
+ * Discard; losing a real one cost the owner the session.
+ */
+export function liveSessionOpen(blocks: readonly DraftBlock[]): boolean {
+  return blocks.length > 0;
+}
+
+/**
+ * Does this session hold anything that could be SAVED? A set marked done, or a
+ * value typed. Structure alone does not count.
+ *
+ * It no longer decides whether a session exists (that is
+ * {@link liveSessionOpen}); it decides whether Finish can run, and what the
+ * Discard confirm says it is about to delete.
  */
 export function draftBlocksHaveData(blocks: DraftBlock[]): boolean {
   return blocks.some((b) =>
@@ -458,22 +496,117 @@ export function liveDraftSessionId(draft: LiveDraft): string {
 /**
  * Whose session the live slot holds, from one logger screen's point of view.
  *
- *   - `free`  — nothing worth protecting: no row, a row from another build, or
- *               a draft with nothing typed in it (the same test the hub's card
- *               and the logger's own write-through use, so the three agree).
+ *   - `free`  — nothing to protect: no row, or a row from another build.
  *   - `mine`  — the slot holds this screen's session.
- *   - `other` — it holds a DIFFERENT session with data in it.
+ *   - `other` — it holds a DIFFERENT session.
  *
- * The logger reads this when it regains focus and before Finish and Discard —
- * the only moments another screen can have touched the slot, since nothing
- * writes a draft except the focused logger. A screen whose session is no longer
- * in the slot must not write, finish or clear again: writing would clobber the
- * session that is there, and finishing would save a workout a second time.
+ * Any parseable draft is a session ({@link liveSessionOpen}): one with nothing
+ * typed in it still has a start instant and a list of exercises the owner
+ * chose, and those are what a screen writing over it would destroy.
+ *
+ * The logger reads this when a new screen mounts, when it regains focus, and
+ * before Finish and Discard — the only moments another screen can have
+ * touched the slot, since nothing writes a draft except the focused logger. A
+ * screen whose session is no longer in the slot must not write, finish or
+ * clear again: writing would clobber the session that is there, and finishing
+ * would save a workout a second time.
  */
 export function liveSlotState(stored: unknown, sessionId: string): 'free' | 'mine' | 'other' {
   const draft = parseLiveDraft(stored);
-  if (!draft || !liveDraftHasData(draft)) return 'free';
+  if (!draft) return 'free';
   return liveDraftSessionId(draft) === sessionId ? 'mine' : 'other';
+}
+
+/**
+ * Has this screen lost its session? `'ended'` when the slot was emptied under
+ * it (finished or discarded elsewhere), `'other'` when it now holds a different
+ * session, null when it is still this one's — or was never claimed.
+ *
+ * `owned` is what separates the two readings of an empty slot: a screen that
+ * had written (or resumed) the session and now finds nothing has been ended
+ * from somewhere else, while a fresh screen that has written nothing yet is
+ * simply fresh. Getting that wrong would close a brand-new session to a notice
+ * on its first focus.
+ */
+export function liveSlotLoss(
+  stored: unknown,
+  sessionId: string,
+  owned: boolean
+): 'ended' | 'other' | null {
+  const slot = liveSlotState(stored, sessionId);
+  if (slot === 'other') return 'other';
+  return slot === 'free' && owned ? 'ended' : null;
+}
+
+/**
+ * May this screen empty the slot — on Finish, on its own Discard, when its
+ * last exercise is removed? Only when it does not hold someone else's session:
+ * a different session in the slot belongs to whoever started it.
+ */
+export function mayClearLiveSlot(stored: unknown, sessionId: string): boolean {
+  return liveSlotState(stored, sessionId) !== 'other';
+}
+
+/** What a logger does with the slot when it regains focus. */
+export type LiveFocusDecision =
+  | { kind: 'keep' }
+  | { kind: 'adopt'; draft: LiveDraft; serialised: string }
+  | { kind: 'stale'; why: 'ended' | 'other' };
+
+/**
+ * **The focus decision**, pure so db/exercise.test.mjs can pin every branch.
+ *
+ *   - lost the slot ({@link liveSlotLoss}) → `stale`: the screen stops
+ *     writing, finishing and clearing, and says why;
+ *   - still this session, byte-identical to this screen's last write → `keep`;
+ *   - still this session, but written by ANOTHER copy of the logger (resumed
+ *     from Home or the hub while this one sat underneath) → `adopt` that copy,
+ *     or this screen's next keystroke would overwrite what was done there.
+ *
+ * `lastWritten` is the JSON of this screen's last write that LANDED, or null
+ * if none has. A screen that has never written adopts nothing: whatever is in
+ * the slot is what it resumed, and a write that threw must not make the older
+ * copy in the slot read as someone else's newer one.
+ */
+export function liveFocusDecision(
+  stored: unknown,
+  sessionId: string,
+  owned: boolean,
+  lastWritten: string | null
+): LiveFocusDecision {
+  const loss = liveSlotLoss(stored, sessionId, owned);
+  if (loss) return { kind: 'stale', why: loss };
+  if (lastWritten === null || stored == null) return { kind: 'keep' };
+  const serialised = JSON.stringify(stored);
+  if (serialised === lastWritten) return { kind: 'keep' };
+  const draft = parseLiveDraft(stored);
+  // `liveSlotLoss` returned null with a parseable draft only when it is 'mine'.
+  if (!draft || liveSlotState(stored, sessionId) !== 'mine') return { kind: 'keep' };
+  return { kind: 'adopt', draft, serialised };
+}
+
+/** What backing out of a logger does. */
+export type LeaveGuard = 'leave' | 'ask-unsaved-copy' | 'ask-discard-changes';
+
+/**
+ * **The way out**, for both loggers (2026-09-23). It never discards: leaving
+ * keeps an unfinished session in its slot, exactly as an iOS kill does.
+ *
+ *   - An EDIT of a stored session with changes asks before dropping them —
+ *     it has a saved copy, and leaving it means "put it back as it was".
+ *   - An unfinished session asks only when the last draft write THREW: then the
+ *     slot does not hold what is on screen, and leaving would lose it quietly.
+ *   - Everything else just leaves.
+ */
+export function leaveGuard(state: {
+  editing: boolean;
+  dirty: boolean;
+  /** An unfinished session is on screen (live: a block; manual: anything typed). */
+  open: boolean;
+  writeFailed: boolean;
+}): LeaveGuard {
+  if (state.editing) return state.dirty ? 'ask-discard-changes' : 'leave';
+  return state.open && state.writeFailed ? 'ask-unsaved-copy' : 'leave';
 }
 
 /**

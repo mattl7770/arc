@@ -78,3 +78,37 @@ export function parseDurationField(text: string): DurationField {
   const minutes = Number(trimmed);
   return minutes >= 1 ? { ok: true, minutes } : { ok: false };
 }
+
+/** What the editor's minutes field shows for a stored figure: whole minutes, or blank. */
+export function durationFieldText(storedMin: number | null): string {
+  return storedMin == null ? '' : String(Math.round(storedMin));
+}
+
+/**
+ * The minutes Save writes, and whether they changed.
+ *
+ *   - `ok: false` — the field was edited into something that will not save;
+ *     Save is held and the margin says why.
+ *   - `changed` — the figure differs from the stored one, which is what runs a
+ *     pairing pass after the save (the span rule's end moved, and the day
+ *     rule's duration ratio reads this number).
+ *
+ * **An untouched field is never a problem.** The stored figure is written back
+ * exactly, whatever it is: the Coach and imports can store 0, 0.3 or 1,200
+ * minutes (the schema only asks for `>= 0`), and none of them round-trips
+ * through a whole-minutes field. Holding Save over a field the owner never
+ * touched would leave him two ways out — clear a figure or invent one — when
+ * all he opened the session to do was fix a weight. So the bounds of
+ * {@link parseDurationField} apply only to text he typed.
+ */
+export function editedDuration(
+  storedMin: number | null,
+  text: string
+): { ok: true; minutes: number | null; changed: boolean } | { ok: false } {
+  if (text === durationFieldText(storedMin)) {
+    return { ok: true, minutes: storedMin, changed: false };
+  }
+  const field = parseDurationField(text);
+  if (!field.ok) return { ok: false };
+  return { ok: true, minutes: field.minutes, changed: field.minutes !== storedMin };
+}

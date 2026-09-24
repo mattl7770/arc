@@ -32,7 +32,12 @@ import {
   liveDraftMovements,
   liveDraftSessionId,
   liveDraftSetsDone,
+  leaveGuard,
+  liveFocusDecision,
+  liveSessionOpen,
+  liveSlotLoss,
   liveSlotState,
+  mayClearLiveSlot,
   openSessionLine,
   parseLiveDraft,
 } from '../src/lib/exercise/draft.ts';
@@ -40,10 +45,13 @@ import {
   blockSegments,
   moveBlockSegment,
   removeBlockKeepingBinds,
+  storedBlockRuns,
   supersetGroups,
 } from '../src/lib/exercise/block-order.ts';
 import {
   MAX_SESSION_MIN,
+  durationFieldText,
+  editedDuration,
   parseDurationField,
   shiftSessionStart,
 } from '../src/lib/exercise/session-time.ts';
@@ -1160,10 +1168,12 @@ console.log('12. leaving keeps a session; its order and its minutes are editable
   liveSlotState(live({ sessionId: 'b' }), 'a') === 'other'
     ? ok('the slot reads free / mine / other from one screen’s point of view')
     : bad('slot states');
-  liveSlotState(live({ sessionId: 'b' }, [set(1)]), 'a') === 'free' &&
+  // Since the review round (§13): a session with nothing typed is still a
+  // session — it has a start and the exercises the owner chose.
+  liveSlotState(live({ sessionId: 'b' }, [set(1)]), 'a') === 'other' &&
   liveSlotState({ ...live({ sessionId: 'b' }), version: 1 }, 'a') === 'free'
-    ? ok('a draft with nothing typed, or from another build, is nothing to protect')
-    : bad('empty / foreign draft protected');
+    ? ok('a draft with nothing typed is still protected; one from another build is not')
+    : bad('empty / foreign draft');
   const legacy = live({});
   liveDraftSessionId(legacy) === String(legacy.startedAt) &&
   liveSlotState(legacy, String(legacy.startedAt)) === 'mine'
@@ -1206,6 +1216,233 @@ console.log('12. leaving keeps a session; its order and its minutes are editable
         'home line, old',
         openSessionLine(live({ startedAt: new Date(2026, 8, 20, 18, 0).getTime() }), at1530)
       );
+}
+
+// ---------------------------------------------------------------------------
+// The review round on the same three notes (2026-09-23). Each block below is a
+// decision the screen used to make inline, moved into a pure function so it can
+// be pinned here rather than trusted: whether a session exists, what the focus
+// check does with the slot, what the way out asks, what Save writes for the
+// minutes, and how a stored session is cut back into blocks.
+console.log('13. the review round: every session is kept, and the decisions are pinned');
+{
+  const set = (key, over) => ({
+    key,
+    weight: '',
+    reps: '',
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: false,
+    pr: false,
+    ...over,
+  });
+  const block = (key, sets = [set(key)]) => ({
+    key,
+    exerciseId: 'barbell-bench-press',
+    name: 'Barbell Bench Press',
+    loggingType: 'weight_reps',
+    measures: 'reps,load',
+    mechanic: 'compound',
+    restSec: 180,
+    prev: [],
+    bestE1rm: null,
+    linkedToNext: false,
+    sets,
+  });
+  const live = (over, blocks = [block(1)]) => ({
+    version: DRAFT_VERSION,
+    sessionId: 'a',
+    startedAt: new Date(2026, 8, 23, 14, 2).getTime(),
+    routineId: 'push-day',
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks,
+    ...over,
+  });
+
+  // --- a session exists from its first exercise ------------------------------
+  // The reviewer's failure: a saved workout started, every set blank, left to
+  // check Home — no draft was written, so no Home row, no hub card, and the
+  // start instant was gone.
+  liveSessionOpen([block(1)]) && !liveSessionOpen([])
+    ? ok('a session with one exercise and nothing typed is open; an empty sheet is not')
+    : bad('liveSessionOpen');
+  const untouched = live({});
+  const parsed = parseLiveDraft(untouched);
+  parsed && !liveDraftHasData(parsed) && parsed.startedAt === untouched.startedAt
+    ? ok('…and its draft parses — with its start instant — though nothing in it can be saved yet')
+    : bad('untouched draft parse');
+  openSessionLine(untouched, new Date(2026, 8, 23, 15, 30)) ===
+  'Workout in progress · started 14:02'
+    ? ok('Home offers it back: "Workout in progress · started 14:02", no set count')
+    : bad('home line (untouched)', openSessionLine(untouched, new Date(2026, 8, 23, 15, 30)));
+
+  // --- the slot, from one screen's point of view -----------------------------
+  liveSlotLoss(null, 'a', false) === null
+    ? ok('a fresh screen that has written nothing is not stale when the slot is empty')
+    : bad('false stale on a fresh screen');
+  liveSlotLoss(null, 'a', true) === 'ended'
+    ? ok('a screen that HAD written finds the slot empty → ended elsewhere')
+    : bad('ended');
+  liveSlotLoss(live({ sessionId: 'b' }), 'a', false) === 'other' &&
+  liveSlotLoss(live({ sessionId: 'b' }), 'a', true) === 'other'
+    ? ok('another session in the slot is "other" whether or not this screen had written')
+    : bad('other');
+  liveSlotLoss(untouched, 'a', true) === null
+    ? ok('its own untouched session in the slot is not a loss')
+    : bad('own untouched');
+  mayClearLiveSlot(untouched, 'a') &&
+  mayClearLiveSlot(null, 'a') &&
+  !mayClearLiveSlot(live({ sessionId: 'b' }, [block(9)]), 'a')
+    ? ok('a screen may empty the slot of its own session or of nothing — never of another')
+    : bad('mayClearLiveSlot');
+
+  // --- the focus decision ----------------------------------------------------
+  const mine = live({});
+  const mineJson = JSON.stringify(mine);
+  const newer = live({}, [block(1, [set(1, { weight: '80', reps: '8', done: true })])]);
+  const decide = (stored, owned, lastWritten) =>
+    liveFocusDecision(stored, 'a', owned, lastWritten);
+  decide(mine, true, mineJson).kind === 'keep'
+    ? ok('focus: the slot holds exactly what this screen last wrote → keep')
+    : bad('focus keep');
+  const adopt = decide(newer, true, mineJson);
+  adopt.kind === 'adopt' &&
+  adopt.draft.blocks[0].sets[0].done === true &&
+  adopt.serialised === JSON.stringify(newer)
+    ? ok('focus: the same session, written by another copy of the logger → adopt that copy')
+    : bad('focus adopt', JSON.stringify(adopt).slice(0, 120));
+  decide(newer, true, null).kind === 'keep'
+    ? ok('focus: a screen whose writes never landed adopts nothing — the slot is what it resumed')
+    : bad('focus adopt without a write');
+  decide(null, false, null).kind === 'keep'
+    ? ok('focus: a brand-new screen with an empty slot is not closed to a notice')
+    : bad('focus false stale');
+  const ended = decide(null, true, mineJson);
+  const other = decide(live({ sessionId: 'b' }), true, mineJson);
+  ended.kind === 'stale' && ended.why === 'ended' && other.kind === 'stale' && other.why === 'other'
+    ? ok('focus: emptied → stale "ended"; another session → stale "other"')
+    : bad('focus stale', `${JSON.stringify(ended)} ${JSON.stringify(other)}`);
+
+  // --- the way out never discards --------------------------------------------
+  const guard = (over) =>
+    leaveGuard({ editing: false, dirty: false, open: true, writeFailed: false, ...over });
+  guard({}) === 'leave' && guard({ open: false }) === 'leave'
+    ? ok('leaving an unfinished session just leaves — nothing asked, nothing cleared')
+    : bad('leave');
+  guard({ writeFailed: true }) === 'ask-unsaved-copy' &&
+  guard({ writeFailed: true, open: false }) === 'leave'
+    ? ok('…unless the last draft write threw, and only when there is a session to lose')
+    : bad('unsaved copy');
+  guard({ editing: true, dirty: true, writeFailed: true }) === 'ask-discard-changes' &&
+  guard({ editing: true }) === 'leave'
+    ? ok('an edit with changes asks before dropping them; an untouched edit just leaves')
+    : bad('editing guard');
+
+  // --- the rest alert rides the draft ----------------------------------------
+  // In the key order the logger's write-through builds it (after restEndsAt).
+  const { away: restAway, blocks: restBlocks, ...restHead } = live({
+    restEndsAt: Date.now() + 90_000,
+  });
+  const resting = { ...restHead, restAlertId: 'ios-alert-7', away: restAway, blocks: restBlocks };
+  parseLiveDraft(resting).restAlertId === 'ios-alert-7' &&
+  JSON.stringify(parseLiveDraft(resting)) === JSON.stringify(resting)
+    ? ok('the queued alert id round-trips, so a resumed screen can cancel or replace it')
+    : bad('restAlertId round-trip');
+  !('restAlertId' in parseLiveDraft(mine)) && !('restAlertId' in parseLiveDraft(live({ restAlertId: '' })))
+    ? ok('…and is not invented when absent — no version bump')
+    : bad('restAlertId invented');
+  {
+    const { db } = freshDb();
+    saveWorkoutDraft(db, 'live', resting);
+    parseLiveDraft(readWorkoutDraft(db, 'live').value).restAlertId === 'ios-alert-7'
+      ? ok('…through the store as well: what the hub’s trash reads to cancel it')
+      : bad('restAlertId store');
+  }
+
+  // --- a logged session's minutes: an untouched field never holds Save -------
+  const edited = (stored, text) => JSON.stringify(editedDuration(stored, text));
+  [0, 0.3, 1000, 1200.5].every((m) => {
+    const e = editedDuration(m, durationFieldText(m));
+    return e.ok && e.minutes === m && !e.changed;
+  })
+    ? ok('untouched 0, 0.3, 1000 and 1200.5 minutes (the Coach, an import) save back exactly')
+    : bad('untouched out-of-range', [0, 0.3, 1000].map((m) => edited(m, durationFieldText(m))).join(' '));
+  edited(47.6, '48') === '{"ok":true,"minutes":47.6,"changed":false}' &&
+  edited(null, '') === '{"ok":true,"minutes":null,"changed":false}'
+    ? ok('…including a fraction the field rounds for display, and no figure at all')
+    : bad('untouched', `${edited(47.6, '48')} ${edited(null, '')}`);
+  edited(0, '0 ') === '{"ok":false}' && edited(47, '1000') === '{"ok":false}'
+    ? ok('a figure the owner TYPES is still held to whole minutes 1–999')
+    : bad('typed bounds', `${edited(0, '0 ')} ${edited(47, '1000')}`);
+  edited(20, '60') === '{"ok":true,"minutes":60,"changed":true}' &&
+  edited(20, '') === '{"ok":true,"minutes":null,"changed":true}' &&
+  edited(20, ' 20') === '{"ok":true,"minutes":20,"changed":false}'
+    ? ok('a real change says so — which is what runs the pairing pass — and a retyped same figure does not')
+    : bad('changed', `${edited(20, '60')} ${edited(20, '')} ${edited(20, ' 20')}`);
+
+  // --- a stored session cut back into blocks ---------------------------------
+  const ss = (exerciseId, supersetGroup = null, exercise = exerciseId) => ({
+    exerciseId,
+    exercise,
+    supersetGroup,
+  });
+  const shape = (runs) =>
+    runs.map((r) => `${r.name}×${r.sets.length}${r.linkedToNext ? '+' : ''}`).join(' ');
+  // The reviewer's probe: a lone bench moved above a Bench + Row superset.
+  shape(storedBlockRuns([ss('bench'), ss('bench', 1), ss('row', 1)])) === 'bench×1 bench×1+ row×1'
+    ? ok('a lone bench above a Bench + Row superset reopens as two blocks, the superset intact')
+    : bad('reviewer probe', shape(storedBlockRuns([ss('bench'), ss('bench', 1), ss('row', 1)])));
+  shape(storedBlockRuns([ss('bench', 1), ss('row', 1), ss('bench')])) === 'bench×1+ row×1 bench×1'
+    ? ok('…and the mirror case (the superset first, the lone bench after it)')
+    : bad('mirror probe');
+  shape(storedBlockRuns([ss('bench'), ss('bench'), ss('row')])) === 'bench×2 row×1'
+    ? ok('an ungrouped run of one movement is still one block')
+    : bad('ungrouped merge');
+  shape(storedBlockRuns([ss('bench', 1), ss('row', 1), ss('bench', 1), ss('row', 1)])) ===
+  'bench×1+ row×1+ bench×1+ row×1'
+    ? ok('an interleaved superset (the Coach logs them that way) stays one chain')
+    : bad('interleave');
+  shape(storedBlockRuns([ss('bench', 1), ss('row', 1), ss('curl', 2), ss('press', 2)])) ===
+  'bench×1+ row×1 curl×1+ press×1'
+    ? ok('two neighbouring supersets stay two — the bind is read from each block’s own group')
+    : bad('two supersets');
+  shape(
+    storedBlockRuns([ss(null, 1, 'Sled push'), ss('row', 1), ss(null, null, 'Sled push')])
+  ) === 'Sled push×1+ row×1 Sled push×1'
+    ? ok('a free-text block keeps the bind Save wrote for it (the old per-movement map dropped it)')
+    : bad('free-text bind');
+
+  // End to end through the repository: stored → blocks → the groups Save writes
+  // are the groups that were stored.
+  {
+    const { db } = freshDb();
+    const row = (exerciseId, exercise, supersetGroup) => ({
+      exercise,
+      exerciseId,
+      reps: 8,
+      weightKg: 60,
+      supersetGroup,
+    });
+    const id = logWorkout(db, { date: '2026-09-23', kind: 'strength', durationMin: 0 }, [
+      row('barbell-bench-press', 'Barbell Bench Press', null),
+      row('barbell-bench-press', 'Barbell Bench Press', 1),
+      row('barbell-row', 'Barbell Row', 1),
+    ]);
+    const runs = storedBlockRuns(getWorkoutDetail(db, id).sets);
+    const groups = supersetGroups(runs);
+    const rewritten = runs.flatMap((r, i) => r.sets.map(() => groups[i] ?? '-')).join();
+    rewritten === '-,1,1'
+      ? ok('a Save of the reopened session writes the superset back exactly as it was stored')
+      : bad('round trip groups', rewritten);
+    const e = editedDuration(getWorkoutDetail(db, id).durationMin, '0');
+    e.ok && e.minutes === 0 && !e.changed
+      ? ok('…and a stored 0-minute duration, untouched, does not hold that Save')
+      : bad('stored 0 untouched', JSON.stringify(e));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
