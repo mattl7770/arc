@@ -377,9 +377,16 @@ console.log('S. the status line: two at once, the exclusion clause, and the reve
   });
   endStatus(relapse, injury.id, isoDaysAgo(NOW, 1));
   const back = buildTurnContext(relapse, NOW);
-  !back.includes('sick ended yesterday') && back.includes('injured ended yesterday')
+  // The whole cue line, not a substring: the labels join with " and " in
+  // start order, so without the exclusion the line reads "sick and injured
+  // ended yesterday", which a check for "sick ended yesterday" never matches.
+  const cueLines = back
+    .split('\n')
+    .filter((l) => l.startsWith('Status:') && l.includes('ended yesterday'));
+  cueLines.length === 1 &&
+  cueLines[0] === 'Status: injured ended yesterday — put back what it took out.'
     ? ok('a label running again today gets no revert cue; another that ended still does')
-    : bad('relapse cue', back);
+    : bad('relapse cue', cueLines.join(' | ') || back);
 
   // A booking the Coach made for next week, so a later session can see it.
   const { db: booked } = freshDb();
