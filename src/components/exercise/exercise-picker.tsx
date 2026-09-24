@@ -584,7 +584,7 @@ function AiAddView({
       onCreated(createCustomExercise(getDb(), entry));
     } catch (error) {
       console.warn('[exercise] AI entry save failed', error);
-      setPhase({ kind: 'error', message: 'Couldn’t save that exercise. Please try again.' });
+      setPhase({ kind: 'error', message: 'Couldn’t save that exercise. Try again.' });
     }
   };
 

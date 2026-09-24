@@ -312,7 +312,7 @@ export default function MissionDayScreen() {
           without explaining. */}
       {isPast && ordered.length > 0 && daysBetween(date, today) > CARRY_MAX_DAYS ? (
         <Text className="mt-4 font-serif text-[14px] leading-6 text-ink-secondary">
-          This day is settled. More than a week back, the record stands as it is.
+          More than a week back, the record stands as it is.
         </Text>
       ) : null}
     </Screen>

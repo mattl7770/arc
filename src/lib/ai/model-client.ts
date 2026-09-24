@@ -64,7 +64,7 @@ export const DEFAULT_MODEL = 'claude-sonnet-5';
  * shrinks much further.
  */
 export const COACH_MODELS = [
-  { id: 'claude-sonnet-5', label: 'Sonnet 5', note: 'Near-Opus quality · default' },
+  { id: 'claude-sonnet-5', label: 'Sonnet 5', note: 'Default' },
   { id: 'claude-opus-5', label: 'Opus 5', note: 'Deepest reasoning · ~2.5× the cost' },
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', note: 'Fastest · cheapest' },
 ] as const;

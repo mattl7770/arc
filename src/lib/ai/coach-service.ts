@@ -349,25 +349,21 @@ function mockReply(userText: string): string {
 
   if (isGreeting) {
     return (
-      "Morning. I'm here, but I should be straight with you: no model is connected this " +
-      'session, so this is the chat foundation, not the intelligence. Paste an API key in ' +
-      "the panel above and I'll answer from your actual data — trends, today's log, " +
-      'reminders, all of it. What would you want me to look at first?'
+      'Morning. No model is connected this session, so this is a preview. Paste an API key ' +
+      "in the panel above and I'll answer from your actual data."
     );
   }
 
   if (asksAboutData) {
     return (
-      "Good question — and exactly the kind I'm built to answer. I can't yet in this " +
-      "session: no model is connected, so I won't pretend to read your labs, wearables, " +
-      "or logs. Paste an API key in the panel above and I'll answer this with your " +
-      'actual numbers and the trend behind them, not a generic take.'
+      "I can't answer that in this session: no model is connected, so I won't pretend to " +
+      'read your labs, wearables, or logs. Paste an API key in the panel above and ' +
+      "I'll answer with your actual numbers."
     );
   }
 
   return (
-    "Noted. I'm running as a preview right now — the chat works end to end, but no model " +
-    "is connected this session, so I won't pretend to have answers I can't ground. " +
-    'Paste an API key in the panel above and this same thread becomes the real thing.'
+    "Noted. I'm running as a preview — no model is connected this session, so I won't " +
+    "pretend to have answers I can't ground. Paste an API key in the panel above."
   );
 }

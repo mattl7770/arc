@@ -1123,9 +1123,9 @@ export function deriveReadiness(
     // nothing from: the switch is there, the native module is not, so no amount
     // of vendor syncing into Apple Health can reach ARC.
     detail =
-      'Apple Health cannot be read in this build — the HealthKit module rides the next app build. Whatever your watch or ring is syncing into Apple Health is safe there and will land here once it does.';
+      'Apple Health cannot be read in this build — the HealthKit module rides the next app build. Readings already in Apple Health will land then.';
   } else if (link === 'disconnected') {
-    detail = 'Connect Apple Health in Settings to power readiness.';
+    detail = 'Connect Apple Health in Settings.';
   } else {
     detail =
       'Apple Health is connected but no readings have arrived. Check Settings → Privacy & Security → Health → ARC — iOS never tells apps whether read access was granted.';

@@ -671,6 +671,17 @@ console.log('6. Doctor pack — measured markers only, no BP, no BMI');
     'a lab-less pack says so instead of printing sixty em-dashes',
     blankPack.labs.empty != null && blankPack.labs.groups.length === 0
   );
+  // Slop pass 3 (docs/ai-slop-candidates-2026-09.md §10). The empty ran "…, so
+  // this section has nothing to report. The catalogue tracks N markers and is
+  // waiting on a first draw." — a restatement, a flourish, and a catalogue count
+  // the coverage line directly above it already prints. One sentence; the count
+  // stays where the renderer puts it.
+  is('…in one sentence', blankPack.labs.empty, 'No bloodwork has been imported into ARC yet.');
+  yes(
+    '…and the catalogue size is still stated, once, by the coverage line',
+    /^0 of \d+ tracked markers measured\.$/.test(blankPack.labs.coverageLine),
+    blankPack.labs.coverageLine
+  );
 }
 
 // ============================================================================
@@ -753,6 +764,32 @@ console.log('7. Render — verbatim figures, authored empties, tripwires, determ
       bareData.changed.empty != null
   );
   yes('…and omits the labs section entirely', bareData.labs === null);
+
+  // Slop pass 3 (docs/ai-slop-candidates-2026-09.md §10). The assembler's prose
+  // is a file under src/lib, so neither string-walk of the screens read it —
+  // and the report preview prints it verbatim. Three empties each carried a
+  // tail that was not a fact: an aphorism restating the clause before it, a
+  // reassurance, and a "check back" that narrated the next visit.
+  is(
+    'What changed, empty: the fact and a full stop',
+    bareData.changed.empty,
+    'No protocol revision, target change or status this period.'
+  );
+  is(
+    'Sleep & recovery, empty: where these come from, not a reassurance',
+    bareData.recovery.empty,
+    'No wearable readings in this period or the one before it. Apple Health syncs these.'
+  );
+  const onlyToday = assembleSelfReview(
+    bare,
+    periodFromBounds('custom', '2026-08-12', '2026-08-12', NOW),
+    { now: NOW }
+  );
+  is(
+    'Adherence over a period of only today: the rule, with no "check back tomorrow"',
+    onlyToday.adherence.empty,
+    'This period holds only today, and adherence is scored on complete days — a two-hour-old day is not a day.'
+  );
 
   // Escaping: a protocol named with markup must not become markup.
   const { db: hostile } = freshDb();

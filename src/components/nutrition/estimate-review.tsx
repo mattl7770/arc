@@ -457,9 +457,9 @@ export function QuestionsPlate({
   const answered = questions.filter((q) => answers[q.id] != null).length;
   return (
     <Block device="plate">
-      {/* "A few things", not "Questions" — which reads like a form. The tally
-          is its note, in the house's own form. */}
-      <SectionLabel label="A few things" note={`${answered} of ${questions.length}`} />
+      {/* "Questions": a section label names what is filed under it (the slop
+          list, §0 and §10). The tally is its note, in the house's own form. */}
+      <SectionLabel label="Questions" note={`${answered} of ${questions.length}`} />
       <View className="mt-1">
         {questions.map((question, index) => {
           const chosen = answers[question.id] ?? null;

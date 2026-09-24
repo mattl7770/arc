@@ -1,5 +1,7 @@
 # AI-slop candidates — September 2026
 
+**Status, 2026-09-23: a third walk (§10) applied 28 more entries covering 39 string sites the first two walks could not reach, most of them built in `src/lib` rather than written in a screen. The same blanket approval and the same fact-keeping rule applied. 4 are held for the owner (§10.G).** The 2026-09-19 status below still describes §0–§9.
+
 **Status: FULLY APPLIED, 2026-09-19, by owner approval of the WHOLE list** (Matt: *"Execute the full AI slop candidate list, we can always add stuff back later if we need to."*). This supersedes the partial approval below.
 
 A first pass applied 40 of the 46 candidates on **2026-09-15** (Matt: *"go ahead and implement the proposed slop removals"*) and **kept five** on the list's own argument — `progress-photos`, `settings-units`, `workout-log`, the ended-protocol rule on `app/protocols.tsx`, and the `Open chat` label on `src/components/home/coach-brief.tsx`. The owner has overruled that judgement. Every one of the five is now applied; each carries a second **Outcome (2026-09-19):** line saying what happened to the fact it was carrying. §0 (the protocol adherence plate) was re-set in an earlier branch, before either approval.
@@ -462,6 +464,212 @@ Lines the second walk stopped on and left. Each is here so the decision is on th
 
 ---
 
+## §10 — The third walk: where a string-walk cannot see (2026-09-23)
+
+The owner's device note, after the 0061 build (2026-09-21): *"there is still plenty of slop in the app. another anti ai slop search should be conducted prior to the next build."* Numbered §10 because §9 was already taken.
+
+**Why two walks missed these.** Both walks read the strings *written in* `app/` and `src/components/`. **22 of these 39 sites are not written there.** They are *built* somewhere else and handed to a screen: the brief under Home's hero comes from `src/lib/ai/insights.ts`, the readiness line from `src/lib/home/readiness.ts`, the Train hub's empty card from `src/lib/exercise/recommend.ts`, every coverage note on Settings › Apple Health from `src/lib/health/coverage.ts`, the model picker's notes from `src/lib/ai/model-client.ts`, the report's section prose from `src/lib/reports/`, the Coach's no-key replies from `src/lib/ai/coach-service.ts`. The screen file says `{recommendation.why}`, and a string-walk reads past a variable. **15 sites were inside the walked files, in places the method looked away from.** The first list excluded error messages wholesale (*"they name the failure and the way out"*). That is right about their facts and blind to their register, so eleven "Please try again." bodies could not be listed. Three more lines were simply read and passed. **2 lines were added by builds merged after the second walk** (`60bb653`).
+
+**Method.** Every string of three or more words in `src/lib/**` and `src/hooks/**` was extracted (2,149 in `src/lib` alone), prompts and model-only text set aside, and each remaining one traced to the screen that prints it. Every `Alert.alert` / `Alert.prompt` in the app was inventoried: title, body and buttons (40 sheets). Every string new in `app/` and `src/components/` since `60bb653` was diffed out and read. Same six tags, same three shapes, same rule: never take a fact with the cut. Docblocks ignored, as before.
+
+**Counts.** **28 entries, 39 string sites, all applied**: **19 `applied, fact kept`** and **9 `applied`** (the cut carried no fact). **4 held for the owner.** **Where it was hiding:** built in `src/lib` or `src/hooks` and printed by a screen — **22** (Home's brief and readiness line 7, the Coach's no-key replies, model note and relayed notes 6, the coverage notes 3, Train hub, Data tab and reports 6). Inside the walked files, where the method looked away — **15** (Alert and error bodies 12, the confirmation card's lanes 2, the questions label 1). Added since the second walk — **2**.
+
+**A correction to §9's closing note.** It said `app/routine-edit.tsx:314` was *"the only user-facing survivor"* of the retired noun "routine". It was not. A second lived in `src/lib/exercise/recommend.ts:145`, out of the walk's reach (§10.D below).
+
+### §10.A — Home's brief and readiness line, built in `src/lib`
+
+**`src/lib/ai/insights.ts:925`** · `chatty-helper` · **confident**
+> "Sick day. Nothing in your data needs attention. **Look after the basics.**"
+The only piece of generic wellness advice in the brief, on the one day the user has said not to judge them.
+**Now:** "Sick day. Nothing in your data needs attention."
+**Outcome:** applied. Pinned exactly in `db/insights.test.mjs` §0b.
+
+**`src/lib/ai/insights.ts:929`** · `chatty-helper` · **confident**
+> "Nothing logged by hand yet. What I can see: {floor}. Add weight, meals and training **to widen what I can read.**"
+**Now:** "…Add weight, meals and training."
+**Outcome:** applied, **fact kept — the three things to log**. The tail described what logging them would do to the brief itself. Pinned in `db/insights.test.mjs` §20.
+
+**`src/lib/ai/insights.ts:930`** · `chatty-helper` · **confident**
+> "Nothing logged yet. Start with today: weight, what you eat, and any training. **Trends need a few days of anything at all.**"
+**Now:** "…Trends need about ten days."
+**Outcome:** applied, **fact kept and sharpened: about ten days**, which is the detectors' real gate (the next branch already said "Trends need about ten"). The same fix §8 made at `exercise-detail.tsx:312` ("a couple" → two). This is the brief a fresh install shows. Pinned exactly in `db/insights.test.mjs` §0 and on `home (never touched)` in `db/screens-render.test.mjs`.
+
+**`src/lib/ai/insights.ts:935`** · `chatty-helper` (shape 3) · **confident**
+> "Baseline building. 5 days of data so far. Trends need about ten. **Keep the cadence and they will start showing up.**"
+**Now:** "Baseline building. 5 days of data so far. Trends need about ten."
+**Outcome:** applied. What is left is the count and the gate. Refuted in `db/insights.test.mjs` §0b.
+
+**`src/lib/ai/insights.ts:939`** · `ai-label`/aphorism · **confident**
+> "Everything is holding steady. No trend, gap, or symptom pattern worth flagging today. **Stable is the goal, not the absence of news.**"
+A maxim explaining a verdict the sentence before it already stated. Same shape as `reports.tsx:320` in §8.
+**Now:** "Everything is holding steady. No trend, gap, or symptom pattern worth flagging today."
+**Outcome:** applied. Pinned exactly on a new no-watch stable fixture in `db/insights.test.mjs` §0b, because no existing test reached this branch.
+
+**`src/lib/home/readiness.ts:1126`** · `chatty-helper` · **confident**
+> "Apple Health cannot be read in this build — the HealthKit module rides the next app build. **Whatever your watch or ring is syncing into Apple Health is safe there and will land here once it does.**"
+**Now:** "…rides the next app build. Readings already in Apple Health will land then."
+**Outcome:** applied, **fact kept: nothing is lost, and it arrives with the build**, in eight words instead of twenty-two. A reassuring sentence became a statement. Pinned in `db/readiness.test.mjs` §8 and on `home (never touched)`.
+
+**`src/lib/home/readiness.ts:1128`** · `chatty-helper` (shape 3) · **confident**
+> "Connect Apple Health in Settings **to power readiness.**"
+The metrics strip's copy of this sentence lost "…to populate this" in §8. Its twin on the hero's readiness line is built in `src/lib`, so it survived.
+**Now:** "Connect Apple Health in Settings."
+**Outcome:** applied, **fact kept: the route in**. Pinned exactly in `db/readiness.test.mjs` §8.
+
+### §10.B — The Coach, in `src/lib`
+
+**`src/lib/ai/coach-service.ts:352`** · `chatty-helper` · **confident**
+> "Morning. **I'm here, but I should be straight with you:** no model is connected this session, so this is **the chat foundation, not the intelligence.** Paste an API key in the panel above and I'll answer from your actual data **— trends, today's log, reminders, all of it. What would you want me to look at first?**"
+These are the Coach's no-key replies, the thread's answer whenever no model is connected. The closing question invites a turn that can only get another canned reply.
+**Now:** "Morning. No model is connected this session, so this is a preview. Paste an API key in the panel above and I'll answer from your actual data."
+**Outcome:** applied, **fact kept: no model, a preview, the way out, what changes once there is a key**. "Preview" is the word the empty thread's own lede already uses.
+
+**`src/lib/ai/coach-service.ts:361`** · `marketing` · **confident**
+> "**Good question — and exactly the kind I'm built to answer.** I can't yet in this session: no model is connected, so I won't pretend to read your labs, wearables, or logs. Paste an API key in the panel above and I'll answer this with your actual numbers **and the trend behind them, not a generic take.**"
+**Now:** "I can't answer that in this session: no model is connected, so I won't pretend to read your labs, wearables, or logs. Paste an API key in the panel above and I'll answer with your actual numbers."
+**Outcome:** applied, **fact kept: what it cannot read, and the way out**. This was the most assistant-like sentence in the app.
+
+**`src/lib/ai/coach-service.ts:369`** · `marketing` · **confident**
+> "Noted. I'm running as a preview **right now — the chat works end to end, but** no model is connected this session, so I won't pretend to have answers I can't ground. Paste an API key in the panel above **and this same thread becomes the real thing.**"
+**Now:** "Noted. I'm running as a preview — no model is connected this session, so I won't pretend to have answers I can't ground. Paste an API key in the panel above."
+**Outcome:** applied, **fact kept**. "The chat works end to end" is a developer's claim about the pipeline, not something the user needs. *All three replies are refuted by a source scan in `db/screens-render.test.mjs` §22. `mockReply` is private and no suite drives a no-key turn.*
+
+**`src/lib/ai/model-client.ts:67`** · `marketing` · **confident**
+> Sonnet 5 — "**Near-Opus quality** · default"
+§8 cut "near-Opus quality for a fraction of the cost" from the margin on Settings › Coach. The same claim survived just above it, as the picker row's own note, because the note is built in `src/lib`.
+**Now:** "Default"
+**Outcome:** applied, **fact kept: it is the default**. The comparison already lives, once, in the margin below ("Sonnet is the cheaper of the two; Opus is stronger on deep, whole-history analysis"). Opus keeps "Deepest reasoning · ~2.5× the cost", because the multiple is the decision aid. Pinned in `db/model-client.test.mjs` §12.
+
+**`src/lib/notifications/reminders.ts:510`** · `chatty-helper` · **confident**
+> "Saved, but notification permission is not granted, so no phone alert will fire — it surfaces in the app only. **The user can enable notifications for ARC in iOS Settings.**"
+The type says this line is *"safe to relay to the user as-is"*, and the Coach relays it. Relayed as-is, it tells the user about "the user".
+**Now:** "…Notifications for ARC can be turned on in iOS Settings."
+**Outcome:** applied, **fact kept: the way out**.
+
+**`src/lib/notifications/reminders.ts:512`** · `chatty-helper` · **confident**
+> "Saved, but scheduling the OS notification failed, **so do not promise a phone alert** — it surfaces in the app."
+An instruction to the model, inside a sentence documented as safe to hand the user word for word.
+**Now:** "Saved, but scheduling the OS notification failed, so no phone alert will fire — it surfaces in the app only."
+**Outcome:** applied, **fact kept**, and it now reads like its five siblings. Stating the fact tells the model not to promise the alert just as well as the instruction did. *Both are source-scanned (§22): neither branch is reachable under node.*
+
+### §10.C — Settings › Apple Health: the coverage notes in `src/lib/health/coverage.ts`
+
+**`src/lib/health/coverage.ts:128`** · `chatty-helper` (assistant voice) · **confident**
+> "**Nothing in this repository establishes** that Garmin Connect writes in-workout heart-rate samples to Apple Health at all, at what cadence, or whether it associates them with the session **— none of the three was checked.** A blank can also mean the read grant was declined — iOS never tells ARC. Check Settings → Privacy & Security → Health → ARC → Heart Rate before reading a zero as a Garmin fact."
+An audit memo addressed to someone reading the code, printed on a Settings screen. The user has no repository.
+**Now:** "Unconfirmed whether Garmin Connect writes in-workout heart rate to Apple Health at all, at what cadence, or tied to the session. A blank can also mean…"
+**Outcome:** applied, **fact kept: all three unknowns, the declined-grant caveat, the Settings path**. The existing `Privacy & Security` pin still holds.
+
+**`src/lib/health/coverage.ts:173`** · `chatty-helper` (assistant voice) · **confident**
+> "**Nothing in this repository establishes** that Garmin writes hydration to Apple Health**, and no source was checked when the scope was added — the premise is plausible and unconfirmed.** The test is one evening: log a hydration entry on the watch, sync, and see whether a row lands. Any other hydration app on the phone will also fill this**, which is the point of reading it.**"
+**Now:** "Unconfirmed whether Garmin writes hydration to Apple Health. The test is one evening: log a hydration entry on the watch, sync, and see whether a row lands. Any other hydration app on the phone also fills this."
+**Outcome:** applied, **fact kept: unconfirmed, the one-evening test verbatim, the other-apps fact**. Pinned in `db/health-coverage.test.mjs` §6.
+
+**`src/lib/health/coverage.ts:110`** · `chatty-helper` (assistant voice) · **confident**
+> "Syncs — Garmin publishes a dedicated FAQ about step counts **DIFFERING** between the two apps**, which presupposes it.**"
+This argues the verdict instead of stating it. The FAQ does contain something the reader needs, though: the two apps' step counts can differ.
+**Now:** "Syncs. Garmin's own FAQ says the step counts in the two apps can differ."
+**Outcome:** applied, **fact kept, and pointed at the reader: expect a discrepancy**. A whole-table refutation in `db/health-coverage.test.mjs` §6 now fails if any note mentions a repository or argues its own verdict.
+
+### §10.D — Other lines built in `src/lib` and `src/hooks`: Train hub, Data tab, reports
+
+**`src/lib/exercise/recommend.ts:145`** · `chatty-helper` (shape 3) + retired noun · **confident**
+> "Build a **routine** or log a few sessions **and ARC will start recommending your next workout.**"
+Printed under "Train today" when there is nothing to recommend. It has the retired noun, the card narrating its own future, and ARC talking about itself in the third person.
+**Now:** "A recommendation needs a saved workout or a few logged sessions."
+**Outcome:** applied, **fact kept: the precondition, in the house noun**. This is the §8 `exercise-detail.tsx:312` shape. Pinned and refuted (both the noun and the promise) in `db/training-engine.test.mjs` §6. No page render reaches this branch: the render suite's hub always has fallback exercises to offer.
+
+**`src/hooks/use-data-overview.ts:189`** · `chatty-helper` (shape 3) · **confident**
+> Weight trend row, empty: "**Log weight to start a trend**"
+Its five neighbours name the absence: "No water logged yet", "No meals yet", "Nothing logged this week"…
+**Now:** "No weight logged yet"
+**Outcome:** applied. Pinned and refuted on `data tab (never touched)`.
+
+**`src/lib/reports/assemble-self-review.ts:274`** · `chatty-helper` · **confident**
+> "This period holds only today, and adherence is scored on complete days — a two-hour-old day is not a day. **Check back tomorrow.**"
+**Now:** ends at "…is not a day."
+**Outcome:** applied. The rule stays, and the rule is the whole reason the section is empty. Pinned in `db/reports.test.mjs` §7.
+
+**`src/lib/reports/assemble-self-review.ts:972`** · `ai-label`/aphorism · **confident**
+> "No protocol revision, target change or status this period **— the plan you started with is the plan you finished with.**"
+**Now:** "No protocol revision, target change or status this period."
+**Outcome:** applied. Pinned in `db/reports.test.mjs` §7.
+
+**`src/lib/reports/assemble-self-review.ts:738`** · `chatty-helper` · **confident**
+> "No wearable readings in this period or the one before it. Apple Health syncs these**; nothing is missing by hand.**"
+**Now:** "…Apple Health syncs these."
+**Outcome:** applied, **fact kept: where these readings come from**. "Nothing is missing by hand" was reassurance. Pinned in `db/reports.test.mjs` §7.
+
+**`src/lib/reports/assemble-doctor-pack.ts:291–293`** · `restates-obvious` (shapes 1 + 2) · **confident**
+> "No bloodwork has been imported into ARC yet**, so this section has nothing to report. The catalogue tracks 65 markers and is waiting on a first draw.**"
+The renderer prints the coverage line directly above it: "0 of 65 tracked markers measured." So the count appeared twice, beside a restatement and a flourish, in the document a clinician reads.
+**Now:** "No bloodwork has been imported into ARC yet."
+**Outcome:** applied, **fact kept: the catalogue size, stated once, by the coverage line**. Pinned in `db/reports.test.mjs` §6, along with the coverage line.
+
+### §10.E — Inside the walked files, where the method looked away
+
+The first list's exclusions were about facts: an error message names the failure and the way out, so none was listed. That is still true of every line below. What the exclusion could not see was register, and three more lines were read by both walks and passed.
+
+**"Please try again." ×11** · `chatty-helper` (register) · **confident**
+> `app/protocol-edit.tsx:455`, `app/protocol-item.tsx:240`, `app/protocol-settings.tsx:161` and `:191`, `app/protocol-versions.tsx:172`, `app/routine-edit.tsx:228` and `:251`, `app/workout-import.tsx:292`, `app/workout-live.tsx:1067` and `:1093`, `src/components/exercise/exercise-picker.tsx:587` — "Nothing was changed. **Please** try again." (and two variants).
+The only "Please" in the app's copy. It is the customer-service register. The house form is "Try again.": five sibling error bodies already end with it (`meal-estimate`, `meal-revise`, `progress-photo-add`, `recipe-revise`, `settings`), and it is the label on every retry button.
+**Now:** "Nothing was changed. Try again." (variants kept: "The session is unchanged. Try again.", "Couldn't save that exercise. Try again.")
+**Outcome:** applied, **fact kept: the rollback statement and the way out**. Neither is a filler word. *Source-scanned across 73 files in `app/` and 46 in `src/components/` (§22). Alert bodies do not render.*
+
+**`app/meal-detail.tsx:662`** · `feature-explainer` · **confident**
+> Alert.prompt "Save as template": "Name it **so you can log it again in one tap.**"
+It explains templates on a sheet opened by choosing to save one. Its sibling, "Save as recipe", carries a real fact ("servings default to 1") and is untouched.
+**Now:** "Name it."
+**Outcome:** applied. Source-scanned (§22). *One line, in a file the parallel slices work also touches, and kept to that one line.*
+
+**`src/components/coach/pending-write-card.tsx:136–137`** · `restates-obvious` (shape 2) · **confident**
+> ON APPROVE: "This is written to your on-device record, once**, and the Coach carries on from there.**" (and the delete twin, "This row leaves…")
+The NOW lane directly above already says "The Coach is suspended until you answer." The tail said the same thing from the other side, on every write card. Both walks read the create line and passed it. The domain-registry build (2026-09-19, merged after the second walk) copied the tail into a new delete twin.
+**Now:** "This is written to your on-device record, once." / "This row leaves your on-device record, once."
+**Outcome:** applied, **fact kept: where the write goes, and that it happens once**. *Source-scanned, with a positive pin on the kept lines, in `db/screens-render.test.mjs` §22. The card imports the tools barrel, a directory import the render harness does not resolve. The docblock's quote of the 2026-08-11 wording was left alone as history.*
+
+**`src/components/nutrition/estimate-review.tsx:462`** · `ai-label` · **confident**
+> `SectionLabel label="A few things"` over the estimator's clarifying questions.
+This is §0's shape exactly: "How it is going" became "Adherence". A section label names what is filed under it. It has been here since C5 (2026-09-14), and the second walk read it and passed it.
+**Now:** `label="Questions"` (the tally note is unchanged)
+**Outcome:** applied, **and it overrides a documented decision**. `docs/nutrition-subapp.md` ("The UX") and the auto-ask spike chose "A few things" because "Questions" *"reads like a form"*. That is a preference about tone, and tone is what the owner is reporting. The spec's two mentions were updated. The spike was left as dated history. Reverting is one line. Rendered from props and refuted in `db/screens-render.test.mjs` §22.
+
+### §10.F — Added since the second walk
+
+**`app/(tabs)/index.tsx:170`** · `chatty-helper` · **confident**
+> Home's Protocols link: `hint="What builds the day"`
+§1 cut this from the link's `accessibilityLabel` ("Protocols — what builds this day"). A rebuild of the control brought it back as the hint. A hint says what activating the control does. This one editorialised about what protocols are.
+**Now:** no hint. The prop became optional, the one type change this pass made. The Plan link keeps "The mission on other days", because "Plan" alone does not say where it goes.
+**Outcome:** applied. Source-scanned (§22): react-native-web drops `accessibilityHint`, so a render refutation would be vacuous.
+
+**`app/mission-day.tsx:315`** · `restates-obvious` · **confident**
+> "**This day is settled.** More than a week back, the record stands as it is."
+**Now:** "More than a week back, the record stands as it is."
+**Outcome:** applied, **fact kept: the one-week boundary and the consequence**. The opening sentence said the consequence twice. Pinned and refuted on `mission-day (beyond the carry window)`.
+
+### §10.G — Held for the owner
+
+- **`src/lib/status/chips.ts:57–58`**: the status chips' canned prompts, "Check what's up and adjust accordingly." and "Re-check today and put back what you took out." The first is **the owner's own sentence** from the backlog entry (the file's docblock quotes it), and both are sent in his voice, not the app's. The end-of-status seeded line built on the second is also being reworked by the parallel status work. Not touched.
+- **`app/knowledge.tsx:633`**: "…removed for good — the Coach can never cite it again. **Restore exists; undelete does not.**" This has the aphorism shape the list cuts, but it is the consequence line of a permanent delete, and it separates the two verbs on that screen. The method excludes consequence lines. **Proposal if wanted:** end at "…never cite it again."
+- **`src/lib/reports/assemble-self-review.ts:718–720`**: "Up 12% on the window before — **the direction you want** / **worth watching**. The gap is larger than your normal day-to-day variation." Which direction is good (HRV up, resting HR down) is a fact a reader may not know. "Worth watching" is the soft half. **Proposal if wanted:** "…— the direction you want / not the direction you want."
+- **`src/lib/db/repositories/mission-generate.ts:804`**: "Day 3 **of this experiment**". This restates the "Experiment · {title}" chip beside it on Home, but it is three words and pinned by `db/coach-pass.test.mjs`. **Proposal if wanted:** "Day 3".
+
+### §10.H — Read on this walk and deliberately not cut
+
+- `src/lib/ai/insights.ts:689` "Correlation, not causation — worth watching.": the honest caveat on a correlation insight.
+- `src/lib/notifications/rest-timer.ts:43–44` "Rest complete" / "Time for your next set.": a lock-screen notification needs a body, and this one is one imperative.
+- `src/lib/exercise/recommend.ts:120` "…still recovering; go lighter or swap if it's flat.": guidance at the moment of a live choice. This is §9's ruling on `progress-photos.tsx:349`.
+- `src/hooks/use-data-overview.ts:160` "No plan yet — build a protocol": the absence and the only fix. This is §9's ruling on `mission-history.tsx:253`.
+- `src/lib/health/log.ts` (the sync log's `metricNote` / `publishNote`), `src/lib/exercise/format.ts` (the ingest and HR lines), `src/lib/db/repositories/day-meta.ts` (Home's timezone line) and `src/lib/status/line.ts` (Home's status line): measurements, routes and consequences throughout.
+- `src/lib/recipes/video-outcome.ts`, `src/lib/recipes/import.ts`, `src/lib/knowledge/import.ts`: failures that each name the way out. The method excludes these by name.
+- The Coach's card lines (`summarize` in `src/lib/ai/domains/`, `confirmSummary` in `src/lib/ai/tools/write-tools.ts`): terse and factual throughout ("Log workout · 45 min", "Start experiment "…" — 14 days").
+- `src/lib/export/serializer.ts`'s notes inside the export file, and `src/lib/photos/analyze.ts:59–60` (the photo-reading consent line): facts about what leaves the phone and what is not included.
+- The iOS purpose string in `app.json` ("…to power readiness and recovery"): Apple requires it to say why access is needed.
+
+**Assertions.** Changed: 1 (`mission-day (beyond the carry window)` no longer expects "This day is settled"; it refutes it). **Added: 40 checks across seven suites.** With the branch base's copy (`6f3acf1`) of all 23 changed source files swapped back in, **35 of them fail**: 5 / 2 / 2 / 3 / 2 / 4 / 17 in `insights`, `readiness`, `training-engine`, `health-coverage`, `model-client`, `reports` and `screens-render`. The five that still pass are keep-the-fact pins (Opus's cost multiple, the doctor pack's coverage line) and the three new renders themselves. Where no render reaches a line (Alert bodies, an iOS-only hint, the confirmation card, the no-key replies, two relayed notes), the guard is a source scan of the line's code form, and the test says so.
+
+---
+
 ## The three shapes, if you want to decide by rule instead of line by line
 
 1. **The empty state that grew a second paragraph.** Nine of these. The first line names the absence (correct, keep); the paragraph under it explains the feature (`meal-templates`, `protocols`, `reports`, `exercise`, `knowledge` ×2, `recipe-folders`, `food-search`, `experiments`). A rule that says *an empty state gets one sentence* would settle all nine.
@@ -477,3 +685,5 @@ Lines the second walk stopped on and left. Each is here so the decision is on th
 **One non-slop finding, worth a line of your attention:** `app/routine-edit.tsx:314` still says **"routine"**. Everywhere else in the app the noun is **saved workout**. That is the only user-facing survivor of the retired vocabulary I found in the whole walk.
 
 **Fixed 2026-09-15.** The line was also the confident candidate at §4 (`app/routine-edit.tsx:314`), so the same edit that cut the explainer removed the stale noun with it — nothing said "routine" left to fix separately. Pinned in `db/screens-render.test.mjs` (`routine-edit (new)`), refuting both the old sentence and the bare word.
+
+**Corrected 2026-09-23.** "Nothing said 'routine' left to fix" was true of the screens and false of the app. The Train hub's empty card is built in `src/lib/exercise/recommend.ts:145`, and it still said "Build a routine…". Fixed in §10.D.

@@ -289,7 +289,7 @@ export default function WorkoutImportScreen() {
     } catch (error) {
       inFlight.current = false;
       console.warn('[exercise] photo import save failed', error);
-      Alert.alert('Save failed', 'Nothing was changed. Please try again.');
+      Alert.alert('Save failed', 'Nothing was changed. Try again.');
     }
   };
 

@@ -288,9 +288,7 @@ function assembleLabs(db: Database, today: string): LabsSection {
   if (measured.length === 0) {
     return {
       title: 'Laboratory results',
-      empty:
-        'No bloodwork has been imported into ARC yet, so this section has nothing to report. ' +
-        `The catalogue tracks ${plural(catalog.length, 'marker')} and is waiting on a first draw.`,
+      empty: 'No bloodwork has been imported into ARC yet.',
       provenance,
       coverageLine,
       groups: [],

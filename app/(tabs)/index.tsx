@@ -140,7 +140,12 @@ function LabelLink({
 }: {
   icon: 'git-branch-outline' | 'calendar-outline';
   label: string;
-  hint: string;
+  /**
+   * Optional, and Protocols has none: "what builds the day" was the line the
+   * 2026-09-15 slop pass cut from this link's accessibilityLabel, back through
+   * the hint slot (docs/ai-slop-candidates-2026-09.md §10).
+   */
+  hint?: string;
   href: '/protocols' | '/mission-day';
 }) {
   const router = useRouter();
@@ -164,12 +169,7 @@ function LabelLink({
 function MissionLinks() {
   return (
     <View className="flex-row gap-4">
-      <LabelLink
-        icon="git-branch-outline"
-        label="Protocols"
-        hint="What builds the day"
-        href="/protocols"
-      />
+      <LabelLink icon="git-branch-outline" label="Protocols" href="/protocols" />
       <LabelLink
         icon="calendar-outline"
         label="Plan"

@@ -1040,7 +1040,7 @@ Plus the parser's ordinary tolerance, extended: an option whose effect names an 
 
 ### The UX
 
-A `Block device="plate"` labelled **A few things** (not "Questions", which reads like a form), **above the item table** — the rows *are* the answer, and on a phone a control below the thing it changes makes the change happen off-screen. The tally is its note: `1 of 2`.
+A `Block device="plate"` labelled **Questions** (it read *A few things* until 2026-09-23 — see `docs/ai-slop-candidates-2026-09.md` §10: a section label names what is filed under it), **above the item table** — the rows *are* the answer, and on a phone a control below the thing it changes makes the change happen off-screen. The tally is its note: `1 of 2`.
 
 Each question is one ruled row: the ask in serif (it is a sentence, and serif speaks), then outlined option chips in the label voice at ≥ 44 pt. **No accent anywhere in the block** — in the review phase the accent is `Save meal` and stays there; an answered chip fills `bg-ink`, which is a state mark, not a claim to being the next action. **Skip** sits at the row's trailing edge and becomes **Undo** once answered.
 
@@ -1070,7 +1070,7 @@ The negatives are pinned **at the source** (`db/nutrition-v2.test.mjs` §40): th
 ### What only a device can judge
 
 - **Whether the model asks at all, and asks the right thing.** Every rule here is a criterion, and the estimator is tested against a mock harness — no real call is made on this branch. The first latte is the test: does it come back with "How many shots?", or with three weak questions about a sandwich?
-- **Whether "A few things" above the table reads as help or as an interrogation** at 375 pt, particularly with three questions and four chips each.
+- **Whether "Questions" above the table reads as help or as an interrogation** at 375 pt, particularly with three questions and four chips each.
 - **Whether watching the rows re-price is enough confirmation**, or whether the change needs saying out loud after all.
 - **The "Other" round trip in the hand** — a second or two of `Working…` on a screen the user thought was finished.
 

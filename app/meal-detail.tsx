@@ -659,7 +659,7 @@ export default function MealDetailScreen() {
   const saveAsTemplate = () => {
     Alert.prompt(
       'Save as template',
-      'Name it so you can log it again in one tap.',
+      'Name it.',
       [
         { text: 'Cancel', style: 'cancel' },
         {

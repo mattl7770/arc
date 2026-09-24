@@ -507,9 +507,9 @@ const DELIVERY_NOTE: Record<ReminderDeliveryReason, string> = {
   'module-unavailable':
     'Saved, but this build cannot schedule OS notifications, so no phone alert will fire — it surfaces in the app only.',
   'permission-not-granted':
-    'Saved, but notification permission is not granted, so no phone alert will fire — it surfaces in the app only. The user can enable notifications for ARC in iOS Settings.',
+    'Saved, but notification permission is not granted, so no phone alert will fire — it surfaces in the app only. Notifications for ARC can be turned on in iOS Settings.',
   'schedule-failed':
-    'Saved, but scheduling the OS notification failed, so do not promise a phone alert — it surfaces in the app.',
+    'Saved, but scheduling the OS notification failed, so no phone alert will fire — it surfaces in the app only.',
   'not-active':
     'Saved, but it is not an active reminder, so nothing was scheduled and it will not surface.',
 };

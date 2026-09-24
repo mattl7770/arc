@@ -271,7 +271,7 @@ function assembleAdherence(
       // user has pending items on today's mission. Name the clip instead.
       empty:
         accEnd < period.start
-          ? 'This period holds only today, and adherence is scored on complete days — a two-hour-old day is not a day. Check back tomorrow.'
+          ? 'This period holds only today, and adherence is scored on complete days — a two-hour-old day is not a day.'
           : 'No protocol was active this period — nothing was scheduled, so nothing is being scored.',
       provenance,
       rows: [],
@@ -735,7 +735,7 @@ function assembleRecovery(db: Database, period: Period, accEnd: string): Recover
     title: 'Sleep & recovery',
     empty:
       rows.length === 0
-        ? 'No wearable readings in this period or the one before it. Apple Health syncs these; nothing is missing by hand.'
+        ? 'No wearable readings in this period or the one before it. Apple Health syncs these.'
         : null,
     provenance,
     rows,
@@ -967,10 +967,7 @@ function assembleWhatChanged(
 
   return {
     title: 'What changed',
-    empty:
-      rows.length === 0
-        ? 'No protocol revision, target change or status this period — the plan you started with is the plan you finished with.'
-        : null,
+    empty: rows.length === 0 ? 'No protocol revision, target change or status this period.' : null,
     provenance: {
       sources: 'protocol_versions · nutrition_targets · day_statuses · day_modes',
       range: period.rangeLabel,
