@@ -90,12 +90,8 @@ import {
   personalRecords,
 } from '@/lib/db/repositories/training-stats';
 import { getPreferences } from '@/lib/db/repositories/user';
-import {
-  deleteWaterEntry,
-  listWaterEntries,
-  updateWaterEntry,
-  type WaterEntry,
-} from '@/lib/db/repositories/water';
+import { listWaterEntries, type WaterEntry } from '@/lib/db/repositories/water';
+import { editWaterCapture, removeWaterCapture } from '@/lib/health/publish';
 import type { RoutineDetail } from '@/lib/exercise/types';
 import { deleteMealWithPhotos } from '@/lib/media/meal-photo-store';
 import { fmtAmount, fmtInt, macroLine } from '@/lib/nutrition/format';
@@ -549,13 +545,17 @@ const waterDomain: CoachDomainEntry = {
   },
   summarize: ({ row, patch }) => describeEdit('water entry', row!, patch),
   edit: (db, row, patch) => {
-    if (!updateWaterEntry(db, row.id, patch.ml as number)) {
+    // The water screen's edit: ARC's row, then the published sample (parity —
+    // a correction made here must not leave the old glass in Apple Health).
+    if (!editWaterCapture(db, row.id, patch.ml as number)) {
       throw new Error('That water entry could not be updated — it may be a device row.');
     }
   },
   // HARD, and narrowly: `deleteWaterEntry` refuses a device row itself, and no
   // foreign key points at a manual wearable row, so nothing is stranded. The
-  // water screen's own Remove, and the Log tab's quick-add undo, both call it.
+  // water screen's own Remove and the Log tab's quick-add Undo both come
+  // through `removeWaterCapture`, which also takes the published sample out of
+  // Apple Health (2026-09-23, two-way water) — so this does too.
   remove: {
     mode: 'hard',
     // The name carries the canonical ml and the day; the card adds the clock
@@ -567,7 +567,7 @@ const waterDomain: CoachDomainEntry = {
       return `${asEntered}logged at ${clockFromISO(entry.at)}`;
     },
     run: (db, row) => {
-      if (!deleteWaterEntry(db, row.id)) {
+      if (!removeWaterCapture(db, row.id)) {
         throw new Error('That water entry could not be deleted — it may be a device row.');
       }
     },

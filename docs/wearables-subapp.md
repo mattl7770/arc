@@ -1830,12 +1830,12 @@ instant and the switch.
 4. **That the Undo removes it.** Log a glass, sync, confirm it in Health, undo it on the Log tab,
    and check that the Health app no longer lists it.
 
-**Known gap, left alone on purpose.** The Coach's `edit_record` / `delete_record` for water call
-`updateWaterEntry` / `deleteWaterEntry` directly (`src/lib/ai/domains/read-domains.ts`), so a
-correction or removal made through the Coach does not reach Apple Health. ARC's own numbers are
-unaffected, because the read excludes ARC's glasses either way, but the Health app keeps the old
-one. That registry belongs to the Coach, and this change was scoped not to touch it (both prompt
-ceilings re-measured unchanged).
+**Closed at merge (2026-09-23).** The branch left the Coach's `edit_record` / `delete_record` for
+water calling the bare repository writes, so a Coach correction or removal would have left the old
+glass in the Health app. By the parity rule (`docs/coach-domains.md`) the Coach calls what the
+screen calls, so the water domain now goes through `editWaterCapture` / `removeWaterCapture` like
+the water screen and the Log tab's Undo. Pinned in `db/coach-domains.test.mjs`; no schema or prompt
+text changed, so both Coach ceilings are untouched.
 
 ---
 

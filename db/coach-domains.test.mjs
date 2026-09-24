@@ -23,6 +23,7 @@
  * card that names the row's day and figures — and whatever no screen deletes
  * is refused, naming where the row lives.
  */
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
@@ -1230,6 +1231,25 @@ export async function resolve(specifier, context, next) {
   ungated.toolCalls[0]?.declined === true && getMeal(db, lunchId) !== undefined
     ? ok('with no gate to answer it, a delete is declined and the meal stays')
     : bad('an ungated delete ran', JSON.stringify(ungated.toolCalls[0]));
+}
+
+console.log("water parity: the Coach edits and deletes through the screen's Health-aware functions");
+{
+  // Two-way water (2026-09-23) moved the water screen's edit and delete, and
+  // the Log tab's Undo, onto editWaterCapture / removeWaterCapture so a change
+  // reaches Apple Health. The parity rule (docs/coach-domains.md) says the
+  // Coach calls what the screen calls — a bare repository call would leave the
+  // old glass in the Health app behind a card that said it was gone.
+  const src = readFileSync(
+    new URL('../src/lib/ai/domains/read-domains.ts', import.meta.url),
+    'utf8'
+  );
+  src.includes('removeWaterCapture(db, row.id)') && src.includes('editWaterCapture(db, row.id,')
+    ? ok('the water domain deletes and edits through the Health-aware functions')
+    : bad('the water domain does not call removeWaterCapture / editWaterCapture');
+  !/\b(deleteWaterEntry|updateWaterEntry)\(/.test(src)
+    ? ok('…and never calls the bare repository write that skips Apple Health')
+    : bad('the water domain still calls a bare repository write');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -281,7 +281,7 @@ guardrail, so it is held to four things, each asserted in `db/coach-domains.test
 | --- | --- | --- | --- | --- |
 | `meals` | Eat › meal, *Delete this meal* (`meal-detail.tsx`) | `deleteMealWithPhotos` | **allowed** (was own) | the screen's function, not bare `deleteMeal`: the CASCADE takes photo rows and leaves the files |
 | `workouts` | Train › session, *Delete session* (`workout-live.tsx`) | `deleteWorkout` | **allowed** (was own) | sets are its own parts; the watch's paired session stays |
-| `water` | Water, *Remove* (`water.tsx`); the Log tab's quick-add undo | `deleteWaterEntry` | allowed | manual rows only — a device row refuses at resolve |
+| `water` | Water, *Remove* (`water.tsx`); the Log tab's quick-add undo | `removeWaterCapture` (edits: `editWaterCapture`) — the row, then its published sample in Apple Health | allowed | manual rows only — a device row refuses at resolve |
 | `protocols` | Protocols › settings, *Delete protocol* (`protocol-settings.tsx`) | `deleteProtocol`, then `rederiveMissionFromToday` | **allowed** (was refuse) | its refusal asked for a screen "that shows what it would take with it"; the card now shows it — versions go, logged days keep their entries, unlinked |
 | `meal_templates` | Eat › templates (`meal-templates.tsx`) | `deleteTemplate` | allowed | a stamp, never a day |
 | `saved_workouts` | Train › saved workout (`routine-edit.tsx`) | `deleteRoutine` | allowed | sessions keep their sets (SET NULL) |

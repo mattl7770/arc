@@ -457,12 +457,10 @@ function mayTouchHealth(db: Database, deps: WaterPublishDeps): boolean {
  * while sync is off leaves its copy in the Health app, where it can be removed
  * by hand, exactly like a weight.
  *
- * ⚠️ The Coach's `delete_record` / `edit_record` for water call
- * `deleteWaterEntry` / `updateWaterEntry` directly (`src/lib/ai/domains/`), so
- * a Coach-made removal or correction does NOT reach Apple Health. ARC's own
- * numbers are unaffected either way — the read excludes ARC's samples — but
- * the Health app keeps the old glass. Left alone deliberately: that registry
- * is the Coach's, and this change was scoped not to touch it.
+ * The Coach's `delete_record` / `edit_record` for water come through here and
+ * `editWaterCapture` too (`src/lib/ai/domains/read-domains.ts`), by the parity
+ * rule: a Coach removal or correction reaches Apple Health exactly as the
+ * screen's does. Pinned in `db/coach-domains.test.mjs`.
  */
 export function removeWaterCapture(
   db: Database,
