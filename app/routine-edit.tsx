@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Alert, Pressable, Text, TextInput, View } from 'react-native';
 
+import { ExerciseOrder, ReorderToggle } from '@/components/exercise/exercise-order';
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
@@ -12,8 +13,15 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { createRoutine, deleteRoutine, updateRoutine } from '@/lib/db/repositories/routines';
+import { blockSegments } from '@/lib/exercise/block-order';
 import { MUSCLE_LABEL } from '@/lib/exercise/constants';
-import type { RoutineDetail, RoutineExerciseInput } from '@/lib/exercise/types';
+import {
+  moveRoutineLine,
+  newRoutineLine,
+  routineExerciseInputs,
+  routineLines,
+  type RoutineLine,
+} from '@/lib/exercise/routine-lines';
 import { useRoutine } from '@/hooks/use-training';
 
 /**
@@ -27,7 +35,11 @@ import { useRoutine } from '@/hooks/use-training';
  * ## The surface system (00-design-spec.md §1)
  *
  *   Exercises      plate   a routine IS a record — an ordered, ruled list
+ *   Order          plate   reorder mode: the same record, a row per line
  *   Save problems  margin  the "why Save is off" annotation
+ *
+ * Exercises and Order are never on screen together: reorder mode swaps one
+ * plate for the other, so there is still one device for the list.
  *
  * The name/notes/target fields are recessed stock drawn inline: an input is not
  * a content block and takes no device of its own. Targets are measurements, so
@@ -35,34 +47,19 @@ import { useRoutine } from '@/hooks/use-training';
  *
  * **Accent budget: one.** Save, and nothing else — Delete is a quiet text
  * button, because a destructive action should never be the brightest thing on
- * the page.
+ * the page. Reorder and its arrows are chrome, off the budget.
+ *
+ * ## Reorder (2026-09-23)
+ *
+ * The owner's note — *"be able to reorder exercises in a workout"* — was built
+ * for a live and a logged session first; this editor could only append and
+ * remove, so moving a line meant retyping its targets. It now has the
+ * session's Order mode: the same toggle, the same plate
+ * (src/components/exercise/exercise-order.tsx) and the same move
+ * (`moveBlockSegment`, via src/lib/exercise/routine-lines.ts). A line moves
+ * whole, so its sets, rep range and rest go with it, and Save — unchanged —
+ * writes the lines in their new order.
  */
-
-/** One line under edit. `key` is a mount-local id for React lists only. */
-type EditLine = {
-  key: number;
-  exerciseId: string;
-  exerciseName: string;
-  primaryMuscles: string;
-  sets: string;
-  repLow: string;
-  repHigh: string;
-  rest: string;
-};
-
-function initialLines(detail: RoutineDetail | null): EditLine[] {
-  if (!detail) return [];
-  return detail.exercises.map((e, i) => ({
-    key: i,
-    exerciseId: e.exerciseId,
-    exerciseName: e.exerciseName,
-    primaryMuscles: e.primaryMuscles.map((m) => MUSCLE_LABEL[m]).join(', '),
-    sets: String(e.targetSets),
-    repLow: e.repLow == null ? '' : String(e.repLow),
-    repHigh: e.repHigh == null ? '' : String(e.repHigh),
-    rest: e.restSec == null ? '' : String(e.restSec),
-  }));
-}
 
 /**
  * A compact mono numeric field for the per-line targets.
@@ -146,10 +143,18 @@ function RoutineEditor({ id }: { id: string | undefined }) {
 
   const [name, setName] = useState(detail?.name ?? '');
   const [notes, setNotes] = useState(detail?.notes ?? '');
-  const [lines, setLines] = useState<EditLine[]>(() => initialLines(detail));
+  const [lines, setLines] = useState<RoutineLine[]>(() => routineLines(detail));
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Reorder mode: the target fields fold away to one ruled list of the lines,
+  // each with an up and a down control — the live logger's interaction.
+  const [reordering, setReordering] = useState(false);
   const nextKey = useRef(lines.length);
   const inFlight = useRef(false);
+
+  // Reordering needs two things to put in order. A saved workout stores no
+  // superset, so that is two lines — counted as the logger counts it.
+  const canReorder = blockSegments(lines).length > 1;
+  const showOrder = reordering && canReorder;
 
   // A line's targets must fit routine_exercises' per-column CHECKs
   // (0012_routines.sql): each rep bound in [1, 99], rest in [0, 3599], and when
@@ -180,42 +185,25 @@ function RoutineEditor({ id }: { id: string | undefined }) {
   const addExercise = (exerciseId: string, exerciseName: string, primaryMuscles: string) => {
     const key = nextKey.current;
     nextKey.current += 1;
-    setLines((prev) => [
-      ...prev,
-      {
-        key,
-        exerciseId,
-        exerciseName,
-        primaryMuscles,
-        sets: '3',
-        repLow: '',
-        repHigh: '',
-        rest: '',
-      },
-    ]);
+    setLines((prev) => [...prev, newRoutineLine(key, exerciseId, exerciseName, primaryMuscles)]);
   };
 
-  const updateLine = (key: number, patch: Partial<Omit<EditLine, 'key'>>) => {
+  const updateLine = (key: number, patch: Partial<Omit<RoutineLine, 'key' | 'linkedToNext'>>) => {
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   };
   const removeLine = (key: number) => setLines((prev) => prev.filter((l) => l.key !== key));
 
-  const num = (s: string): number | null => {
-    if (s.trim() === '') return null;
-    const n = Number(s);
-    return Number.isFinite(n) ? n : null;
+  /** One line a place up or down, whole — its targets go with it. */
+  const moveLine = (key: number, direction: -1 | 1) => {
+    setLines((prev) => moveRoutineLine(prev, key, direction) ?? prev);
   };
 
   const save = () => {
     if (inFlight.current || !canSave) return;
     inFlight.current = true;
-    const exercises: RoutineExerciseInput[] = lines.map((l) => ({
-      exerciseId: l.exerciseId,
-      targetSets: Math.min(20, Math.max(1, num(l.sets) ?? 3)),
-      repLow: num(l.repLow),
-      repHigh: num(l.repHigh),
-      restSec: num(l.rest),
-    }));
+    // The lines as they stand, in the order they stand: a reorder needs
+    // nothing more, because `insertLines` numbers `position` from this array.
+    const exercises = routineExerciseInputs(lines);
     const input = { name: name.trim(), notes: notes.trim() || null, exercises };
     try {
       const db = getDb();
@@ -302,84 +290,98 @@ function RoutineEditor({ id }: { id: string | undefined }) {
       {/* Exercises — the routine's record, so: one ruled plate, one line each,
           drawn whether or not there are lines yet. A new routine always opens
           empty, and the plate is what says a record goes here. (The sweep of
-          2026-08-10 made it conditional; reverted at the owner's instruction.) */}
-      <View className="mt-7">
-        <Block device="plate">
-          <SectionLabel
-            label="Exercises"
-            note={lines.length > 0 ? String(lines.length) : undefined}
-          />
-          {lines.length === 0 ? (
-            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-              No exercises yet.
-            </Text>
+          2026-08-10 made it conditional; reverted at the owner's instruction.)
+
+          REORDER is the live logger's mode, not a handle on every line: the
+          toggle sits right above the list, and in reorder mode the Order plate
+          takes the Exercises plate's place — one device for the list either
+          way. Shown only when there are two lines to put in order. */}
+      <View className={canReorder ? 'mt-4' : 'mt-7'}>
+        {canReorder ? (
+          <ReorderToggle active={showOrder} onToggle={() => setReordering(!showOrder)} />
+        ) : null}
+        <View className={canReorder ? 'mt-2' : undefined}>
+          {showOrder ? (
+            <ExerciseOrder items={lines} onMove={moveLine} />
           ) : (
-            <View className="mt-1">
-              {lines.map((l, i) => (
-                <View key={l.key}>
-                  <Divider first={i === 0} />
-                  <View className="py-3">
-                    <View className="flex-row items-start gap-2">
-                      <View className="flex-1">
-                        <Text className="font-serif text-[15px] text-ink">{l.exerciseName}</Text>
-                        {l.primaryMuscles ? (
-                          <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                            {l.primaryMuscles}
-                          </Text>
-                        ) : null}
-                      </View>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Remove ${l.exerciseName}`}
-                        onPress={() => removeLine(l.key)}
-                        hitSlop={10}
-                        className="-mr-1 h-8 w-8 items-center justify-center active:opacity-60">
-                        <Ionicons name="close" size={16} color={palette.inkMuted} />
-                      </Pressable>
-                    </View>
-                    {/* `fill` on all four: this row splits its width evenly
+            <Block device="plate">
+              <SectionLabel
+                label="Exercises"
+                note={lines.length > 0 ? String(lines.length) : undefined}
+              />
+              {lines.length === 0 ? (
+                <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+                  No exercises yet.
+                </Text>
+              ) : (
+                <View className="mt-1">
+                  {lines.map((l, i) => (
+                    <View key={l.key}>
+                      <Divider first={i === 0} />
+                      <View className="py-3">
+                        <View className="flex-row items-start gap-2">
+                          <View className="flex-1">
+                            <Text className="font-serif text-[15px] text-ink">{l.name}</Text>
+                            {l.primaryMuscles ? (
+                              <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                                {l.primaryMuscles}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Remove ${l.name}`}
+                            onPress={() => removeLine(l.key)}
+                            hitSlop={10}
+                            className="-mr-1 h-8 w-8 items-center justify-center active:opacity-60">
+                            <Ionicons name="close" size={16} color={palette.inkMuted} />
+                          </Pressable>
+                        </View>
+                        {/* `fill` on all four: this row splits its width evenly
                         between them. A target field that ever gets a row to
                         itself must NOT carry it — see {@link NumField}. */}
-                    <View className="mt-2.5 flex-row items-end gap-2">
-                      <NumField
-                        label="Sets"
-                        value={l.sets}
-                        onChange={(sets) => updateLine(l.key, { sets })}
-                        placeholder="3"
-                        accessibilityLabel={`Target sets for ${l.exerciseName}`}
-                        fill
-                      />
-                      <NumField
-                        label="Rep low"
-                        value={l.repLow}
-                        onChange={(repLow) => updateLine(l.key, { repLow })}
-                        placeholder="6"
-                        accessibilityLabel={`Rep range low for ${l.exerciseName}`}
-                        fill
-                      />
-                      <NumField
-                        label="Rep high"
-                        value={l.repHigh}
-                        onChange={(repHigh) => updateLine(l.key, { repHigh })}
-                        placeholder="10"
-                        accessibilityLabel={`Rep range high for ${l.exerciseName}`}
-                        fill
-                      />
-                      <NumField
-                        label="Rest s"
-                        value={l.rest}
-                        onChange={(rest) => updateLine(l.key, { rest })}
-                        placeholder="150"
-                        accessibilityLabel={`Rest seconds for ${l.exerciseName}`}
-                        fill
-                      />
+                        <View className="mt-2.5 flex-row items-end gap-2">
+                          <NumField
+                            label="Sets"
+                            value={l.sets}
+                            onChange={(sets) => updateLine(l.key, { sets })}
+                            placeholder="3"
+                            accessibilityLabel={`Target sets for ${l.name}`}
+                            fill
+                          />
+                          <NumField
+                            label="Rep low"
+                            value={l.repLow}
+                            onChange={(repLow) => updateLine(l.key, { repLow })}
+                            placeholder="6"
+                            accessibilityLabel={`Rep range low for ${l.name}`}
+                            fill
+                          />
+                          <NumField
+                            label="Rep high"
+                            value={l.repHigh}
+                            onChange={(repHigh) => updateLine(l.key, { repHigh })}
+                            placeholder="10"
+                            accessibilityLabel={`Rep range high for ${l.name}`}
+                            fill
+                          />
+                          <NumField
+                            label="Rest s"
+                            value={l.rest}
+                            onChange={(rest) => updateLine(l.key, { rest })}
+                            placeholder="150"
+                            accessibilityLabel={`Rest seconds for ${l.name}`}
+                            fill
+                          />
+                        </View>
+                      </View>
                     </View>
-                  </View>
+                  ))}
                 </View>
-              ))}
-            </View>
+              )}
+            </Block>
           )}
-        </Block>
+        </View>
 
         <Pressable
           accessibilityRole="button"

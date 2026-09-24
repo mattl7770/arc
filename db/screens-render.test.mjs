@@ -92,6 +92,9 @@ import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import ExerciseDetailScreen from '../app/exercise-detail.tsx';
 import { setExerciseLoadBasis } from '../src/lib/db/repositories/exercise-catalog.ts';
 import RoutineEditScreen from '../app/routine-edit.tsx';
+import { ExerciseOrder } from '../src/components/exercise/exercise-order.tsx';
+import { createRoutine, deleteRoutine, getRoutine } from '../src/lib/db/repositories/routines.ts';
+import { moveRoutineLine, routineLines } from '../src/lib/exercise/routine-lines.ts';
 // The two set grids. They joined the walk with the stopwatch clock field
 // (2026-09-23): workout-live needed a Reanimated stub and both needed
 // `useNavigation` from the expo-router stub — see db/render-hook.mjs.
@@ -2338,6 +2341,90 @@ const db = getDb();
       'Add exercise',
     ]);
     refute('routine-edit (new)', newRoutine, ['movements this routine runs', 'routine']);
+
+    // Reorder in the saved-workout editor (owner, 2026-09-23: "be able to
+    // reorder exercises in a workout"). The editor could only append and
+    // remove; it now has the live logger's Order mode. A server render cannot
+    // tap Reorder, so this proves the door on the editor's first frame and then
+    // renders the plate the mode swaps in, fed the editor's own lines
+    // (routineLines) — the same component and props the editor passes.
+    refute('routine-edit (new)', newRoutine, ['Reorder']);
+    const upperId = createRoutine(db, {
+      name: 'Upper B',
+      notes: null,
+      exercises: [
+        { exerciseId: 'barbell-bench-press', targetSets: 4, repLow: 5, repHigh: 8, restSec: 180 },
+        { exerciseId: 'barbell-row', targetSets: 4, repLow: 6, repHigh: 10, restSec: 150 },
+        { exerciseId: 'plank', targetSets: 3, repLow: null, repHigh: null, restSec: null },
+      ],
+    });
+    const upper = render('routine-edit (editing)', RoutineEditScreen, { id: upperId });
+    expect('routine-edit (editing)', upper, [
+      'Edit saved workout',
+      'aria-label="Reorder exercises"',
+      'Barbell Bench Press',
+      'value="180"',
+      'Save workout',
+    ]);
+    // The fields are what reorder mode folds away; until it is on, no arrows.
+    refute('routine-edit (editing)', upper, ['aria-label="Move Barbell Bench Press up"']);
+
+    const soloId = createRoutine(db, {
+      name: 'One thing',
+      notes: null,
+      exercises: [
+        { exerciseId: 'plank', targetSets: 3, repLow: null, repHigh: null, restSec: null },
+      ],
+    });
+    // One line is nothing to put in order — the door is not drawn.
+    refute(
+      'routine-edit (one line)',
+      render('routine-edit (one line)', RoutineEditScreen, { id: soloId }),
+      ['Reorder']
+    );
+
+    const upperLines = routineLines(getRoutine(db, upperId));
+    const ordered = render(
+      'routine-edit (reorder mode)',
+      ExerciseOrder,
+      {},
+      { items: upperLines, onMove: () => {} }
+    );
+    expect('routine-edit (reorder mode)', ordered, [
+      'Order',
+      'aria-label="Move Barbell Bench Press up"',
+      'aria-label="Move Barbell Bench Press down"',
+      'aria-label="Move Plank down"',
+    ]);
+    // Top's up and bottom's down are drawn off, never hidden; a saved workout
+    // has no superset, so the superset line and tag never show.
+    const offArrows = (ordered ?? '').split('aria-disabled="true"').length - 1;
+    offArrows === 2
+      ? ok('routine-edit (reorder mode): the two end arrows are drawn disabled')
+      : bad('routine-edit (reorder mode): disabled arrows', String(offArrows));
+    refute('routine-edit (reorder mode)', ordered, ['A superset moves as one', '>Superset<']);
+
+    // After the plank is pressed up once it is drawn above the row.
+    const plankKey = upperLines[2].key;
+    const movedHtml =
+      render(
+        'routine-edit (reorder mode, moved)',
+        ExerciseOrder,
+        {},
+        {
+          items: moveRoutineLine(upperLines, plankKey, -1),
+          onMove: () => {},
+        }
+      ) ?? '';
+    const at = (label) => movedHtml.indexOf(`aria-label="Move ${label} up"`);
+    at('Barbell Bench Press') < at('Plank') && at('Plank') < at('Barbell Row')
+      ? ok('routine-edit (reorder mode, moved): Bench, Plank, Row — the plate draws the new order')
+      : bad(
+          'routine-edit (reorder mode, moved): order',
+          [at('Barbell Bench Press'), at('Plank'), at('Barbell Row')].join()
+        );
+    deleteRoutine(db, upperId);
+    deleteRoutine(db, soloId);
 
     // -----------------------------------------------------------------------
     // The Resume card (0045, owner 2026-09-14). The hub is where the app lands

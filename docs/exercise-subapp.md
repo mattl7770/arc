@@ -85,7 +85,7 @@ Deferred (flagged, not designed here): supersets (column reserved), plate calcul
 | **Exercise hub** | `app/exercise.tsx` | exists — grows: "Train today" card (the pine action), routines list (replaces the Templates stub), muscle-freshness ledger, existing week strip + recent sessions |
 | **Live workout** (structured) | `app/workout-live.tsx` | **new** — the set-grid logger: exercise blocks, previous-values prefill, set-type/RPE entry, rest timer, PR stamps. Entered from "Train today" or a routine |
 | **Quick log** | `app/workout-log.tsx` | exists — **kept as-is** for free-form/cardio/mobility/past sessions (a grid is wrong for a Zone 2 ride) |
-| **Routine builder** | `app/routine-edit.tsx` | **new** — name, ordered exercises, targets. Exercise picker is an in-screen modal, not a route |
+| **Routine builder** | `app/routine-edit.tsx` | **new** — name, ordered exercises, targets. Exercise picker is an in-screen modal, not a route. Lines reorder in the session's Order mode (§14.9) |
 | **Exercise detail** | `app/exercise-detail.tsx` | **new** — history list, e1RM sparkline, rep-record table, last-performed |
 
 All pushed screens: `<Screen>` + `<StackHeader>`, registered in `app/_layout.tsx` (**integrator-merge**).
@@ -847,6 +847,27 @@ An independent review of the first cut found five things the code did not do as 
 - **The free-form logger leaves the same way.** `app/workout-log.tsx` asked *Discard this workout?* on back, so the two loggers did opposite things on one gesture. It now goes through the same `leaveGuard`: backing out keeps the draft (the hub's Session in progress card resumes it), a failed draft write is the only question, and *Discard session* (*Discard workout* in its live mode) is a muted control under Save, the old confirm's words and two taps. Its write-through also records a write only once it lands, as the live logger's does. Its draft is still not on Home: a past session being typed up is not a fact about now.
 
 What the review round did not add: the free-form logger has no session id, so the notification-tap double stack §14.1 fixes for the live logger is still possible there. That predates this change — a push over the logger never went through `beforeRemove` — and is left as an open question rather than a second copy of §14.2.
+
+### 14.9 Saved workouts reorder too (2026-09-23)
+
+An independent verifier found the gap the owner was most likely to hit: the saved-workout editor (Train › Saved workouts › Edit, `app/routine-edit.tsx`) could only append and remove lines. Moving an exercise meant removing it and adding it again, which threw away the sets, rep range and rest typed on that line. No migration.
+
+**The same interaction, the same helper.** The editor gets the session's Order mode: a **Reorder** toggle above the list (label voice, off the accent budget, drawn only when there are two lines), and in reorder mode the **Order** plate takes the Exercises plate's place, one row per line with an up and a down control. The plate is `src/components/exercise/exercise-order.tsx`, lifted from the logger's local `ExerciseOrder` so the two screens draw the same component. The move is `moveBlockSegment` from `block-order.ts`, reached through `moveRoutineLine` in `src/lib/exercise/routine-lines.ts`. There is no second ordering algorithm. `app/workout-live.tsx` was left alone for this change (other work was in flight on it); it still has its own copy of the plate and toggle, and switching it to the shared component is a mechanical follow-up.
+
+**A line moves whole.** The helper reorders the array and copies nothing it does not have to, so every field typed on a line goes with it, including an edit made just before the move. Save is unchanged: `routineExerciseInputs` maps the lines in their current order and `updateRoutine` / `createRoutine` number `position` 1..n from that order (`insertLines`). The editor's line model (open, add, move, save mapping) moved out of the screen into `routine-lines.ts` so the tests round-trip the editor's own code, not a copy.
+
+**Supersets: a saved workout cannot carry one.** `routine_exercises` (0012) has no group column and `RoutineExerciseInput` has no bind. A session started from a saved workout begins with every block unbound, and a superset made during it lives on that session's sets only. So every editor line is `linkedToNext: false` (typed as the literal) and each is its own segment. If saved workouts ever store a superset, the session's rule, that a superset moves as one, already applies, and the test pins that.
+
+**Should Finish offer to save a session's new order back to its saved workout? No (recommendation, not built).** Three reasons:
+1. A session's order is often a fact about that day (the rack was taken, the cable station was busy). A question on every reordered Finish would ask about the one-offs as often as the real changes, and a question the owner learns to dismiss is noise at the moment he is closing a workout.
+2. The session is not a copy of the saved workout. It drops the rep range (the logger takes only sets and rest from a line), it may have exercises added or removed mid-session, and it may hold a superset the saved workout cannot store. "Save this order back" would need rules for all three, and each rule is a way to quietly change a plan the owner did not open.
+3. The permanent change now takes two taps where it belongs: Train › Saved workouts › Edit › Reorder.
+
+If the owner asks for it, the smallest honest version is a quiet line after Finish, not a question in the Finish path.
+
+**Tests.** `db/routines.test.mjs` §8: a stored routine opens with every line unbound; each press moves one line past one neighbour; the ends return null; a move copies no line; `moveRoutineLine` returns exactly what `moveBlockSegment` returns; an edit rides with its line; the reordered routine saves through `updateRoutine` and reopens in the new order with positions 1..n and every set count, rep range and rest intact, nulls included; a new routine reordered before its first Save is created in that order; the sets clamp; a bound pair moves as one unit whichever member is pressed; Save writes no bind. `db/screens-render.test.mjs` (next to the A9 check): the editor draws the Reorder door with two lines and not with one or none; the Order plate, fed the editor's own lines, draws its arrows with the two end arrows disabled and no superset copy, and draws the new order after a move. A server render cannot tap Reorder, so the swap between the two plates is a device check.
+
+**What only a device can settle:** that the toggle-then-arrows flow is quick enough for a six-line workout, and that the 40pt jump when the second line appears (the toggle row arriving above the list) reads as the door appearing rather than as the page lurching. The logger has the same jump.
 
 ---
 
