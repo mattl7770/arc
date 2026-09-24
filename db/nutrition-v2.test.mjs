@@ -2216,6 +2216,24 @@ console.log('36. C4/C5: the estimator prompts have a ceiling now');
   //   967, 33 of headroom. The revision prompt moved 798 → 834 in the same
   //   round (the schema clause, and one rail about keeping a count).
   //
+  // THE ROUND AFTER THAT (device feedback, "shots", 2026-09-23), paid in the
+  // same round again. The latte was asked about its milk and never its shots,
+  // because the bar counted energy and protein only — a shot is ~1% of a
+  // latte's energy and ~50% of its caffeine. §53 pins the fix at the source.
+  //
+  //   +10  the bar names every figure the reply carries: "a figure, not just
+  //        a name" — energy, caffeine or sodium by ~15%, protein by ~10 g
+  //   +5   "biggest change first"
+  //   +6   "micros included" on the assumed answer — an answer scales a
+  //        figure and cannot create one (§54 proves both halves)
+  //   −6   the cut ESTIMATOR_PROMPT_CEILING named: confidence's three
+  //        definitions are two plus "else medium"
+  //   −9   the per-portion line after the schema, folded into the micros
+  //        bullet — the revision prompt's own shape
+  //   ---
+  //   973, 27 of headroom. The revision prompt took the same three clauses,
+  //   834 → 855. §53 pins both trims, so a revert is visible there too.
+  //
   // The rule the Coach's own budget note states applies verbatim: **the next
   // addition trims rather than raises this.** What is left to cut is named on
   // ESTIMATOR_PROMPT_CEILING itself, and it is not free.
@@ -2528,7 +2546,9 @@ console.log('40. C5: which logging methods may ask — and which must never');
   MEAL_ESTIMATION_SYSTEM_PROMPT.includes('a kitchen they did not stand in')
     ? ok('…and knowability is stated as a PLACE, with the owner’s own restaurant example')
     : bad('knowability rule missing');
-  MEAL_ESTIMATION_SYSTEM_PROMPT.includes('~15% of its energy')
+  // The phrase moved on 2026-09-23 (§53): the magnitude now covers every figure
+  // the reply carries, not energy alone. Still a magnitude, still not a list.
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes("the meal's energy, caffeine or sodium by ~15%")
     ? ok('…and materiality as a magnitude, not a list of askable topics')
     : bad('materiality rule missing');
   MEAL_REVISION_SYSTEM_PROMPT.includes('Questions (optional, and USUALLY ABSENT)')
@@ -3320,6 +3340,199 @@ console.log('52. 0059: both prompts carry the rule, and it is a criterion not a 
   ) && !MEAL_ESTIMATION_SYSTEM_PROMPT.includes('- Prefer underestimating')
     ? ok('the two overlapping restraint bullets were folded into one — the trim that paid')
     : bad('the fold was reverted');
+}
+
+// === Device feedback, 2026-09-23: the latte asked about milk, never shots =====
+//
+// The owner, verbatim: *"asked me what milk was in the latte- this is a good
+// question, but it did not ask about how many shots and therefore doesn't have
+// good caffeination data"*.
+//
+// The prompt did what it was told. Its bar was "~15% of its energy or ~10 g of
+// protein", and one shot is ~1% of a latte's energy and ~50% of its caffeine —
+// so the one question that set a figure he tracks was, by the prompt's own
+// rule, not worth asking. The fix is the CRITERION, never "if latte, ask
+// shots": judgment lives in the model, and his latte is an example, not a spec.
+
+console.log('53. feedback: the bar counts every figure the reply carries, not energy alone');
+{
+  const E = MEAL_ESTIMATION_SYSTEM_PROMPT;
+  const R = MEAL_REVISION_SYSTEM_PROMPT;
+  E.includes('Ask nothing unless an answer would change a figure, not just a name:')
+    ? ok('a question must change a FIGURE — refining what an item is called is not enough')
+    : bad('the figure-not-name criterion is missing');
+  E.includes("the meal's energy, caffeine or sodium by ~15%, or its protein by ~10 g")
+    ? ok('…and the figures are the ones ARC tracks: energy, caffeine, sodium, protein')
+    : bad('the bar does not name the tracked micros');
+  // The revert guard: the energy-only bar is exactly what ruled the shots out.
+  !E.includes('~15% of its energy')
+    ? ok('the energy-only bar is gone, so a revert fails here and not on a phone')
+    : bad('the energy-only bar is back');
+  E.includes('At most 3, biggest change first;')
+    ? ok('ranked by how far an answer moves a figure — three slots still allow milk AND shots')
+    : bad('ranking missing');
+  // THE OTHER HALF. An answer scales a figure the item carries (§54); if the
+  // micros bullet's "OMIT the key when you would be guessing" strips the
+  // caffeine off the very item a question is about, there is nothing to scale.
+  E.includes('the items you return, micros included, must already') &&
+  E.includes('OMIT the key when you would be guessing')
+    ? ok('the assumed answer carries its micros, and the omit-a-guess rule stands for the rest')
+    : bad('the assumed answer does not carry its micros');
+
+  // A revision may ask too (owner decision) — so it gets the same criterion.
+  R.includes("(the meal's energy, caffeine or sodium by ~15%)") &&
+  R.includes('At most 3, biggest change first,') &&
+  R.includes('the items you return, micros included, must already')
+    ? ok('the revision prompt carries the same three clauses')
+    : bad('the revision prompt lags the estimate');
+
+  // JUDGMENT LIVES IN THE MODEL: the question rules name figures, never foods.
+  // His latte is how the gap was found, not what the rule is about.
+  const rules = (p) => p.slice(p.indexOf('Questions ('), p.indexOf('Respond with ONLY'));
+  !/latte|espresso|coffee|milk|caffeinated/i.test(rules(E)) &&
+  !/latte|espresso|coffee|milk|caffeinated/i.test(rules(R))
+    ? ok('neither question block names a drink — a criterion, not "if latte, ask shots"')
+    : bad('a food-specific rule has crept into the question block');
+
+  // THE TWO TRIMS THAT PAID FOR IT, asserted so a revert is visible here rather
+  // than only on the ceiling (§36).
+  E.includes('the food or portion is genuinely uncertain, else "medium".') &&
+  !E.includes('for typical mixed dishes')
+    ? ok('the confidence bullet is two definitions and a default — the cut the ceiling named')
+    : bad('the confidence trim was reverted');
+  E.includes('Give sodium and caffeine in milligrams for the portion, not per 100,') &&
+  !E.includes('Micro amounts are for the portion you estimated')
+    ? ok('the per-portion line is folded into the micros bullet, and the rule is still stated')
+    : bad('the per-portion fold was reverted');
+}
+
+/** The owner's latte as the prompt now asks for it: the question is about the
+ *  espresso, the items assume the most likely answer (two shots), and the
+ *  espresso carries the caffeine FOR that answer. The answers set the espresso
+ *  outright — `set_amount`, in its own unit — rather than scaling it. */
+const SHOTS_REPLY = JSON.stringify({
+  title: 'Latte',
+  items: [
+    {
+      name: 'Espresso',
+      amount: 60,
+      unit: 'ml',
+      kcal: 5,
+      protein_g: 0,
+      carbs_g: 1,
+      fat_g: 0,
+      micros: { caffeine_mg: 126 },
+      confidence: 'medium',
+    },
+    {
+      name: 'Whole milk',
+      amount: 300,
+      unit: 'ml',
+      kcal: 186,
+      protein_g: 10,
+      carbs_g: 14,
+      fat_g: 10,
+      micros: { sodium_mg: 130 },
+      confidence: 'medium',
+    },
+  ],
+  notes: null,
+  questions: [
+    {
+      id: 'shots',
+      ask: 'How many shots?',
+      allow_other: false,
+      options: [
+        { label: '2', effect: { set_amount: 'Espresso', amount: 60 } },
+        { label: '1', effect: { set_amount: 'Espresso', amount: 30 } },
+        { label: '3', effect: { set_amount: 'Espresso', amount: 90 } },
+      ],
+    },
+  ],
+});
+
+console.log('54. feedback: a shots answer reaches the caffeine figure, not only the kcal');
+{
+  // The screen's own path, with the model's reply mocked: estimateMeal's text →
+  // parseMealEstimate → groundMealEstimate → rowsFromEstimate → an answer →
+  // rowsToMealItems → logMealWithItems. No model is called.
+  const { db } = freshDb();
+  const estimate = groundMealEstimate(db, parseMealEstimate(SHOTS_REPLY));
+  const shots = estimate.questions.find((q) => q.id === 'shots');
+  shots &&
+  shots.options.length === 3 &&
+  shots.options.every((o) => o.effect.kind === 'set_amount' && o.effect.name === 'Espresso')
+    ? ok('the shots question parses with its three set_amount answers intact')
+    : bad('shots question', JSON.stringify(estimate.questions));
+  shots && shots.options[0].effect.amount === estimate.items[0].amount
+    ? ok('the first answer is the one the items already assume (60 ml, two shots)')
+    : bad('first answer is not the assumed one');
+  estimate.items[0].foodId === null && near(parseMicros(estimate.items[0].micros).caffeine_mg, 126)
+    ? ok('grounding leaves the espresso and its 126 mg standing')
+    : bad('grounded espresso', JSON.stringify(estimate.items[0]));
+
+  const base = rowsFromEstimate(db, estimate);
+  const three = applyAnswer(base, shots.options[2].effect);
+  const espresso = currentPortion(three[0]);
+  near(espresso.amount, 90) &&
+  near(espresso.kcal, 7.5) &&
+  near(parseMicros(espresso.micros).caffeine_mg, 189)
+    ? ok('tapping “3” reaches the caffeine: 126 → 189 mg, not only 5 → 7.5 kcal')
+    : bad('the answer stopped at the kcal', JSON.stringify(espresso));
+  const milk = currentPortion(three[1]);
+  near(milk.amount, 300) &&
+  near(parseMicros(milk.micros).sodium_mg, 130) &&
+  parseMicros(milk.micros).caffeine_mg === undefined
+    ? ok('…and the milk keeps its 300 ml and its sodium, and gains no caffeine')
+    : bad('the milk moved', JSON.stringify(milk));
+
+  // WHY THE OLD BAR NEVER ASKED IT, as arithmetic: the energy barely moves.
+  const energyShare = (reviewKcal(three) - reviewKcal(base)) / reviewKcal(base);
+  const caffeineShare = (189 - 126) / 126;
+  energyShare < 0.02 && caffeineShare >= 0.5
+    ? ok(
+        `the answer moves energy ${(energyShare * 100).toFixed(1)}% and caffeine 50% — under the old bar, never asked`
+      )
+    : bad('shares', `${energyShare} / ${caffeineShare}`);
+
+  // Changing the answer re-applies to the same base (the hook freezes it), so
+  // "3" then "1" is "1", never "3 × ½".
+  const one = applyAnswer(base, shots.options[1].effect);
+  near(parseMicros(currentPortion(one[0]).micros).caffeine_mg, 63)
+    ? ok('“1” reads 63 mg from the same base — the caffeine does not compound')
+    : bad('compounded', currentPortion(one[0]).micros);
+  near(parseMicros(currentPortion(base[0]).micros).caffeine_mg, 126)
+    ? ok('skipping keeps the assumed answer’s 126 mg — accuracy lost, never coherence')
+    : bad('skip lost the caffeine');
+  const scaled = applyAnswer(base, { kind: 'scale_item', name: 'Espresso', factor: 1.5 });
+  near(parseMicros(currentPortion(scaled[0]).micros).caffeine_mg, 189)
+    ? ok('the scale_item spelling of the same answer lands on the same 189 mg')
+    : bad('scale_item caffeine', currentPortion(scaled[0]).micros);
+
+  // …and it is the figure ARC tracks: the day's own caffeine.
+  logMealWithItems(db, {
+    date: TODAY,
+    time: '08:30',
+    name: estimate.title,
+    source: 'ai_suggested',
+    items: rowsToMealItems(three),
+  });
+  const day = dayMicroTotals(db, TODAY);
+  near(day.caffeine_mg, 189) && near(day.sodium_mg, 130)
+    ? ok('saved through the screen’s own path, the day reads 189 mg of caffeine')
+    : bad('day totals', JSON.stringify(day));
+
+  // THE OTHER HALF, pinned as a fact: an answer SCALES a figure an item carries
+  // and cannot CREATE one. Had the estimator omitted the espresso's caffeine as
+  // a guess, "3" would move 2.5 kcal and record nothing — the question would be
+  // no path to a caffeine figure at all. Hence "micros included" (§53).
+  const bareReply = JSON.parse(SHOTS_REPLY);
+  delete bareReply.items[0].micros;
+  const bare = rowsFromEstimate(db, parseMealEstimate(JSON.stringify(bareReply)));
+  const bareThree = currentPortion(applyAnswer(bare, shots.options[2].effect)[0]);
+  near(bareThree.kcal, 7.5) && bareThree.micros === null
+    ? ok('omit the caffeine and “3” moves the kcal and records none — an answer cannot create it')
+    : bad('an answer created a figure', JSON.stringify(bareThree));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

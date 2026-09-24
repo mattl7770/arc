@@ -7,6 +7,16 @@
 3. **The recipe-log portion card was not built.** §3.4's "yes, but not through a model" is a good idea and a separate one: it needs no estimator, no prompt and no parser, and folding it in here would have made this round's surface bigger than its subject.
 4. **The token cost was under-predicted.** §3.6's `+266` was measured before `ml` landed; against the real baseline the two rounds cost +149 (C4) and +279 (C5). The `ESTIMATOR_PROMPT_CEILING` §3.6 recommends was built, at 1,000, and **the rule it states was applied to this round**: three enumerations were trimmed back to three examples each, taking 970 → 922.
 
+**Device finding, 2026-09-23: the archetype was not asked.** On the 0061 build, the first on his phone to carry C5, the owner logged a latte. He was asked what milk was in it, and never how many shots: *"asked me what milk was in the latte- this is a good question, but it did not ask about how many shots and therefore doesn't have good caffeination data"*.
+
+The cause is in §3.2 below. Its bar measured materiality in energy and protein only, which is point 1 of that section. One shot is ~1% of a latte's energy and ~50% of its caffeine, so the rule this spike drafted ruled out the archetype the spike was named for.
+
+The fix widened the criterion rather than adding a rule. A question must now *"change a figure, not just a name: the meal's energy, caffeine or sodium by ~15%, or its protein by ~10 g"*, ranked *"biggest change first"*.
+
+The fix also closed a second gap the finding exposed. An answer's effect can only **scale** a figure the item already carries; it cannot create one. So the assumed answer now carries its micros too.
+
+It was paid for inside the 1,000 ceiling (967 → 973) by the confidence trim the constant had named, plus one fold. The full account is in `docs/nutrition-subapp.md` §12l, "Device finding".
+
 The original proposal follows unchanged.
 **Migration:** **none.** (Confirmed at build: C5 needed no schema at all. Its two branch-mates were renumbered `0048`→`0057` and `0049`→`0058` at commit — see `0057`’s header for why a *free* number below main’s head is worse than a taken one.) Questions are a property of an estimate in flight, not of a logged record — nothing is persisted that `meal_items` cannot already hold.
 **Citations verified against `main` at `950c846`.** `main` moves several times a day; if a line number below misses, the surrounding quote is the anchor.
