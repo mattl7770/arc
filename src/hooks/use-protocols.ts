@@ -273,7 +273,9 @@ function readRecord(id: string | undefined): ProtocolRecord | null {
  * landed — everything app/protocol-detail.tsx draws, read in one place so the
  * screen holds no query of its own.
  */
-export function useProtocolRecord(id: string | undefined): ProtocolRecord | null {
+export function useProtocolRecord(
+  id: string | undefined
+): (ProtocolRecord & { reload: () => void }) | null {
   const [record, setRecord] = useState<ProtocolRecord | null>(() => readRecord(id));
 
   const reload = useCallback(() => {
@@ -282,5 +284,8 @@ export function useProtocolRecord(id: string | undefined): ProtocolRecord | null
 
   useFocusEffect(reload);
 
-  return record;
+  // `reload` rides the record because the page now WRITES without leaving it —
+  // Pause / Resume (src/lib/protocols/pause.ts) — and has to re-read what it
+  // just changed rather than wait for a focus that is not coming.
+  return record ? { ...record, reload } : null;
 }

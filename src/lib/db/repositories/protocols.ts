@@ -31,6 +31,7 @@ import type {
   Timestamp,
 } from '../types';
 import { allItems, parseProtocolContent } from '@/lib/protocols/content';
+import { fieldPatch, rebaseContent, type ProtocolFields } from '@/lib/protocols/rebase';
 import type { NewProtocol, ProtocolContent, ProtocolListItem } from '@/lib/protocols/types';
 
 /**
@@ -240,6 +241,115 @@ export function reviseProtocol(
     }
   });
   return versionId;
+}
+
+/** What the one protocol editor (app/protocol-edit.tsx) hands its Save. */
+export type ProtocolEdit = {
+  /** The document the form opened on, canonical. */
+  base: ProtocolContent;
+  /** The document the form now holds, canonical, every id already minted. */
+  content: ProtocolContent;
+  /** Typed change notes, or null. A typed note forces a version: it is user data. */
+  changeNotes: string | null;
+  /** The row fields as the form opened on them. */
+  opened: ProtocolFields;
+  /** The row fields as the form now holds them. */
+  fields: ProtocolFields;
+};
+
+export type ProtocolEditResult =
+  | {
+      ok: true;
+      /** The new version's id, or null when the document did not change. */
+      versionId: string | null;
+      /** The row fields this save wrote — only the ones the form changed. */
+      wrote: (keyof ProtocolFields)[];
+    }
+  | { ok: false; refusal: string };
+
+const FIELD_COLUMNS: Record<keyof ProtocolFields, string> = {
+  name: 'name',
+  description: 'description',
+  type: 'type',
+  startedOn: 'started_on',
+  carryOver: 'carry_over',
+  checkoffMode: 'checkoff_mode',
+};
+
+/**
+ * The row's editable fields, in the form's shape — the same trim the form
+ * applies to what it writes, so a stored value and an untouched field compare
+ * equal and Save stays inert at rest.
+ */
+export function protocolFieldsOf(row: ProtocolRow): ProtocolFields {
+  return {
+    name: row.name.trim(),
+    description: row.description?.trim() || null,
+    type: row.type,
+    startedOn: row.started_on,
+    carryOver: row.carry_over === 1,
+    checkoffMode: row.checkoff_mode,
+  };
+}
+
+/**
+ * **The editor's Save: ONE transaction that writes only what changed**, onto the
+ * protocol as it is at the moment of saving.
+ *
+ * The row and the live version are re-read inside the transaction, and the
+ * form's changes are merged onto them by `rebaseContent` and `fieldPatch`
+ * (src/lib/protocols/rebase.ts) — so a Coach edit approved while the form was
+ * open is kept rather than reverted, and a change that collides with it is
+ * refused with a sentence and writes nothing at all.
+ *
+ * What it writes, and nothing else:
+ *   - a new version, only when the merged document differs from the live one or
+ *     a note was typed — no no-op versions from opening a form and closing it;
+ *   - each row field the form changed, one column at a time. A settings-only
+ *     save therefore writes no version, and a document-only save leaves every
+ *     row column byte-identical (db/protocols.test.mjs §12b, §12c).
+ *
+ * `is_active` is never written here: pausing is its own act
+ * (src/lib/protocols/pause.ts). It never re-derives today either — that is the
+ * caller's, after the commit, exactly as every other protocol write.
+ */
+export function saveProtocolEdit(
+  db: Database,
+  id: string,
+  edit: ProtocolEdit
+): ProtocolEditResult {
+  let result: ProtocolEditResult = { ok: false, refusal: 'This protocol no longer exists.' };
+  db.transaction(() => {
+    const row = getProtocol(db, id);
+    if (!row) return;
+    const liveRow = getCurrentVersion(db, id);
+    const live = parseProtocolContent(liveRow?.content ?? null);
+    const merged = rebaseContent(edit.base, edit.content, live);
+    if (!merged.ok) {
+      result = merged;
+      return;
+    }
+    const fields = fieldPatch(edit.opened, edit.fields, protocolFieldsOf(row));
+    if (!fields.ok) {
+      result = fields;
+      return;
+    }
+    const wrote = Object.keys(fields.patch) as (keyof ProtocolFields)[];
+    for (const key of wrote) {
+      const value = fields.patch[key];
+      // The column names come from the fixed table above, never from input.
+      db.run(`UPDATE protocols SET ${FIELD_COLUMNS[key]} = ? WHERE id = ?`, [
+        typeof value === 'boolean' ? (value ? 1 : 0) : (value ?? null),
+        id,
+      ]);
+    }
+    const notes = edit.changeNotes?.trim() || null;
+    const changed = JSON.stringify(merged.content) !== JSON.stringify(live);
+    const versionId =
+      changed || notes !== null ? insertVersionRow(db, id, merged.content, notes, 'user') : null;
+    result = { ok: true, versionId, wrote };
+  });
+  return result;
 }
 
 export function getProtocol(db: Database, id: string): ProtocolRow | undefined {

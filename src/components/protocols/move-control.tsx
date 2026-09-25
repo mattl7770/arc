@@ -14,7 +14,8 @@
  *
  * So this reuses `Chip` and `FormField` — the same typed field, the same
  * keyboard — and ends in *Move* instead. The reminder stays where it is set, in
- * the per-item editor one tap away.
+ * the protocol editor one tap away (*Edit this item*). Since 2026-09-25 the
+ * sheet's row reads *Move today …*, so its scope is in its name.
  *
  * Since 2026-09-21 the six anchor chips are this control's own: `TimeControl`
  * became an iOS wheel on the owner's note (*"needs a real wheel like a calendar

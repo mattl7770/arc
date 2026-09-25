@@ -22,8 +22,8 @@
  * ## The seam, and what happens without it
  *
  * The picker is a native module, reached through `src/lib/ui/date-time-picker.ts`
- * — never a static import, for the reasons written there (both editors are on
- * Expo Router's eagerly-required route manifest, and Node cannot load the
+ * — never a static import, for the reasons written there (the protocol editor
+ * is on Expo Router's eagerly-required route manifest, and Node cannot load the
  * package at all). Where the module is absent — the web logic-check preview,
  * the headless render suite, a dev client built before the dependency landed —
  * this falls back to the **typed field C9 shipped**, so the time is always
@@ -48,7 +48,7 @@
  * That mono caption is not decoration. VoiceOver reads the wheel one column
  * at a time, and the render suite cannot see the wheel at all; the caption is
  * where the chosen time is stated whole, once, in ARC's own voice — in both
- * branches, on both screens.
+ * branches.
  */
 import { Text, View } from 'react-native';
 

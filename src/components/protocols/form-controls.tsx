@@ -1,13 +1,15 @@
 /**
- * The recessed field the protocol forms are built from, plus the day-length
- * parser they share. The neutral Chip moved to src/components/ui/chip.tsx on
- * 2026-09-19, when the Coach’s status rail became a caller from outside these
- * forms; the three controls here import it back.
+ * The recessed field the protocol forms are built from. The neutral Chip moved
+ * to src/components/ui/chip.tsx on 2026-09-19, when the Coach’s status rail
+ * became a caller from outside these forms; the three controls here import it
+ * back.
  *
  * Extracted verbatim from app/protocol-edit.tsx on 2026-09-19, when the per-item
- * editor and the settings sheet became second and third callers. Nothing about
- * either control changed in the move; both docblocks came with them, because
- * what they record is a defect this app shipped and the reason a rule exists.
+ * editor and the settings sheet became second and third callers. Both folded
+ * back into the one editor on 2026-09-25 (docs/spikes/protocol-menus-compact.md,
+ * option A), and the field stayed here: nothing about it changed in either
+ * move, and its docblock records a defect this app shipped and the reason a
+ * rule exists.
  *
  * Conformed Set: a capture surface is a **well** — paper-dim on a paper-deep
  * edge, square — and a form carries **no block** (form (b) of the capture-surface
@@ -29,13 +31,11 @@ import { palette } from '@/constants/theme';
  * how the app grows two ideas of what a clock time is.
  */
 
-/** A whole number of days ≥ 1, or null for "not a length". */
-export function parseDays(text: string): number | null {
-  const trimmed = text.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const n = Number(trimmed);
-  return n >= 1 ? n : null;
-}
+/*
+ * `parseDays` moved to src/lib/protocols/edit-form.ts on 2026-09-25, beside the
+ * form state that builds a document from it, so the headless suite can load it
+ * without a component. The same rule as `normalizeTime` above: one import path.
+ */
 
 type FieldProps = {
   value: string;

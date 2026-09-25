@@ -72,6 +72,14 @@ type MissionExtras = {
    */
   late_on?: string;
   /**
+   * Beside `late_on`: the id of the carried copy whose completion settled this
+   * row (2026-09-25). A copy stands for every miss of its item, so it settles
+   * several rows, and `carried_from` names only one of them — this is how the
+   * undo finds the rest. The mirror of `skipped_via`, which a hand-made skip of
+   * the copy writes instead. Read by nothing but that undo.
+   */
+  late_via?: string;
+  /**
    * `true` on a row that was written BEFORE its day — a day committed ahead by
    * a tick on the Plan screen. It is what {@link NOT_UNSEEN_SQL} keys on, and
    * it is stripped from every still-pending row when the day arrives and
@@ -81,8 +89,8 @@ type MissionExtras = {
    */
   ahead?: boolean;
   /**
-   * `true` on a row whose time was set BY HAND for its day — *Move to …* on
-   * the item sheet, or the Coach's `adjust_today` move — through
+   * `true` on a row whose time was set BY HAND for its day — *Move today …*
+   * on the item sheet (*Move to …* until 2026-09-25), or the Coach's `adjust_today` move — through
    * {@link moveMissionItem} (2026-09-23, no migration).
    *
    * It is what the re-derive's kept-row re-sync keys on
@@ -401,6 +409,34 @@ export function getMissionItem(db: Database, id: string): MissionItem | null {
 }
 
 /**
+ * One protocol's rows on `date` that nobody has acted on yet — **what a pause
+ * takes off the day**, read so the protocol page's confirmation can name them
+ * before the tap rather than after it (app/protocol-detail.tsx).
+ *
+ * `pending` and nothing else, because that is exactly what the re-derive's diff
+ * removes when a protocol stops planning: a done, skipped or partial row is
+ * preserved, and so is its title on the record. Carried rows are included —
+ * a paused protocol carries no debt onto today either. The two standing
+ * predicates keep an ad-hoc capture and a tombstone out, as everywhere the
+ * mission is shown. Ordered as Home orders them.
+ */
+export function untouchedRowsOf(
+  db: Database,
+  date: string,
+  protocolId: string
+): { id: string; title: string }[] {
+  return db.all<{ id: string; title: string }>(
+    `SELECT e.id AS id, e.title AS title
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND e.protocol_id = ? AND e.status = 'pending'
+        AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}
+      ORDER BY (e.scheduled_time IS NULL), e.scheduled_time, e.created_at, e.id`,
+    [date, protocolId]
+  );
+}
+
+/**
  * How many rows each protocol has on `date`'s COMMITTED mission — the hub's
  * `3 today`.
  *
@@ -649,130 +685,18 @@ function dayOfEntry(db: Database, id: string): string | null {
 }
 
 /**
- * Close (or re-open) the debt behind a CARRIED row.
- *
- * Completing a carried row is a statement about the day it came FROM, not only
- * about today, so the original row is settled in the same breath: `skipped`,
- * plus `value.late_on = <the day it was actually done>`. Every existing query
- * then does the right thing with no change at all — a skipped row on a
- * non-excusing day is already a miss — and the only new surface is an
- * annotation. **The missed day stays a miss and the late completion earns no
- * rate credit** (owner's call, 2026-09-14: "did it late" and "did it on time"
- * must not produce the same number).
- *
- * `day = null` UNDOES that: un-ticking a carried row on Home puts the original
- * back to `pending` and clears the stamp, so the debt is live again and the
- * generator re-carries it tomorrow. Without this the toggle would be one-way —
- * a mis-tap would permanently convert an untouched row into a skip.
- *
- * NOT wrapped in a transaction of its own: `Database.transaction` is a plain
- * BEGIN and does not nest, and the Coach's mission-ops batch already calls
- * {@link setMissionStatus} from inside one. The two statements are sequential
- * and the divergence if the second never ran is self-healing — the debt is
- * simply still outstanding, and the next generation carries it again.
- *
- * Every guard is defence in depth on a statement that reaches a row the caller
- * never named: it can only touch the row this one was carried FROM, and only
- * while that row is in the state this function itself put it in.
- */
-function settleCarriedOriginal(db: Database, id: string, day: string | null): void {
-  const row = db.get<{ origin: string | null; protocolId: string | null }>(
-    `SELECT json_extract(value, '$.carried_from.entry') AS origin, protocol_id AS protocolId
-       FROM log_entries WHERE id = ?`,
-    [id]
-  );
-  const origin = row?.origin;
-  if (typeof origin !== 'string' || origin === '') return;
-  if (day === null) {
-    // ONE undo path for the TWO ways a copy can settle its original: a late
-    // completion (`late_on`, written just below) and a hand-tapped skip on the
-    // copy ({@link skipCarriedOriginal}'s `skipped_via`). Both marks are
-    // removed. An original marked neither is untouched, which is what keeps a
-    // plain un-tick from converting an unrelated row.
-    //
-    // Two statements because the two marks reach different rows. `late_on` is
-    // only ever on the anchor. `skipped_via` is on EVERY miss the skip settled
-    // (2026-09-23: one copy stands for all of them), and it is keyed to THIS
-    // copy — a debt another copy skipped is not this row's to re-open.
-    // `protocol_id IS ?` is only there to keep the search on the protocol's
-    // index: every row the skip stamped shares the copy's protocol, and IS also
-    // matches when a deleted protocol has set both to NULL.
-    db.run(
-      `UPDATE log_entries
-          SET status = 'pending',
-              value = json_remove(value, '$.late_on', '$.skipped_via')
-        WHERE id = ? AND status = 'skipped' AND ${DONE_LATE_SQL}`,
-      [origin]
-    );
-    db.run(
-      `UPDATE log_entries
-          SET status = 'pending',
-              value = json_remove(value, '$.late_on', '$.skipped_via')
-        WHERE protocol_id IS ? AND status = 'skipped'
-          AND json_extract(value, '$.skipped_via') = ?`,
-      [row?.protocolId ?? null, id]
-    );
-    return;
-  }
-  db.run(
-    `UPDATE log_entries
-        SET status = 'skipped',
-            value = json_set(COALESCE(value, '{}'), '$.late_on', ?)
-      WHERE id = ? AND status = 'pending' AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`,
-    [day, origin]
-  );
-}
-
-/**
- * Skipping a CARRIED row skips the debt behind it — the second half of a
- * `setMissionStatus(copy, 'skipped')`, and the only place that rule is written.
- *
- * A carried copy is not an obligation of the day it appears on — the ORIGINAL
- * day keeps that ({@link NOT_CARRIED_SQL}) — so skipping only the copy would be
- * a decision that evaporates overnight: `outstandingCarries` reads `pending`
- * ORIGINALS, so the debt would be re-levied tomorrow, and the tap the user made
- * to say "not this one" would mean nothing. A hand-tapped skip is a DECISION
- * not to do it (the rule 0050 already settled for native rows), and here it has
- * to reach the row that holds the obligation.
- *
- * So the copy is settled `skipped` by the caller, and the original is settled
- * `skipped` plus `value.skipped_via = <this copy's id>`. That mark is the
- * mirror of `late_on` — the second of exactly two ways a copy can close its
- * original — and it exists so the undo in {@link settleCarriedOriginal} can
- * re-open the right rows and only those. The undo is any other status on the
- * copy: the row's own tap on Home (`toggleMission`, skipped → pending) and the
- * sheet's *Put back* alike.
- *
- * ## Every miss the copy stood for, not only its anchor (2026-09-23)
+ * Every row a CARRIED copy stands for: its anchor (`carried_from.entry`) and
+ * every other debt of the same item as of the copy's own day — the same window,
+ * the same exclusions and the same definition the carry was generated from
+ * ({@link carryDebtRows}). Null when `copyId` is not a carried copy.
  *
  * One carried row stands for EVERY outstanding miss of its item — three missed
- * days produce one row — and `carried_from` names only the most recent. Settling
- * that one alone left the older misses `pending`, so the next morning the carry
- * re-anchored on the oldest and the item came back as *owed from Mon, 6 days
- * late*: the skip the user had just made, undone overnight. So the skip settles
- * the anchor AND every row {@link carryDebtRows} counts as a debt of the same
- * item as of the copy's own day — the same window, the same exclusions, the
- * same definition the carry was generated from. An excused day, a miss older
- * than the window and every other item are untouched.
- *
- * Completing a copy is different on purpose, and stays one row: doing the item
- * once pays one debt, while declining it declines the debt the row stands for.
- *
- * **What the record then reads:** each settled day moves from untouched to
- * `skipped`, which on a non-excusing day is a miss either way, and back on
- * undo. No adherence figure reads either mark: `late_on` feeds only the
- * `doneLate` annotation and `skipped_via` feeds only the undo guard. This is a
- * deliberate write the user made by tapping the one row that stands for those
- * days, bounded by the window the carry itself offered them in — not an
- * annotation stamped on week-old history behind his back, which the carry-over
- * spike considered and rejected.
- *
- * Until 2026-09-23 this was an exported `skipCarried` that only the item sheet
- * called; the hero card and `adjust_today` went through {@link setMissionStatus}
- * and left the debt owed. It now runs from there, so no surface can skip a
- * carried row the other way. A no-op on a row that is not a carried copy.
+ * days produce one row — and `carried_from` names only the most recent. So
+ * whatever the copy settles, it settles for all of them, or the next morning
+ * the carry re-anchors on the oldest and the item comes back as *owed from Mon,
+ * 6 days late*: the decision the user just made, undone overnight.
  */
-function skipCarriedOriginal(db: Database, copyId: string): void {
+function debtsBehind(db: Database, copyId: string): string[] | null {
   const copy = db.get<{
     origin: string | null;
     protocolId: string | null;
@@ -789,26 +713,162 @@ function skipCarriedOriginal(db: Database, copyId: string): void {
     [copyId]
   );
   const origin = copy?.origin;
-  if (!copy || typeof origin !== 'string' || origin === '') return;
-  // The anchor always — exactly what this settled before — and then every
-  // other debt of the same item as of the copy's day, the day it was offered.
+  if (!copy || typeof origin !== 'string' || origin === '') return null;
   const ids = new Set<string>([origin]);
   if (copy.protocolId !== null && typeof copy.item === 'string') {
     const only = { protocolId: copy.protocolId, item: copy.item };
     for (const debt of carryDebtRows(db, copy.date, only)) ids.add(debt.id);
   }
-  // Every guard is defence in depth on a statement reaching rows the caller
-  // never named: `pending` only, so a completed original is never overwritten,
-  // and the two standing predicates so it can never touch an ad-hoc capture or
-  // a tombstone. Exactly the settle branch's shape.
-  const placeholders = [...ids].map(() => '?').join(', ');
+  return [...ids];
+}
+
+/**
+ * Close (or re-open) the debt behind a CARRIED row when it is completed.
+ *
+ * Completing a carried row is a statement about the days it came FROM, not only
+ * about today, so every miss it stands for ({@link debtsBehind}) is settled in
+ * the same breath: `skipped`, plus `value.late_on = <the day it was actually
+ * done>` and `value.late_via = <this copy's id>`. Every existing query then does
+ * the right thing with no change at all — a skipped row on a non-excusing day is
+ * already a miss — and the only surface is the `doneLate` annotation. **A missed
+ * day stays a miss and the late completion earns no rate credit** (owner's
+ * call, 2026-09-14: "did it late" and "did it on time" must not produce the
+ * same number).
+ *
+ * ## Every miss, not only the anchor (owner, 2026-09-25)
+ *
+ * *"An item missed on two days shows up once, carried. When you do it: it
+ * settles both missed days (both marked late)."* Until then a completion
+ * settled the anchor alone — one debt paid by one doing — so the next morning
+ * the older miss was carried in its place and the item the user had just done
+ * came back owed. It now settles exactly what a SKIP of the same copy settles
+ * ({@link skipCarriedOriginal}), marked the other way: both days read
+ * *done late* on the ledger.
+ *
+ * `late_via` is the mirror of `skipped_via`: it is what lets the undo find the
+ * older misses, because `carried_from` names only the anchor. `late_on` stays
+ * the mark every reader already keys on.
+ *
+ * `day = null` UNDOES whatever this copy settled, either way: un-ticking a
+ * carried row on Home puts every miss it settled back to `pending` and clears
+ * the marks, so the debt is live again and the generator re-carries it
+ * tomorrow. Without this the toggle would be one-way — a mis-tap would
+ * permanently convert untouched rows into skips.
+ *
+ * NOT wrapped in a transaction of its own: `Database.transaction` is a plain
+ * BEGIN and does not nest, and the Coach's mission-ops batch already calls
+ * {@link setMissionStatus} from inside one. The statements are sequential and
+ * the divergence if one never ran is self-healing — the debt is simply still
+ * outstanding, and the next generation carries it again.
+ *
+ * Every guard is defence in depth on a statement that reaches rows the caller
+ * never named: it can only touch rows this copy stands for, and only while each
+ * is in the state this function itself put it in.
+ */
+function settleCarriedOriginal(db: Database, id: string, day: string | null): void {
+  if (day === null) {
+    const row = db.get<{ origin: string | null; protocolId: string | null }>(
+      `SELECT json_extract(value, '$.carried_from.entry') AS origin, protocol_id AS protocolId
+         FROM log_entries WHERE id = ?`,
+      [id]
+    );
+    const origin = row?.origin;
+    if (typeof origin !== 'string' || origin === '') return;
+    // ONE undo path for the TWO ways a copy can settle what it stands for: a
+    // late completion (`late_on` + `late_via`, written below) and a hand-tapped
+    // skip ({@link skipCarriedOriginal}'s `skipped_via`). Every mark is
+    // removed. A row marked none of them is untouched, which is what keeps a
+    // plain un-tick from converting an unrelated row.
+    //
+    // Two statements. The first re-opens the ANCHOR by `late_on` alone, which
+    // is the only mark a completion wrote before 2026-09-25 — a row settled by
+    // an older build has no `late_via` and must still come back. The second
+    // re-opens every row keyed to THIS copy by either `_via` mark; a debt
+    // another copy settled is not this row's to re-open. `protocol_id IS ?` is
+    // only there to keep the search on the protocol's index: every row a copy
+    // stamps shares its protocol, and IS also matches when a deleted protocol
+    // has set both to NULL.
+    db.run(
+      `UPDATE log_entries
+          SET status = 'pending',
+              value = json_remove(value, '$.late_on', '$.late_via', '$.skipped_via')
+        WHERE id = ? AND status = 'skipped' AND ${DONE_LATE_SQL}`,
+      [origin]
+    );
+    db.run(
+      `UPDATE log_entries
+          SET status = 'pending',
+              value = json_remove(value, '$.late_on', '$.late_via', '$.skipped_via')
+        WHERE protocol_id IS ? AND status = 'skipped'
+          AND (json_extract(value, '$.skipped_via') = ? OR json_extract(value, '$.late_via') = ?)`,
+      [row?.protocolId ?? null, id, id]
+    );
+    return;
+  }
+  const debts = debtsBehind(db, id);
+  if (!debts) return;
+  const placeholders = debts.map(() => '?').join(', ');
+  db.run(
+    `UPDATE log_entries
+        SET status = 'skipped',
+            value = json_set(COALESCE(value, '{}'), '$.late_on', ?, '$.late_via', ?)
+      WHERE id IN (${placeholders})
+        AND status = 'pending' AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`,
+    [day, id, ...debts]
+  );
+}
+
+/**
+ * Skipping a CARRIED row skips the debt behind it — the second half of a
+ * `setMissionStatus(copy, 'skipped')`, and the only place that rule is written.
+ *
+ * A carried copy is not an obligation of the day it appears on — the ORIGINAL
+ * day keeps that ({@link NOT_CARRIED_SQL}) — so skipping only the copy would be
+ * a decision that evaporates overnight: `outstandingCarries` reads `pending`
+ * ORIGINALS, so the debt would be re-levied tomorrow, and the tap the user made
+ * to say "not this one" would mean nothing. A hand-tapped skip is a DECISION
+ * not to do it (the rule 0050 already settled for native rows), and here it has
+ * to reach the rows that hold the obligation.
+ *
+ * So the copy is settled `skipped` by the caller, and every miss it stands for
+ * ({@link debtsBehind}) is settled `skipped` plus `value.skipped_via = <this
+ * copy's id>`. That mark is the mirror of `late_via` — the second of exactly two
+ * ways a copy can close what it stands for — and it exists so the undo in
+ * {@link settleCarriedOriginal} can re-open the right rows and only those. The
+ * undo is any other status on the copy: the row's own tap on Home
+ * (`toggleMission`, skipped → pending) and the sheet's *Put back* alike.
+ *
+ * An excused day, a miss older than the window and every other item are
+ * untouched, because {@link carryDebtRows} never offered them.
+ *
+ * **What the record then reads:** each settled day moves from untouched to
+ * `skipped`, which on a non-excusing day is a miss either way, and back on
+ * undo. No adherence figure reads either `_via` mark: `late_on` feeds only the
+ * `doneLate` annotation and the two `_via` marks feed only the undo. This is a
+ * deliberate write the user made by tapping the one row that stands for those
+ * days, bounded by the window the carry itself offered them in — not an
+ * annotation stamped on week-old history behind his back, which the carry-over
+ * spike considered and rejected.
+ *
+ * Until 2026-09-23 this was an exported `skipCarried` that only the item sheet
+ * called; the hero card and `adjust_today` went through {@link setMissionStatus}
+ * and left the debt owed. It now runs from there, so no surface can skip a
+ * carried row the other way. A no-op on a row that is not a carried copy.
+ */
+function skipCarriedOriginal(db: Database, copyId: string): void {
+  const debts = debtsBehind(db, copyId);
+  if (!debts) return;
+  // `pending` only, so a completed original is never overwritten, and the two
+  // standing predicates so it can never touch an ad-hoc capture or a tombstone.
+  // Exactly the completion branch's shape.
+  const placeholders = debts.map(() => '?').join(', ');
   db.run(
     `UPDATE log_entries
         SET status = 'skipped',
             value = json_set(COALESCE(value, '{}'), '$.skipped_via', ?)
       WHERE id IN (${placeholders})
         AND status = 'pending' AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}`,
-    [copyId, ...ids]
+    [copyId, ...debts]
   );
 }
 

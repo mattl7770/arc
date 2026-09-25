@@ -1,4 +1,4 @@
-import { memo, type ReactNode, useMemo } from 'react';
+import { memo, type ReactNode, type Ref, useMemo } from 'react';
 import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { type Edge, SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
@@ -227,6 +227,12 @@ type ScreenProps = {
    * clear of the home indicator.
    */
   edges?: readonly Edge[];
+  /**
+   * The scroll view itself, for the one screen that has to move to a place on
+   * arrival: the protocol editor opens at the item a mission row came from
+   * (app/protocol-edit.tsx). Only meaningful with `scroll`.
+   */
+  scrollRef?: Ref<ScrollView>;
 };
 
 /**
@@ -285,13 +291,14 @@ type ScreenProps = {
  * non-touchable part of the sheet dismisses the keyboard, while a tap that a
  * child handles still reaches that child.
  */
-export function Screen({ children, scroll = false, edges = ['top'] }: ScreenProps) {
+export function Screen({ children, scroll = false, edges = ['top'], scrollRef }: ScreenProps) {
   return (
     <View className="flex-1 bg-paper">
       <PaperGrid />
       <SafeAreaView edges={edges} className="flex-1">
         {scroll ? (
           <ScrollView
+            ref={scrollRef}
             className="flex-1"
             contentContainerClassName="grow px-5 pb-10"
             keyboardShouldPersistTaps="handled"

@@ -19,8 +19,10 @@ import {
   getProtocol,
   listProtocols,
   listVersions,
+  protocolFieldsOf,
   restoreVersion,
   reviseProtocol,
+  saveProtocolEdit,
   setActive,
   setStartedOn,
   updateProtocolMeta,
@@ -44,7 +46,14 @@ import {
   parseProtocolContent,
   validateContent,
 } from '../src/lib/protocols/content.ts';
-import { applyItemToContent, itemChangeNote } from '../src/lib/protocols/item-edit.ts';
+import {
+  blankItem,
+  buildContent,
+  moveToPhase,
+  parseDays,
+  seedPhases,
+} from '../src/lib/protocols/edit-form.ts';
+import { fieldPatch, rebaseContent } from '../src/lib/protocols/rebase.ts';
 import { diffContent, diffLines } from '../src/lib/protocols/diff.ts';
 import { phaseOn, totalDays } from '../src/lib/protocols/phase.ts';
 
@@ -808,10 +817,10 @@ console.log('12. reviseProtocol applies meta + active + version in one transacti
     : bad('partial revise persisted');
 }
 
-console.log('12b. a per-item save is the full editor’s document, written through addVersion');
+console.log('12b. the one editor: an untouched form IS the live version, and a save writes only what changed');
 {
   const { db, raw } = freshDb();
-  const item = (id, title, dose, cadence = { kind: 'daily' }) => ({
+  const item = (id, title, dose, cadence = { kind: 'daily' }, extra = {}) => ({
     id,
     title,
     scheduled_time: '07:30',
@@ -819,11 +828,79 @@ console.log('12b. a per-item save is the full editor’s document, written throu
     notes: null,
     cadence,
     remind: false,
+    ...extra,
   });
   const document = (items) =>
     normalizeContent({ phases: [{ id: 'only', title: null, duration_days: null, items }] });
   const before = document([item('a', 'Creatine', '5 g'), item('b', 'Omega-3', '2 caps')]);
+  let key = 0;
+  const nextKey = () => ++key;
 
+  // THE RULE the Save button rests on: a form seeded from a document and left
+  // alone builds that document byte for byte, so Save is inert at rest and
+  // opening the form writes nothing. Pinned on the shapes that could drift: a
+  // why-line, a reminder, a titration with an empty phase, and a v1 document
+  // with derived ids.
+  const rich = normalizeContent({
+    phases: [
+      {
+        id: 'load',
+        title: 'Loading',
+        duration_days: 7,
+        items: [item('c', 'Creatine', '20 g', { kind: 'weekdays', days: [1, 3, 5] }, { notes: 'Saturate first.', remind: true })],
+      },
+      { id: 'gap', title: null, duration_days: 3, items: [] },
+      { id: 'hold', title: 'Hold', duration_days: null, items: [item('d', 'Walk', null, { kind: 'quota', per_week: 3 }, { scheduled_time: null })] },
+    ],
+  });
+  const legacy = parseProtocolContent(JSON.stringify(STACK));
+  [before, rich, legacy].every(
+    (doc) => JSON.stringify(buildContent(seedPhases(doc, nextKey))) === JSON.stringify(doc)
+  )
+    ? ok('an untouched form builds the live document byte for byte (why-line, reminder, empty phase, v1)')
+    : bad('seed → build drifted', JSON.stringify(buildContent(seedPhases(rich, nextKey))));
+
+  // The same dose change made in the form and made on the document are one
+  // document — the byte-identity rule the per-item editor was pinned to, kept
+  // for the form that replaced it.
+  const form = seedPhases(before, nextKey);
+  form[0].items[0].dose = '10 g';
+  const viaForm = buildContent(form);
+  const direct = document([item('a', 'Creatine', '10 g'), item('b', 'Omega-3', '2 caps')]);
+  JSON.stringify(viaForm) === JSON.stringify(direct)
+    ? ok('a dose change made in the form is the same document as the change made directly')
+    : bad('form document drifted', JSON.stringify(viaForm));
+  viaForm.phases[0].items.map((it) => it.id).join() === 'a,b'
+    ? ok('…and the edited item keeps its id and its place')
+    : bad('form reordered', JSON.stringify(viaForm.phases[0].items.map((i) => i.id)));
+
+  // A blank NEW row is not an item yet and is not written.
+  const withBlank = seedPhases(before, nextKey);
+  withBlank[0].items.push(blankItem(nextKey(), 'fresh'));
+  JSON.stringify(buildContent(withBlank)) === JSON.stringify(before)
+    ? ok('a blank row the form added is left out of the document')
+    : bad('a blank row was written');
+  parseDays('28') === 28 && parseDays('') === null && parseDays('0') === null && parseDays('2.5') === null
+    ? ok('a phase length is a whole number of days ≥ 1, or nothing')
+    : bad('parseDays');
+
+  // A PHASE MOVE keeps the item: its id, its key and every field. It used to
+  // mean removing it and adding it again, which minted a new id — so the diff
+  // read "removed / added" and the quota counter lost its history.
+  const phasedForm = seedPhases(rich, nextKey);
+  const creatine = phasedForm[0].items[0];
+  const movedForm = moveToPhase(phasedForm, creatine.key, phasedForm[2].key);
+  const landed = movedForm[2].items[movedForm[2].items.length - 1];
+  movedForm[0].items.length === 0 &&
+  landed === creatine &&
+  buildContent(movedForm).phases[2].items.map((it) => it.id).join() === 'd,c'
+    ? ok('moving an item between phases keeps its id and fields, at the end of the target')
+    : bad('phase move', JSON.stringify(buildContent(movedForm).phases.map((p) => p.items.map((i) => i.id))));
+  moveToPhase(movedForm, creatine.key, movedForm[2].key) === movedForm
+    ? ok('…and moving it to the phase it is already in changes nothing')
+    : bad('a no-op move rebuilt the form');
+
+  // --- the save, against real SQLite --------------------------------------
   const pid = createProtocolWithVersion(
     db,
     {
@@ -843,114 +920,398 @@ console.log('12b. a per-item save is the full editor’s document, written throu
            FROM protocols WHERE id = ?`
       )
       .get(pid);
+  const versions = () =>
+    raw.prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?').get(pid).c;
+  const opened = () => protocolFieldsOf(getProtocol(db, pid));
+  const liveDoc = () => parseProtocolContent(getCurrentVersion(db, pid).content);
   const identityBefore = JSON.stringify(identity());
 
-  // THE RULE: the same dose change made per-item and made by rebuilding the
-  // whole document must produce byte-identical content. Anything else means
-  // two implementations of "what a version is".
-  const perItem = applyItemToContent(before, item('a', 'Creatine', '10 g'), { phase: 0 });
-  const wholeForm = document([item('a', 'Creatine', '10 g'), item('b', 'Omega-3', '2 caps')]);
-  JSON.stringify(perItem) === JSON.stringify(wholeForm)
-    ? ok('a per-item dose change yields the full editor’s document, byte for byte')
-    : bad('per-item document drifted', JSON.stringify(perItem));
+  // Nothing changed: nothing written, not even a no-op version.
+  const idle = saveProtocolEdit(db, pid, {
+    base: before,
+    content: before,
+    changeNotes: null,
+    opened: opened(),
+    fields: opened(),
+  });
+  idle.ok && idle.versionId === null && idle.wrote.length === 0 && versions() === 1
+    ? ok('a save with nothing changed writes no version and no column')
+    : bad('idle save wrote', JSON.stringify(idle));
 
-  // …and the note is the part that differs, which is why it is asserted apart.
-  itemChangeNote('Creatine', 'edited') === 'Edited "Creatine"'
-    ? ok('…with an auto-filled change note naming the item')
-    : bad('change note', itemChangeNote('Creatine', 'edited'));
-
-  // Replace IN PLACE: a dose edit must never reorder the phase it belongs to.
-  perItem.phases[0].items.map((it) => it.id).join() === 'a,b'
-    ? ok('the edited item keeps its position in the phase')
-    : bad('per-item save reordered', JSON.stringify(perItem.phases[0].items.map((i) => i.id)));
-
-  // An item edited back to itself is not a change, so the screen's string
-  // compare writes nothing — no no-op versions from opening a form.
-  JSON.stringify(applyItemToContent(before, before.phases[0].items[0], { phase: 0 })) ===
-  JSON.stringify(before)
-    ? ok('an item edited back to itself rebuilds the same document, so no version is written')
-    : bad('idempotent edit produced a change');
-
-  addVersion(db, pid, perItem, itemChangeNote('Creatine', 'edited'), 'user');
+  // A document-only save: a version, and every row column byte-identical.
+  const docOnly = saveProtocolEdit(db, pid, {
+    base: before,
+    content: direct,
+    changeNotes: null,
+    opened: opened(),
+    fields: opened(),
+  });
+  docOnly.ok && docOnly.versionId !== null && versions() === 2
+    ? ok('a document change writes one version')
+    : bad('document save', JSON.stringify(docOnly));
   JSON.stringify(identity()) === identityBefore
-    ? ok('a per-item save leaves every identity and policy column byte-identical')
+    ? ok('…and leaves every identity and policy column byte-identical')
     : bad('identity moved', `${identityBefore} → ${JSON.stringify(identity())}`);
-  getCurrentVersion(db, pid).version_number === 2
-    ? ok('…and it is a real version, written through the Coach’s own path')
-    : bad('no version written');
 
-  // Built AFTER a Coach write, from the live version — which is the whole
-  // reason the screen re-reads at save instead of using its mount-time content.
+  // A typed note is user data: it forces a version even over an unchanged plan.
+  const noted = saveProtocolEdit(db, pid, {
+    base: direct,
+    content: direct,
+    changeNotes: '  Held at 10 g for a month  ',
+    opened: opened(),
+    fields: opened(),
+  });
+  noted.ok &&
+  noted.versionId !== null &&
+  getCurrentVersion(db, pid).change_notes === 'Held at 10 g for a month'
+    ? ok('a typed note alone writes a version, trimmed')
+    : bad('note-only save', JSON.stringify(noted));
+
+  // A settings-only save: the columns it changed, and NO version.
+  const versionsBefore = versions();
+  const renamed = saveProtocolEdit(db, pid, {
+    base: direct,
+    content: direct,
+    changeNotes: null,
+    opened: opened(),
+    fields: { ...opened(), name: 'AM Stack', carryOver: false },
+  });
+  renamed.ok &&
+  renamed.versionId === null &&
+  versions() === versionsBefore &&
+  JSON.stringify([...renamed.wrote].sort()) === JSON.stringify(['carryOver', 'name']) &&
+  identity().name === 'AM Stack' &&
+  identity().carry_over === 0 &&
+  identity().checkoff_mode === 'adjusting'
+    ? ok('a settings-only save writes the two changed columns and mints no version')
+    : bad('settings save', JSON.stringify({ renamed, row: identity() }));
+
+  // PAUSE IS NOT A FIELD OF THE FORM: a pause made while the form is open (on
+  // the page, or approved on the Coach tab) survives the form's save.
+  const openedBeforePause = opened();
+  setActive(db, pid, false);
+  const afterPause = saveProtocolEdit(db, pid, {
+    base: direct,
+    content: direct,
+    changeNotes: null,
+    opened: openedBeforePause,
+    fields: { ...openedBeforePause, description: 'Morning, with food' },
+  });
+  afterPause.ok && identity().is_active === 0 && identity().description === 'Morning, with food'
+    ? ok('a settings save never flips is_active back from the value it opened with')
+    : bad('the form un-paused the protocol', JSON.stringify(identity()));
+  setActive(db, pid, true);
+
+  // A STALE save that does not collide: the Coach added magnesium while the
+  // form changed the creatine dose. Both land; nothing is reverted.
+  const base = liveDoc();
   addVersion(
     db,
     pid,
-    document([
-      item('a', 'Creatine', '10 g'),
-      item('b', 'Omega-3', '2 caps'),
-      item('c', 'Magnesium', '400 mg'),
-    ]),
+    document([item('a', 'Creatine', '10 g'), item('b', 'Omega-3', '2 caps'), item('m', 'Magnesium', '400 mg')]),
     'Added magnesium',
     'ai'
   );
-  const live = parseProtocolContent(getCurrentVersion(db, pid).content);
-  const afterCoach = applyItemToContent(live, item('a', 'Creatine', '15 g'), { phase: 0 });
-  afterCoach.phases[0].items.some((it) => it.title === 'Magnesium')
-    ? ok('a per-item save built after a Coach version still contains the Coach’s change')
-    : bad('the Coach’s change was reverted', JSON.stringify(afterCoach));
-
-  // A REMOVAL takes the item out and nothing else.
-  const removed = applyItemToContent(live, item('b', 'Omega-3', '2 caps'), {
-    phase: 0,
-    remove: true,
+  const merged = saveProtocolEdit(db, pid, {
+    base,
+    content: document([item('a', 'Creatine', '15 g'), item('b', 'Omega-3', '2 caps')]),
+    changeNotes: null,
+    opened: opened(),
+    fields: opened(),
   });
-  removed.phases[0].items.map((it) => it.id).join() === 'a,c'
-    ? ok('a removal takes out exactly one item')
-    : bad('removal', JSON.stringify(removed.phases[0].items.map((i) => i.id)));
+  const afterMerge = liveDoc().phases[0].items;
+  merged.ok &&
+  afterMerge.map((it) => `${it.id}:${it.dose}`).join() === 'a:15 g,b:2 caps,m:400 mg'
+    ? ok('a save built before a Coach version keeps the Coach’s change and applies its own')
+    : bad('stale merge', JSON.stringify({ merged, afterMerge }));
 
-  // A version-LESS protocol reads as one empty open-ended phase, so the add
-  // path needs no special case: the first save writes v1.
+  // A STALE save that DOES collide: both changed the creatine dose. Refused,
+  // named, and nothing at all is written — not the version, not the rename.
+  const stale = liveDoc();
+  addVersion(
+    db,
+    pid,
+    document([item('a', 'Creatine', '20 g'), item('b', 'Omega-3', '2 caps'), item('m', 'Magnesium', '400 mg')]),
+    'Loading again',
+    'ai'
+  );
+  const countBefore = versions();
+  const rowBefore = JSON.stringify(identity());
+  const refused = saveProtocolEdit(db, pid, {
+    base: stale,
+    content: document([item('a', 'Creatine', '5 g'), item('b', 'Omega-3', '2 caps'), item('m', 'Magnesium', '400 mg')]),
+    changeNotes: 'back to 5',
+    opened: opened(),
+    fields: { ...opened(), name: 'Renamed in the same save' },
+  });
+  !refused.ok && /"Creatine" was changed elsewhere/.test(refused.refusal)
+    ? ok(`a save that collides with a newer version refuses, naming the item ("${refused.refusal}")`)
+    : bad('collision not refused', JSON.stringify(refused));
+  versions() === countBefore && JSON.stringify(identity()) === rowBefore
+    ? ok('…and writes nothing — no version and no column')
+    : bad('a refused save wrote something', JSON.stringify(identity()));
+
+  // A phase move made from the form keeps the item's id in the saved version.
+  const phasedId = createProtocolWithVersion(
+    db,
+    { name: 'Titration', type: 'supplement_stack', startedOn: TODAY },
+    rich
+  );
+  const titrationForm = seedPhases(rich, nextKey);
+  const moving = titrationForm[0].items[0];
+  const saved = saveProtocolEdit(db, phasedId, {
+    base: rich,
+    content: buildContent(moveToPhase(titrationForm, moving.key, titrationForm[2].key)),
+    changeNotes: null,
+    opened: protocolFieldsOf(getProtocol(db, phasedId)),
+    fields: protocolFieldsOf(getProtocol(db, phasedId)),
+  });
+  const savedPhases = parseProtocolContent(getCurrentVersion(db, phasedId).content).phases;
+  saved.ok &&
+  savedPhases[0].items.length === 0 &&
+  savedPhases[2].items.some((it) => it.id === 'c' && it.dose === '20 g')
+    ? ok('a phase move saved from the form keeps the item’s id in the new version')
+    : bad('phase move lost its id', JSON.stringify(savedPhases));
+
+  // A version-LESS protocol reads as one empty open-ended phase, so an item
+  // added from *Add an item* writes v1 — exactly as the Coach's tool would.
   const bare = createProtocol(db, { name: 'Bare', type: 'other' });
-  const first = applyItemToContent(parseProtocolContent(null), item('z', 'Walk', null), {
-    phase: 0,
+  const emptyForm = seedPhases(parseProtocolContent(null), nextKey);
+  emptyForm[0].items.push({ ...blankItem(nextKey(), 'walk'), title: 'Walk' });
+  const firstSave = saveProtocolEdit(db, bare, {
+    base: parseProtocolContent(null),
+    content: buildContent(emptyForm),
+    changeNotes: null,
+    opened: protocolFieldsOf(getProtocol(db, bare)),
+    fields: protocolFieldsOf(getProtocol(db, bare)),
   });
-  addVersion(db, bare, first, itemChangeNote('Walk', 'added'), 'user');
   const firstVersion = getCurrentVersion(db, bare);
-  firstVersion.version_number === 1 && allItems(parseProtocolContent(firstVersion.content)).length === 1
-    ? ok('a per-item ADD on a version-less protocol writes v1 with one item')
+  firstSave.ok &&
+  firstVersion.version_number === 1 &&
+  allItems(parseProtocolContent(firstVersion.content)).length === 1
+    ? ok('adding an item to a version-less protocol writes v1 with one item')
     : bad('version-less add', JSON.stringify(firstVersion));
 
-  // MOVING between phases appends at the end of the target, and leaves exactly
-  // one copy — order inside a phase stays the full editor's.
-  const phased = normalizeContent({
-    phases: [
-      { id: 'one', title: 'Loading', duration_days: 7, items: [item('a', 'Creatine', '20 g')] },
-      { id: 'two', title: 'Maintenance', duration_days: null, items: [item('b', 'Omega-3', '2 caps')] },
-    ],
+  // A protocol deleted while the form was open refuses rather than throwing.
+  deleteProtocol(db, bare);
+  const gone = saveProtocolEdit(db, bare, {
+    base: parseProtocolContent(null),
+    content: buildContent(emptyForm),
+    changeNotes: null,
+    opened: protocolFieldsOf({ ...getProtocol(db, pid) }),
+    fields: protocolFieldsOf({ ...getProtocol(db, pid) }),
   });
-  const moved = applyItemToContent(phased, item('a', 'Creatine', '20 g'), { phase: 1 });
-  moved.phases[0].items.length === 0 &&
-  moved.phases[1].items.map((it) => it.id).join() === 'b,a'
-    ? ok('moving an item leaves one copy, at the end of the target phase')
-    : bad('move', JSON.stringify(moved.phases.map((p) => p.items.map((i) => i.id))));
+  !gone.ok && gone.refusal === 'This protocol no longer exists.'
+    ? ok('a save on a protocol deleted meanwhile refuses in one sentence')
+    : bad('deleted-protocol save', JSON.stringify(gone));
+}
 
-  // The settings sheet's path: identity and policy, no version.
-  const versionsBefore = raw
-    .prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?')
-    .get(pid).c;
-  reviseProtocol(db, pid, {
-    name: 'Morning Stack',
+console.log('12c. the save’s merge: one side’s change wins, agreement wins, a collision refuses');
+{
+  const it = (id, title, extra = {}) => ({
+    id,
+    title,
+    scheduled_time: null,
+    dose: null,
+    notes: null,
+    cadence: { kind: 'daily' },
+    remind: false,
+    ...extra,
+  });
+  const doc = (...phases) =>
+    normalizeContent({
+      phases: phases.map(([id, items, extra = {}]) => ({ id, title: null, duration_days: null, ...extra, items })),
+    });
+  const ids = (content) => content.phases.map((p) => p.items.map((i) => i.id).join(',')).join(' | ');
+  const base = doc(['p', [it('a', 'A'), it('b', 'B'), it('c', 'C')]]);
+
+  const quiet = rebaseContent(base, doc(['p', [it('a', 'A', { dose: '1' }), it('b', 'B'), it('c', 'C')]]), base);
+  quiet.ok && quiet.content.phases[0].items[0].dose === '1'
+    ? ok('nothing moved elsewhere: the form’s document is written as it stands')
+    : bad('quiet', JSON.stringify(quiet));
+
+  const theirs = doc(['p', [it('a', 'A'), it('b', 'B', { dose: '2' }), it('c', 'C')]]);
+  const untouched = rebaseContent(base, base, theirs);
+  untouched.ok && JSON.stringify(untouched.content) === JSON.stringify(theirs)
+    ? ok('the form changed nothing: the live document stands')
+    : bad('untouched', JSON.stringify(untouched));
+
+  // Different items, different sides: both land.
+  const both = rebaseContent(
+    base,
+    doc(['p', [it('a', 'A', { dose: '1' }), it('b', 'B'), it('c', 'C')]]),
+    theirs
+  );
+  both.ok &&
+  both.content.phases[0].items[0].dose === '1' &&
+  both.content.phases[0].items[1].dose === '2'
+    ? ok('a change here and a change there to different items both land')
+    : bad('both', JSON.stringify(both));
+
+  // The SAME field of one item changed two ways is a guess — refused, named.
+  const clash = rebaseContent(
+    base,
+    doc(['p', [it('a', 'A', { dose: '1' }), it('b', 'B'), it('c', 'C')]]),
+    doc(['p', [it('a', 'A', { dose: '9' }), it('b', 'B'), it('c', 'C')]])
+  );
+  !clash.ok && clash.refusal === '"A" was changed elsewhere while this form was open.'
+    ? ok('the same field of one item changed two ways refuses, naming the item')
+    : bad('clash', JSON.stringify(clash));
+  // …while two DIFFERENT fields of one item are two facts, and both land.
+  const twoFields = rebaseContent(
+    base,
+    doc(['p', [it('a', 'A', { dose: '1' }), it('b', 'B'), it('c', 'C')]]),
+    doc(['p', [it('a', 'A', { notes: 'Why it is here' }), it('b', 'B'), it('c', 'C')]])
+  );
+  twoFields.ok &&
+  twoFields.content.phases[0].items[0].dose === '1' &&
+  twoFields.content.phases[0].items[0].notes === 'Why it is here'
+    ? ok('a dose changed here and a why-line changed there on the same item both land')
+    : bad('two fields', JSON.stringify(twoFields));
+  // A reminder is meaningless without a time: kept on here, time cleared
+  // there — the merged item cannot store the reminder.
+  const remindBase = doc(['p', [it('r', 'R', { scheduled_time: '07:00' })]]);
+  const remindMerge = rebaseContent(
+    remindBase,
+    doc(['p', [it('r', 'R', { scheduled_time: '07:00', remind: true })]]),
+    doc(['p', [it('r', 'R', { scheduled_time: null })]])
+  );
+  remindMerge.ok &&
+  remindMerge.content.phases[0].items[0].scheduled_time === null &&
+  remindMerge.content.phases[0].items[0].remind === false
+    ? ok('a reminder turned on here over a time cleared there is not stored')
+    : bad('remind merge', JSON.stringify(remindMerge));
+  const agreed = rebaseContent(
+    base,
+    doc(['p', [it('a', 'A', { dose: '1' }), it('b', 'B'), it('c', 'C')]]),
+    doc(['p', [it('a', 'A', { dose: '1' }), it('b', 'B', { dose: '2' }), it('c', 'C')]])
+  );
+  agreed.ok && agreed.content.phases[0].items[1].dose === '2'
+    ? ok('…while the same change made on both sides is no conflict')
+    : bad('agreement', JSON.stringify(agreed));
+
+  // Removal against an edit, in both directions.
+  const removedHere = rebaseContent(base, doc(['p', [it('a', 'A'), it('c', 'C')]]), theirs);
+  !removedHere.ok && /"B" was changed elsewhere while this form removed it/.test(removedHere.refusal)
+    ? ok('removing an item someone else just changed refuses')
+    : bad('remove vs edit', JSON.stringify(removedHere));
+  const removedThere = rebaseContent(
+    base,
+    doc(['p', [it('a', 'A'), it('b', 'B', { dose: '5' }), it('c', 'C')]]),
+    doc(['p', [it('a', 'A'), it('c', 'C')]])
+  );
+  !removedThere.ok && removedThere.refusal === '"B" is not in the live version any more.'
+    ? ok('editing an item someone else removed refuses — the edit would resurrect it')
+    : bad('edit vs remove', JSON.stringify(removedThere));
+  const cleanRemove = rebaseContent(base, doc(['p', [it('a', 'A'), it('c', 'C')]]), doc(['p', [it('a', 'A', { dose: '3' }), it('b', 'B'), it('c', 'C')]]));
+  cleanRemove.ok && ids(cleanRemove.content) === 'a,c' && cleanRemove.content.phases[0].items[0].dose === '3'
+    ? ok('removing an item nobody else touched lands beside their change')
+    : bad('clean remove', JSON.stringify(cleanRemove));
+
+  // Additions on both sides: each lands where its own side put it.
+  const addBoth = rebaseContent(
+    base,
+    doc(['p', [it('a', 'A'), it('n', 'New here'), it('b', 'B'), it('c', 'C')]]),
+    doc(['p', [it('a', 'A'), it('b', 'B'), it('c', 'C'), it('z', 'New there')]])
+  );
+  addBoth.ok && ids(addBoth.content) === 'a,n,b,c,z'
+    ? ok('an item added here and one added there both land, each after its own predecessor')
+    : bad('add both', JSON.stringify(addBoth.ok ? ids(addBoth.content) : addBoth));
+
+  // Re-ordering here, adding there.
+  const reorder = rebaseContent(
+    base,
+    doc(['p', [it('c', 'C'), it('a', 'A'), it('b', 'B')]]),
+    doc(['p', [it('a', 'A'), it('b', 'B'), it('c', 'C'), it('z', 'Z')]])
+  );
+  reorder.ok && ids(reorder.content) === 'c,z,a,b'
+    ? ok('a re-order here keeps its order, and an item added there follows its predecessor')
+    : bad('reorder + add', JSON.stringify(reorder.ok ? ids(reorder.content) : reorder));
+  const twoOrders = rebaseContent(
+    base,
+    doc(['p', [it('c', 'C'), it('a', 'A'), it('b', 'B')]]),
+    doc(['p', [it('b', 'B'), it('a', 'A'), it('c', 'C')]])
+  );
+  !twoOrders.ok && /order of the items/.test(twoOrders.refusal)
+    ? ok('two different re-orderings of one phase refuse')
+    : bad('two orders', JSON.stringify(twoOrders));
+
+  // Phases. A phase added here while an item changed there: both land.
+  const phasedBase = doc(['p1', [it('a', 'A'), it('b', 'B')], { duration_days: 7 }], ['p2', [it('c', 'C')]]);
+  const addPhase = rebaseContent(
+    phasedBase,
+    doc(['p1', [it('a', 'A'), it('b', 'B')], { duration_days: 7 }], ['p2', [it('c', 'C')], { duration_days: 14 }], ['p3', [it('d', 'D')]]),
+    doc(['p1', [it('a', 'A', { dose: '4' }), it('b', 'B')], { duration_days: 7 }], ['p2', [it('c', 'C')]])
+  );
+  addPhase.ok &&
+  addPhase.content.phases.length === 3 &&
+  addPhase.content.phases[0].items[0].dose === '4'
+    ? ok('a phase added here and an item changed there both land')
+    : bad('add phase', JSON.stringify(addPhase));
+  const twoFrames = rebaseContent(
+    phasedBase,
+    doc(['p1', [it('a', 'A'), it('b', 'B')], { duration_days: 10 }], ['p2', [it('c', 'C')]]),
+    doc(['p1', [it('a', 'A'), it('b', 'B')], { duration_days: 21 }], ['p2', [it('c', 'C')]])
+  );
+  !twoFrames.ok && twoFrames.refusal === 'The phases were changed elsewhere while this form was open.'
+    ? ok('two different re-shapings of the phases refuse')
+    : bad('two frames', JSON.stringify(twoFrames));
+  const orphan = rebaseContent(
+    phasedBase,
+    doc(['p1', [it('a', 'A'), it('b', 'B'), it('c', 'C')]]),
+    doc(['p1', [it('a', 'A'), it('b', 'B')], { duration_days: 7 }], ['p2', [it('c', 'C'), it('e', 'E')]])
+  );
+  !orphan.ok && orphan.refusal === '"E" belongs to a phase that is no longer there.'
+    ? ok('an item added to a phase this form removed refuses, naming it')
+    : bad('orphan', JSON.stringify(orphan));
+
+  // A phase MOVE here and a dose change there are two facts of one item.
+  const moveAndDose = rebaseContent(
+    phasedBase,
+    doc(['p1', [it('a', 'A')], { duration_days: 7 }], ['p2', [it('c', 'C'), it('b', 'B')]]),
+    doc(['p1', [it('a', 'A'), it('b', 'B', { dose: '8' })], { duration_days: 7 }], ['p2', [it('c', 'C')]])
+  );
+  moveAndDose.ok && ids(moveAndDose.content) === 'a | c,b' && moveAndDose.content.phases[1].items[1].dose === '8'
+    ? ok('an item moved to another phase here keeps a dose changed there')
+    : bad('move and dose', JSON.stringify(moveAndDose.ok ? ids(moveAndDose.content) : moveAndDose));
+
+  // Every result passes the gate the Coach's tool passes, even when nothing
+  // moved elsewhere and the form's own document is the whole answer.
+  const invalid = rebaseContent(
+    phasedBase,
+    doc(['p1', [it('a', 'A'), it('b', 'B')]], ['p2', [it('c', 'C')]]),
+    phasedBase
+  );
+  !invalid.ok && /Phase 1 has no length/.test(invalid.refusal)
+    ? ok(`a document that breaks the phase rule is refused ("${invalid.refusal.slice(0, 40)}…")`)
+    : bad('an invalid document was accepted', JSON.stringify(invalid));
+  // …but a save that leaves the document alone is never refused over it: a
+  // rename of a protocol whose STORED document breaks the rule (a hand-edited
+  // export) writes the rename and none of the document.
+  const storedBad = doc(['p1', [it('a', 'A')]], ['p2', [it('c', 'C')]]);
+  const untouchedBad = rebaseContent(storedBad, storedBad, storedBad);
+  untouchedBad.ok && JSON.stringify(untouchedBad.content) === JSON.stringify(storedBad)
+    ? ok('a document this form did not touch is passed through, not re-judged')
+    : bad('untouched stored document refused', JSON.stringify(untouchedBad));
+
+  // Row fields: only what the form changed, onto the row as it is now.
+  const f = {
+    name: 'Stack',
+    description: null,
     type: 'supplement_stack',
-    description: 'The one that matters',
-    active: false,
-    content: null,
+    startedOn: '2026-09-01',
     carryOver: false,
     checkoffMode: 'strict',
-  });
-  raw.prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?').get(pid).c ===
-    versionsBefore &&
-  raw.prepare('SELECT is_active, carry_over FROM protocols WHERE id = ?').get(pid).is_active === 0
-    ? ok('the settings path writes identity and policy and mints NO version')
-    : bad('settings path wrote a version');
+  };
+  const renamedThere = { ...f, name: 'Evening stack' };
+  const patch = fieldPatch(f, { ...f, carryOver: true }, renamedThere);
+  patch.ok && JSON.stringify(patch.patch) === JSON.stringify({ carryOver: true })
+    ? ok('a policy change here writes that one field, and a rename made there survives it')
+    : bad('field patch', JSON.stringify(patch));
+  const fieldClash = fieldPatch(f, { ...f, name: 'Morning stack' }, renamedThere);
+  !fieldClash.ok && fieldClash.refusal === 'The name was changed elsewhere while this form was open.'
+    ? ok('the same field changed on both sides refuses, naming it')
+    : bad('field clash', JSON.stringify(fieldClash));
 }
 
 console.log('13. listVersions: newest first, item counts, honest nulls');
