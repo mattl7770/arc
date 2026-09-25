@@ -127,6 +127,9 @@ function AmountField({
  *   carry what was eaten and no whole, and an `of [3]` there would invite
  *   typing the pizza's eight over three logged slices. Emptied and left, ATE
  *   un-counts such a dish, since it is the only field saying what the dish is.
+ *   A counted PLAIN item always reads this shape — `ATE [2] EGGS`, beneath its
+ *   own row (2026-09-25): its pieces are the portion, not a cut of a whole, so
+ *   there is no OF to re-declare (src/lib/nutrition/review-rows.ts).
  *
  * Both fields are the parts' `AmountField` anatomy — a `w-14` mono field with the
  * same live, snapshot-from-focus, non-compounding semantics — because they are
@@ -277,20 +280,33 @@ export type ReviewHandlers = {
   onPiecesName: (key: string, name: string) => void;
 };
 
-/** One priced row — a plain item, or a part indented inside its composite. */
+/**
+ * One priced row — a plain item, or a part indented inside its composite.
+ *
+ * `count` is a counted PLAIN item's count, `2 eggs` (2026-09-25). It stands in
+ * the amount column where the grams field stood — the count is the row's amount
+ * once it has one, as it is a counted dish's — and the grams lead the sub-line
+ * as the secondary figure. The count is edited in ONE place, the `ATE [2] EGGS`
+ * sentence drawn beneath the row.
+ */
 function PricedRow({
   row,
   first,
   indented,
   handlers,
+  count = null,
 }: {
   row: ReviewRow;
   first: boolean;
   indented: boolean;
   handlers: ReviewHandlers;
+  count?: string | null;
 }) {
   const p = currentPortion(row);
   const macros = MACRO_LINE(p);
+  const subLine = [count && p.amount != null ? fmtAmount(p.amount, row.unit) : '', macros]
+    .filter(Boolean)
+    .join(' · ');
   return (
     <View>
       <Divider first={first} />
@@ -305,21 +321,25 @@ function PricedRow({
               </Text>
             </Text>
           </View>
-          <AmountField
-            row={row}
-            value={row.amountText}
-            label={row.name}
-            onChange={(t) => handlers.onAmountChange(row.key, t)}
-          />
+          {count ? (
+            <Text className="font-mono text-[13px] text-ink">{count}</Text>
+          ) : (
+            <AmountField
+              row={row}
+              value={row.amountText}
+              label={row.name}
+              onChange={(t) => handlers.onAmountChange(row.key, t)}
+            />
+          )}
           <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
             {p.kcal != null ? fmtInt(p.kcal) : '—'}
           </Text>
           <RemoveButton name={row.name} onPress={() => handlers.onRemove(row.key)} />
         </View>
         <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-          {macros}
+          {subLine}
           {/* The one notable micro, at the live portion (2026-09-23). */}
-          <KeyMicroTail label={keyMicroLabel(p)} lead={macros !== ''} />
+          <KeyMicroTail label={keyMicroLabel(p)} lead={subLine !== ''} />
         </Text>
       </View>
     </View>
@@ -492,13 +512,19 @@ export function ReviewItemsPlate({
             isComposite(row) ? (
               <CompositeRow key={row.key} row={row} first={index === 0} handlers={handlers} />
             ) : (
-              <PricedRow
-                key={row.key}
-                row={row}
-                first={index === 0}
-                indented={false}
-                handlers={handlers}
-              />
+              // A counted plain item (2026-09-25) reads `2 eggs` in its amount
+              // column and is edited by the dish's own sentence beneath it —
+              // `ATE [2] EGGS`, a record-shaped count with no OF.
+              <View key={row.key}>
+                <PricedRow
+                  row={row}
+                  first={index === 0}
+                  indented={false}
+                  handlers={handlers}
+                  count={row.pieces ? piecesLabel(row.pieces.count, row.pieces.name) : null}
+                />
+                {row.pieces ? <CountRow row={row} handlers={handlers} /> : null}
+              </View>
             )
           )}
         </View>

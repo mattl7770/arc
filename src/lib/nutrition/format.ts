@@ -6,6 +6,7 @@
 import { ML_PER_OZ } from '@/lib/log/metrics';
 import type { VolumeUnit } from '@/lib/user/types';
 
+import { MICROS, parseMicros } from './micros';
 import type { AmountUnit, MealItemWithServing } from './types';
 
 /** 1840 → "1,840" — the one thousands comma, without leaning on Intl. */
@@ -27,6 +28,21 @@ export function fmtQty(n: number): string {
  */
 export function fmtMicro(value: number, decimals: number): string {
   return decimals > 0 ? value.toFixed(decimals) : fmtInt(value);
+}
+
+/**
+ * "Sodium 380 mg · Iron 2.1 mg · Omega-3 1.2 g" — every micro a payload
+ * records, in the vocabulary's own order and decimals, or null when it records
+ * none. What app/food-new.tsx shows under a described food's macros
+ * (2026-09-25), so a figure the model filled is read before Save writes it and
+ * never rides to the row unseen.
+ */
+export function microsLine(json: string | null | undefined): string | null {
+  const micros = parseMicros(json);
+  const parts = MICROS.filter((m) => micros[m.key] != null).map(
+    (m) => `${m.label} ${fmtMicro(micros[m.key] ?? 0, m.decimals)} ${m.unit}`
+  );
+  return parts.length === 0 ? null : parts.join(' · ');
 }
 
 /** "P 42g · C 30g · F 18g" from whatever macros a row actually recorded. */
@@ -179,19 +195,36 @@ export function piecesLabel(count: number, noun: string): string {
 }
 
 /**
- * "2 × 1 egg (100 g)" · "3 slices (270 g)" · "1 × 1 can (330 ml)" · "150 g" —
- * the honest portion label. A count only reads with the name of what it counts,
+ * A row's count of PIECES as a person reads it — `2 eggs`, `3 slices` — or null
+ * when the row has none. A `serving_qty` with no `piece_name` beside it counts
+ * the catalog food's serving, not pieces, and is not one (2026-09-25). What the
+ * Coach's meal and template payloads carry as `count`, through the one
+ * formatter every screen reads a count through.
+ */
+export function pieceCount(item: {
+  serving_qty: number | null;
+  piece_name?: string | null;
+}): string | null {
+  return item.serving_qty != null && item.piece_name != null
+    ? piecesLabel(item.serving_qty, item.piece_name)
+    : null;
+}
+
+/**
+ * "2 × 1 egg (100 g)" · "3 slices (270 g)" · "2 eggs (100 g)" · "150 g" — the
+ * honest portion label. A count only reads with the name of what it counts,
  * so an item whose catalog food is gone (food_serving_name NULL) falls back to
  * the bare amount.
  *
- * **Two sources for that name, and they never mix** (0059). A composite HEADER
- * names its own piece in `piece_name` — it has no `food_id`, so the live serving
- * join can never reach it — and reads as a count of pieces, `3 slices`
- * ({@link piecesLabel}). A catalog item keeps naming the FOOD's serving through
- * that join, so correcting a serving name still reaches rows already logged, and
- * reads as servings, `2 × 1 egg` ({@link countLabel}). `piece_name` wins where
- * both somehow exist, because a row that has one is a header and a header's
- * `food_serving_name` is NULL by construction.
+ * **Two sources for that name, and they never mix** (0059). A row counted in
+ * its own PIECES names the piece in `piece_name` — a composite header, which
+ * has no `food_id` and so can never reach the live serving join, and since
+ * 2026-09-25 a plain item, `2 eggs` — and reads as a count of pieces
+ * ({@link piecesLabel}). A catalog item counted in SERVINGS keeps naming the
+ * food's serving through that join, so correcting a serving name still reaches
+ * rows already logged, and reads as servings, `2 × 1 egg` ({@link countLabel}).
+ * `piece_name` wins where both exist — a grounded `2 eggs` has a food with a
+ * serving too — because the noun is what says the count is of pieces.
  *
  * The count LEADS and the amount follows in brackets: once a dish is counted its
  * unit is the piece, and the grams are the secondary figure.

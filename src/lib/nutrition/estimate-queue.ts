@@ -156,7 +156,13 @@ function toMealItems(estimate: MealEstimate): NewMealItem[] {
           piece_name: item.pieces?.name ?? null,
           components: (item.components ?? []).map(priced),
         }
-      : priced(item)
+      : // A plain item keeps its own count of pieces (2026-09-25) — `2 eggs`,
+        // the pair whole, as the review's Save writes it.
+        {
+          ...priced(item),
+          serving_qty: item.pieces?.count ?? null,
+          piece_name: item.pieces?.name ?? null,
+        }
   );
 }
 

@@ -212,11 +212,18 @@ function insertMealItem(
   // only two non-display readers inner-join on `food_id`, which a header lacks.
   //
   // The pair is written only WHOLE. A noun with no count names nothing, so
-  // `piece_name` rides on a non-null `serving_qty`; on a part or a plain item it
-  // is always NULL, whose count names the catalog food's serving through the
-  // live join instead. The two vocabularies never share a column.
+  // `piece_name` rides on a non-null `serving_qty`; on a part it is always
+  // NULL — a slice is not a fraction of the cheese.
+  //
+  // A PLAIN top-level item may carry the pair too (2026-09-25, the owner:
+  // *"read them as a count too: '2 eggs'"*). The two vocabularies still never
+  // share a MEANING: with `piece_name` set, `serving_qty` counts pieces; with it
+  // NULL, it counts the catalog food's serving through the live join, exactly
+  // as before. Every reader keys off `piece_name` to tell which (`portionLabel`,
+  // the recents rails, meal-detail's editor, the template copy).
   const count = item.serving_qty ?? null;
-  const pieceName = header && count != null ? (item.piece_name ?? null) : null;
+  const noun = item.piece_name?.trim() || null;
+  const pieceName = parentItemId === null && count != null ? noun : null;
   db.run(
     `INSERT INTO meal_items (id, meal_id, food_id, name, amount, unit, serving_qty,
        kcal, protein_g, carbs_g, fat_g, fiber_g, confidence, micros,
@@ -356,7 +363,14 @@ export function addMealItem(db: Database, mealId: string, item: NewMealItem): st
 }
 
 /** Rewrite an item's portion + macro snapshot (the caller re-scales via
- * src/lib/nutrition/servings.ts) and re-derive the meal's totals. */
+ * src/lib/nutrition/servings.ts) and re-derive the meal's totals.
+ *
+ * A portion rewrite speaks in grams or in the catalog food's SERVINGS, never in
+ * pieces, so it clears `piece_name` (2026-09-25): a `serving_qty` it writes is
+ * a serving count, and a noun left beside it would read that count as pieces —
+ * `2 × '3 slices'` printed as `2 slices`. A piece count is written only by
+ * {@link setItemCount}, which is what meal-detail's editor opens on a counted
+ * item. */
 export function updateMealItemPortion(
   db: Database,
   itemId: string,
@@ -371,8 +385,8 @@ export function updateMealItemPortion(
     // `unit` is deliberately absent: re-portioning answers "how much", and a
     // portion does not change what it is measured in (see rescaleLoggedItem).
     db.run(
-      `UPDATE meal_items SET amount = ?, serving_qty = ?, kcal = ?, protein_g = ?,
-         carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?
+      `UPDATE meal_items SET amount = ?, serving_qty = ?, piece_name = NULL, kcal = ?,
+         protein_g = ?, carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?
        WHERE id = ?`,
       [
         portion.amount ?? null,
@@ -595,6 +609,87 @@ export function clearCompositeCount(db: Database, parentItemId: string): void {
   db.run(
     'UPDATE meal_items SET serving_qty = NULL, piece_name = NULL WHERE id = ? AND is_composite = 1',
     [parentItemId]
+  );
+}
+
+/**
+ * The count on ANY top-level item — a composite header (`setCompositeCount`,
+ * unchanged) or, since 2026-09-25, a PLAIN item counted in its own pieces:
+ * `2 eggs`, then "I ate 3" (the owner: *"read them as a count too"*).
+ *
+ * The same principle as the dish's, applied to one row: the first count
+ * DECLARES what the portion, as it stands, is — nothing scales — and every later
+ * one PRESERVES that by scaling the row itself (amount, macros, fiber, micros)
+ * by `count / current`, then writing the count outright so 2 → 3 → 2 lands on
+ * exactly 2. Proportional, from the row's CURRENT values, and unrounded, for
+ * `scaleCompositeItem`'s reasons.
+ *
+ * **Which count is "current" is the noun's call.** A plain item's `serving_qty`
+ * WITHOUT a `piece_name` is a count of the catalog food's SERVING (`2 × 1 egg`)
+ * — another vocabulary — so it is not a count to scale from: a first piece count
+ * on such a row declares, and the serving count it replaces is the same portion
+ * said in pieces. A part never takes a count (a slice is not a fraction of the
+ * cheese), so a part id is refused by doing nothing.
+ */
+export function setItemCount(
+  db: Database,
+  itemId: string,
+  count: number,
+  pieceName?: string
+): void {
+  if (!Number.isFinite(count) || count <= 0) {
+    throw new Error(`setItemCount: ${count} is not a count of anything.`);
+  }
+  const row = db.get<MealItemRow>('SELECT * FROM meal_items WHERE id = ?', [itemId]);
+  if (!row || row.parent_item_id !== null) return;
+  if (row.is_composite === 1) {
+    setCompositeCount(db, itemId, count, pieceName);
+    return;
+  }
+  const given = pieceName?.trim();
+  const noun = given !== undefined && given !== '' ? given : (row.piece_name ?? 'piece');
+  const current = row.piece_name != null ? row.serving_qty : null;
+  db.transaction(() => {
+    if (current != null && current > 0) {
+      const factor = count / current;
+      const s = (v: number | null): number | null => (v == null ? null : v * factor);
+      db.run(
+        `UPDATE meal_items SET amount = ?, kcal = ?, protein_g = ?, carbs_g = ?, fat_g = ?,
+           fiber_g = ?, micros = ?
+         WHERE id = ?`,
+        [
+          s(row.amount),
+          s(row.kcal),
+          s(row.protein_g),
+          s(row.carbs_g),
+          s(row.fat_g),
+          s(row.fiber_g),
+          serializeMicros(scaleMicros(parseMicros(row.micros), factor)),
+          itemId,
+        ]
+      );
+    }
+    db.run('UPDATE meal_items SET serving_qty = ?, piece_name = ? WHERE id = ?', [
+      count,
+      noun,
+      itemId,
+    ]);
+    recomputeMealTotals(db, row.meal_id);
+  });
+}
+
+/**
+ * Clear a top-level item's count of pieces, scaling nothing — a composite's
+ * (`clearCompositeCount`) or a plain item's (2026-09-25). The portion stays
+ * exactly where it is and reads in grams again: forgetting how many eggs it
+ * was is not eating any fewer of them. A plain item's SERVING count (no noun)
+ * is not a piece count and is left alone.
+ */
+export function clearItemCount(db: Database, itemId: string): void {
+  db.run(
+    `UPDATE meal_items SET serving_qty = NULL, piece_name = NULL
+     WHERE id = ? AND parent_item_id IS NULL AND (is_composite = 1 OR piece_name IS NOT NULL)`,
+    [itemId]
   );
 }
 

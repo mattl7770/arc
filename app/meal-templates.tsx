@@ -17,7 +17,7 @@ import {
   listTemplates,
   logMealFromTemplate,
 } from '@/lib/db/repositories/meal-templates';
-import { fmtAmount, fmtInt, fmtQty, macroLine } from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt, fmtQty, macroLine, portionLabel } from '@/lib/nutrition/format';
 import type { MealTemplateItemRow, MealTemplateSummary } from '@/lib/nutrition/types';
 import type { VolumeUnit } from '@/lib/user/types';
 
@@ -42,10 +42,16 @@ import type { VolumeUnit } from '@/lib/user/types';
  * template is ever expanded, so only one accent is ever on screen.
  */
 
-/** "150 g" / "250 ml" / "1.5 ×" — a template item's portion, best-effort
- * without the catalog serving name (template_items snapshot the food, not its
- * serving), and under the user's volume preference. */
+/** "2 eggs (100 g)" / "150 g" / "250 ml" / "1.5 ×" — a template item's portion,
+ * best-effort without the catalog serving name (template_items snapshot the
+ * food, not its serving), and under the user's volume preference. A line
+ * counted in its own pieces reads as a count first (0065), through the same
+ * `portionLabel` → `piecesLabel` every logged row reads through, so a template
+ * and the meal it logs say `2 eggs` the same way. */
 function itemPortion(item: MealTemplateItemRow, volume: VolumeUnit): string | null {
+  if (item.serving_qty != null && item.piece_name != null) {
+    return portionLabel({ ...item, food_serving_name: null }, volume);
+  }
   if (item.amount != null) return fmtAmount(item.amount, item.unit, volume);
   if (item.serving_qty != null) return `${fmtQty(item.serving_qty)} ×`;
   return null;

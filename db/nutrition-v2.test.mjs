@@ -8,7 +8,10 @@ import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { ModelRequestError } from '../src/lib/ai/model-client.ts';
-import { todayISODate } from '../src/lib/db/date.ts';
+// The Coach's domain registry, for §77's payload read only (a namespace, for
+// the reason given at reviewRowsModule below).
+import * as domainsModule from '../src/lib/ai/domains/index.ts';
+import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
@@ -165,6 +168,8 @@ import {
 import * as estimateModule from '../src/lib/nutrition/estimate.ts';
 import * as keyMicroModule from '../src/lib/nutrition/key-micro.ts';
 import * as nutritionRepoModule from '../src/lib/db/repositories/nutrition.ts';
+import * as formatModule from '../src/lib/nutrition/format.ts';
+import { portionLabel } from '../src/lib/nutrition/format.ts';
 import {
   microsForAmount,
   MICROS,
@@ -208,6 +213,8 @@ const bad = (n, e) => {
   console.log(`  FAIL ${n}${e ? ' — ' + e : ''}`);
 };
 const near = (a, b) => typeof a === 'number' && Math.abs(a - b) < 1e-6;
+/** A source file's text, for the wiring pins of §75–§77. */
+const src2 = (file) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 const throws = (fn) => {
   try {
     fn();
@@ -2916,7 +2923,7 @@ console.log('44. 0059: the first count DECLARES; every later one PRESERVES');
   const beer = listMealItems(db, mealId).find((r) => r.name === 'Lager');
   setCompositeCount(db, beer.id, 3, 'slice');
   listMealItems(db, mealId).find((r) => r.id === beer.id).piece_name === null
-    ? ok('and a NON-header is refused outright — a plain item is not counted in pieces')
+    ? ok('and a NON-header is refused outright — a plain item’s count is setItemCount’s (§77)')
     : bad('plain item counted');
 
   // Clearing is a declaration of ignorance, not of eating.
@@ -3586,16 +3593,25 @@ console.log('50. 0059: what the parser accepts as a count, and what it ignores')
     ? ok('an empty noun, 0, 101, "three", a bare string and null all parse to no count')
     : bad('a bad count survived');
 
-  // On a PLAIN item it is ignored: a count there would land in three places
-  // built for a catalog serving count.
-  parseMealEstimate(
+  // On a PLAIN item it is CARRIED since 2026-09-25 (the owner: "read them as a
+  // count too: '2 eggs'") — the three serving-count readers that once made it
+  // unsafe now key off the noun (§77 pins each one). The same shape rules hold.
+  const toast = parseMealEstimate(
     JSON.stringify({
       title: 'Toast',
       items: [{ name: 'Toast', amount: 60, kcal: 160, pieces: { name: 'slice', count: 3 } }],
     })
+  ).items[0];
+  toast.pieces?.name === 'slice' &&
+  toast.pieces?.count === 3 &&
+  parseMealEstimate(
+    JSON.stringify({
+      title: 'Toast',
+      items: [{ name: 'Toast', amount: 60, kcal: 160, pieces: { name: 'slice', count: 0 } }],
+    })
   ).items[0].pieces === null
-    ? ok('and a count on a plain item is ignored, not carried')
-    : bad('plain item counted');
+    ? ok('a count on a plain item is carried now — and a bad one still parses to none')
+    : bad('plain item counted', JSON.stringify(toast.pieces));
 
   // A reply with no "pieces" key at all parses exactly as it did before.
   const legacy = parseMealEstimate(composite(undefined)).items[0];
@@ -4000,11 +4016,14 @@ console.log('55. 2026-09-23: a LOGGED composite — ate [3] slices, and the Save
 
   // THE SOURCE PIN: the screen runs exactly this plan, through exactly these writers.
   const screen = readFileSync(new URL('../app/meal-detail.tsx', import.meta.url), 'utf8');
+  // The writers are the item-level pair since 2026-09-25: they run the
+  // composite's own `setCompositeCount` / `clearCompositeCount` on a header,
+  // and scale the row itself on a counted plain item (§77).
   [
     'planLoggedCount(countEdit, item)',
-    'clearCompositeCount(db, item.id)',
-    'setCompositeCount(db, item.id, plan.declare, plan.noun)',
-    'setCompositeCount(db, item.id, plan.eaten, plan.noun)',
+    'clearItemCount(db, item.id)',
+    'setItemCount(db, item.id, plan.declare, plan.noun)',
+    'setItemCount(db, item.id, plan.eaten, plan.noun)',
   ].every((s) => screen.includes(s)) && !screen.includes('cleared:')
     ? ok('meal-detail’s Save runs this plan and nothing else — the `cleared` gesture is gone')
     : bad('meal-detail save drifted from the mirrored plan');
@@ -5038,11 +5057,17 @@ console.log(
         'meal-detail: the × and Delete this meal go through the Undo paths, and remove nothing directly'
       )
     : bad('meal-detail wiring');
+  // The combine's wiring moved into ONE hook the Eat tab and History share
+  // (2026-09-25), so it is pinned there and each screen is pinned to the hook.
+  const combineHook = src('src/hooks/use-combine-meals.ts');
   const eat = src('app/nutrition.tsx');
-  eat.includes('combineWithUndo(') &&
+  combineHook.includes('combineWithUndo(') &&
+  !combineHook.includes('combineMeals(') &&
+  combineHook.includes('error instanceof CombineRefused') &&
+  eat.includes('useCombineMeals(today, meals, pendingEstimates, reload)') &&
   !eat.includes('combineMeals(') &&
-  eat.includes("useUndoOffer('list', todayISODate())") &&
-  eat.includes('error instanceof CombineRefused')
+  eat.includes('const today = todayISODate();') &&
+  eat.includes("useUndoOffer('list', today)")
     ? ok('the Eat tab combines through combineWithUndo, draws today’s offers, and shows a refusal')
     : bad('Eat tab wiring');
   src('app/nutrition-history.tsx').includes("useUndoOffer('list', view.date)")
@@ -6680,6 +6705,473 @@ console.log('74. a square of seed chocolate does not hide a dinner’s sodium on
   near(dayMicroTotals(db, TODAY).caffeine_mg, 112)
     ? ok('the day’s Caffeine cell counts all of it: 96 + 8 + 8 = 112 mg')
     : bad('day caffeine', JSON.stringify(dayMicroTotals(db, TODAY)));
+}
+
+// ===========================================================================
+// 75. 2026-09-25 — "Also allow combine on past days, from History." Nothing in
+// combineMeals, its Undo, or the offer assumes today: a past day combines,
+// is offered back on THAT day's list, and splits again exactly — while today's
+// meals never move. History runs the Eat tab's own hook, keyed by the day drawn.
+// ===========================================================================
+console.log('75. combine on a past day: the same rules, the Undo on that day, today untouched');
+{
+  const { raw, db } = freshDb();
+  closeUndo();
+  const PAST = shiftISODate(TODAY, -3);
+  const lunchA = logMeal(db, { date: PAST, time: '12:30', name: 'Soup', kcal: 220, protein_g: 9 });
+  const { mealId: lunchB } = logMealWithItems(db, {
+    date: PAST,
+    time: '12:40',
+    name: 'Bread',
+    items: [{ name: 'Sourdough', amount: 60, kcal: 150, protein_g: 5 }],
+  });
+  const { mealId: todays } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:00',
+    name: 'Oats',
+    items: [{ name: 'Oats', amount: 50, kcal: 190, protein_g: 7 }],
+  });
+  const todayBefore = JSON.stringify(rowsOf(raw, 'meals', 'date = ?', TODAY));
+  const pastEnergy = () => `${todayTotals(db, PAST).kcal}/${todayTotals(db, PAST).protein_g}`;
+  const pastTotalBefore = pastEnergy();
+
+  const plan = planCombine(listTodayMeals(db, PAST), pendingEstimateMealIds(db, PAST));
+  plan.kind === 'ok' && plan.keep.id === lunchA && plan.count === 2
+    ? ok('the planner combines a past day’s two meals, keeping the earliest')
+    : bad('past plan', JSON.stringify(plan));
+
+  const combined = combineWithUndo(db, [lunchA, lunchB], 'Lunch');
+  const offer = currentUndo();
+  const kept = getMeal(db, lunchA);
+  kept.date === PAST &&
+  kept.name === 'Lunch' &&
+  !getMeal(db, lunchB) &&
+  pastEnergy() === pastTotalBefore
+    ? ok('the result keeps the past day’s own date and its total, not today’s')
+    : bad('past combine', JSON.stringify(kept));
+  offer?.scope.on === 'list' &&
+  offer.scope.date === PAST &&
+  offerDrawnOn(offer, 'list', PAST) === offer &&
+  offerDrawnOn(offer, 'list', TODAY) === null
+    ? ok('the Undo is offered on that day’s list — History draws it, the Eat tab does not')
+    : bad('offer scope', JSON.stringify(offer?.scope));
+  JSON.stringify(rowsOf(raw, 'meals', 'date = ?', TODAY)) === todayBefore &&
+  getMeal(db, todays)?.date === TODAY
+    ? ok('today’s meals are untouched by a combine on another day')
+    : bad('today moved');
+
+  runUndo();
+  getMeal(db, lunchB)?.date === PAST &&
+  getMeal(db, lunchA)?.name === 'Soup' &&
+  listTodayMeals(db, PAST).length === 2 &&
+  pastEnergy() === pastTotalBefore &&
+  combined.count === 2
+    ? ok('Undo splits them again on the past day, each meal as it was')
+    : bad('past uncombine', JSON.stringify(listTodayMeals(db, PAST)));
+
+  // A photo logged offline can outlive its day: a past meal still waiting on
+  // its estimate is refused by name, exactly as on the Eat tab.
+  const { mealId: waiting } = queueNewMealEstimate(
+    db,
+    { date: PAST, time: '19:00', name: 'a curry' },
+    { kind: 'text', description: 'a curry' }
+  );
+  const refused = planCombine(listTodayMeals(db, PAST), pendingEstimateMealIds(db, PAST));
+  pendingEstimateMealIds(db, PAST).has(waiting) &&
+  refused.kind === 'refused' &&
+  refused.reason.includes('a curry')
+    ? ok('a past meal still waiting on its estimate refuses the combine, by name')
+    : bad('past pending', JSON.stringify(refused));
+  closeUndo();
+
+  // THE WIRING: one hook, keyed by the day drawn, on both lists.
+  const hook = src2('src/hooks/use-combine-meals.ts');
+  const history = src2('app/nutrition-history.tsx');
+  const dayHook = src2('src/hooks/use-nutrition.ts');
+  hook.includes('state !== null && state.day === day ? state : null') &&
+  history.includes(
+    'useCombineMeals(view.date, view.meals, view.pendingEstimates, reload)'
+  ) &&
+  history.includes('<CombineToggle') &&
+  history.includes('<CombineFooter') &&
+  history.includes('<CombineMark') &&
+  history.includes('Estimate pending — offline') &&
+  dayHook.includes('pendingEstimates: readPendingEstimates(db, date),')
+    ? ok('History runs the Eat tab’s hook, toggle, foot and mark over the day in view')
+    : bad('history combine wiring');
+}
+
+// ===========================================================================
+// 76. 2026-09-25 — "When you create a food by describing it, should the AI
+// also fill the other micros where the food is a notable source? Yes, same
+// rule as the estimator." The shortlist and its bar are the estimator's own
+// constants, the reply goes through the one vocabulary filter, and the row
+// stores per-100 micros — no model call is made (the parser is the path).
+// ===========================================================================
+console.log('76. a described food asks for the shortlist the estimator asks for, and keeps it');
+{
+  const { NOTABLE_MICRO_KEYS, NOTABLE_SOURCE_BAR } = estimateModule;
+  const F = FOOD_ENTRY_SYSTEM_PROMPT;
+  typeof NOTABLE_MICRO_KEYS === 'string' &&
+  NOTABLE_MICRO_KEYS.includes('omega3_g') &&
+  !NOTABLE_MICRO_KEYS.includes('sodium_mg') &&
+  NOTABLE_SOURCE_BAR === "gives 10%+ of a day's value" &&
+  F.includes(`${NOTABLE_MICRO_KEYS} only where a serving\n  ${NOTABLE_SOURCE_BAR}.`) &&
+  MEAL_ESTIMATION_SYSTEM_PROMPT.includes(
+    `${NOTABLE_MICRO_KEYS} only where the portion\n  ${NOTABLE_SOURCE_BAR}.`
+  ) &&
+  MEAL_REVISION_SYSTEM_PROMPT.includes(
+    `${NOTABLE_MICRO_KEYS} only where the portion\n  ${NOTABLE_SOURCE_BAR};`
+  )
+    ? ok('all three prompts read ONE shortlist and ONE bar — the food entry judges it per serving')
+    : bad('shared shortlist', F.slice(F.indexOf('micros'), F.indexOf('micros') + 400));
+  F.includes('"micros" are PER 100 too') &&
+  F.includes('sodium_mg and caffeine_mg where the food plausibly carries them') &&
+  F.includes('"micros": {<key>: number}|null}') &&
+  !F.includes('{"sodium_mg": number, "caffeine_mg": number}')
+    ? ok('its micros are per 100 like every figure on the row, and the schema names no key twice')
+    : bad('food-entry micros bullet');
+  // The ceiling was NOT raised: the round paid for itself (estimate.ts note).
+  Math.round(F.length / 3.6) < 500
+    ? ok(`the food-entry prompt still fits under 500 (~${Math.round(F.length / 3.6)} tok)`)
+    : bad('food-entry prompt over its ceiling', String(Math.round(F.length / 3.6)));
+
+  // THE PARSE: salmon per 100 g — its omega-3, vitamin D and B12 kept; an
+  // invented key and a non-number dropped by the one vocabulary filter.
+  const salmon = parseFoodEntry(
+    JSON.stringify({
+      name: 'Atlantic salmon, baked',
+      basis: 'g',
+      kcal_100: 206,
+      protein_g_100: 22,
+      fat_g_100: 12,
+      micros: {
+        sodium_mg: 61,
+        omega3_g: 2.2,
+        vitamin_d_mcg: 13.1,
+        b12_mcg: 3.2,
+        astaxanthin_mg: 0.5,
+        potassium_mg: 'about 380',
+      },
+    })
+  );
+  const m = parseMicros(salmon.micros);
+  m.omega3_g === 2.2 &&
+  m.vitamin_d_mcg === 13.1 &&
+  m.b12_mcg === 3.2 &&
+  m.sodium_mg === 61 &&
+  !('astaxanthin_mg' in m) &&
+  !('potassium_mg' in m)
+    ? ok('the shortlist lands per 100; an invented key and "about 380" are dropped')
+    : bad('parsed micros', salmon.micros);
+
+  // THE ROW: what the form saves is what was parsed, per 100 of the basis, and
+  // it scales to a portion like any catalog micro.
+  const { db } = freshDb();
+  const id = createFood(db, {
+    name: salmon.name,
+    basis: salmon.basis,
+    kcal_100g: salmon.kcal_100g,
+    protein_g_100g: salmon.protein_g_100g,
+    fat_g_100g: salmon.fat_g_100g,
+    micros: salmon.micros,
+    source: 'ai',
+  });
+  const stored = getFood(db, id);
+  const fillet = itemForPortion(stored, { amount: 150 });
+  stored.micros === salmon.micros && near(parseMicros(fillet.micros).omega3_g, 3.3)
+    ? ok('the row stores them as parsed, and 150 g of it carries 3.3 g omega-3')
+    : bad('stored micros', `${stored.micros} / ${fillet.micros}`);
+
+  // THE READOUT food-new draws under the macros, so nothing rides to the row
+  // unseen — the vocabulary's order, labels and decimals.
+  const format = formatModule;
+  format.microsLine?.(salmon.micros) ===
+    'Sodium 61 mg · Vitamin D 13.1 mcg · Vitamin B12 3.2 mcg · Omega-3 2.2 g' &&
+  format.microsLine(null) === null &&
+  format.microsLine('{}') === null
+    ? ok('food-new reads them out: “Sodium 61 mg · Vitamin D 13.1 mcg · …”, nothing when none')
+    : bad('microsLine', String(format.microsLine?.(salmon.micros)));
+  src2('app/food-new.tsx').includes('microsLine(micros)')
+    ? ok('…and the screen draws that line from the micros it will save')
+    : bad('food-new readout');
+}
+
+// ===========================================================================
+// 77. 2026-09-25 — "Read them as a count too: '2 eggs'." A plain item the
+// model returns with pieces keeps them, reads `2 eggs`, edits as `ATE [2]
+// EGGS` (never an OF), saves the pair whole, and every reader that used to
+// make a plain count unsafe keys off the noun: meal-detail's editor, the
+// recents rails, a template round-trip, Log again, a revision, the drain and
+// the Coach's payload.
+// ===========================================================================
+console.log('77. a plain item counted in pieces: `2 eggs` from the estimate to every reader');
+{
+  const { db } = freshDb();
+  const EGG = createFood(db, {
+    name: 'Test farm egg',
+    serving_name: '3 eggs',
+    serving_amount: 150,
+    kcal_100g: 143,
+    protein_g_100g: 12.6,
+    carbs_g_100g: 0.7,
+    fat_g_100g: 9.5,
+    micros: '{"b12_mcg":0.9}',
+  });
+  const estimate = groundMealEstimate(
+    db,
+    parseMealEstimate(
+      JSON.stringify({
+        title: 'Eggs and toast',
+        items: [
+          {
+            name: 'Test farm egg',
+            amount: 100,
+            unit: 'g',
+            kcal: 150,
+            protein_g: 12,
+            carbs_g: 1,
+            fat_g: 10,
+            confidence: 'high',
+            pieces: { name: 'egg', count: 2 },
+          },
+          {
+            name: 'Pizza',
+            confidence: 'medium',
+            pieces: { name: 'slice', count: 8 },
+            components: [
+              { name: 'Crust', amount: 400, unit: 'g', kcal: 1000, protein_g: 30, carbs_g: 180, fat_g: 12 },
+              { name: 'Cheese', amount: 200, unit: 'g', kcal: 700, protein_g: 45, carbs_g: 4, fat_g: 55 },
+            ],
+          },
+          {
+            name: 'Calzone',
+            confidence: 'medium',
+            components: [
+              { name: 'Dough', amount: 200, unit: 'g', kcal: 500, protein_g: 15, carbs_g: 90, fat_g: 6 },
+              { name: 'Filling', amount: 100, unit: 'g', kcal: 300, protein_g: 20, carbs_g: 4, fat_g: 22 },
+            ],
+          },
+        ],
+      })
+    )
+  );
+  const egg = estimate.items[0];
+  egg.foodId === EGG && egg.pieces?.name === 'egg' && egg.pieces?.count === 2
+    ? ok('the model’s `2 eggs` survives grounding to a catalog food whose serving is “3 eggs”')
+    : bad('grounded egg', JSON.stringify(egg));
+
+  let rows = rowsFromEstimate(db, estimate);
+  const eggRow = rows[0];
+  eggRow.pieces?.count === 2 && eggRow.wholeCount === null && eggRow.expanded === false
+    ? ok('a plain row keeps the count as a RECORD-shaped count — no whole, so no OF')
+    : bad('plain row', JSON.stringify({ p: eggRow.pieces, w: eggRow.wholeCount }));
+
+  // ITEM 4: a counted dish opens by default; an uncounted one does not.
+  rows[1].expanded === true && rows[2].expanded === false && rows[1].wholeCount === 8
+    ? ok('a counted dish opens on the review — its sentence is its only handle — an uncounted one stays shut')
+    : bad('default disclosure', JSON.stringify(rows.map((r) => r.expanded)));
+
+  // ATE, live and non-compounding from the focus snapshot: 2 → "3" → "30" → "3".
+  rows = beginCountEdit(rows, eggRow.key);
+  rows = setRowsCount(rows, eggRow.key, '3');
+  const at3 = rows[0];
+  near(currentPortion(at3).amount, 150) && near(currentPortion(at3).kcal, 214.5) && at3.pieces.count === 3
+    ? ok('ATE 3 scales the row itself: 150 g, every figure × 3/2')
+    : bad('ate 3', JSON.stringify(currentPortion(at3)));
+  rows = setRowsCount(rows, eggRow.key, '30');
+  rows = setRowsCount(rows, eggRow.key, '3');
+  near(currentPortion(rows[0]).amount, 150) && rows[0].pieces.count === 3
+    ? ok('…and "30" then "3" lands on × 3/2 again, never compounded')
+    : bad('compounded', JSON.stringify(currentPortion(rows[0])));
+  rows = setRowsCount(rows, eggRow.key, '');
+  near(currentPortion(rows[0]).amount, 100) && rows[0].pieces?.count === 2
+    ? ok('an emptied ATE shows the row as it stood at focus')
+    : bad('emptied mid-edit', JSON.stringify(rows[0].pieces));
+  const uncounted = endCountEdit(rows, eggRow.key)[0];
+  uncounted.pieces === null && near(currentPortion(uncounted).amount, 100)
+    ? ok('…and left empty it un-counts, the grams exactly where they stood')
+    : bad('uncount', JSON.stringify(uncounted.pieces));
+  rows = endCountEdit(setRowsCount(beginCountEdit(rows, eggRow.key), eggRow.key, '3'), eggRow.key);
+  rows = setPiecesName(rows, eggRow.key, 'large egg');
+
+  // A C5 answer that scales the item moves its count: "how many eggs? 4".
+  const scaled = applyAnswer(rowsFromEstimate(db, estimate), {
+    kind: 'scale_item',
+    name: 'Test farm egg',
+    factor: 2,
+  })[0];
+  scaled.pieces?.count === 4 && near(currentPortion(scaled).amount, 200)
+    ? ok('a scale_item answer on a counted egg reads `4 eggs`, 200 g')
+    : bad('answer scale', JSON.stringify(scaled.pieces));
+
+  // SAVE: the pair lands whole on the plain item; a part never carries one.
+  const saved = rowsToMealItems(rows);
+  saved[0].serving_qty === 3 && saved[0].piece_name === 'large egg' && saved[0].food_id === EGG
+    ? ok('Save writes `3 × large egg` on the item, grounded food kept')
+    : bad('saved plain', JSON.stringify(saved[0]));
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:00',
+    name: 'Eggs and toast',
+    items: [
+      ...saved,
+      {
+        name: 'Toast',
+        components: [{ name: 'Bread', amount: 60, kcal: 150, serving_qty: 2, piece_name: 'slice' }],
+      },
+    ],
+  });
+  const items = listMealItems(db, mealId);
+  const stored = items.find((i) => i.name === 'Test farm egg');
+  const part = items.find((i) => i.name === 'Bread');
+  stored.serving_qty === 3 &&
+  stored.piece_name === 'large egg' &&
+  part.piece_name === null &&
+  nutritionRepoModule.listMealItems &&
+  portionLabel(stored) === '3 large eggs (150 g)'
+    ? ok('the record reads `3 large eggs (150 g)`, never `3 × 3 eggs`; the part carries no noun')
+    : bad('stored', JSON.stringify({ stored, part: part.piece_name }));
+
+  // THE RECENTS RAIL: a piece count is not a serving count. Re-adding it as
+  // three servings of "3 eggs" would log nine.
+  const recent = listRecentFoods(db).find((r) => r.food.id === EGG);
+  recent?.lastServingQty === null && near(recent?.lastAmount, 150)
+    ? ok('the recents rail re-adds a piece-counted egg by its 150 g, not as 3 servings')
+    : bad('recents', JSON.stringify(recent && { q: recent.lastServingQty, a: recent.lastAmount }));
+  addMealItem(db, mealId, itemForPortion(getFood(db, EGG), { servingQty: 1 }));
+  listRecentFoods(db).find((r) => r.food.id === EGG)?.lastServingQty === 1
+    ? ok('…while a serving-counted log of the same food still re-adds as 1 serving')
+    : bad('serving recents');
+
+  // meal-detail's writers: setItemCount scales the row, and the meal follows.
+  const setItemCount = nutritionRepoModule.setItemCount;
+  const clearItemCount = nutritionRepoModule.clearItemCount;
+  const kcalBefore = getMeal(db, mealId).kcal;
+  setItemCount(db, stored.id, 2);
+  const two = listMealItems(db, mealId).find((i) => i.id === stored.id);
+  near(two.amount, 100) &&
+  near(two.kcal, stored.kcal * (2 / 3)) &&
+  near(parseMicros(two.micros).b12_mcg, parseMicros(stored.micros).b12_mcg * (2 / 3)) &&
+  two.serving_qty === 2 &&
+  two.piece_name === 'large egg' &&
+  near(getMeal(db, mealId).kcal, kcalBefore - stored.kcal / 3)
+    ? ok('setItemCount 3 → 2 scales the egg row by 2/3 — micros too — and the meal total follows')
+    : bad('setItemCount', JSON.stringify(two));
+  setItemCount(db, stored.id, 3);
+  near(listMealItems(db, mealId).find((i) => i.id === stored.id).amount, 150) &&
+  listMealItems(db, mealId).find((i) => i.id === stored.id).serving_qty === 3
+    ? ok('…and 2 → 3 returns to exactly 3 eggs, 150 g')
+    : bad('round trip');
+  setItemCount(db, part.id, 5, 'slice');
+  listMealItems(db, mealId).find((i) => i.id === part.id).piece_name === null
+    ? ok('a PART is refused by setItemCount — a slice is not a fraction of the cheese')
+    : bad('part counted');
+  throws(() => setItemCount(db, stored.id, 0))
+    ? ok('0 is not a count of anything')
+    : bad('zero count');
+  // A plain item counted in SERVINGS declares, it does not scale from them.
+  const [servingEgg] = listMealItems(db, mealId).filter(
+    (i) => i.food_id === EGG && i.piece_name === null
+  );
+  setItemCount(db, servingEgg.id, 3, 'egg');
+  const declared = listMealItems(db, mealId).find((i) => i.id === servingEgg.id);
+  declared.amount === servingEgg.amount && declared.serving_qty === 3 && declared.piece_name === 'egg'
+    ? ok('a serving-counted row given a piece count DECLARES — `1 × 3 eggs` becomes `3 eggs`, same grams')
+    : bad('declare over serving', JSON.stringify(declared));
+  clearItemCount(db, declared.id);
+  const clearedRow = listMealItems(db, mealId).find((i) => i.id === declared.id);
+  clearedRow.serving_qty === null && clearedRow.piece_name === null && clearedRow.amount === 150
+    ? ok('clearItemCount drops the pair and leaves the grams')
+    : bad('clear', JSON.stringify(clearedRow));
+  // One egg row from here on, so every later read names exactly one.
+  removeMealItem(db, clearedRow.id);
+  // A portion rewrite speaks in grams or servings — never leaves a noun beside
+  // a serving count it writes.
+  updateMealItemPortion(db, stored.id, { amount: 120, serving_qty: null, kcal: 170 });
+  const regrammed = listMealItems(db, mealId).find((i) => i.id === stored.id);
+  regrammed.piece_name === null && regrammed.serving_qty === null
+    ? ok('updateMealItemPortion clears the noun with the count it replaces')
+    : bad('portion rewrite kept noun', JSON.stringify(regrammed));
+  setItemCount(db, stored.id, 2, 'egg');
+
+  // TEMPLATES (0065): the pair survives a round-trip and logs back out.
+  const templateId = saveMealAsTemplate(db, mealId, 'Egg breakfast');
+  const tItem = listTemplateItems(db, templateId).find((i) => i.name === 'Test farm egg');
+  const tPart = listTemplateItems(db, templateId).find((i) => i.name === 'Bread');
+  tItem?.serving_qty === 2 && tItem?.piece_name === 'egg' && tPart?.piece_name === null
+    ? ok('a template keeps `2 eggs` — the flattened part keeps none')
+    : bad('template item', JSON.stringify(tItem));
+  const relogged = logMealFromTemplate(db, templateId, TODAY, '09:00');
+  const fromTemplate = listMealItems(db, relogged).find((i) => i.name === 'Test farm egg');
+  fromTemplate.serving_qty === 2 && fromTemplate.piece_name === 'egg' && portionLabel(fromTemplate) === '2 eggs (120 g)'
+    ? ok('…and logs back out as `2 eggs (120 g)`, not `2 × 3 eggs`')
+    : bad('template relog', JSON.stringify(fromTemplate));
+  const again = listMealItems(db, relogMeal(db, mealId, TODAY, '10:00')).find(
+    (i) => i.name === 'Test farm egg'
+  );
+  again.piece_name === 'egg' && again.serving_qty === 2
+    ? ok('Log again carries the count and its noun')
+    : bad('relog');
+
+  // THE REVISION: the model sees the count, keeps it, and the reply reads it.
+  const tree = assembleMealItems(listMealItems(db, mealId));
+  const subject = estimateModule.loggedToRevisionItems(tree);
+  const subjEgg = subject.find((i) => i.name === 'Test farm egg');
+  subjEgg?.pieces?.name === 'egg' && subjEgg?.pieces?.count === 2
+    ? ok('a logged plain count goes to the revision as `pieces`')
+    : bad('revision subject', JSON.stringify(subjEgg));
+  const request = buildMealRevisionRequest({ name: 'Breakfast', items: subject }, 'no toast')
+    .messages[0].content[0].text;
+  request.includes('- Test farm egg — 2 × egg, 120 g,') && !request.includes('1 × 3 eggs')
+    ? ok('…printed `2 × egg, 120 g, …` — the shape of its own `pieces`, never a serving count')
+    : bad('revision request', request);
+  const back = rowsFromEstimate(
+    db,
+    parseMealEstimate(
+      JSON.stringify({
+        title: 'Breakfast',
+        items: [{ name: 'Test farm egg', amount: 100, kcal: 143, pieces: { name: 'egg', count: 2 } }],
+      })
+    ),
+    { countIsEaten: true }
+  )[0];
+  back.pieces?.count === 2 && back.wholeCount === null
+    ? ok('the reply’s plain count comes back as a record’s count: `ate [2] eggs`')
+    : bad('revised row', JSON.stringify(back.pieces));
+  const subjectRows = rowsToRevisionSubject('Breakfast', [back]);
+  subjectRows.items[0].pieces?.count === 2
+    ? ok('a typed answer sends a plain row’s count too')
+    : bad('rowsToRevisionSubject', JSON.stringify(subjectRows.items[0]));
+
+  // THE COACH'S PAYLOAD reads the count as the screens do.
+  const mealsDomain = domainsModule.domainByKey('meals');
+  const payload = mealsDomain.read.run(db, { id: mealId, from: TODAY, to: TODAY, limit: 5 });
+  const payloadEgg = payload.find((m) => m.id === mealId)?.items?.find(
+    (i) => i.name === 'Test farm egg'
+  );
+  const templatesDomain = domainsModule.domainByKey('meal_templates');
+  const tPayload = templatesDomain.read.run(db, { id: templateId, limit: 5 });
+  const tPayloadEgg = tPayload
+    .find((t) => t.id === templateId)
+    ?.items?.find((i) => i.name === 'Test farm egg');
+  payloadEgg?.count === '2 eggs' &&
+  tPayloadEgg?.count === '2 eggs' &&
+  !('count' in (payload.find((m) => m.id === mealId).items.find((i) => i.name === 'Bread') ?? {}))
+    ? ok('the Coach’s meal and template payloads say `count: "2 eggs"`, and nothing on a row with none')
+    : bad('coach payload', JSON.stringify({ payloadEgg, tPayloadEgg }));
+
+  // THE READERS, pinned at the source: meal-detail opens the count sentence on
+  // a counted plain item, the drain carries the pair, the review draws it.
+  const detail = src2('app/meal-detail.tsx');
+  const queue = src2('src/lib/nutrition/estimate-queue.ts');
+  const review = src2('src/components/nutrition/estimate-review.tsx');
+  detail.includes("const counted = item.parent_item_id === null && pieceCount(item) !== null;") &&
+  detail.includes('<CountSaveRow item={item} edit={countEdit} onSave={saveCount} />') &&
+  queue.includes('serving_qty: item.pieces?.count ?? null,\n          piece_name: item.pieces?.name ?? null,\n        }\n  );') &&
+  review.includes('{row.pieces ? <CountRow row={row} handlers={handlers} /> : null}')
+    ? ok('meal-detail, the offline drain and the review sheet each read the plain count')
+    : bad('reader pins');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

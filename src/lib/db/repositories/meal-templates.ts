@@ -28,10 +28,16 @@ import type {
 
 function insertTemplateItem(db: Database, templateId: string, item: NewMealItem): string {
   const id = newId(db);
+  // A count of pieces travels WITH its noun (0065): `2 eggs` saved into a
+  // template is still two eggs when it is logged back out. The pair is written
+  // whole — a noun with no count names nothing — exactly as `insertMealItem`
+  // writes it.
+  const noun = item.piece_name?.trim() || null;
+  const pieceName = item.serving_qty != null ? noun : null;
   db.run(
     `INSERT INTO meal_template_items (id, template_id, food_id, name, amount, unit, serving_qty,
-       kcal, protein_g, carbs_g, fat_g, fiber_g, micros)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       kcal, protein_g, carbs_g, fat_g, fiber_g, micros, piece_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       templateId,
@@ -46,6 +52,7 @@ function insertTemplateItem(db: Database, templateId: string, item: NewMealItem)
       item.fat_g ?? null,
       item.fiber_g ?? null,
       item.micros ?? null,
+      pieceName,
     ]
   );
   return id;
@@ -87,6 +94,10 @@ export function saveMealAsTemplate(db: Database, mealId: string, name: string): 
       amount: i.amount,
       unit: i.unit,
       serving_qty: i.serving_qty,
+      // A plain item's count of pieces rides with its noun (0065). A part's is
+      // NULL by construction, and a header — the one other row that counts —
+      // is not a leaf, so a dish's slices still flatten away with its name.
+      piece_name: i.piece_name,
       kcal: i.kcal,
       protein_g: i.protein_g,
       carbs_g: i.carbs_g,
@@ -188,6 +199,9 @@ export function logMealFromTemplate(
       amount: i.amount,
       unit: i.unit,
       serving_qty: i.serving_qty,
+      // `2 eggs` logs as two eggs (0065); NULL keeps a serving count a serving
+      // count, through the live join.
+      piece_name: i.piece_name,
       kcal: i.kcal,
       protein_g: i.protein_g,
       carbs_g: i.carbs_g,

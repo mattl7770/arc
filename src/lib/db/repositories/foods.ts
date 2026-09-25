@@ -142,10 +142,16 @@ type RecentRow = FoodRow & {
  * Relies on SQLite's documented bare-column-with-max() behavior: the
  * last_amount / last_serving_qty values come from the same row that supplied
  * max(created_at).
+ *
+ * `last_serving_qty` is a count of the FOOD's serving, so it is read only where
+ * the item has no `piece_name` (2026-09-25): a grounded `2 eggs` counts pieces,
+ * and re-adding it as two servings of a food whose serving is `3 slices` would
+ * log six. Such a row re-adds by its amount instead, which is the same portion.
  */
 export function listRecentFoods(db: Database, limit: number = 12): RecentFood[] {
   const rows = db.all<RecentRow>(
-    `SELECT f.*, mi.amount AS last_amount, mi.serving_qty AS last_serving_qty,
+    `SELECT f.*, mi.amount AS last_amount,
+            CASE WHEN mi.piece_name IS NULL THEN mi.serving_qty END AS last_serving_qty,
             max(mi.created_at) AS last_logged_at
      FROM meal_items mi
      JOIN foods f ON f.id = mi.food_id
@@ -185,7 +191,9 @@ export function listRecentFoods(db: Database, limit: number = 12): RecentFood[] 
  */
 export function listRecentBarcodeFoods(db: Database, limit: number = 6): RecentFood[] {
   const rows = db.all<RecentRow>(
-    `SELECT f.*, mi.amount AS last_amount, mi.serving_qty AS last_serving_qty,
+    // A piece count is not a serving count — {@link listRecentFoods}.
+    `SELECT f.*, mi.amount AS last_amount,
+            CASE WHEN mi.piece_name IS NULL THEN mi.serving_qty END AS last_serving_qty,
             max(mi.created_at) AS last_logged_at
      FROM meal_items mi
      JOIN foods f ON f.id = mi.food_id

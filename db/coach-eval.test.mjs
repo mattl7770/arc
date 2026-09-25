@@ -1150,6 +1150,12 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // half of the null rule, which said in a clause what the first half had just
   // said. The ceiling is 500, a deliberate ~6% of headroom rather than a round
   // number well above the truth: a ceiling nothing can reach guards nothing.
+  //
+  // 2026-09-25: the estimator's micro shortlist and its 10% bar joined it (the
+  // owner's "yes, same rule as the estimator"), +48, paid inside the ceiling by
+  // rewriting the sodium/caffeine bullet in the estimator's shape and trimming
+  // the drinks list and the schema line: **468 tok**, and the ceiling did not
+  // move. The accounting is on FOOD_ENTRY_SYSTEM_PROMPT itself.
   const foodEntryTokens = proseTok(FOOD_ENTRY_SYSTEM_PROMPT);
   const FOOD_ENTRY_PROMPT_CEILING = 500;
   foodEntryTokens < FOOD_ENTRY_PROMPT_CEILING
