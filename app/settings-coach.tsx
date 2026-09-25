@@ -1,6 +1,7 @@
-import { useState, useSyncExternalStore } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { useCallback, useState, useSyncExternalStore } from 'react';
+import { Pressable, Switch, Text, TextInput, View } from 'react-native';
 
+import { ClockSetting } from '@/components/coach/clock-setting';
 import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -8,6 +9,10 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { COACH_MODELS } from '@/lib/ai/model-client';
+import { getDb } from '@/lib/db/client';
+import { getNudgeSettings, saveNudgeSettings } from '@/lib/db/repositories/coach-nudges';
+import type { NudgeSettings } from '@/lib/notifications/nudge-plan';
+import { syncReminderNotifications } from '@/lib/notifications/reminders';
 
 /**
  * Settings › Coach — the durable home for the Coach's API key and model.
@@ -35,16 +40,50 @@ import { COACH_MODELS } from '@/lib/ai/model-client';
  * dot, the selected model marker and the Save action are all neutral ink. The
  * Coach's presence dot is on the accent budget on the Coach's own surfaces —
  * not here.
+ *
+ * ## Notifications (0064, docs/spikes/coach-notifications.md §4)
+ *
+ * The owner's answers, as controls: **Coach nudges** on or off (on by
+ * default — he said yes to the Coach scheduling up to two a day without
+ * asking); **quiet hours**, 21:30–07:00 until he moves them; and the **morning
+ * check-in**, off until he picks a time. Every change writes the setting and
+ * rebuilds the OS schedule at once, through the one resync that owns it.
+ * Turning nudges off cancels every one still ahead. Moving quiet hours over a
+ * planned nudge HOLDS it back rather than cancelling it — never moved, and
+ * back if the hours move off it — because the wheel commits every time it
+ * settles and a spin must not destroy anything (coach-nudges.ts).
+ * A ruled plate like the model picker: these are settings, a record.
  */
 
+/** Where the morning check-in starts when it is first turned on. */
+const CHECKIN_DEFAULT = '07:30';
+
+/** The notification settings, written through and resynced on every change. */
+function useNudgeSettings(): [NudgeSettings, (patch: Partial<NudgeSettings>) => void] {
+  const [settings, setSettings] = useState(() => getNudgeSettings(getDb()));
+  const save = useCallback((patch: Partial<NudgeSettings>) => {
+    setSettings(saveNudgeSettings(getDb(), patch));
+    void syncReminderNotifications(getDb());
+  }, []);
+  return [settings, save];
+}
+
 export default function SettingsCoachScreen() {
-  const keySet = useSyncExternalStore(apiKeyStore.subscribe, () => apiKeyStore.has());
-  const hydrated = useSyncExternalStore(apiKeyStore.subscribe, () => apiKeyStore.isHydrated());
-  const persistent = useSyncExternalStore(apiKeyStore.subscribe, () => apiKeyStore.isPersistent());
-  const model = useSyncExternalStore(apiKeyStore.subscribe, () => apiKeyStore.getModel());
+  // Each getter doubles as the server snapshot: the headless render suite
+  // renders this screen to HTML since 0064, and React requires one there. On
+  // the phone the third argument is never read.
+  const has = () => apiKeyStore.has();
+  const isHydrated = () => apiKeyStore.isHydrated();
+  const isPersistent = () => apiKeyStore.isPersistent();
+  const getModel = () => apiKeyStore.getModel();
+  const keySet = useSyncExternalStore(apiKeyStore.subscribe, has, has);
+  const hydrated = useSyncExternalStore(apiKeyStore.subscribe, isHydrated, isHydrated);
+  const persistent = useSyncExternalStore(apiKeyStore.subscribe, isPersistent, isPersistent);
+  const model = useSyncExternalStore(apiKeyStore.subscribe, getModel, getModel);
 
   const [draft, setDraft] = useState('');
   const canSave = draft.trim().length > 0;
+  const [nudges, saveNudges] = useNudgeSettings();
 
   return (
     <Screen scroll>
@@ -182,6 +221,83 @@ export default function SettingsCoachScreen() {
                 2026-08-11 — the picker above it affords the switch. */}
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
               Sonnet is the cheaper of the two; Opus is stronger on deep, whole-history analysis.
+            </Text>
+          </Block>
+        </View>
+      </View>
+
+      {/* Notifications — what the Coach may send, and when it may not. */}
+      <View className="mt-8">
+        <SectionLabel label="Notifications" />
+        <View className="mt-3">
+          <Block device="plate">
+            {/* Not an `accessible` container — the Switch must stay individually
+                focusable and toggleable for VoiceOver. */}
+            <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+              <View className="flex-1">
+                <Text className="font-serif text-[15px] text-ink">Coach nudges</Text>
+                <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                  Up to two a day, planned when ARC opens
+                </Text>
+              </View>
+              <Switch
+                accessibilityLabel="Coach nudges"
+                value={nudges.enabled}
+                onValueChange={(enabled) => saveNudges({ enabled })}
+                trackColor={{ true: palette.ink, false: palette.hairlineStrong }}
+                ios_backgroundColor={palette.hairlineStrong}
+              />
+            </View>
+            <Divider />
+            <ClockSetting
+              label="Quiet from"
+              value={nudges.quietStart}
+              onChange={(quietStart) => saveNudges({ quietStart })}
+            />
+            <Divider />
+            <ClockSetting
+              label="Quiet until"
+              value={nudges.quietEnd}
+              onChange={(quietEnd) => saveNudges({ quietEnd })}
+            />
+            <Divider />
+            <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+              <View className="flex-1">
+                <Text className="font-serif text-[15px] text-ink">Morning check-in</Text>
+                <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                  {nudges.checkinTime
+                    ? 'A daily notification; tap it and the Coach speaks first'
+                    : 'Off'}
+                </Text>
+              </View>
+              <Switch
+                accessibilityLabel="Morning check-in"
+                value={nudges.checkinTime !== null}
+                onValueChange={(on) => saveNudges({ checkinTime: on ? CHECKIN_DEFAULT : null })}
+                trackColor={{ true: palette.ink, false: palette.hairlineStrong }}
+                ios_backgroundColor={palette.hairlineStrong}
+              />
+            </View>
+            {nudges.checkinTime ? (
+              <>
+                <Divider />
+                <ClockSetting
+                  label="Check-in at"
+                  value={nudges.checkinTime}
+                  onChange={(checkinTime) => saveNudges({ checkinTime })}
+                />
+              </>
+            ) : null}
+          </Block>
+        </View>
+
+        <View className="mt-4">
+          <Block device="margin">
+            <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+              A nudge timed inside quiet hours is dropped, not moved. Your own reminders, the
+              morning check-in and protocol items keep their times. The lock screen shows the
+              Coach&rsquo;s line in full, with no numbers in it; to hide it, set Show Previews to
+              When Unlocked for ARC in iOS Settings.
             </Text>
           </Block>
         </View>

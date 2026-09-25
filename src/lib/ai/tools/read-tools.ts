@@ -29,6 +29,7 @@ import {
 } from '@/lib/db/repositories/nutrition';
 import { getCurrentVersion, listProtocols } from '@/lib/db/repositories/protocols';
 import { isDueOn, listActiveReminders } from '@/lib/db/repositories/reminders';
+import { upcomingNudges } from '@/lib/db/repositories/coach-nudges';
 import {
   dueScreenings,
   listScreenings,
@@ -1568,9 +1569,17 @@ const listRemindersTool: CoachTool = {
   // are not in the ceiling budget; descriptions are. The belt is the card-time
   // throw in the reminders domain, so a model that skips the read meets a
   // refusal rather than an approved write.
+  //
+  // 0064 adds two conditional fields, on the same precedent and at the same
+  // price (0 schema tokens): `checkin` on a reminder that is one, and
+  // `coachNotifications` — the nudges the Coach's own passes planned, which
+  // the Coach tab lists beside the reminders. "What is scheduled?" asked in
+  // chat must see both, and the chat Coach has no other way to see the second.
+  // Read-only: cancelling one is the tab's Cancel, the way the screen does it.
   execute: (db, _input, context) => {
     const today = todayISODate(context.now);
     const reminders = listActiveReminders(db);
+    const planned = upcomingNudges(db, context.now);
     return json({
       reminders: reminders.map((r) => ({
         id: r.id,
@@ -1580,8 +1589,14 @@ const listRemindersTool: CoachTool = {
         repeat: r.repeat,
         createdBy: r.created_by,
         dueToday: isDueOn(r, today),
+        ...(r.checkin === 1 ? { checkin: true } : {}),
       })),
       ...(reminders.some((r) => r.repeat !== 'once') ? { note: RECURRING_REMINDER_NOTE } : {}),
+      ...(planned.length > 0
+        ? {
+            coachNotifications: planned.map((n) => ({ day: n.day, time: n.time, text: n.body })),
+          }
+        : {}),
     });
   },
 };

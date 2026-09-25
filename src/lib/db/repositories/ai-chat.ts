@@ -133,13 +133,25 @@ export function listMessages(db: Database, conversationId: string): AiMessageRec
  * ai_messages never takes an UPDATE. Generic over anything role-shaped so the
  * stored rows and the chat view-models are marked by the ONE rule rather than
  * two copies of it. Input must be in thread order ({@link listMessages}).
+ *
+ * **A COMPLETE turn is never superseded (2026-09-25).** Retry is offered only
+ * on an unfinished turn, so only an unfinished turn can have been replaced. But
+ * not every assistant row that follows another is a retry: the coach pass
+ * appends its note on its own, and since 0064 a tapped nudge and a nudge-plan
+ * record do too. Under the old rule each of those stamped the finished reply
+ * above it "Superseded — replaced by the reply below", which was false. The
+ * outcome is read from `turn_outcome` (a stored row) or `outcome` (a live
+ * view-model); a row that carries neither keeps the positional rule.
  */
-export function markSupersededTurns<T extends { role: string }>(
-  rows: readonly T[]
-): (T & { superseded: boolean })[] {
+export function markSupersededTurns<
+  T extends { role: string; turn_outcome?: AiTurnOutcome; outcome?: AiTurnOutcome },
+>(rows: readonly T[]): (T & { superseded: boolean })[] {
   return rows.map((row, index) => ({
     ...row,
-    superseded: row.role === 'assistant' && rows[index + 1]?.role === 'assistant',
+    superseded:
+      row.role === 'assistant' &&
+      rows[index + 1]?.role === 'assistant' &&
+      (row.turn_outcome ?? row.outcome) !== 'complete',
   }));
 }
 

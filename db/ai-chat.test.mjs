@@ -434,5 +434,40 @@ console.log('12. retry appends beside the fragment; the record matches the displ
     : bad('landed filter too loose');
 }
 
+console.log('13. a finished reply is never "superseded" by a note that follows it (0064)');
+{
+  // The coach pass appends its note on its own, and since 0064 a tapped nudge
+  // and a nudge-plan record do too. Each is an assistant row after an assistant
+  // row, and the positional rule stamped the reply above it "Superseded" —
+  // which only a retry of an UNFINISHED turn can make true.
+  const { db } = freshDb();
+  const convo = createConversation(db);
+  appendMessage(db, convo, 'user', 'How was my week?');
+  appendMessage(db, convo, 'assistant', 'Four sessions, protein short twice.');
+  appendMessage(db, convo, 'assistant', 'Walk after lunch.'); // a tapped nudge
+  appendMessage(db, convo, 'assistant', 'Planned notifications\ntomorrow, 07:30 · Leg day.');
+  const marks = listThread(db, convo).map((m) => m.superseded);
+  JSON.stringify(marks) === JSON.stringify([false, false, false, false])
+    ? ok('complete replies stay unmarked, whatever follows them')
+    : bad('complete reply superseded', JSON.stringify(marks));
+
+  const live = markSupersededTurns([
+    { role: 'user', outcome: 'complete' },
+    { role: 'assistant', outcome: 'complete' },
+    { role: 'assistant', outcome: 'complete' },
+  ]);
+  JSON.stringify(live.map((m) => m.superseded)) === JSON.stringify([false, false, false])
+    ? ok('…and the live view-model reads its `outcome` the same way')
+    : bad('live complete superseded', JSON.stringify(live));
+  const retried = markSupersededTurns([
+    { role: 'user', outcome: 'complete' },
+    { role: 'assistant', outcome: 'failed' },
+    { role: 'assistant', outcome: 'complete' },
+  ]);
+  JSON.stringify(retried.map((m) => m.superseded)) === JSON.stringify([false, true, false])
+    ? ok('an unfinished turn followed by its retry is still superseded')
+    : bad('retry mark lost', JSON.stringify(retried));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

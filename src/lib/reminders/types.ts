@@ -19,6 +19,12 @@ export type ReminderRow = {
   status: ReminderStatus;
   created_by: 'user' | 'ai';
   notes: string | null;
+  /**
+   * 1 for a CHECK-IN (0064) — "check in with me tonight about the knee". A tap
+   * on its notification makes the Coach speak first; a plain reminder's tap
+   * opens it with "Talk about this" instead. 0 for every other reminder.
+   */
+  checkin: number;
   created_at: string;
   updated_at: string;
 };
@@ -33,4 +39,6 @@ export type NewReminder = {
   /** Who asked for it — 'ai' when the Coach self-initiates. */
   createdBy?: 'user' | 'ai';
   notes?: string | null;
+  /** A check-in (0064): the Coach speaks first when its notification is tapped. */
+  checkin?: boolean;
 };

@@ -19,17 +19,48 @@
  * that into a per-reminder verdict the Coach can relay honestly.
  *
  * Reconciliation model: {@link syncReminderNotifications} cancels ALL of the
- * app's scheduled notifications and reschedules from the current active
- * reminders. Reminders are the only thing ARC schedules, so cancel-all-then-
- * reschedule keeps the OS schedule an exact mirror of the DB without tracking
- * per-reminder identifiers. Daily/weekly triggers repeat natively, so a resync
- * is only needed when reminders CHANGE (Coach set/complete/dismiss) or at boot.
+ * app's scheduled notifications and reschedules from every source ARC has.
+ * There are four now, and they all live in this one pass because the
+ * cancel-all would wipe a second scheduler's work:
+ *
+ *   1. active `reminders` rows with a time (0009) — his own, or the Coach's
+ *      on his say-so through `set_reminder`;
+ *   2. the morning check-in, when he turned it on in Settings › Coach (0064);
+ *   3. protocol items that asked for a nudge (C10, ./protocol-reminders.ts);
+ *   4. the Coach's own nudges (0064, `coach_nudges`, ./nudge-plan.ts).
+ *
+ * Cancel-all-then-reschedule keeps the OS schedule an exact mirror of the DB
+ * without tracking per-row identifiers. (This header said reminders were the
+ * only thing ARC schedules until 2026-09-25; that stopped being true with C10.)
+ * The rest timer (./rest-timer.ts) is the one notification outside this pass,
+ * and a resync also wipes it — a documented, accepted cost.
+ *
+ * **iOS keeps only the 64 soonest pending notifications per app** and drops
+ * the rest without a word. Nothing guarded the total before 0064. Now every
+ * pass fits {@link NOTIFICATION_BUDGET}; see `runReminderSyncPass` for the
+ * order in which the budget is spent.
  */
 import type { Database } from '@/lib/db/database';
+import { getDayStartsAt } from '@/lib/db/date';
+import { getNudgeSettings, upcomingNudges } from '@/lib/db/repositories/coach-nudges';
 import { listActiveReminders } from '@/lib/db/repositories/reminders';
 import type { ReminderRow } from '@/lib/reminders/types';
 
 import { protocolRemindersDue } from './protocol-reminders';
+
+/**
+ * How many notifications one sync will leave pending. iOS keeps 64 and drops
+ * the rest silently; four are left for the rest timer, which schedules outside
+ * this pass, and for whatever a future feature adds before anyone remembers
+ * this number.
+ */
+export const NOTIFICATION_BUDGET = 60;
+
+/** The morning check-in's own words: no health content, ever (plan §3(e)1). */
+export const CHECKIN_TITLE = 'Morning check-in';
+
+/** The title a Coach nudge carries above its line on the lock screen. */
+export const NUDGE_TITLE = 'Coach';
 
 /**
  * An `expo-notifications` schedulable trigger. The `type` strings are the values
@@ -124,15 +155,33 @@ export function reminderTrigger(reminder: ReminderRow, now: Date): ReminderTrigg
 
 type PermissionResult = { granted: boolean; canAskAgain: boolean };
 type NotificationResponse = {
-  notification: { request: { content: { data?: Record<string, unknown> } } };
+  notification: {
+    request: { identifier?: string; content: { data?: Record<string, unknown> } };
+  };
 };
 type Subscription = { remove(): void };
+
+/**
+ * What ARC puts in a notification. `interruptionLevel` is set on the Coach's
+ * nudges only, to `'active'` — the ordinary level. The plan (§3(e)3): the
+ * Coach's opinion must never break through his Focus, and while the binary
+ * holds no Time Sensitive entitlement iOS enforces that anyway; stating it
+ * keeps a future entitlement from quietly changing it.
+ */
+export type NotificationContent = {
+  title: string;
+  body?: string;
+  sound?: string;
+  interruptionLevel?: 'active';
+  data?: Record<string, unknown>;
+};
+
 type NotificationsModule = {
   getPermissionsAsync(): Promise<PermissionResult>;
   requestPermissionsAsync(): Promise<PermissionResult>;
   cancelAllScheduledNotificationsAsync(): Promise<void>;
   scheduleNotificationAsync(request: {
-    content: { title: string; body?: string; sound?: string; data?: Record<string, unknown> };
+    content: NotificationContent;
     trigger: ReminderTrigger;
   }): Promise<string>;
   setNotificationHandler(handler: {
@@ -147,6 +196,8 @@ type NotificationsModule = {
     listener: (response: NotificationResponse) => void
   ): Subscription;
   getLastNotificationResponseAsync(): Promise<NotificationResponse | null>;
+  /** Forget the launching tap once it is handled (optional: older builds lack it). */
+  clearLastNotificationResponse?(): void;
 };
 
 let notifications: NotificationsModule | null = null;
@@ -181,10 +232,7 @@ export type ReminderSyncDeps = {
   available(): boolean;
   cancelAll(): Promise<void>;
   ensurePermission(): Promise<boolean>;
-  schedule(request: {
-    content: { title: string; body?: string; sound?: string; data?: Record<string, unknown> };
-    trigger: ReminderTrigger;
-  }): Promise<void>;
+  schedule(request: { content: NotificationContent; trigger: ReminderTrigger }): Promise<void>;
 };
 
 /** The real thing: a no-op on every count when the module is absent. */
@@ -233,10 +281,21 @@ export function configureNotificationPresentation(): void {
   }
 }
 
-/** What a tapped notification wants ARC to open. */
+/**
+ * What a tapped notification wants ARC to open. Every Coach-side kind lands on
+ * the Coach tab; what differs is what happens there (app/_layout.tsx):
+ *
+ *   reminder  that reminder highlighted, with "Talk about this". When it is a
+ *             CHECK-IN (0064, owner's Q5) the Coach also speaks first.
+ *   checkin   the morning check-in: the Coach speaks first unless the day's
+ *             note already exists, in which case the thread shows it.
+ *   nudge     the nudge's own line is added to the thread as the Coach's
+ *             latest message, so his reply has context.
+ */
 export type NotificationRoute =
-  | { kind: 'reminder'; id: string }
-  | { kind: 'coach' }
+  | { kind: 'reminder'; id: string; checkin: boolean }
+  | { kind: 'checkin' }
+  | { kind: 'nudge'; id: string }
   /** A protocol item's own nudge (C10) — the tap belongs on the mission, where
    *  the item can actually be ticked, not on the protocol's reference screen. */
   | { kind: 'mission' };
@@ -246,9 +305,14 @@ export function routeForNotification(
   data: Record<string, unknown> | undefined
 ): NotificationRoute | null {
   if (!data) return null;
-  if (data.kind === 'checkin') return { kind: 'coach' };
+  if (data.kind === 'nudge') {
+    return typeof data.nudgeId === 'string' ? { kind: 'nudge', id: data.nudgeId } : null;
+  }
+  if (data.kind === 'checkin') return { kind: 'checkin' };
   if (typeof data.protocolItem === 'string') return { kind: 'mission' };
-  if (typeof data.reminderId === 'string') return { kind: 'reminder', id: data.reminderId };
+  if (typeof data.reminderId === 'string') {
+    return { kind: 'reminder', id: data.reminderId, checkin: data.checkin === true };
+  }
   return null;
 }
 
@@ -259,27 +323,49 @@ export function routeForNotification(
  * Before this, `data.reminderId` was attached to every scheduled notification
  * and read by nothing: tapping a reminder dumped the user on Home with no idea
  * why the phone had buzzed.
+ *
+ * **Each tap is routed once (0064).** A cold start can hand the same response
+ * to both the waiting-response read and the listener, and the waiting response
+ * outlives a JS reload. That was a double navigation before; now a tap can
+ * start a paid check-in pass, so a response is remembered by its request
+ * identifier and the launching one is cleared once handled. The check-in and
+ * nudge paths are idempotent underneath as well (pass-store.ts) — this is the
+ * first of two locks, not the only one.
  */
 export function registerNotificationRouting(
   onRoute: (route: NotificationRoute) => void
 ): () => void {
   const mod = notifications;
   if (!mod || typeof mod.addNotificationResponseReceivedListener !== 'function') return () => {};
+  const handle = (response: NotificationResponse | null | undefined): void => {
+    if (!response) return;
+    const id = response.notification.request.identifier;
+    if (id !== undefined) {
+      if (routedResponses.has(id)) return;
+      routedResponses.add(id);
+    }
+    const route = routeForNotification(response.notification.request.content.data);
+    if (route) onRoute(route);
+  };
   try {
     // A cold start FROM a tap: the response is already waiting.
     void mod.getLastNotificationResponseAsync?.().then((response) => {
-      const route = routeForNotification(response?.notification.request.content.data);
-      if (route) onRoute(route);
+      handle(response);
+      try {
+        mod.clearLastNotificationResponse?.();
+      } catch {
+        // Older builds: the identifier set above is the lock.
+      }
     });
-    const subscription = mod.addNotificationResponseReceivedListener((response) => {
-      const route = routeForNotification(response.notification.request.content.data);
-      if (route) onRoute(route);
-    });
+    const subscription = mod.addNotificationResponseReceivedListener(handle);
     return () => subscription.remove();
   } catch {
     return () => {};
   }
 }
+
+/** Request identifiers already routed in this JS session. */
+const routedResponses = new Set<string>();
 
 /**
  * What one sync actually managed to do. Returned rather than logged because the
@@ -303,9 +389,31 @@ export type NotificationSyncResult = {
    * question about a reminder.
    */
   scheduledProtocolItems: string[];
+  /** `coach_nudges` ids an OS notification was really scheduled for (0064). */
+  scheduledNudges: string[];
+  /** The morning check-in was scheduled as a daily notification (0064). */
+  checkinScheduled: boolean;
+  /**
+   * How many notifications the budget left out this sync — reminders, the
+   * check-in, protocol items and nudges together. 0 on any ordinary phone. Not
+   * an error: iOS would have dropped them itself, silently; this says so.
+   */
+  overBudget: number;
   /** A native call threw; scheduling was abandoned mid-way. */
   failed: boolean;
 };
+
+/**
+ * The last sync's result, for a screen that has to say whether what it lists
+ * will actually buzz (the Coach tab's Scheduled list). Null until a sync has
+ * run in this session. Not a store: the list re-reads it when it re-reads the
+ * rows, which is on focus and after every change it makes.
+ */
+let lastSync: NotificationSyncResult | null = null;
+
+export function getLastNotificationSync(): NotificationSyncResult | null {
+  return lastSync;
+}
 
 /**
  * Make the OS notification schedule mirror the database — the active reminders
@@ -407,6 +515,29 @@ function startReminderSyncPass(
   return pass;
 }
 
+/**
+ * One sync: cancel everything, then schedule the four sources inside
+ * {@link NOTIFICATION_BUDGET}.
+ *
+ * **How the budget is spent.** iOS's own rule is "the 64 soonest win", and the
+ * dated sources follow it; the two that are HIS come first because a
+ * repeating trigger has no single "soonest" to sort by, and because he chose
+ * those times:
+ *
+ *   1. his reminders, in the list's clock order;
+ *   2. the morning check-in, if he turned it on;
+ *   3. protocol items AND Coach nudges, merged and soonest first — a nudge for
+ *      tomorrow morning outranks a protocol item six days out, which is the
+ *      order iOS would have kept them in anyway.
+ *
+ * Whatever does not fit is counted in `overBudget`, never scheduled to be
+ * dropped by iOS without a word. Protocol items are still capped at 32 on
+ * their own (PROTOCOL_REMINDER_MAX) and nudges at two a day, so on any real
+ * phone the budget binds only when he has dozens of reminders.
+ *
+ * Quiet hours apply to the Coach's nudges only. His reminders, the check-in
+ * and protocol items are exempt — he chose those times (owner's Q2).
+ */
 async function runReminderSyncPass(
   db: Database,
   now: Date,
@@ -417,9 +548,15 @@ async function runReminderSyncPass(
     permissionGranted: null,
     scheduledIds: [],
     scheduledProtocolItems: [],
+    scheduledNudges: [],
+    checkinScheduled: false,
+    overBudget: 0,
     failed: false,
   };
-  if (!result.moduleAvailable) return result;
+  if (!result.moduleAvailable) {
+    lastSync = result;
+    return result;
+  }
 
   try {
     // Always clear first so a removed/cleared reminder can't linger on the OS.
@@ -430,46 +567,115 @@ async function runReminderSyncPass(
       .filter((entry): entry is { reminder: ReminderRow; trigger: ReminderTrigger } =>
         Boolean(entry.trigger)
       );
-    const items = protocolRemindersDue(db, now);
-    if (timed.length === 0 && items.length === 0) return result;
+    const checkinTime = getNudgeSettings(db).checkinTime;
+    const checkinTrigger = checkinTime ? dailyTrigger(checkinTime) : null;
+    const dated = [
+      ...protocolRemindersDue(db, now).map((item) => ({ when: item.when, item, nudge: null })),
+      ...upcomingNudges(db, now, getDayStartsAt()).map((nudge) => ({
+        when: nudge.when,
+        item: null,
+        nudge,
+      })),
+    ].sort((a, b) => a.when.getTime() - b.when.getTime());
+    if (timed.length === 0 && dated.length === 0 && checkinTrigger === null) {
+      lastSync = result;
+      return result;
+    }
+
+    // The budget, spent in the order the header gives.
+    let room = NOTIFICATION_BUDGET;
+    const ownReminders = timed.slice(0, room);
+    room -= ownReminders.length;
+    const checkin = checkinTrigger !== null && room > 0 ? checkinTrigger : null;
+    if (checkin) room -= 1;
+    const datedSlots = dated.slice(0, Math.max(0, room));
+    result.overBudget =
+      timed.length -
+      ownReminders.length +
+      (checkinTrigger !== null && checkin === null ? 1 : 0) +
+      dated.length -
+      datedSlots.length;
 
     result.permissionGranted = await deps.ensurePermission();
-    if (!result.permissionGranted) return result;
+    if (!result.permissionGranted) {
+      lastSync = result;
+      return result;
+    }
 
-    for (const { reminder, trigger } of timed) {
+    for (const { reminder, trigger } of ownReminders) {
       await deps.schedule({
         content: {
           title: reminder.title,
           body: reminder.notes ?? undefined,
           sound: 'default',
-          data: { reminderId: reminder.id },
+          // `checkin` rides the payload so the TAP knows, without a read, that
+          // the Coach should speak first (0064).
+          data: { reminderId: reminder.id, ...(reminder.checkin === 1 ? { checkin: true } : {}) },
         },
         trigger,
       });
       result.scheduledIds.push(reminder.id);
     }
 
-    for (const item of items) {
+    if (checkin) {
       await deps.schedule({
-        content: {
-          title: item.title,
-          body: item.body ?? undefined,
-          sound: 'default',
-          data: { protocolItem: item.key, protocolId: item.protocolId },
-        },
-        // One dated moment, never a repeating trigger: a repeat would keep
-        // firing on days the item was already done, and nothing about a
-        // recurring OS trigger can be told that the plan changed.
-        trigger: { type: 'date', date: item.when },
+        // The title only. A fixed daily notification cannot know the day it
+        // lands on, so it carries no health content — the tap is where the
+        // Coach reads the night and speaks.
+        content: { title: CHECKIN_TITLE, sound: 'default', data: { kind: 'checkin' } },
+        trigger: checkin,
       });
-      result.scheduledProtocolItems.push(item.key);
+      result.checkinScheduled = true;
+    }
+
+    for (const slot of datedSlots) {
+      if (slot.item) {
+        const item = slot.item;
+        await deps.schedule({
+          content: {
+            title: item.title,
+            body: item.body ?? undefined,
+            sound: 'default',
+            data: { protocolItem: item.key, protocolId: item.protocolId },
+          },
+          // One dated moment, never a repeating trigger: a repeat would keep
+          // firing on days the item was already done, and nothing about a
+          // recurring OS trigger can be told that the plan changed.
+          trigger: { type: 'date', date: item.when },
+        });
+        result.scheduledProtocolItems.push(item.key);
+      } else if (slot.nudge) {
+        const nudge = slot.nudge;
+        await deps.schedule({
+          content: {
+            title: NUDGE_TITLE,
+            body: nudge.body,
+            sound: 'default',
+            interruptionLevel: 'active',
+            data: { kind: 'nudge', nudgeId: nudge.id },
+          },
+          // Built from the row's logical day and clock at THIS sync, under the
+          // zone the phone is in now — so a trip re-anchors it, as it does a
+          // protocol item, and an eastbound moment already past never arrives
+          // here (`upcomingNudges` is strictly future).
+          trigger: { type: 'date', date: nudge.when },
+        });
+        result.scheduledNudges.push(nudge.id);
+      }
     }
   } catch {
     // Notifications are a best-effort layer over the in-app reminders — swallow,
     // but say so, so nothing downstream claims an alert that isn't there.
     result.failed = true;
   }
+  lastSync = result;
   return result;
+}
+
+/** A validated `HH:MM` as a daily repeating trigger. */
+function dailyTrigger(time: string): ReminderTrigger | null {
+  const hm = parseHM(time);
+  return hm ? { type: 'daily', hour: hm.hour, minute: hm.minute } : null;
 }
 
 // --- Per-reminder honesty ----------------------------------------------------

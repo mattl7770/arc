@@ -48,15 +48,32 @@ import type { ReminderRow } from '@/lib/reminders/types';
  * Both take `ink-secondary`, as `.cf-miniact` does. The old split — secondary
  * for the check, muted for the close — was ranking two icons that could not rank
  * themselves; verbs do it in words, so the ink no longer has to.
+ *
+ * ## The tapped row (0064)
+ *
+ * A reminder's notification opens this tab with that reminder's id. The row
+ * it names is marked with a small filled ink square before its title — the
+ * same "this one" mark Settings uses for the chosen model, a mark and not a
+ * device, so nothing nests — and gains one more action beneath it, **Talk
+ * about this**, which seeds the composer with the reminder and never sends
+ * (the composer-seed rule, src/lib/status/composer-seed.ts). That is the whole
+ * of a plain reminder's tap (owner's Q5); a CHECK-IN's tap also has the Coach
+ * speak first, in the thread below. A check-in says so in its meta line.
  */
 export function RemindersCard({
   reminders,
   onComplete,
   onDismiss,
+  highlightId,
+  onTalk,
 }: {
   reminders: ReminderRow[];
   onComplete: (id: string) => void;
   onDismiss: (id: string) => void;
+  /** The reminder whose notification was just tapped, if any. */
+  highlightId?: string | null;
+  /** "Talk about this" on the tapped row. */
+  onTalk?: (reminder: ReminderRow) => void;
 }) {
   if (reminders.length === 0) return null;
 
@@ -68,49 +85,77 @@ export function RemindersCard({
       />
 
       <View className="mt-1">
-        {reminders.map((reminder) => (
-          <View key={reminder.id}>
-            {/* Unconditional: the section label above is the row this rule
+        {reminders.map((reminder) => {
+          const tapped = highlightId === reminder.id;
+          return (
+            <View key={reminder.id}>
+              {/* Unconditional: the section label above is the row this rule
                 separates from, so even the first reminder has something above
                 it. */}
-            <Divider />
-            <View className="min-h-[44px] flex-row items-center gap-3 py-2">
-              <View className="flex-1">
-                <Text className="font-serif text-[15px] leading-5 text-ink">{reminder.title}</Text>
-                <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-                  {reminder.time ?? 'anytime'}
-                  {reminder.repeat !== 'once' ? ` · ${reminder.repeat}` : ''}
-                  {reminder.created_by === 'ai' ? ' · via Coach' : ''}
-                </Text>
-              </View>
-              {/* `.cf-miniacts` — the pair travels together at its own 8pt
+              <Divider />
+              <View className="min-h-[44px] flex-row items-center gap-3 py-2">
+                <View className="flex-1">
+                  <View className="flex-row items-center gap-2">
+                    {tapped ? (
+                      <View
+                        className="h-1.5 w-1.5 bg-ink"
+                        accessibilityElementsHidden
+                        importantForAccessibility="no"
+                      />
+                    ) : null}
+                    <Text className="flex-1 font-serif text-[15px] leading-5 text-ink">
+                      {reminder.title}
+                    </Text>
+                  </View>
+                  <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                    {reminder.time ?? 'anytime'}
+                    {reminder.repeat !== 'once' ? ` · ${reminder.repeat}` : ''}
+                    {reminder.checkin === 1 ? ' · check-in' : ''}
+                    {reminder.created_by === 'ai' ? ' · via Coach' : ''}
+                  </Text>
+                </View>
+                {/* `.cf-miniacts` — the pair travels together at its own 8pt
                   gap, so the title's `gap-3` separates the group from the text
                   rather than opening a hole between the two buttons. */}
-              <View className="flex-row gap-2">
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Mark "${reminder.title}" done`}
-                  onPress={() => onComplete(reminder.id)}
-                  hitSlop={{ left: 4, right: 4 }}
-                  className="min-h-[44px] items-center justify-center border border-hairline px-2.5 active:opacity-60">
-                  <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
-                    Done
-                  </Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Dismiss "${reminder.title}"`}
-                  onPress={() => onDismiss(reminder.id)}
-                  hitSlop={{ left: 4, right: 4 }}
-                  className="min-h-[44px] items-center justify-center border border-hairline px-2.5 active:opacity-60">
-                  <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
-                    Dismiss
-                  </Text>
-                </Pressable>
+                <View className="flex-row gap-2">
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Mark "${reminder.title}" done`}
+                    onPress={() => onComplete(reminder.id)}
+                    hitSlop={{ left: 4, right: 4 }}
+                    className="min-h-[44px] items-center justify-center border border-hairline px-2.5 active:opacity-60">
+                    <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+                      Done
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Dismiss "${reminder.title}"`}
+                    onPress={() => onDismiss(reminder.id)}
+                    hitSlop={{ left: 4, right: 4 }}
+                    className="min-h-[44px] items-center justify-center border border-hairline px-2.5 active:opacity-60">
+                    <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+                      Dismiss
+                    </Text>
+                  </Pressable>
+                </View>
               </View>
+              {tapped && onTalk ? (
+                <View className="pb-2">
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Talk about "${reminder.title}" with the Coach`}
+                    onPress={() => onTalk(reminder)}
+                    className="min-h-[44px] items-center justify-center self-start border border-hairline px-2.5 active:opacity-60">
+                    <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+                      Talk about this
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
-          </View>
-        ))}
+          );
+        })}
       </View>
     </Block>
   );

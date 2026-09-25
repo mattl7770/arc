@@ -713,6 +713,75 @@ export function subscribeHealthSyncRunning(listener: Listener): () => void {
 }
 
 /**
+ * How long the coach pass waits for a Health sync before it goes ahead anyway.
+ * Long enough for an ordinary 14-day pass; short enough that a first 90-day
+ * backfill, or a HealthKit that never answers, cannot hold the Coach hostage.
+ */
+export const HEALTH_SETTLE_TIMEOUT_MS = 10_000;
+
+/** The two facts {@link waitForHealthSyncIdle} watches, injectable for the suite. */
+export type HealthSyncProbe = {
+  isRunning: () => boolean;
+  subscribe: (listener: () => void) => () => void;
+};
+
+const TRACKED_PASSES: HealthSyncProbe = {
+  isRunning: isHealthSyncRunning,
+  subscribe: subscribeHealthSyncRunning,
+};
+
+/**
+ * Resolve once no tracked Health sync is running or queued — or once
+ * `timeoutMs` has passed, whichever is first.
+ *
+ * **Why the coach pass needs this (0064 plan, the checker's correction to
+ * §3(e)1).** On a foreground, the Health sync and the coach pass both start
+ * from AppState listeners, and nothing ordered them: the pass built its state
+ * block at once, while last night's sleep and HRV were still on their way in
+ * from HealthKit. A morning word that had not seen the night was the likely
+ * outcome, not the rare one. The pass now awaits this first.
+ *
+ * It YIELDS a macrotask before it looks. The foreground listeners all run in
+ * one AppState emit, and whichever of them is registered first, the Health
+ * sync's has started its pass (synchronously, inside `syncHealthIfEnabled`) by
+ * the time the emit returns. Looking immediately would let registration order
+ * decide whether the pass waits at all.
+ *
+ * Never rejects. 'idle' when the syncs finished, 'timeout' when it gave up.
+ */
+export function waitForHealthSyncIdle(
+  timeoutMs: number = HEALTH_SETTLE_TIMEOUT_MS,
+  probe: HealthSyncProbe = TRACKED_PASSES
+): Promise<'idle' | 'timeout'> {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      if (!probe.isRunning()) {
+        resolve('idle');
+        return;
+      }
+      let settled = false;
+      let unsubscribe: () => void = () => {};
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (how: 'idle' | 'timeout') => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        unsubscribe();
+        resolve(how);
+      };
+      unsubscribe = probe.subscribe(() => {
+        if (!probe.isRunning()) finish('idle');
+      });
+      if (settled) {
+        unsubscribe();
+        return;
+      }
+      timer = setTimeout(() => finish('timeout'), timeoutMs);
+    }, 0);
+  });
+}
+
+/**
  * Start a tracked pass now, beside any other. For Settings' three setup flows,
  * whose pass must read AFTER the permission sheet they just showed — and the
  * 90-day heart-rate flow carries a window no ordinary pass would.
