@@ -24,10 +24,11 @@ import {
 } from '@/lib/db/repositories/exercise';
 import { getRoutine, touchRoutineStarted } from '@/lib/db/repositories/routines';
 import {
-  clearWorkoutDraft,
+  clearOwnLiveDraft,
   readWorkoutDraft,
   saveWorkoutDraft,
 } from '@/lib/db/repositories/workout-drafts';
+import type { Database } from '@/lib/db/database';
 import {
   lastSessionSets,
   personalRecords,
@@ -57,12 +58,16 @@ import {
   liveDraftSessionId,
   liveFocusDecision,
   liveSessionOpen,
+  liveSessionQuiet,
   liveSlotLoss,
-  mayClearLiveSlot,
+  liveStartOf,
   parseLiveDraft,
   type DraftBlock as LiveBlock,
   type DraftSet as LiveSet,
+  type LeaveGuard,
   type LiveDraft,
+  type LiveSessionState,
+  type LiveStart,
 } from '@/lib/exercise/draft';
 import {
   dayLabel,
@@ -162,6 +167,18 @@ import type { UnitPreferences } from '@/lib/user/types';
  * navigating. A session is kept from its FIRST EXERCISE, typed into or not: a
  * session started from a saved workout and left to check Home is still the
  * session he started, with the start instant the clock counts from.
+ *
+ * ## Except a Start taken straight back (owner, 2026-09-25)
+ *
+ * *"Quietly drop a session with nothing typed if you leave within a few
+ * seconds of starting."* A NEW session that is still exactly what Start put
+ * there, left within ten seconds of Start, is thrown away on the way out — its
+ * slot cleared, its rest alert cancelled, nothing on Home or the hub. Anything
+ * changed, or ten seconds passed, and the rule above holds. A resumed session
+ * is never dropped this way, and neither is one killed inside the window: a
+ * kill runs no code, so the draft Start wrote comes back. `leaveLiveLogger`
+ * below is the whole way out; `liveSessionQuiet` (src/lib/exercise/draft.ts)
+ * says why ten seconds and why a kill keeps it.
  *
  * The slot is one row and this screen can now outlive its claim on it (a
  * notification tap pushes the tabs over a mounted logger, and the session can
@@ -501,6 +518,94 @@ function initialBlocks(
   return exerciseIds.map((id) => buildBlock(id, 3, null)).filter((b): b is LiveBlock => b !== null);
 }
 
+/** What the logger knows when something asks to take it off the stack. */
+export type LiveLeaveState = {
+  /** Finished, discarded, or lost to another screen: nothing left to guard. */
+  settled: boolean;
+  editing: boolean;
+  /** An edit has changes (read only when `editing`). */
+  dirty: boolean;
+  /** The last draft write threw, so the slot does not hold what is on screen. */
+  writeFailed: boolean;
+  sessionId: string;
+  /** What Start put there — null for a resumed session and for an edit. */
+  start: LiveStart | null;
+  session: LiveSessionState;
+};
+
+/** What leaving did: nothing to guard, dropped the session, or `leaveGuard`'s answer. */
+export type LiveLeaveOutcome = 'settled' | 'drop' | LeaveGuard;
+
+/**
+ * **The way out of the live logger**, whole: the `beforeRemove` handler calls
+ * this and nothing else, and db/screens-render.test.mjs drives it over a real
+ * slot, so the path the screen takes is the path the suite takes.
+ *
+ * In order:
+ *
+ *   1. A session already settled (finished, discarded, gone stale) leaves.
+ *   2. **The quiet drop** (owner, 2026-09-25): a new session still exactly
+ *      what Start put there, left within ten seconds of Start
+ *      (`liveSessionQuiet`), is thrown away — `stop` first (no more writes,
+ *      the rest alert cancelled), then the slot cleared if it holds this
+ *      session. Nothing is asked: there is nothing in it to lose.
+ *   3. Otherwise `leaveGuard` (2026-09-23): an edit with changes asks before
+ *      dropping them; a live session is kept in its slot and leaves without a
+ *      word, unless its last draft write failed — then leaving asks, because
+ *      it would lose the session.
+ *
+ * A kill never reaches here, so a session killed inside the window is kept —
+ * `liveSessionQuiet` says why that is the right answer.
+ */
+export function leaveLiveLogger<A>(
+  e: { preventDefault: () => void; data: { action: A } },
+  s: LiveLeaveState,
+  io: {
+    db: Database;
+    /** The moment of leaving. */
+    at: number;
+    /** Stop writing the session and cancel its rest alert. */
+    stop: () => void;
+    dispatch: (action: A) => void;
+  }
+): LiveLeaveOutcome {
+  if (s.settled) return 'settled';
+  if (liveSessionQuiet(s.start, s.session, io.at)) {
+    io.stop();
+    try {
+      clearOwnLiveDraft(io.db, s.sessionId);
+    } catch (error) {
+      // Never let losing the draft lose the navigation with it.
+      console.warn('[exercise] draft clear failed', error);
+    }
+    return 'drop';
+  }
+  const guard = leaveGuard({
+    editing: s.editing,
+    dirty: s.dirty,
+    open: liveSessionOpen(s.session.blocks),
+    writeFailed: s.writeFailed,
+  });
+  if (guard === 'leave') return guard;
+  e.preventDefault();
+  if (guard === 'ask-unsaved-copy') {
+    Alert.alert(
+      'Leave without a saved copy?',
+      'ARC could not store this workout for later, so leaving now loses it.',
+      [
+        { text: 'Stay', style: 'cancel' },
+        { text: 'Leave', style: 'destructive', onPress: () => io.dispatch(e.data.action) },
+      ]
+    );
+    return guard;
+  }
+  Alert.alert('Discard these changes?', 'The session stays as it was.', [
+    { text: 'Keep editing', style: 'cancel' },
+    { text: 'Discard', style: 'destructive', onPress: () => io.dispatch(e.data.action) },
+  ]);
+  return guard;
+}
+
 export default function WorkoutLiveScreen() {
   const params = useLocalSearchParams<{
     routineId?: string | string[];
@@ -681,6 +786,13 @@ function WorkoutLive({
   // as a countdown showing zero.
   const [restEndsAt, setRestEndsAt] = useState<number | null>(() =>
     draft?.restEndsAt != null && draft.restEndsAt > Date.now() ? draft.restEndsAt : null
+  );
+  // What Start put on the screen (2026-09-25), taken once on the way in: the
+  // baseline the quiet drop measures "nothing typed" against. Only a NEW
+  // session has one — resuming is choosing to come back to a session, and an
+  // edit has a stored copy — so only a new session can be dropped by leaving.
+  const [start] = useState<LiveStart | null>(() =>
+    draft || workoutId ? null : liveStartOf({ blocks, startedAt, away, restEndsAt })
   );
   // The id of the pending OS rest-alert (to cancel/replace it). null when none.
   //
@@ -863,9 +975,7 @@ function WorkoutLive({
    */
   const clearOwnDraft = () => {
     try {
-      if (mayClearLiveSlot(readWorkoutDraft(getDb(), 'live')?.value ?? null, sessionId)) {
-        clearWorkoutDraft(getDb(), 'live');
-      }
+      clearOwnLiveDraft(getDb(), sessionId);
       ownedRef.current = false;
     } catch (error) {
       // Never let losing the draft lose the navigation with it.
@@ -1019,52 +1129,42 @@ function WorkoutLive({
   );
 
   /**
-   * The way out.
-   *
-   * An EDIT still asks before dropping changes: it has a saved copy, and
-   * leaving it means "put it back as it was".
-   *
-   * A LIVE session does not ask (owner, 2026-09-23): leaving keeps it, exactly
-   * as an iOS kill does, because every change is already in the slot. The one
-   * exception is a draft write that failed — then leaving really would lose the
-   * session, and the screen says so rather than letting it go quietly.
-   *
-   * Nothing here ever clears the slot. The decision is `leaveGuard`
-   * (src/lib/exercise/draft.ts), shared with app/workout-log.tsx and pinned in
-   * db/exercise.test.mjs.
+   * The way out — `leaveLiveLogger`, above the component; this only feeds it.
+   * It reads the clock at the moment of leaving, so the ten-second window is
+   * measured to the tap, not to the last one-second tick.
    */
   useEffect(() => {
     const unsub = navigation.addListener('beforeRemove', (e) => {
-      if (savedRef.current) return;
-      const guard = leaveGuard({ editing, dirty, open, writeFailed: writeFailedRef.current });
-      if (guard === 'leave') return;
-      e.preventDefault();
-      if (guard === 'ask-unsaved-copy') {
-        Alert.alert(
-          'Leave without a saved copy?',
-          'ARC could not store this workout for later, so leaving now loses it.',
-          [
-            { text: 'Stay', style: 'cancel' },
-            {
-              text: 'Leave',
-              style: 'destructive',
-              onPress: () => navigation.dispatch(e.data.action),
-            },
-          ]
-        );
-        return;
-      }
-      Alert.alert('Discard these changes?', 'The session stays as it was.', [
-        { text: 'Keep editing', style: 'cancel' },
+      leaveLiveLogger(
+        e,
         {
-          text: 'Discard',
-          style: 'destructive',
-          onPress: () => navigation.dispatch(e.data.action),
+          settled: savedRef.current,
+          editing,
+          dirty,
+          writeFailed: writeFailedRef.current,
+          sessionId,
+          start,
+          session: { blocks, startedAt, away, restEndsAt },
         },
-      ]);
+        {
+          db: getDb(),
+          at: Date.now(),
+          stop: () => {
+            // Before the slot is cleared: the write-through must not put the
+            // session back, and the unmount must not keep its alert.
+            savedRef.current = true;
+            ownedRef.current = false;
+            disarmRestAlert();
+          },
+          dispatch: (action) => navigation.dispatch(action),
+        }
+      );
     });
     return unsub;
-  }, [navigation, open, dirty, editing]);
+    // `disarmRestAlert` is a render-scoped closure over refs and a state
+    // setter only; re-subscribing for it would re-subscribe on every tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigation, editing, dirty, sessionId, start, blocks, startedAt, away, restEndsAt]);
 
   /**
    * Throw the unfinished session away — the control that took over from the

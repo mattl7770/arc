@@ -38,12 +38,17 @@ import {
 import {
   candidateFromTyped,
   defaultTrendMetric,
+  defaultTrendRange,
   directionOf,
   e1rmRecordOf,
+  inTrendRange,
   phraseText,
   primaryTrendMetric,
   prSummary,
   prSummaryParts,
+  rangeTrendOf,
+  rangeTrendPhrase,
+  rangeTrendPhraseParts,
   recordCellsFor,
   recordKindsFor,
   recordSessionIds,
@@ -52,13 +57,19 @@ import {
   repMaxesFrom,
   sessionSeriesFrom,
   stampFor,
+  TREND_RANGES,
+  TREND_SESSION_LIMIT,
   trendEmptyNote,
+  trendExtent,
   trendHeadline,
   trendMetricsFor,
   trendOf,
   trendPhrase,
   trendPhraseParts,
+  trendRangeEmptyNote,
+  trendRangeStart,
   trendToken,
+  trendView,
 } from '../src/lib/exercise/records.ts';
 import { measuredSetLine } from '../src/lib/exercise/format.ts';
 import { DEFAULT_UNIT_PREFERENCES } from '../src/lib/user/types.ts';
@@ -71,7 +82,7 @@ import {
   pairIngestedWorkouts,
   pendingIngestedStrength,
 } from '../src/lib/db/repositories/workout-ingest.ts';
-import { todayISODate } from '../src/lib/db/date.ts';
+import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import { activityLoad } from '../src/lib/exercise/activity-load.ts';
 import {
   countsForE1rm,
@@ -1737,6 +1748,230 @@ console.log('13. review fixes: one direction, assisted ranking, the live stamp a
   trendPhraseParts(trendOf([pt(100), pt(101)])).every((p) => !p.measured)
     ? ok('"+10% on the previous 3 sessions": the figures are mono, the words are prose')
     : bad('phrase parts', JSON.stringify(phrase));
+}
+
+console.log('14. range chips on the Trend: 1M · 3M · 1Y · All (owner, 2026-09-25)');
+{
+  const TODAY = '2026-09-25';
+
+  // --- where each range starts ------------------------------------------------
+  trendRangeStart('1m', TODAY) === '2026-08-25' &&
+  trendRangeStart('3m', TODAY) === '2026-06-25' &&
+  trendRangeStart('1y', TODAY) === '2025-09-25' &&
+  trendRangeStart('all', TODAY) === null
+    ? ok('1M / 3M / 1Y start on the same date one, three and twelve months back; All has no start')
+    : bad('range starts');
+  trendRangeStart('1m', '2026-03-31') === '2026-02-28' &&
+  trendRangeStart('1m', '2024-03-31') === '2024-02-29' &&
+  trendRangeStart('3m', '2026-05-31') === '2026-02-28' &&
+  trendRangeStart('3m', '2026-01-15') === '2025-10-15' &&
+  trendRangeStart('1y', '2024-02-29') === '2023-02-28'
+    ? ok('…clamped to the month (31 Mar → 28 Feb, 29 Feb in a leap year) and across a new year')
+    : bad('range start clamp');
+
+  const pts = (offsets) =>
+    offsets
+      .map((o) => shiftISODate(TODAY, -o))
+      .sort()
+      .map((date, i) => ({ workoutId: `${date}-${i}`, date, value: 100 + i }));
+  const edge = pts([31, 30, 29]); // 2026-08-25 is 31 days back
+  inTrendRange(edge, '1m', TODAY).map((p) => p.date).join() === '2026-08-25,2026-08-26,2026-08-27' &&
+  inTrendRange(pts([32]), '1m', TODAY).length === 0
+    ? ok('a range includes its first day and nothing before it')
+    : bad('range edge', JSON.stringify(inTrendRange(edge, '1m', TODAY)));
+
+  // --- the default: the shortest range that still shows the old 24 ------------
+  const twiceWeekly = pts(Array.from({ length: 60 }, (_, k) => Math.floor(k / 2) * 7 + (k % 2) * 3));
+  const weekly = pts(Array.from({ length: 104 }, (_, k) => k * 7));
+  const daily = pts(Array.from({ length: 200 }, (_, k) => k));
+  const newThisMonth = pts([0, 4, 9, 18]);
+  const spread = pts([500, 300, 200, 80, 60, 20, 5]);
+  const cases = [
+    ['twice a week for 30 weeks', twiceWeekly, '3m'],
+    ['weekly for two years', weekly, '1y'],
+    ['daily for 200 days', daily, '1m'],
+    ['started this month', newThisMonth, '1m'],
+    ['seven sessions over 500 days', spread, 'all'],
+  ];
+  const wrongDefault = cases.filter(([, p, want]) => defaultTrendRange(p, TODAY) !== want);
+  wrongDefault.length === 0
+    ? ok('default range: twice weekly → 3M, weekly → 1Y, daily → 1M, new → 1M, sparse → All')
+    : bad(
+        'default range',
+        wrongDefault.map(([n, p]) => `${n}: ${defaultTrendRange(p, TODAY)}`).join('; ')
+      );
+  const hides = cases.filter(([, p]) => {
+    const range = defaultTrendRange(p, TODAY);
+    const shown = inTrendRange(p, range, TODAY);
+    const oldView = p.slice(-TREND_SESSION_LIMIT);
+    const shorter = TREND_RANGES[TREND_RANGES.indexOf(range) - 1];
+    return (
+      !oldView.every((q) => shown.includes(q)) ||
+      (shorter != null && inTrendRange(p, shorter, TODAY).length >= oldView.length)
+    );
+  });
+  hides.length === 0
+    ? ok('…and in every case it shows every session the old 24-session view showed, and a shorter chip would not')
+    : bad('default hides a session', hides.map(([n]) => n).join(', '));
+
+  // --- the direction across a range --------------------------------------------
+  const p = (value, away) => ({
+    workoutId: String(value),
+    date: '2026-09-01',
+    value,
+    ...(away ? { away: true } : {}),
+  });
+  const seven = [100, 105, 110, 115, 118, 120, 125].map((v) => p(v));
+  const across = rangeTrendOf(seven);
+  across &&
+  across.compared === 3 &&
+  near(across.baseline, 105, 0.001) &&
+  across.latest === 125 &&
+  trendToken(across) === '+19%'
+    ? ok('across a range: the latest home session against the first three in it (125 on 105, +19%)')
+    : bad('range trend', JSON.stringify(across));
+  const four = seven.slice(-4);
+  JSON.stringify(rangeTrendOf(four)) === JSON.stringify(trendOf(four)) &&
+  JSON.stringify(rangeTrendOf(seven.slice(-2))) === JSON.stringify(trendOf(seven.slice(-2)))
+    ? ok('…with four home sessions or fewer in the range it IS the hub’s figure: the baselines are the same sessions')
+    : bad('range/hub agreement');
+  const withAway = [p(90, true), p(100), p(104), p(140, true)];
+  const awayTrend = rangeTrendOf(withAway);
+  awayTrend && awayTrend.baseline === 100 && awayTrend.latest === 104 && awayTrend.compared === 1
+    ? ok('…away sessions are neither the baseline nor the latest')
+    : bad('range trend away', JSON.stringify(awayTrend));
+  rangeTrendOf([p(100), p(130, true)]) === null && rangeTrendOf([]) === null
+    ? ok('…and fewer than two home sessions in the range has no direction')
+    : bad('range trend null');
+
+  // --- the direction line names the range it measured --------------------------
+  const three = rangeTrendOf([115, 118, 120, 125].map((v) => p(v)));
+  const one = rangeTrendOf([120, 125].map((v) => p(v)));
+  const lvl = rangeTrendOf([100, 101].map((v) => p(v)));
+  rangeTrendPhrase(three, '3m') === '+6% on the first 3 sessions of the last 3 months' &&
+  rangeTrendPhrase(one, '1m') === '+4% on the first session of the last month' &&
+  rangeTrendPhrase(across, 'all') === '+19% on the first 3 sessions on record' &&
+  rangeTrendPhrase(lvl, '1y') === 'level with the first session of the last year'
+    ? ok('"+6% on the first 3 sessions of the last 3 months" — each line says which range it read')
+    : bad(
+        'range phrases',
+        [
+          rangeTrendPhrase(three, '3m'),
+          rangeTrendPhrase(one, '1m'),
+          rangeTrendPhrase(across, 'all'),
+          rangeTrendPhrase(lvl, '1y'),
+        ].join(' | ')
+      );
+  rangeTrendPhrase(three, '3m', { spoken: true }) ===
+    'up 6 percent on the first 3 sessions of the last 3 months' &&
+  JSON.stringify(
+    rangeTrendPhraseParts(three, '3m')
+      .filter((x) => x.measured)
+      .map((x) => x.text)
+  ) === '["+6%","3 sessions"]'
+    ? ok('…spoken in words for VoiceOver, and only its figures are mono')
+    : bad('range phrase spoken/parts');
+
+  // --- from logged sets: the view each chip draws --------------------------------
+  const { db } = freshDb();
+  const hip = (weightKg) => ({ exercise: 'Hip Thrust', exerciseId: 'hip-thrust', reps: 5, weightKg });
+  [
+    [500, 100],
+    [300, 105],
+    [200, 110],
+    [80, 115],
+    [60, 118],
+    [20, 120],
+    [5, 125],
+  ].forEach(([back, kg]) =>
+    logWorkout(db, { date: shiftISODate(TODAY, -back), kind: 'strength' }, [hip(kg)])
+  );
+  const rows = workingSets(db, 'hip-thrust');
+  const view = (range, metric = null) =>
+    trendView(rows, 'reps,load', 'total', { metric, range }, TODAY);
+  const opened = view(null);
+  opened.metric === 'e1rm' &&
+  opened.range === 'all' &&
+  opened.ranges.join() === '1m,3m,1y,all' &&
+  opened.series.length === 7 &&
+  phraseText(opened.phrase) === '+19% on the first 3 sessions on record' &&
+  opened.extent === `May 13 2025 – Sun · 7 sessions`
+    ? ok('opened: e1RM, All (seven sessions over 500 days), the year on a date from last year')
+    : bad('opened view', JSON.stringify({ ...opened, series: opened.series.length }));
+  const perRange = {
+    '1m': ['+4% on the first session of the last month', 2],
+    '3m': ['+6% on the first 3 sessions of the last 3 months', 4],
+    '1y': ['+14% on the first 3 sessions of the last year', 6],
+    all: ['+19% on the first 3 sessions on record', 7],
+  };
+  const wrongRange = TREND_RANGES.filter((r) => {
+    const v = view(r);
+    const [phrase, n] = perRange[r];
+    return (
+      v.range !== r ||
+      phraseText(v.phrase) !== phrase ||
+      v.series.length !== n ||
+      !v.extent?.endsWith(`· ${n} sessions`) ||
+      v.headline?.value !== v.series[v.series.length - 1].value
+    );
+  });
+  wrongRange.length === 0
+    ? ok('each chip: its sessions, its extent, and a direction that names it (+4% · +6% · +14% · +19%)')
+    : bad('per-range views', wrongRange.map((r) => `${r}: ${phraseText(view(r).phrase ?? [])}`).join('; '));
+  const hub = directionOf(rows, 'reps,load', 'total');
+  hub.metric === opened.metric && trendToken(hub.trend) === '+6%' && trendToken(view('3m').trend) === '+6%'
+    ? ok('the hub keeps its own rule (+6% on the previous 3) and opens detail on its metric; 3M agrees here')
+    : bad('hub vs detail', JSON.stringify(hub));
+  const picked = view('1y', 'top_weight');
+  picked.range === '1y' && picked.metric === 'top_weight' && picked.series.length === 6
+    ? ok('a picked range holds across a change of metric')
+    : bad('picked range', JSON.stringify({ range: picked.range, metric: picked.metric }));
+
+  // --- when a range holds fewer than two --------------------------------------
+  const curl = (weightKg) => ({ exercise: 'Barbell Curl', exerciseId: 'barbell-curl', reps: 8, weightKg });
+  logWorkout(db, { date: shiftISODate(TODAY, -70), kind: 'strength' }, [curl(30)]);
+  logWorkout(db, { date: shiftISODate(TODAY, -40), kind: 'strength' }, [curl(32)]);
+  const curlRows = workingSets(db, 'barbell-curl');
+  const noneThisMonth = trendView(curlRows, 'reps,load', 'total', { metric: null, range: '1m' }, TODAY);
+  noneThisMonth.headline === null &&
+  noneThisMonth.phrase === null &&
+  noneThisMonth.ranges.length === 4 &&
+  noneThisMonth.emptyNote === 'Nothing to plot in the last month. Choose a longer range.'
+    ? ok('1M with no session in it: no chart, the chips stay, and the note names the range and the way out')
+    : bad('empty 1m', JSON.stringify(noneThisMonth));
+  logWorkout(db, { date: shiftISODate(TODAY, -3), kind: 'strength' }, [curl(33)]);
+  trendRangeEmptyNote('e1rm', workingSets(db, 'barbell-curl'), '1m', TODAY) ===
+  'One session to plot in the last month; a trend needs two. Choose a longer range.'
+    ? ok('…with one session in it, it says one, and that a trend needs two')
+    : bad('one in 1m', trendRangeEmptyNote('e1rm', workingSets(db, 'barbell-curl'), '1m', TODAY));
+  const lone = trendView(
+    workingSets(db, 'dumbbell-curl'),
+    'reps,load',
+    'per_hand',
+    { metric: null, range: null },
+    TODAY
+  );
+  logWorkout(db, { date: shiftISODate(TODAY, -2), kind: 'strength' }, [
+    { exercise: 'Dumbbell Curl', exerciseId: 'dumbbell-curl', reps: 10, weightKg: 12 },
+  ]);
+  const single = trendView(
+    workingSets(db, 'dumbbell-curl'),
+    'reps,load',
+    'per_hand',
+    { metric: null, range: '1m' },
+    TODAY
+  );
+  lone.ranges.length === 0 &&
+  lone.emptyNote === trendEmptyNote(lone.metric, []) &&
+  single.ranges.length === 0 &&
+  single.emptyNote === 'An estimated-1RM trend needs two weighted sessions.'
+    ? ok('fewer than two sessions in all: no range chips, and the note is about the metric, not the range')
+    : bad('no ranges', JSON.stringify([lone.ranges, lone.emptyNote, single.emptyNote]));
+  trendExtent([], TODAY) === null &&
+  trendExtent(pts([3, 1]), TODAY) === 'Tue – Yesterday · 2 sessions' &&
+  trendExtent(pts([40, 0]), TODAY) === 'Aug 16 – Today · 2 sessions'
+    ? ok('the extent line: none under two points; the hub’s day words, no year inside this one')
+    : bad('extent', `${trendExtent(pts([3, 1]), TODAY)} | ${trendExtent(pts([40, 0]), TODAY)}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

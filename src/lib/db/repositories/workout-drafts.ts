@@ -17,7 +17,7 @@
  */
 import type { Database } from '../database';
 import { newId } from '../id';
-import type { DraftKey } from '@/lib/exercise/draft';
+import { mayClearLiveSlot, type DraftKey } from '@/lib/exercise/draft';
 
 type DraftRow = { value: string; updated_at: string };
 
@@ -66,4 +66,17 @@ export function readWorkoutDraft(db: Database, key: DraftKey): StoredDraft | nul
  */
 export function clearWorkoutDraft(db: Database, key: DraftKey): void {
   db.run('DELETE FROM workout_drafts WHERE key = ?', [key]);
+}
+
+/**
+ * Empty the live slot for one logger screen — on Finish, on its Discard, when
+ * its last exercise goes, and on a quiet drop (2026-09-25) — but only when the
+ * slot holds that screen's session or nothing ({@link mayClearLiveSlot}). A
+ * different session in the slot belongs to whoever started it. Returns false
+ * only when it refused for that reason.
+ */
+export function clearOwnLiveDraft(db: Database, sessionId: string): boolean {
+  if (!mayClearLiveSlot(readWorkoutDraft(db, 'live')?.value ?? null, sessionId)) return false;
+  clearWorkoutDraft(db, 'live');
+  return true;
 }
