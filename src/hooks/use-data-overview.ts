@@ -2,7 +2,10 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 
 import { getDb } from '@/lib/db/client';
-import { todayISODate } from '@/lib/db/date';
+import { shiftISODate, todayISODate } from '@/lib/db/date';
+import { latestScreenTime, screenTimeSeries } from '@/lib/db/repositories/screen-time';
+import { formatHm } from '@/lib/screen-time/entry';
+import { dayLabel } from '@/lib/utils/day-cursor';
 import { bodySeries, latestBody } from '@/lib/db/repositories/body';
 import { weeklyTrainingSeries, weekSummary } from '@/lib/db/repositories/exercise';
 import {
@@ -39,7 +42,8 @@ import {
  */
 
 /** Which sub-app a trend row drills into — the screen maps this to a route. */
-export type TrendKey = 'mission' | 'weight' | 'water' | 'nutrition' | 'training' | 'symptoms';
+export type TrendKey =
+  'mission' | 'weight' | 'water' | 'nutrition' | 'training' | 'symptoms' | 'screen_time';
 
 export interface DataTrend {
   key: TrendKey;
@@ -287,10 +291,42 @@ function read(): DataOverviewState {
     emptyLabel: 'None in 14 days',
   };
 
+  // Screen time — the latest DAY on record is the headline, the last 14 days
+  // the trend (2026-09-25, docs/screen-time.md). The daily record's line for a
+  // number that is typed on Log or sent by a Shortcut.
+  //
+  // Three choices, each the honest one for this metric:
+  //   - **The latest day, not today.** The number is usually filed the morning
+  //     after, so "today" would read "—" nearly every morning while yesterday's
+  //     figure sat on record. The qualifier says which day it is.
+  //   - **Recorded days only in the sparkline.** A day with no number is
+  //     unknown, not zero screen time, so nothing is filled: a bar per day that
+  //     has one (screenTimeSeries).
+  //   - **Empty means never recorded.** One old reading still headlines, dated,
+  //     like Weight's.
+  const screenLatest = latestScreenTime(db, today);
+  const screenPoints = screenTimeSeries(db, shiftISODate(today, -13), today);
+  const screenTime: DataTrend = {
+    key: 'screen_time',
+    name: 'Screen time',
+    sub: 'Daily total · last 14 days',
+    spark: screenPoints.map((p) => p.minutes),
+    sparkBaseline: 'zero',
+    value: screenLatest ? formatHm(screenLatest.minutes) : '—',
+    unit: '',
+    qualifier: screenLatest
+      ? `${dayLabel(screenLatest.date, today)}${screenLatest.via === 'shortcuts' ? ' · Shortcuts' : ''}`
+      : null,
+    empty: screenLatest === null,
+    emptyLabel: 'No screen time logged yet',
+  };
+
   return {
     // Water sits beside the other body readings, after Weight: it is a daily
     // behaviour like Nutrition, and the order runs execution → body → intake.
-    trends: [mission, weight, water, nutrition, training, symptoms],
+    // Screen time is behaviour but not intake, and last: it is the one row
+    // here that is typed from another app's screen rather than measured.
+    trends: [mission, weight, water, nutrition, training, symptoms, screenTime],
   };
 }
 

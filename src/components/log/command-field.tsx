@@ -7,10 +7,15 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { logNote } from '@/lib/db/repositories/logs';
+import { recordScreenTime } from '@/lib/db/repositories/screen-time';
 import { logMetricCapture } from '@/lib/health/publish';
 import { isLoggableCanonical, metricByKey } from '@/lib/log/metrics';
 import { parseCommand } from '@/lib/log/parse';
+import { defaultScreenTimeDay, screenTimeDate } from '@/lib/screen-time/entry';
+import { noteTypedScreenTime } from '@/lib/screen-time/receipt-store';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
+
+import { ScreenTimeReceipt } from './screen-time-receipt';
 
 /**
  * The Log tab hero (direction A, "Open Line"): a recessed "Log anything…" field
@@ -29,6 +34,12 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  *
  * This button is the whole accent budget for the Log screen — the quick-add
  * tiles and the symptom row are deliberately neutral.
+ *
+ * **Screen time** (2026-09-25) parses here too — `screen 3h20`, `st 200` — and
+ * is the one capture that does not go through `logMetricCapture`: it is filed
+ * to the day the noon rule picks (usually yesterday) and replaces that day's
+ * number, so it writes through `recordScreenTime` and reports itself in the
+ * receipt row at the foot of this well (screen-time-receipt.tsx).
  */
 export function CommandField({ onLogged }: { onLogged: () => void }) {
   const [text, setText] = useState('');
@@ -50,7 +61,24 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
     const result = parseCommand(trimmed, units);
     try {
       const metric = result.kind === 'metric' ? metricByKey(result.metric) : undefined;
-      if (result.kind === 'metric' && metric && isLoggableCanonical(metric, result.canonical)) {
+      if (
+        result.kind === 'metric' &&
+        result.metric === 'screen_time' &&
+        metric &&
+        isLoggableCanonical(metric, result.canonical)
+      ) {
+        // One number per day, filed to the day the user named or, if none, by
+        // the noon rule — and reported with an Undo by ScreenTimeReceipt
+        // below, because that day is usually not the one the feed shows.
+        const now = new Date();
+        const day = result.day ?? defaultScreenTimeDay(now);
+        const write = recordScreenTime(db, screenTimeDate(day, now), result.canonical, 'typed');
+        noteTypedScreenTime(write.id);
+      } else if (
+        result.kind === 'metric' &&
+        metric &&
+        isLoggableCanonical(metric, result.canonical)
+      ) {
         // A parsed "water 16 oz" goes to Apple Health now, like a vessel tap.
         logMetricCapture(db, date, result.metric, result.canonical);
       } else {
@@ -124,6 +152,10 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
           )}
         </Text>
       </View>
+
+      {/* Screen time's receipt — a ruled row of this well, drawn only after a
+          number was filed (here, on the keypad, or by a Shortcut). */}
+      <ScreenTimeReceipt onChanged={onLogged} />
     </Block>
   );
 }

@@ -56,8 +56,11 @@
  *     were always a running total.
  *   - **`workout`** — many sessions a day, one row each (mapping.ts's
  *     `workoutRows`), so the day's minutes are a sum that is not final until
- *     the day is. The only hand-written entry left, because a workout row is
- *     per-session rather than per-day and so is not a `STATISTIC_METRICS` spec.
+ *     the day is. Hand-written, because a workout row is per-session rather
+ *     than per-day and so is not a `STATISTIC_METRICS` spec.
+ *   - **`screen_time_min`** (2026-09-25) — the day's screen-time total, typed
+ *     or sent by a Shortcut. Hand-written because nothing ingests it; one row
+ *     per day, but a number filed for TODAY is still climbing.
  *
  * Everything else is a level reading, INCLUDING metrics discovered from the
  * table rather than declared (read-tools.ts's layer 2). An unknown cadence is
@@ -75,6 +78,14 @@ export const ACCUMULATING_METRIC_TYPES: readonly string[] = [
   ...STATISTIC_METRICS.map((spec) => spec.metricType),
   // Sessions logged through the day (HealthKit workouts).
   'workout',
+  // Screen time (2026-09-25, docs/screen-time.md): the second hand-written
+  // entry, for the same reason as `workout` — no HealthKit spec to derive it
+  // from, since Health carries no screen time. It is one row per day, but the
+  // number on it keeps climbing until midnight: one typed at 21:00 for TODAY
+  // is a so-far figure, and averaging it in with finished days reads as an
+  // evening of restraint that never happened. Most days it is typed the
+  // morning after, for a closed day, and then this changes nothing.
+  'screen_time_min',
 ];
 
 const ACCUMULATING = new Set(ACCUMULATING_METRIC_TYPES);

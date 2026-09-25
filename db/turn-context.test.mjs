@@ -14,6 +14,7 @@ import { endStatus, startStatus } from '../src/lib/db/repositories/statuses.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { setGoalDirection, updateProfile } from '../src/lib/db/repositories/user.ts';
 import { addGroceryItems } from '../src/lib/db/repositories/grocery.ts';
+import { recordScreenTime } from '../src/lib/db/repositories/screen-time.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import { ageOn, buildTurnContext } from '../src/lib/ai/turn-context.ts';
 
@@ -273,6 +274,36 @@ console.log("R. today's numbers ride in the block, so trivial questions cost no 
   !/Today so far/.test(buildTurnContext(quiet, NOW))
     ? ok('no wearable data → no line at all (never a fabricated zero)')
     : bad('empty day still emits the line');
+}
+
+console.log('ST. screen time: yesterday’s total rides in the block, with its date and door');
+{
+  // The owner's answer (2026-09-25): the number is a Coach input. It is usually
+  // filed the morning after, so the line reads YESTERDAY's — which "Today so
+  // far" would never show.
+  const { db } = freshDb();
+  const yesterday = isoDaysAgo(NOW, 1);
+  recordScreenTime(db, yesterday, 200, 'typed');
+  const context = buildTurnContext(db, NOW);
+  const line = context.split('\n').find((l) => l.startsWith('Screen time'));
+  line === `Screen time (typed): 3h 20m on ${yesterday}`
+    ? ok(`yesterday's number is stated with its date: "${line}"`)
+    : bad('screen time line', String(line));
+
+  recordScreenTime(db, TODAY, 45, 'shortcuts');
+  const today = buildTurnContext(db, NOW)
+    .split('\n')
+    .find((l) => l.startsWith('Screen time'));
+  today === `Screen time (from a Shortcut): 45m on ${TODAY} (today so far)`
+    ? ok('a number for today names its door and says it is a so-far figure')
+    : bad('today screen time line', String(today));
+
+  // Older than yesterday is not "the day's" number; the series tool reaches it.
+  const { db: stale } = freshDb();
+  recordScreenTime(stale, isoDaysAgo(NOW, 3), 200, 'typed');
+  !/Screen time/.test(buildTurnContext(stale, NOW))
+    ? ok('a three-day-old number adds no line')
+    : bad('stale screen time line');
 }
 
 console.log('S. the status line: two at once, the exclusion clause, and the revert cue');

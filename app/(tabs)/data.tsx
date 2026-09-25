@@ -16,7 +16,7 @@ import { useReportsHistory } from '@/hooks/use-reports';
  *
  * The exploratory surface: never directive — that is Home's job — just a calm,
  * drafted record. Top to bottom: today's folio line and title; **Trends**
- * (Mission, Weight, Water, Nutrition, Training, Symptoms, each with a live
+ * (Mission, Weight, Water, Nutrition, Training, Symptoms, Screen time, each with a live
  * sparkline and headline, or an honest first-run invite); **The full file**, the
  * manage/browse index into everything; and the row into **Settings**.
  *
@@ -260,6 +260,12 @@ export default function DataScreen() {
         return;
       case 'symptoms':
         router.push('/symptom');
+        return;
+      case 'screen_time':
+        // The keypad on its Screen time chip, where the day's number is typed
+        // or replaced — and whose back control names this screen, as Weight's
+        // does. The Undo for what it writes is the Log tab's receipt.
+        router.push({ pathname: '/metric-entry', params: { metric: 'screen_time', from: 'Data' } });
         return;
     }
   };

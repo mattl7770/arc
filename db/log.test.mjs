@@ -3,10 +3,17 @@
  * registry conversions + range validation, and the capture repository
  * (logs.ts) — against real SQLite via node:sqlite. Mirrors
  * db/data-layer.test.mjs; op-sqlite is never loaded. Run: npm run db:test.
+ *
+ * §13–§18 are screen time (docs/screen-time.md): the duration grammar, the
+ * noon rule, the link's validation, and the one-row-per-day repository with
+ * its restoring Undo.
  */
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
-import { localDayUtcRange, todayISODate } from '../src/lib/db/date.ts';
+import { redirectSystemPath } from '../app/+native-intent.ts';
+
+import { localDayUtcRange, shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
@@ -16,6 +23,26 @@ import {
   logNote,
   recentSummary,
 } from '../src/lib/db/repositories/logs.ts';
+import {
+  getScreenTime,
+  latestScreenTime,
+  recentShortcutsWrite,
+  recordScreenTime,
+  screenTimeOn,
+  screenTimeSeries,
+  undoScreenTime,
+} from '../src/lib/db/repositories/screen-time.ts';
+import {
+  defaultScreenTimeDay,
+  filedDayWords,
+  formatHm,
+  keypadPress,
+  keypadReadout,
+  parseDuration,
+  parseScreenTimeLink,
+  receiptWords,
+  screenTimeDate,
+} from '../src/lib/screen-time/entry.ts';
 import { listMission } from '../src/lib/db/repositories/mission.ts';
 import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
 import {
@@ -491,6 +518,358 @@ console.log('12. recentSummary is empty-safe');
   recentSummary(db, 'hrv', TODAY).startsWith('No readings yet')
     ? ok('hrv with no data notes the Apple Health fallback')
     : bad('empty hrv summary', recentSummary(db, 'hrv', TODAY));
+}
+
+// ---------------------------------------------------------------------------
+// Screen time (2026-09-25, docs/screen-time.md). The number is typed on Log or
+// sent by a Shortcut's link; ONE row per day in wearable_data; filed to
+// yesterday before noon. Sections 13–18 are its pure half and its repository.
+
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+console.log('13. screen time: a duration parses, and only a whole line is an entry');
+{
+  for (const [text, minutes] of [
+    ['3h20', 200],
+    ['3h 20m', 200],
+    ['3 hours 20 minutes', 200],
+    ['3h', 180],
+    ['3.5h', 210],
+    ['3:05', 185],
+    ['200', 200],
+    ['200 min', 200],
+    ['45m', 45],
+  ]) {
+    parseDuration(text) === minutes
+      ? ok(`parseDuration("${text}") → ${minutes}`)
+      : bad(`parseDuration ${text}`, String(parseDuration(text)));
+  }
+  for (const text of ['', 'abc', '3h75', '3:75', 'three hours']) {
+    parseDuration(text) === null
+      ? ok(`parseDuration("${text}") → null`)
+      : bad(`parseDuration ${text} should be null`, String(parseDuration(text)));
+  }
+
+  for (const [text, minutes, day] of [
+    ['screen 3h20', 200, undefined],
+    ['screen time 3h 20m', 200, undefined],
+    ['Screentime 200', 200, undefined],
+    ['st 200', 200, undefined],
+    ['st: 3:20', 200, undefined],
+    ['screen 3h20 yesterday', 200, 'yesterday'],
+    ['st yesterday 200', 200, 'yesterday'],
+    ['3h20 screen time', 200, undefined],
+    ['200 min screen today', 200, 'today'],
+  ]) {
+    const r = parseCommand(text);
+    r.kind === 'metric' && r.metric === 'screen_time' && r.canonical === minutes && r.day === day
+      ? ok(`"${text}" → screen time ${minutes} min${day ? `, ${day}` : ''}`)
+      : bad(`screen time parse ${text}`, JSON.stringify(r));
+  }
+
+  // The adjacency rule's stricter cousin: anything else on the line and it is
+  // a note. Each of these would have filed a screen day under a keyword match.
+  for (const [text, why] of [
+    ['walked down 5th st 20 min', '"st" mid-sentence is a street'],
+    ['20 st', 'a number before "st" is a weight in stone'],
+    ['st200', 'the keyword needs a separator'],
+    ['screen 3h75', 'a minutes part over 59 is a typo'],
+    ['st yesterday 200 today', 'two days named'],
+    ['screen time was rough today', 'no duration'],
+    ['bought a new screen 2 days ago', 'words around the number'],
+  ]) {
+    const r = parseCommand(text);
+    r.kind === 'note'
+      ? ok(`"${text}" stays a note (${why})`)
+      : bad(`note ${text}`, JSON.stringify(r));
+  }
+
+  // Out of range parses — so the command field's range guard can save it as a
+  // note, exactly as "bf 150" is saved (§3b).
+  const st = metricByKey('screen_time');
+  const long = parseCommand('screen 30h');
+  long.kind === 'metric' && long.canonical === 1800 && !isLoggableCanonical(st, long.canonical)
+    ? ok('"screen 30h" parses and is refused by the range guard (a note, not a crash)')
+    : bad('screen 30h', JSON.stringify(long));
+  !isLoggableCanonical(st, 0) &&
+  isLoggableCanonical(st, 1) &&
+  isLoggableCanonical(st, 1440) &&
+  !isLoggableCanonical(st, 1441) &&
+  !isLoggableCanonical(st, 200.5)
+    ? ok('screen time is loggable as whole minutes 1–1440 only')
+    : bad('screen time range');
+
+  // The rest of the grammar is untouched by the new first pass.
+  const hrv = parseCommand('hrv 48');
+  hrv.kind === 'metric' && hrv.metric === 'hrv' && hrv.day === undefined
+    ? ok('"hrv 48" still parses as HRV, with no day')
+    : bad('hrv after screen time', JSON.stringify(hrv));
+
+  formatCanonical(st, 200) === '3h 20m' && formatHm(45) === '45m' && formatHm(180) === '3h 0m'
+    ? ok('a duration prints "3h 20m" / "45m", the app’s sleep format')
+    : bad('duration format', formatCanonical(st, 200));
+}
+
+console.log('14. screen time: which day a typed number is filed to');
+{
+  const at = (h, m, day = 25) => new Date(2026, 8, day, h, m, 0, 0);
+  for (const [h, m, expected] of [
+    [6, 0, 'yesterday'],
+    [11, 59, 'yesterday'],
+    [12, 0, 'today'],
+    [23, 55, 'today'],
+    [0, 30, 'yesterday'],
+  ]) {
+    defaultScreenTimeDay(at(h, m), '00:00') === expected
+      ? ok(`${h}:${String(m).padStart(2, '0')} under a midnight day → ${expected}`)
+      : bad(`noon rule ${h}:${m}`, defaultScreenTimeDay(at(h, m), '00:00'));
+  }
+  // Under a 04:00 start, 02:00 is still the previous day's evening: "today"
+  // in ARC's terms, which is that previous calendar date.
+  defaultScreenTimeDay(at(2, 0), '04:00') === 'today' &&
+  screenTimeDate('today', at(2, 0), '04:00') === '2026-09-24'
+    ? ok('02:00 under a 04:00 start files to that (logical) day, 24 Sep')
+    : bad('boundary late night', screenTimeDate('today', at(2, 0), '04:00'));
+  defaultScreenTimeDay(at(5, 0), '04:00') === 'yesterday' &&
+  screenTimeDate('yesterday', at(5, 0), '04:00') === '2026-09-24'
+    ? ok('05:00 under a 04:00 start is morning → yesterday, 24 Sep')
+    : bad('boundary morning');
+  screenTimeDate('yesterday', at(9, 0), '00:00') === '2026-09-24' &&
+  screenTimeDate('today', at(9, 0), '00:00') === '2026-09-25'
+    ? ok('yesterday/today name the dates they say')
+    : bad('screenTimeDate');
+
+  filedDayWords('2026-09-24', '2026-09-25') === 'yesterday, Thu 24 Sep' &&
+  filedDayWords('2026-09-25', '2026-09-25') === 'today, Fri 25 Sep' &&
+  filedDayWords('2026-09-22', '2026-09-25') === 'Tue 22 Sep'
+    ? ok('a receipt names the day in words and as a date')
+    : bad('filedDayWords', filedDayWords('2026-09-24', '2026-09-25'));
+}
+
+console.log('15. screen time: the link is validated before anything is written');
+{
+  const now = new Date(2026, 8, 25, 23, 55, 0, 0);
+  const good = parseScreenTimeLink({ minutes: '200', date: '2026-09-25' }, now);
+  eq(good, { ok: true, minutes: 200, date: '2026-09-25' })
+    ? ok('minutes=200&date=2026-09-25 → accepted')
+    : bad('good link', JSON.stringify(good));
+  const repeated = parseScreenTimeLink({ minutes: ['200', '999'], date: ['2026-09-24'] }, now);
+  repeated.ok && repeated.minutes === 200
+    ? ok('a repeated param takes the first value')
+    : bad('repeated param', JSON.stringify(repeated));
+  parseScreenTimeLink({ minutes: '1440', date: '2026-09-25' }, now).ok &&
+  parseScreenTimeLink({ minutes: '1', date: '2026-08-26' }, now).ok
+    ? ok('the edges are inside: 1440 minutes, and 30 days back')
+    : bad('edges');
+
+  for (const [params, fragment] of [
+    [{ date: '2026-09-25' }, 'no minutes'],
+    [{ minutes: '200.0', date: '2026-09-25' }, 'whole number'],
+    [{ minutes: '-5', date: '2026-09-25' }, 'whole number'],
+    [{ minutes: '3h', date: '2026-09-25' }, 'whole number'],
+    [{ minutes: '0', date: '2026-09-25' }, 'failed read'],
+    [{ minutes: '1441', date: '2026-09-25' }, 'at most 1440'],
+    [{ minutes: '200' }, 'no date'],
+    [{ minutes: '200', date: '2026-9-25' }, 'YYYY-MM-DD'],
+    [{ minutes: '200', date: '2026-02-30' }, 'not a real date'],
+    [{ minutes: '200', date: '2026-09-26' }, 'in the future'],
+    [{ minutes: '200', date: '2026-08-25' }, 'more than 30 days back'],
+  ]) {
+    const r = parseScreenTimeLink(params, now);
+    !r.ok && r.reason.includes(fragment)
+      ? ok(`refused (${fragment}): ${JSON.stringify(params)}`)
+      : bad(`link should refuse ${JSON.stringify(params)}`, JSON.stringify(r));
+  }
+  // The link reaches the route untouched: app/+native-intent.ts redirects only
+  // the share extension's deliveries, and `arc` is app.json's scheme.
+  const url = 'arc://log/screen-time?minutes=200&date=2026-09-24';
+  redirectSystemPath({ path: url, initial: true }) === url &&
+  redirectSystemPath({ path: url, initial: false }) === url
+    ? ok('the native-intent redirect passes the screen-time link through, cold or warm')
+    : bad('native intent rewrote the link', redirectSystemPath({ path: url, initial: true }));
+  JSON.parse(readFileSync(new URL('../app.json', import.meta.url), 'utf8')).expo.scheme === 'arc'
+    ? ok('app.json registers the arc:// scheme the link uses')
+    : bad('scheme is not arc');
+
+  // Apple's day is the calendar's: at 00:30 the new date is not the future,
+  // even under a boundary that still calls it yesterday in ARC.
+  parseScreenTimeLink({ minutes: '30', date: '2026-09-26' }, new Date(2026, 8, 26, 0, 30)).ok
+    ? ok('at 00:30, the new calendar date is accepted')
+    : bad('calendar today');
+}
+
+console.log('16. screen time: one row per day, a replace keeps what it replaced, Undo restores it');
+{
+  const { db, raw } = freshDb();
+  const DAY = shiftISODate(TODAY, -1);
+  const rowsOn = (date) =>
+    raw
+      .prepare(`SELECT * FROM wearable_data WHERE metric_type = 'screen_time_min' AND date = ?`)
+      .all(date);
+
+  const first = recordScreenTime(db, DAY, 185, 'typed');
+  const row = rowsOn(DAY);
+  first.wrote &&
+  first.minutes === 185 &&
+  first.via === 'typed' &&
+  first.replaced.length === 0 &&
+  row.length === 1 &&
+  row[0].unit === 'min' &&
+  row[0].source_device === 'manual' &&
+  row[0].source_raw_id === null
+    ? ok('the first write is one manual wearable_data row, unit min, via typed')
+    : bad('first write', JSON.stringify({ first, row }));
+
+  const second = recordScreenTime(db, DAY, 200, 'typed');
+  second.wrote && eq(second.replaced, [{ minutes: 185, via: 'typed' }]) && rowsOn(DAY).length === 1
+    ? ok('a second number for the same day REPLACES the first and names it')
+    : bad('replace', JSON.stringify({ second, rows: rowsOn(DAY) }));
+
+  const again = recordScreenTime(db, DAY, 200, 'typed');
+  !again.wrote && again.id === second.id && eq(again.replaced, [{ minutes: 185, via: 'typed' }])
+    ? ok('the same number from the same door writes nothing, and keeps the original replaced')
+    : bad('idempotent', JSON.stringify(again));
+
+  // The typed 200 as it stands, to compare against once Undo puts it back.
+  const before = raw.prepare(`SELECT * FROM wearable_data WHERE id = ?`).get(second.id);
+  const linked = recordScreenTime(db, DAY, 210, 'shortcuts');
+  linked.via === 'shortcuts' && eq(linked.replaced, [{ minutes: 200, via: 'typed' }])
+    ? ok('a Shortcuts write replaces a typed one and says so')
+    : bad('shortcuts replace', JSON.stringify(linked));
+  recentShortcutsWrite(db, DAY)?.id === linked.id &&
+  recentShortcutsWrite(db, shiftISODate(DAY, 1)) === null
+    ? ok('the Shortcuts receipt is found from the record, bounded by day')
+    : bad('recentShortcutsWrite');
+
+  // Undo: the linked write goes, and the typed 200 comes back byte for byte —
+  // its id, its timestamp, and its own record of what IT replaced.
+  undoScreenTime(db, linked.id) === true
+    ? ok('Undo of the newest write succeeds')
+    : bad('undo linked');
+  const restored = rowsOn(DAY);
+  restored.length === 1 &&
+  restored[0].id === second.id &&
+  restored[0].value === 200 &&
+  restored[0].created_at === before.created_at &&
+  restored[0].metadata === before.metadata &&
+  eq(getScreenTime(db, second.id)?.replaced, [{ minutes: 185, via: 'typed' }])
+    ? ok('Undo restores the replaced row exactly: id, value, timestamp, its own history')
+    : bad('undo restore', JSON.stringify(restored));
+
+  undoScreenTime(db, linked.id) === false && rowsOn(DAY).length === 1
+    ? ok('a stale Undo (already undone) changes nothing')
+    : bad('stale undo');
+
+  undoScreenTime(db, second.id);
+  undoScreenTime(db, first.id);
+  screenTimeOn(db, DAY) === null
+    ? ok('undoing back past the first write leaves the day with no number')
+    : bad('undo to empty', JSON.stringify(rowsOn(DAY)));
+
+  // Other days are never touched by a write to this one.
+  const other = shiftISODate(DAY, -1);
+  recordScreenTime(db, other, 90, 'typed');
+  recordScreenTime(db, DAY, 120, 'typed');
+  recordScreenTime(db, DAY, 130, 'typed');
+  screenTimeOn(db, other)?.minutes === 90 && rowsOn(other).length === 1
+    ? ok('a write to one day leaves its neighbour alone')
+    : bad('neighbour');
+
+  // Refusals throw before touching the table.
+  let threw = 0;
+  for (const fn of [
+    () => recordScreenTime(db, DAY, 0, 'typed'),
+    () => recordScreenTime(db, DAY, 1441, 'typed'),
+    () => recordScreenTime(db, DAY, 12.5, 'typed'),
+    () => recordScreenTime(db, '2026-9-1', 100, 'typed'),
+  ]) {
+    try {
+      fn();
+    } catch {
+      threw++;
+    }
+  }
+  threw === 4 && screenTimeOn(db, DAY)?.minutes === 130
+    ? ok('0, 1441, 12.5 minutes and a malformed date all throw, and the day keeps 130')
+    : bad('refusals', String(threw));
+
+  // Reads: the latest DAY (not the latest row), recorded days only, no future.
+  recordScreenTime(db, shiftISODate(TODAY, 2), 60, 'typed');
+  latestScreenTime(db, TODAY)?.date === DAY
+    ? ok('latestScreenTime is the latest day on or before today; a future row is ignored')
+    : bad('latest', JSON.stringify(latestScreenTime(db, TODAY)));
+  eq(screenTimeSeries(db, shiftISODate(TODAY, -13), TODAY), [
+    { date: other, minutes: 90 },
+    { date: DAY, minutes: 130 },
+  ])
+    ? ok('the series holds recorded days only — no stand-in zeros')
+    : bad('series', JSON.stringify(screenTimeSeries(db, shiftISODate(TODAY, -13), TODAY)));
+}
+
+console.log('17. screen time reads back through the typed-metric paths');
+{
+  const { db, raw } = freshDb();
+  recentSummary(db, 'screen_time', TODAY) === 'No screen time logged yet'
+    ? ok('empty keypad line: no Apple Health fallback claimed (Health has no screen time)')
+    : bad('empty screen summary', recentSummary(db, 'screen_time', TODAY));
+
+  // logMetric — every door that reaches it — keeps one row per day.
+  logMetric(db, TODAY, 'screen_time', 200);
+  logMetric(db, TODAY, 'screen_time', 215);
+  const rows = raw
+    .prepare(`SELECT value FROM wearable_data WHERE metric_type = 'screen_time_min'`)
+    .all();
+  rows.length === 1 && rows[0].value === 215
+    ? ok('logMetric(screen_time) replaces rather than appends')
+    : bad('logMetric replace', JSON.stringify(rows));
+
+  const feed = listTodayEntries(db);
+  feed.length === 1 && feed[0].title === '3h 35m' && feed[0].category === 'Screen time'
+    ? ok('today’s number sits in the Log feed as "3h 35m" under Screen time')
+    : bad('feed', JSON.stringify(feed));
+  recentSummary(db, 'screen_time', TODAY).startsWith('Last 3h 35m · ')
+    ? ok('the keypad line names the latest day’s figure')
+    : bad('screen summary', recentSummary(db, 'screen_time', TODAY));
+
+  const words = receiptWords(
+    { date: '2026-09-24', minutes: 200, via: 'shortcuts', replaced: [{ minutes: 185 }] },
+    '2026-09-25'
+  );
+  words.said === 'Shortcuts filed screen time to yesterday, Thu 24 Sep' &&
+  words.figure === '3h 20m, was 3h 5m' &&
+  words.spoken === 'Undo screen time 3h 20m for Thu 24 Sep'
+    ? ok('a receipt says where it came from, the day, the figure and what it replaced')
+    : bad('receipt words', JSON.stringify(words));
+  receiptWords({ date: '2026-09-25', minutes: 45, via: 'typed', replaced: [] }, '2026-09-25')
+    .said === 'Screen time filed to today, Fri 25 Sep'
+    ? ok('a typed first entry reads plainly')
+    : bad('typed receipt');
+}
+
+console.log('18. screen time: the keypad types hours with its "." key');
+{
+  const typed = (keys) => keys.reduce((v, k) => keypadPress(v, k), '');
+  for (const [keys, expected] of [
+    [['h'], ''],
+    [['3', 'h'], '3h'],
+    [['3', 'h', 'h'], '3h'],
+    [['3', 'h', '2', '0'], '3h20'],
+    [['3', 'h', '2', '0', '5'], '3h20'],
+    [['2', '0', '0', 'h'], '200'],
+    [['1', '4', '4', '0', '1'], '1440'],
+    [['0', '5'], '5'],
+    [['3', 'h', 'del'], '3'],
+  ]) {
+    typed(keys) === expected
+      ? ok(`${keys.join(' ')} → "${expected}"`)
+      : bad(`keypad ${keys.join(' ')}`, typed(keys));
+  }
+  eq(keypadReadout(''), { figure: '0h 0m', unit: '' }) &&
+  eq(keypadReadout('200'), { figure: '200', unit: 'min' }) &&
+  eq(keypadReadout('3h'), { figure: '3h', unit: '' }) &&
+  eq(keypadReadout('3h2'), { figure: '3h 2m', unit: '' })
+    ? ok('the readout shows what was typed, with the placeholder naming the h key')
+    : bad('readout', JSON.stringify(keypadReadout('3h2')));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

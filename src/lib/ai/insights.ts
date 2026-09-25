@@ -35,6 +35,7 @@ import { deriveReadiness } from '@/lib/home/readiness';
 import { openStatuses } from '@/lib/db/repositories/statuses';
 import { activeExperiments } from '@/lib/db/repositories/experiments';
 import { activeNutritionTargets } from '@/lib/db/repositories/nutrition';
+import { SCREEN_TIME_METRIC } from '@/lib/screen-time/entry';
 import type { ReminderRow } from '@/lib/reminders/types';
 import type { UnitPreferences } from '@/lib/user/types';
 import {
@@ -845,7 +846,13 @@ function wearableFloorLine(db: Database, now: Date): string | null {
 
   // Rows exist but none inside the window, or only metrics with no phrasing
   // above. Still not "nothing logged" — say what is actually on the device.
-  const inventory = wearableMetricInventory(db);
+  //
+  // Screen time shares the table but never comes from Apple Health (it is typed
+  // or sent by a Shortcut, docs/screen-time.md), so it is not counted here: a
+  // phone with only screen time on record must not be told Health "synced".
+  const inventory = wearableMetricInventory(db).filter(
+    (row) => row.metricType !== SCREEN_TIME_METRIC
+  );
   if (inventory.length === 0) return null;
   const last = inventory.reduce((a, b) => (a.lastDate >= b.lastDate ? a : b));
   const held = `Apple Health holds ${inventory.length} metric${inventory.length === 1 ? '' : 's'} on this device, last synced ${last.lastDate}`;

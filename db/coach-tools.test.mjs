@@ -3827,5 +3827,71 @@ console.log('47. get_today_snapshot carries sodium, caffeine and fiber — paylo
     : bad('schema moved');
 }
 
+console.log('48. screen time reaches the Coach — payload only, no schema moved');
+{
+  // The owner's answer (2026-09-25): the number is a Coach input. It is read
+  // through the paths every metric already has — the snapshot and the series
+  // tool — and nothing about any tool's description or schema changes.
+  const { recordScreenTime } = await import('../src/lib/db/repositories/screen-time.ts');
+  const { db } = freshDb();
+
+  run('get_today_snapshot', db).screenTime === undefined
+    ? ok('no number on record → no screenTime field at all')
+    : bad('empty snapshot grew screenTime');
+
+  const yesterday = shiftISODate(TODAY, -1);
+  recordScreenTime(db, yesterday, 200, 'typed');
+  const st = run('get_today_snapshot', db).screenTime;
+  st &&
+  st.date === yesterday &&
+  st.value === 200 &&
+  st.unit === 'min' &&
+  st.hm === '3h 20m' &&
+  st.source === 'typed by the user' &&
+  st.partial === undefined
+    ? ok('yesterday’s total is in the snapshot with its date, "3h 20m" and its door')
+    : bad('snapshot screenTime', JSON.stringify(st));
+
+  recordScreenTime(db, TODAY, 45, 'shortcuts');
+  const today = run('get_today_snapshot', db);
+  today.screenTime?.date === TODAY &&
+  today.screenTime.partial === true &&
+  today.screenTime.source === 'Shortcuts automation' &&
+  today.wearables.availableMetrics.includes('screen_time_min')
+    ? ok('a number for today is marked partial, and screen_time_min is an available metric')
+    : bad('today screenTime', JSON.stringify(today.screenTime));
+  // It is not a sync. On a device whose only rows are screen time, the wearables
+  // plane must not tell the model Apple Health "HAS synced today".
+  today.wearables.today.screen_time_min === undefined &&
+  /Apple Health has never synced/.test(today.wearables.note)
+    ? ok('screen time stays out of wearables.today, and no sync is claimed for it')
+    : bad('screen time counted as a sync', JSON.stringify(today.wearables));
+
+  // The series tool: the alias, the "3h 20m" form, and today held out of the
+  // statistics because a today figure is still climbing.
+  const series = run('get_metric_series', db, { metric: 'screen_time', days: 7 });
+  const lastPoint = series.points?.[series.points.length - 1];
+  series.metric === 'screen_time_min' &&
+  series.points.length === 2 &&
+  series.points[0].hm === '3h 20m' &&
+  lastPoint?.partial === true &&
+  !series.inferred
+    ? ok('get_metric_series("screen_time") resolves, reads "3h 20m", and marks today partial')
+    : bad('screen time series', JSON.stringify(series));
+
+  // Older than yesterday is not the snapshot's to report.
+  const { db: stale } = freshDb();
+  recordScreenTime(stale, shiftISODate(TODAY, -3), 200, 'typed');
+  run('get_today_snapshot', stale).screenTime === undefined
+    ? ok('a three-day-old number is left to the series tool')
+    : bad('stale snapshot screenTime');
+
+  // The Coach reads screen time and does not write it: log_metric's enum is
+  // unchanged (the cached prefix §6 of coach-eval guards stays where it was).
+  !JSON.stringify(toolByName('log_metric').inputSchema).includes('screen_time')
+    ? ok('log_metric does not take screen time — reading it moved no schema')
+    : bad('log_metric grew screen_time');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

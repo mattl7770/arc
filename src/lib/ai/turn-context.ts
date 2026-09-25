@@ -31,9 +31,11 @@ import {
   statusDayNumber,
   statusesIn,
 } from '@/lib/db/repositories/statuses';
+import { latestScreenTime } from '@/lib/db/repositories/screen-time';
 import { getGoalDirection, getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { deriveReadiness } from '@/lib/home/readiness';
+import { formatHm } from '@/lib/screen-time/entry';
 import { formatUtcOffset, offsetShift } from '@/lib/timezone/classify';
 import { awayDayNumber } from '@/lib/timezone/trips';
 
@@ -272,6 +274,21 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
   fact('rhr', (v) => `RHR ${Math.round(v)} bpm`);
   if (todayFacts.length > 0) {
     lines.push(`Today so far: ${todayFacts.join(' · ')}`);
+  }
+
+  // --- Screen time (2026-09-25, docs/screen-time.md) — the owner asked for it
+  // as a Coach input. Its own line, not a "Today so far" fact, because the
+  // number is usually filed the morning after: yesterday's total is the one
+  // that exists at breakfast. Named with its date and its door, and only when
+  // yesterday or today has one — about a dozen uncached tokens on those days,
+  // none on the rest. What to make of it is the model's call.
+  const screen = latestScreenTime(db, today);
+  if (screen && screen.date >= shiftISODate(today, -1)) {
+    lines.push(
+      `Screen time (${screen.via === 'shortcuts' ? 'from a Shortcut' : 'typed'}): ` +
+        `${formatHm(screen.minutes)} on ${screen.date}` +
+        (screen.date === today ? ' (today so far)' : '')
+    );
   }
 
   // --- Mission progress — where the day stands and what is next.

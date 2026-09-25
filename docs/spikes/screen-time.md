@@ -1,4 +1,4 @@
-> **PLAN — not built (written and fact-checked 2026-09-23).** Round-2 note "screen time data?". The checker REVERSED the Family Controls recommendation (the licence bars Coach use). Nothing built. The owner's answers are collected on the round-two decisions page; this file is the plan of record until they arrive.
+> **BUILT 2026-09-25 as routes (a) and (e) — see `docs/screen-time.md`.** The owner answered: Coach input and a line on the daily record; the daily total only; typed, with no screenshot to the model (so not (d)); no Family Controls. The Shortcuts check below (§3, and the added note under §5) has not been run yet, so (e) is built as a link that works whenever a Shortcut opens it. What follows is the research and plan as written and fact-checked on 2026-09-23, unchanged.
 
 # Screen time in ARC: what Apple allows, and what it would cost
 
