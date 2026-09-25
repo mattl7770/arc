@@ -1,3 +1,5 @@
+> **Superseded in part 2026-09-25 by `garmin-all-data.md`** (the owner wants all data with minimal involvement; the file import is no longer the recommendation).
+>
 > **PLAN — not built (written and fact-checked 2026-09-23).** Round-2 note "new method for HRV + other data from garmin?". Checked by an independent agent; its corrections are marked "(checked 2026-09-23: …)". Nothing built beyond the one-tap sync on a blank HRV. The owner's answers are collected on the round-two decisions page; this file is the plan of record until they arrive.
 
 # Garmin HRV and the other missing metrics: every route into ARC
