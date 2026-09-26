@@ -16,15 +16,31 @@
  *
  * Session-scoped by design, like the water receipt: the next typed write
  * replaces it, and a relaunch clears it.
+ *
+ * **Noting a write tells the receipt; forgetting one does not.** An Undo
+ * forgets the id it took back, and if that woke the receipt it would re-read
+ * the record and arm the next write it found — a Shortcuts number for another
+ * day, or the very row the Undo just restored — under the thumb that is still
+ * on the button. So {@link forgetTypedScreenTime} is silent, and the receipt
+ * holds its own "Undone" line until the next write or the next focus.
  */
 type Listener = () => void;
 
 let lastTypedId: string | null = null;
 const listeners = new Set<Listener>();
 
-export function noteTypedScreenTime(id: string | null): void {
+/** A typed write just landed: remember its id and tell the receipt. */
+export function noteTypedScreenTime(id: string): void {
   lastTypedId = id;
   for (const listener of listeners) listener();
+}
+
+/**
+ * Stop reporting a typed write — `id` only if it is still the one held, or
+ * whatever is held when omitted. Tells nobody (see the header).
+ */
+export function forgetTypedScreenTime(id?: string): void {
+  if (id === undefined || id === lastTypedId) lastTypedId = null;
 }
 
 export function lastTypedScreenTime(): string | null {

@@ -11,7 +11,8 @@
  *     `source_device = 'manual'`, so a smart bottle or Apple Health can later
  *     add rows to the same metric_type without a migration;
  *   - screen time → the same table, minutes, but ONE row per day: it is routed
- *     through ./screen-time.ts, which replaces instead of appending.
+ *     through ./screen-time.ts, which replaces instead of appending. A day's
+ *     total is not a capture at a moment, so it stays out of this feed.
  *
  * Everything crosses through the metric registry (src/lib/log/metrics.ts), so
  * units and persistence targets are defined once.
@@ -33,6 +34,7 @@ import {
   type MetricKey,
 } from '@/lib/log/metrics';
 import { weekdayDate } from '@/lib/protocols/format';
+import { SCREEN_TIME_METRIC } from '@/lib/screen-time/entry';
 import type { UnitPreferences } from '@/lib/user/types';
 import type { LogFeedItem } from '@/types/log';
 
@@ -266,9 +268,16 @@ export function listEntriesOn(db: Database, date: string, units?: UnitPreference
   }
 
   // 2) Manual wearable metrics — water, HRV, RHR.
+  //
+  // NOT screen time. It is a day's total, not a capture at a moment: typed at
+  // 07:12 on the 25th it is filed under the 24th, and a feed row would say it
+  // was logged at 07:12 on the 24th — a time that never happened on that day,
+  // which the Coach's `captures` domain would then report as fact. It has its
+  // own reads (the Log receipt, Data's row, the Coach's snapshot and series).
   const wearableRows = db.all<WearableDataRow>(
-    `SELECT * FROM wearable_data WHERE date = ? AND source_device = 'manual'`,
-    [date]
+    `SELECT * FROM wearable_data
+     WHERE date = ? AND source_device = 'manual' AND metric_type != ?`,
+    [date, SCREEN_TIME_METRIC]
   );
   for (const r of wearableRows) {
     const metric = metricByWearableType(r.metric_type);

@@ -1,7 +1,7 @@
 /**
  * Screen time — the pure half. What a typed or linked number means, which day
  * it belongs to, and how it prints. No database and no React Native, so the
- * headless suites import it directly (db/log.test.mjs §13–§17).
+ * headless suites import it directly (db/log.test.mjs §13–§21).
  *
  * The plan of record is docs/spikes/screen-time.md; what was built, and the
  * Shortcut setup, is docs/screen-time.md. The owner's answers (2026-09-25) set
@@ -59,6 +59,13 @@ export const SCREEN_TIME_MAX_MINUTES = 24 * 60;
 
 /** How far back a link may write. Older than this is a shortcut gone wrong. */
 export const LINK_MAX_DAYS_BACK = 30;
+
+/**
+ * How far back a link may write WITHOUT a tap: calendar today and yesterday,
+ * the two days a nightly or a morning automation sends. Anything older is
+ * accepted but waits on a confirm card (see {@link linkWritesSilently}).
+ */
+export const LINK_SILENT_DAYS_BACK = 1;
 
 /**
  * The link a Shortcut opens, with its two placeholders — printed exactly this
@@ -157,6 +164,38 @@ export function screenTimeDate(
   return day === 'yesterday' ? shiftISODate(today, -1) : today;
 }
 
+/** The part of a command-field parse this reads — parse.ts's `ParseResult` satisfies it. */
+export type ScreenTimeParse = {
+  kind: string;
+  metric?: string;
+  canonical?: number;
+  day?: ScreenTimeDay;
+};
+
+/**
+ * Where a line typed in the Log tab's command field is filed, when it is a
+ * screen-time entry: the date the named day (or, if none, the noon rule)
+ * picks, and the minutes. Null for anything else — another metric, a note, or
+ * a screen-time number out of range, which the command field then saves as a
+ * note the way it saves "bf 150".
+ *
+ * This is the whole of the command field's decision on send, lifted out of
+ * the tap handler so it is tested at 09:00 and at 13:00 (db/log.test.mjs §19):
+ * a line that took the generic metric path instead would be filed to TODAY,
+ * every morning, and nothing on screen would look wrong.
+ */
+export function screenTimeFiling(
+  result: ScreenTimeParse,
+  now: Date,
+  dayStartsAt: string = getDayStartsAt()
+): { date: string; minutes: number } | null {
+  if (result.kind !== 'metric' || result.metric !== 'screen_time') return null;
+  const minutes = result.canonical;
+  if (typeof minutes !== 'number' || !isScreenTimeMinutes(minutes)) return null;
+  const day = result.day ?? defaultScreenTimeDay(now, dayStartsAt);
+  return { date: screenTimeDate(day, now, dayStartsAt), minutes };
+}
+
 /**
  * How a receipt names the day a number went to: `yesterday, Thu 24 Sep`,
  * `today, Fri 25 Sep`, or just `Tue 22 Sep`. Both the word and the date for
@@ -203,6 +242,49 @@ export function receiptWords(
       : formatHm(entry.minutes),
     spoken: `Undo screen time ${formatHm(entry.minutes)} for ${weekdayDate(entry.date)}`,
   };
+}
+
+/**
+ * Which write the Log tab's receipt reports, if any: the number typed this
+ * session, or the newest one a Shortcut filed — whichever is newer, and each
+ * only for yesterday or today (older is not news).
+ *
+ * A Shortcuts write is reported ONCE. `seenThrough` is the newest write the
+ * receipt has already put in front of the owner (it is stamped when he leaves
+ * the Log tab, src/components/log/screen-time-receipt.tsx), and a Shortcuts
+ * write no newer than that is not drawn again. Without it a nightly automation
+ * would keep a destructive Undo on the Log tab every day, all day — a fixture,
+ * not a receipt. And because the stamp covers typed writes too, a Shortcuts
+ * number that an Undo of a typed correction put BACK (with its original
+ * timestamp) is not re-offered as though it were new.
+ */
+export function pickReceipt<E extends { date: string; createdAt: string }>(
+  typed: E | null,
+  linked: E | null,
+  today: string,
+  seenThrough: string | null
+): E | null {
+  const since = shiftISODate(today, -1);
+  const t = typed && typed.date >= since ? typed : null;
+  const l =
+    linked && linked.date >= since && (seenThrough === null || linked.createdAt > seenThrough)
+      ? linked
+      : null;
+  if (t && l) return t.createdAt >= l.createdAt ? t : l;
+  return t ?? l;
+}
+
+/**
+ * What an Undo leaves on screen in place of its button: what the day holds
+ * now. `restored` is the number put back, or null when the day is empty.
+ *
+ *   Undone. Thu 24 Sep is back to 3h 5m.
+ *   Undone. Nothing is on record for Thu 24 Sep.
+ */
+export function undoneSentence(date: string, restored: number | null): string {
+  return restored === null
+    ? `Undone. Nothing is on record for ${weekdayDate(date)}.`
+    : `Undone. ${weekdayDate(date)} is back to ${formatHm(restored)}.`;
 }
 
 // --- The keypad --------------------------------------------------------------
@@ -263,8 +345,9 @@ function quoted(value: string): string {
 }
 
 /**
- * Validate a link's params. Strict, because the write it leads to is silent:
- * a Personal Automation can run while he sleeps and no card waits for a tap.
+ * Validate a link's params. Strict, because the write it leads to is usually
+ * silent: a Personal Automation can run while he sleeps, and for today and
+ * yesterday no card waits for a tap ({@link linkWritesSilently}).
  *
  *   - `minutes` is a whole number from 1 to 1440, digits only. `200.0` is
  *     refused, which is why the setup note rounds before it builds the URL.
@@ -324,4 +407,59 @@ export function parseScreenTimeLink(
   }
 
   return { ok: true, minutes, date: dateRaw };
+}
+
+/** What the day holds when a valid link arrives — a repository entry satisfies it. */
+export type LinkHeld = { minutes: number; via: 'typed' | 'shortcuts' };
+
+/**
+ * Whether a valid link may write with nobody there to tap: only for calendar
+ * today or yesterday (the two days an automation sends), and only over nothing
+ * or over an earlier Shortcuts number. Everything else waits on a confirm card:
+ *
+ *   - **An older date.** A nightly or morning automation never sends one, so a
+ *     link for 1 Sep is a Shortcut with a wrong Adjust Date or some other
+ *     caller of `arc://`; and its Undo would never be offered again, because
+ *     the Log tab's receipt only reports yesterday and today.
+ *   - **A number he typed.** His own reading of the day is not something an
+ *     automation replaces behind his back.
+ *
+ * The same number as the day already holds is neither: the link screen reports
+ * it as already on record and writes nothing, before asking this.
+ */
+export function linkWritesSilently(date: string, held: LinkHeld | null, now: Date): boolean {
+  if (date < shiftISODate(formatLocalDate(now), -LINK_SILENT_DAYS_BACK)) return false;
+  return held?.via !== 'typed';
+}
+
+/**
+ * The confirm card's words for a link {@link linkWritesSilently} refused to
+ * write alone: the sentence, the Save button and the Keep button.
+ *
+ *   Thu 24 Sep holds 3h 5m, typed on Log. The Shortcut sent 3h 20m.
+ *     [Replace with 3h 20m]  [Keep 3h 5m]
+ *   The Shortcut sent 3h 20m for Tue 1 Sep. ARC saves a Shortcut's number
+ *   without asking only for today and yesterday.
+ *     [Save 3h 20m]  [Don't save]
+ */
+export function linkConfirmWords(
+  date: string,
+  minutes: number,
+  held: LinkHeld | null
+): { said: string; save: string; keep: string } {
+  const day = weekdayDate(date);
+  const sent = formatHm(minutes);
+  if (held?.via === 'typed') {
+    return {
+      said: `${day} holds ${formatHm(held.minutes)}, typed on Log. The Shortcut sent ${sent}.`,
+      save: `Replace with ${sent}`,
+      keep: `Keep ${formatHm(held.minutes)}`,
+    };
+  }
+  const holds = held ? ` ${day} holds ${formatHm(held.minutes)} from Shortcuts.` : '';
+  return {
+    said: `The Shortcut sent ${sent} for ${day}. ARC saves a Shortcut’s number without asking only for today and yesterday.${holds}`,
+    save: `Save ${sent}`,
+    keep: held ? `Keep ${formatHm(held.minutes)}` : 'Don’t save',
+  };
 }

@@ -35,7 +35,7 @@ import {
   pastScheduledAppointments,
   upcomingAppointments,
 } from '@/lib/db/repositories/screenings';
-import { latestScreenTime } from '@/lib/db/repositories/screen-time';
+import { screenTimeOn, type ScreenTimeEntry } from '@/lib/db/repositories/screen-time';
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
 import {
   getGoalDirection,
@@ -884,24 +884,30 @@ const getTodaySnapshot: CoachTool = {
       // owner typed or a Shortcut sent. Its OWN field, not only a
       // `wearables.today` entry, because the number is usually filed the
       // morning after: today has none at breakfast, and yesterday's is the
-      // one worth having. So: the latest day on record if it is yesterday or
-      // today, with its date and where it came from; `partial` when it is
-      // today's, which is a so-far figure. Omitted otherwise, like `ahead`;
-      // older days are one get_metric_series('screen_time') away.
+      // one worth having. So: `yesterday` and `today`, each present when that
+      // day has a number, with its date and where it came from; `today`
+      // carries `partial`, a so-far figure. BOTH when both exist — a today
+      // figure must not push out yesterday's finished total. Omitted when
+      // neither does, like `ahead`; older days are one
+      // get_metric_series('screen_time') away.
       //
       // TOKEN DELTA: zero. Payload only — no description or schema moved, so
       // neither ceiling in db/coach-eval.test.mjs §6 does.
       ...(() => {
-        const latest = latestScreenTime(db, date);
-        if (!latest || latest.date < shiftISODate(date, -1)) return {};
+        const day = (entry: ScreenTimeEntry) => ({
+          date: entry.date,
+          value: entry.minutes,
+          unit: 'min',
+          hm: formatDuration(entry.minutes),
+          source: entry.via === 'shortcuts' ? 'Shortcuts automation' : 'typed by the user',
+        });
+        const yesterday = screenTimeOn(db, shiftISODate(date, -1));
+        const today = screenTimeOn(db, date);
+        if (!yesterday && !today) return {};
         return {
           screenTime: {
-            date: latest.date,
-            value: latest.minutes,
-            unit: 'min',
-            hm: formatDuration(latest.minutes),
-            source: latest.via === 'shortcuts' ? 'Shortcuts automation' : 'typed by the user',
-            ...(latest.date === date ? { partial: true } : {}),
+            ...(yesterday ? { yesterday: day(yesterday) } : {}),
+            ...(today ? { today: { ...day(today), partial: true } } : {}),
           },
         };
       })(),

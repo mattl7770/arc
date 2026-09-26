@@ -4,9 +4,10 @@
  * (logs.ts) — against real SQLite via node:sqlite. Mirrors
  * db/data-layer.test.mjs; op-sqlite is never loaded. Run: npm run db:test.
  *
- * §13–§18 are screen time (docs/screen-time.md): the duration grammar, the
- * noon rule, the link's validation, and the one-row-per-day repository with
- * its restoring Undo.
+ * §13–§21 are screen time (docs/screen-time.md): the duration grammar, the
+ * noon rule, the link's validation, the one-row-per-day repository with its
+ * restoring Undo (one level, and bounded), the command field's filing
+ * decision, the receipt's once-only rule, and when a link may write alone.
  */
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -17,6 +18,7 @@ import { localDayUtcRange, shiftISODate, todayISODate } from '../src/lib/db/date
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
+  listEntriesOn,
   listTodayEntries,
   logCapture,
   logMetric,
@@ -25,7 +27,11 @@ import {
 } from '../src/lib/db/repositories/logs.ts';
 import {
   getScreenTime,
+  lastShortcutsLink,
   latestScreenTime,
+  markReceiptSeen,
+  noteShortcutsLink,
+  receiptSeenThrough,
   recentShortcutsWrite,
   recordScreenTime,
   screenTimeOn,
@@ -38,10 +44,15 @@ import {
   formatHm,
   keypadPress,
   keypadReadout,
+  linkConfirmWords,
+  linkWritesSilently,
   parseDuration,
   parseScreenTimeLink,
+  pickReceipt,
   receiptWords,
   screenTimeDate,
+  screenTimeFiling,
+  undoneSentence,
 } from '../src/lib/screen-time/entry.ts';
 import { listMission } from '../src/lib/db/repositories/mission.ts';
 import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
@@ -741,8 +752,9 @@ console.log('16. screen time: one row per day, a replace keeps what it replaced,
     ? ok('the Shortcuts receipt is found from the record, bounded by day')
     : bad('recentShortcutsWrite');
 
-  // Undo: the linked write goes, and the typed 200 comes back byte for byte —
-  // its id, its timestamp, and its own record of what IT replaced.
+  // Undo: the linked write goes, and the typed 200 comes back — its id, value,
+  // timestamp and door. NOT its own record of what it replaced: Undo is one
+  // level deep, which is what keeps a row's metadata bounded (§19).
   undoScreenTime(db, linked.id) === true
     ? ok('Undo of the newest write succeeds')
     : bad('undo linked');
@@ -751,19 +763,21 @@ console.log('16. screen time: one row per day, a replace keeps what it replaced,
   restored[0].id === second.id &&
   restored[0].value === 200 &&
   restored[0].created_at === before.created_at &&
-  restored[0].metadata === before.metadata &&
-  eq(getScreenTime(db, second.id)?.replaced, [{ minutes: 185, via: 'typed' }])
-    ? ok('Undo restores the replaced row exactly: id, value, timestamp, its own history')
+  JSON.parse(restored[0].metadata).via === 'typed' &&
+  eq(getScreenTime(db, second.id)?.replaced, [])
+    ? ok('Undo restores the replaced row: id, value, timestamp and door, one level deep')
     : bad('undo restore', JSON.stringify(restored));
 
   undoScreenTime(db, linked.id) === false && rowsOn(DAY).length === 1
     ? ok('a stale Undo (already undone) changes nothing')
     : bad('stale undo');
 
-  undoScreenTime(db, second.id);
-  undoScreenTime(db, first.id);
-  screenTimeOn(db, DAY) === null
-    ? ok('undoing back past the first write leaves the day with no number')
+  // The restored row carries no Undo of its own, so taking it back empties the
+  // day — and the first write, long gone, is not somehow resurrected.
+  undoScreenTime(db, second.id) === true &&
+  screenTimeOn(db, DAY) === null &&
+  undoScreenTime(db, first.id) === false
+    ? ok('undoing the restored row leaves the day with no number, and goes no further')
     : bad('undo to empty', JSON.stringify(rowsOn(DAY)));
 
   // Other days are never touched by a write to this one.
@@ -823,10 +837,20 @@ console.log('17. screen time reads back through the typed-metric paths');
     ? ok('logMetric(screen_time) replaces rather than appends')
     : bad('logMetric replace', JSON.stringify(rows));
 
+  // A day's total is not a capture at a moment, so it stays out of the feed —
+  // today's, and above all a number typed this morning for YESTERDAY, which a
+  // feed row would stamp with a clock time that never happened on that day
+  // (and the Coach's `captures` domain would report it). Water beside it still
+  // lists, so the filter is the metric, not the table.
+  recordScreenTime(db, shiftISODate(TODAY, -1), 200, 'typed');
+  logMetric(db, TODAY, 'water', 500);
   const feed = listTodayEntries(db);
-  feed.length === 1 && feed[0].title === '3h 35m' && feed[0].category === 'Screen time'
-    ? ok('today’s number sits in the Log feed as "3h 35m" under Screen time')
-    : bad('feed', JSON.stringify(feed));
+  const yesterdayFeed = listEntriesOn(db, shiftISODate(TODAY, -1));
+  !feed.some((row) => row.category === 'Screen time') &&
+  feed.some((row) => row.category === 'Water') &&
+  yesterdayFeed.length === 0
+    ? ok('screen time is not in the Log feed on either day; water still is')
+    : bad('feed', JSON.stringify({ feed, yesterdayFeed }));
   recentSummary(db, 'screen_time', TODAY).startsWith('Last 3h 35m · ')
     ? ok('the keypad line names the latest day’s figure')
     : bad('screen summary', recentSummary(db, 'screen_time', TODAY));
@@ -870,6 +894,168 @@ console.log('18. screen time: the keypad types hours with its "." key');
   eq(keypadReadout('3h2'), { figure: '3h 2m', unit: '' })
     ? ok('the readout shows what was typed, with the placeholder naming the h key')
     : bad('readout', JSON.stringify(keypadReadout('3h2')));
+}
+
+console.log('19. screen time: a day written forty times keeps a small row');
+{
+  // The first build stored each predecessor's metadata whole, as a string, so
+  // every replace re-escaped the one before it and the row DOUBLED: 863 bytes
+  // after five writes, 3 MB after eighteen, and then JSON.stringify threw and
+  // the day could never be saved again. Corrections, the keypad and a
+  // Shortcut sending "today so far" twice all write the same day, so forty
+  // alternating writes is not an exotic case.
+  const { db, raw } = freshDb();
+  const DAY = shiftISODate(TODAY, -1);
+  let longest = 0;
+  let last = null;
+  for (let i = 0; i < 40; i++) {
+    last = recordScreenTime(db, DAY, 100 + i, i % 2 === 0 ? 'typed' : 'shortcuts');
+    const row = raw
+      .prepare(`SELECT metadata FROM wearable_data WHERE metric_type = 'screen_time_min'`)
+      .get();
+    longest = Math.max(longest, row.metadata.length);
+  }
+  const rows = raw
+    .prepare(`SELECT value, metadata FROM wearable_data WHERE metric_type = 'screen_time_min'`)
+    .all();
+  longest < 300 && rows.length === 1 && rows[0].value === 139
+    ? ok(`forty writes to one day: one row, metadata never over ${longest} bytes`)
+    : bad('metadata growth', `${longest} bytes, ${rows.length} rows`);
+  eq(last.replaced, [{ minutes: 138, via: 'typed' }]) &&
+  undoScreenTime(db, last.id) &&
+  screenTimeOn(db, DAY)?.minutes === 138 &&
+  screenTimeOn(db, DAY)?.via === 'typed'
+    ? ok('the fortieth write still undoes to the thirty-ninth, door and all')
+    : bad('undo after forty', JSON.stringify(last.replaced));
+}
+
+console.log('20. screen time: what the command field files, and where');
+{
+  // The whole of the command field's decision on send (src/components/log/
+  // command-field.tsx), lifted into `screenTimeFiling`. Were a screen-time
+  // line to take the generic metric path instead, it would land on TODAY
+  // every morning — and nothing on screen would look wrong.
+  const at = (h, m) => new Date(2026, 8, 25, h, m, 0, 0);
+  const file = (text, h, m) => screenTimeFiling(parseCommand(text), at(h, m), '00:00');
+  eq(file('st 200', 9, 0), { date: '2026-09-24', minutes: 200 })
+    ? ok('"st 200" at 09:00 → yesterday, 24 Sep, 200 min')
+    : bad('09:00 filing', JSON.stringify(file('st 200', 9, 0)));
+  eq(file('st 200', 13, 0), { date: '2026-09-25', minutes: 200 })
+    ? ok('"st 200" at 13:00 → today, 25 Sep')
+    : bad('13:00 filing', JSON.stringify(file('st 200', 13, 0)));
+  eq(file('screen 3h20 today', 9, 0), { date: '2026-09-25', minutes: 200 }) &&
+  eq(file('screen 3h20 yesterday', 13, 0), { date: '2026-09-24', minutes: 200 })
+    ? ok('a named day overrides the noon rule either side of noon')
+    : bad('named day filing');
+  file('screen 30h', 9, 0) === null &&
+  file('hrv 48', 9, 0) === null &&
+  file('walked down 5th st 20 min', 9, 0) === null
+    ? ok('out of range, another metric and a note all file nothing (a note, or their own path)')
+    : bad('non-filing lines');
+
+  // And the command field actually takes that path — a render cannot fire the
+  // send, so this is a source scan and says so.
+  const field = readFileSync(
+    new URL('../src/components/log/command-field.tsx', import.meta.url),
+    'utf8'
+  );
+  /screenTimeFiling\(result, new Date\(\)\)/.test(field) &&
+  /recordScreenTime\(db, filing\.date, filing\.minutes, 'typed'\)/.test(field) &&
+  /result\.metric !== 'screen_time'/.test(field)
+    ? ok('the command field files through screenTimeFiling, never the generic metric path')
+    : bad('command field no longer files screen time through screenTimeFiling');
+}
+
+console.log('21. screen time: the receipt reports a write once, and a link asks when it should');
+{
+  const today = '2026-09-25';
+  const yesterday = '2026-09-24';
+  const entry = (id, date, createdAt, via) => ({ id, date, createdAt, via });
+
+  // A Shortcuts write is news until it has been shown, and then it is not.
+  const s = entry('s', yesterday, '2026-09-24T23:55:00.000Z', 'shortcuts');
+  pickReceipt(null, s, today, null)?.id === 's' &&
+  pickReceipt(null, s, today, s.createdAt) === null &&
+  pickReceipt(null, entry('s2', today, '2026-09-25T23:55:00.000Z', 'shortcuts'), today, s.createdAt)
+    ?.id === 's2'
+    ? ok('a Shortcuts write is reported once; the next night’s is reported again')
+    : bad('once-only');
+  pickReceipt(null, entry('old', '2026-09-22', '2026-09-22T23:55:00.000Z', 'shortcuts'), today, null) ===
+  null
+    ? ok('a write for a day older than yesterday is not news')
+    : bad('old write shown');
+
+  // The reviewer's case: a Shortcut sent yesterday's 200, then 90 was typed
+  // for today. The typed write is newer, so it is the receipt; once it has
+  // been shown the stamp covers the Shortcut's too — so after its Undo, the
+  // next focus does not arm yesterday's number under the same thumb.
+  const t = entry('t', today, '2026-09-25T13:10:00.000Z', 'typed');
+  pickReceipt(t, s, today, null)?.id === 't' && pickReceipt(null, s, today, t.createdAt) === null
+    ? ok('after the typed write is shown and undone, the older Shortcuts write is not re-offered')
+    : bad('re-arm after undo');
+  // The correction flow: typed T replaced S on the same day; Undo T puts S
+  // back with its ORIGINAL timestamp, which the stamp already covers.
+  const correction = entry('c', yesterday, '2026-09-25T07:12:00.000Z', 'typed');
+  pickReceipt(null, s, today, correction.createdAt) === null
+    ? ok('a Shortcuts row an Undo restored is not reported as though it were new')
+    : bad('restored row re-offered');
+
+  undoneSentence('2026-09-24', 185) === 'Undone. Thu 24 Sep is back to 3h 5m.' &&
+  undoneSentence('2026-09-24', null) === 'Undone. Nothing is on record for Thu 24 Sep.'
+    ? ok('after an Undo the row says what the day holds, and offers nothing')
+    : bad('undone sentence', undoneSentence('2026-09-24', 185));
+
+  // The cursor: monotone, and the Shortcuts record survives a typed
+  // correction — which is what Settings reads "has a Shortcut ever sent a
+  // number" from.
+  const { db } = freshDb();
+  receiptSeenThrough(db) === null && lastShortcutsLink(db) === null
+    ? ok('a fresh device has no cursor and no Shortcuts record')
+    : bad('fresh cursor');
+  markReceiptSeen(db, '2026-09-25T08:00:00.000Z');
+  markReceiptSeen(db, '2026-09-24T08:00:00.000Z');
+  receiptSeenThrough(db) === '2026-09-25T08:00:00.000Z'
+    ? ok('the seen cursor never moves backwards')
+    : bad('cursor went backwards', receiptSeenThrough(db));
+  const DAY = shiftISODate(TODAY, -1);
+  noteShortcutsLink(db, DAY, 200, '2026-09-24T23:55:00.000Z');
+  recordScreenTime(db, DAY, 200, 'shortcuts');
+  recordScreenTime(db, DAY, 205, 'typed');
+  const link = lastShortcutsLink(db);
+  recentShortcutsWrite(db, DAY) === null &&
+  link?.date === DAY &&
+  link.minutes === 200 &&
+  receiptSeenThrough(db) === '2026-09-25T08:00:00.000Z'
+    ? ok('a typed correction replaces the Shortcut’s row, and the Shortcuts record still says it ran')
+    : bad('shortcuts record', JSON.stringify(link));
+
+  // When a valid link may write alone: calendar today or yesterday, over
+  // nothing or an earlier Shortcuts number.
+  const night = new Date(2026, 8, 25, 23, 55);
+  linkWritesSilently('2026-09-25', null, night) &&
+  linkWritesSilently('2026-09-24', { minutes: 185, via: 'shortcuts' }, night) &&
+  linkWritesSilently('2026-09-25', null, new Date(2026, 8, 26, 0, 30))
+    ? ok('today, yesterday, and over an earlier Shortcuts number: written without a tap')
+    : bad('silent cases');
+  !linkWritesSilently('2026-09-24', { minutes: 185, via: 'typed' }, night) &&
+  !linkWritesSilently('2026-09-23', null, night) &&
+  !linkWritesSilently('2026-09-01', null, night)
+    ? ok('a day holding a typed number, or older than yesterday, waits on a confirm card')
+    : bad('confirm cases');
+
+  const typedCard = linkConfirmWords('2026-09-24', 200, { minutes: 185, via: 'typed' });
+  typedCard.said === 'Thu 24 Sep holds 3h 5m, typed on Log. The Shortcut sent 3h 20m.' &&
+  typedCard.save === 'Replace with 3h 20m' &&
+  typedCard.keep === 'Keep 3h 5m'
+    ? ok('the card over a typed number names both numbers and both choices')
+    : bad('typed card', JSON.stringify(typedCard));
+  const olderCard = linkConfirmWords('2026-09-01', 200, null);
+  olderCard.said.startsWith('The Shortcut sent 3h 20m for Tue 1 Sep.') &&
+  olderCard.save === 'Save 3h 20m' &&
+  olderCard.keep === 'Don’t save' &&
+  linkConfirmWords('2026-09-01', 200, { minutes: 185, via: 'shortcuts' }).keep === 'Keep 3h 5m'
+    ? ok('the card for an older day says why it asks, and what keeping means')
+    : bad('older card', JSON.stringify(olderCard));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

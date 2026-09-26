@@ -21,10 +21,22 @@ import {
 import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
 
 /**
- * Quick add — three door tiles (Supplement, Weight, Therapy) and, on its own
- * ruled row, **the water vessels**. Weight is a number so it goes to the metric
- * keypad; Supplement and Therapy open the capture sheet (app/capture.tsx). The
- * vessels open nothing at all: each one logs.
+ * Quick add — four door tiles (Supplement, Weight, Therapy, Screen time) and,
+ * on its own ruled row, **the water vessels**. Weight and Screen time are
+ * numbers so they go to the metric keypad; Supplement and Therapy open the
+ * capture sheet (app/capture.tsx). The vessels open nothing at all: each one
+ * logs.
+ *
+ * ## Screen time is a door (2026-09-25)
+ *
+ * The plan the owner chose (docs/spikes/screen-time.md, route (a)) is "a
+ * Screen time tile in Log". Without one the only routes to the number were a
+ * grammar he would have to be told (`screen 3h20`, `st 200`), the eighth chip
+ * of the keypad's scroller, and rows on Data and in Settings. It opens the
+ * keypad on its own chip, like Weight, so the grid stays one kind of thing —
+ * every tile a door to a capture — and a fourth door squares the grid: the
+ * spanning tile below goes back to being the rule for an odd count, not the
+ * layout.
  *
  * ## The two gateway tiles are gone (owner, 2026-08-12)
  *
@@ -94,7 +106,8 @@ import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
  * {@link TILE}: a three-wide row truncates "Supplement" (it is why the six-tile
  * layout was abandoned), and a 2 + 1 leaves a half-empty row that reads as a
  * tile which failed to load. A trailing door that **spans** has neither fault —
- * every row is complete and no label is squeezed. See {@link TILE_WIDE}.
+ * every row is complete and no label is squeezed. See {@link TILE_WIDE}. (Since
+ * 2026-09-25 there are four doors again, and the grid is 2 × 2.)
  *
  * A side effect worth naming: the tile grid holds **one kind of thing again**.
  * Every tile is a door; water — which was never a door, and spent a week as the
@@ -188,7 +201,8 @@ const TILE =
 
 /**
  * The same tile, spanning the plate — what the LAST door takes when the doors
- * are an odd number, which since 2026-09-21 they are.
+ * are an odd number, as they were from 2026-09-21 until Screen time made them
+ * four (2026-09-25). Kept, and derived from the count, for the next odd one.
  *
  * An odd tile has two obvious endings and both are faults named on {@link TILE}:
  * a three-wide row, which truncates "Supplement", or a half-width tile with two
@@ -238,6 +252,14 @@ const DOORS: Door[] = [
     label: 'Therapy',
     icon: 'thermometer-outline',
     href: { pathname: '/capture', params: { type: 'therapy' } },
+  },
+  {
+    // The day's total off Settings › Screen Time — the keypad on its chip,
+    // which files to yesterday before noon and says so (docs/screen-time.md).
+    key: 'screen_time',
+    label: 'Screen time',
+    icon: 'phone-portrait-outline',
+    href: { pathname: '/metric-entry', params: { metric: 'screen_time' } },
   },
 ];
 

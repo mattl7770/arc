@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 
 import { Block } from '@/components/ui/block';
@@ -172,6 +172,12 @@ export default function MetricEntryScreen() {
   const [recent, setRecent] = useState(() => recentSummary(getDb(), initialKey, today, units));
   // Screen time's day: the noon rule's answer until a chip says otherwise.
   const [day, setDay] = useState<ScreenTimeDay>(() => defaultScreenTimeDay(new Date()));
+  // The chip row scrolls horizontally, and the later chips (Screen time is the
+  // eighth) start off-screen at 375 pt. A screen opened ON one of them — from
+  // Quick add or a Data row — scrolls it into view once, on its first layout,
+  // so the selected chip is never the one he cannot see.
+  const chipRow = useRef<ScrollView>(null);
+  const chipShown = useRef(false);
 
   const active = useMemo<MetricDescriptor>(
     () => metricByKey(activeKey) ?? METRICS[0]!,
@@ -280,6 +286,7 @@ export default function MetricEntryScreen() {
 
       {/* Metric switch chips */}
       <ScrollView
+        ref={chipRow}
         horizontal
         showsHorizontalScrollIndicator={false}
         className="-mx-5 mt-1 grow-0"
@@ -292,6 +299,17 @@ export default function MetricEntryScreen() {
               accessibilityRole="button"
               accessibilityState={{ selected: on }}
               onPress={() => switchMetric(m.key)}
+              onLayout={
+                m.key === initialKey
+                  ? (event) => {
+                      if (chipShown.current) return;
+                      chipShown.current = true;
+                      // x is inside the padded content; 20 is its px-5 gutter.
+                      const x = event.nativeEvent.layout.x - 20;
+                      if (x > 0) chipRow.current?.scrollTo({ x, animated: false });
+                    }
+                  : undefined
+              }
               className={on ? CHIP_ON : CHIP}>
               <Text
                 className={

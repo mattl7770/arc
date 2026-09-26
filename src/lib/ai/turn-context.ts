@@ -31,7 +31,7 @@ import {
   statusDayNumber,
   statusesIn,
 } from '@/lib/db/repositories/statuses';
-import { latestScreenTime } from '@/lib/db/repositories/screen-time';
+import { screenTimeOn } from '@/lib/db/repositories/screen-time';
 import { getGoalDirection, getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { deriveReadiness } from '@/lib/home/readiness';
@@ -282,12 +282,25 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
   // that exists at breakfast. Named with its date and its door, and only when
   // yesterday or today has one — about a dozen uncached tokens on those days,
   // none on the rest. What to make of it is the model's call.
-  const screen = latestScreenTime(db, today);
-  if (screen && screen.date >= shiftISODate(today, -1)) {
+  //
+  // BOTH days when both exist. Today's figure is a so-far number; it must not
+  // push out yesterday's finished total, which is the one worth reasoning
+  // about — so a 45m typed at lunch sits beside last night's 3h 20m, not in
+  // its place.
+  const screenDays = [screenTimeOn(db, shiftISODate(today, -1)), screenTimeOn(db, today)].filter(
+    (entry) => entry !== null
+  );
+  if (screenDays.length > 0) {
     lines.push(
-      `Screen time (${screen.via === 'shortcuts' ? 'from a Shortcut' : 'typed'}): ` +
-        `${formatHm(screen.minutes)} on ${screen.date}` +
-        (screen.date === today ? ' (today so far)' : '')
+      'Screen time: ' +
+        screenDays
+          .map(
+            (entry) =>
+              `${formatHm(entry.minutes)} on ${entry.date}` +
+              (entry.date === today ? ' so far today' : '') +
+              ` (${entry.via === 'shortcuts' ? 'from a Shortcut' : 'typed'})`
+          )
+          .join(' · ')
     );
   }
 

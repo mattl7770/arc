@@ -286,17 +286,30 @@ console.log('ST. screen time: yesterday’s total rides in the block, with its d
   recordScreenTime(db, yesterday, 200, 'typed');
   const context = buildTurnContext(db, NOW);
   const line = context.split('\n').find((l) => l.startsWith('Screen time'));
-  line === `Screen time (typed): 3h 20m on ${yesterday}`
+  line === `Screen time: 3h 20m on ${yesterday} (typed)`
     ? ok(`yesterday's number is stated with its date: "${line}"`)
     : bad('screen time line', String(line));
 
+  // A so-far figure for today joins yesterday's finished total; it does not
+  // replace it. (The first build showed only the latest day, so a 45m at
+  // lunch pushed last night's 3h 20m out of the Coach's context.)
   recordScreenTime(db, TODAY, 45, 'shortcuts');
-  const today = buildTurnContext(db, NOW)
+  const both = buildTurnContext(db, NOW)
     .split('\n')
     .find((l) => l.startsWith('Screen time'));
-  today === `Screen time (from a Shortcut): 45m on ${TODAY} (today so far)`
-    ? ok('a number for today names its door and says it is a so-far figure')
-    : bad('today screen time line', String(today));
+  both ===
+  `Screen time: 3h 20m on ${yesterday} (typed) · 45m on ${TODAY} so far today (from a Shortcut)`
+    ? ok('today’s so-far figure sits beside yesterday’s total, each with its door')
+    : bad('both-days screen time line', String(both));
+
+  const { db: todayOnly } = freshDb();
+  recordScreenTime(todayOnly, TODAY, 45, 'shortcuts');
+  buildTurnContext(todayOnly, NOW)
+    .split('\n')
+    .find((l) => l.startsWith('Screen time')) ===
+  `Screen time: 45m on ${TODAY} so far today (from a Shortcut)`
+    ? ok('a number for today alone names its door and says it is a so-far figure')
+    : bad('today-only screen time line');
 
   // Older than yesterday is not "the day's" number; the series tool reaches it.
   const { db: stale } = freshDb();

@@ -11,7 +11,7 @@ import { recordScreenTime } from '@/lib/db/repositories/screen-time';
 import { logMetricCapture } from '@/lib/health/publish';
 import { isLoggableCanonical, metricByKey } from '@/lib/log/metrics';
 import { parseCommand } from '@/lib/log/parse';
-import { defaultScreenTimeDay, screenTimeDate } from '@/lib/screen-time/entry';
+import { screenTimeFiling } from '@/lib/screen-time/entry';
 import { noteTypedScreenTime } from '@/lib/screen-time/receipt-store';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
@@ -61,21 +61,19 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
     const result = parseCommand(trimmed, units);
     try {
       const metric = result.kind === 'metric' ? metricByKey(result.metric) : undefined;
-      if (
-        result.kind === 'metric' &&
-        result.metric === 'screen_time' &&
-        metric &&
-        isLoggableCanonical(metric, result.canonical)
-      ) {
-        // One number per day, filed to the day the user named or, if none, by
-        // the noon rule — and reported with an Undo by ScreenTimeReceipt
-        // below, because that day is usually not the one the feed shows.
-        const now = new Date();
-        const day = result.day ?? defaultScreenTimeDay(now);
-        const write = recordScreenTime(db, screenTimeDate(day, now), result.canonical, 'typed');
+      // One number per day, filed to the day the user named or, if none, by
+      // the noon rule (`screenTimeFiling`, tested at 09:00 and 13:00) — and
+      // reported with an Undo by ScreenTimeReceipt below, because that day is
+      // usually not the one the feed shows.
+      const filing = screenTimeFiling(result, new Date());
+      if (filing) {
+        const write = recordScreenTime(db, filing.date, filing.minutes, 'typed');
         noteTypedScreenTime(write.id);
       } else if (
         result.kind === 'metric' &&
+        // Never screen time: through here it would land on TODAY, every
+        // morning. Out of range, it falls to the note below.
+        result.metric !== 'screen_time' &&
         metric &&
         isLoggableCanonical(metric, result.canonical)
       ) {

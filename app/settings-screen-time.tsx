@@ -9,9 +9,10 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import {
+  lastShortcutsLink,
   latestScreenTime,
-  recentShortcutsWrite,
   type ScreenTimeEntry,
+  type ShortcutsLink,
 } from '@/lib/db/repositories/screen-time';
 import {
   filedDayWords,
@@ -44,14 +45,21 @@ import {
  * copied, not speech). Zero accent, as everywhere in Settings.
  */
 
-type OnRecord = { latest: ScreenTimeEntry | null; lastLinked: ScreenTimeEntry | null };
+type OnRecord = { latest: ScreenTimeEntry | null; lastLinked: ShortcutsLink | null };
 
+/**
+ * "Has a Shortcut ever sent a number" is read from the Shortcuts cursor, not
+ * from the rows: the morning after a nightly automation, a typed correction
+ * replaces the Shortcut's row, and a screen reading rows would then say no
+ * Shortcut had ever sent one — the wrong answer to the one question this
+ * screen exists to answer.
+ */
 function read(): OnRecord {
   const db = getDb();
   const today = todayISODate();
   return {
     latest: latestScreenTime(db, today),
-    lastLinked: recentShortcutsWrite(db, '0000-01-01'),
+    lastLinked: lastShortcutsLink(db),
   };
 }
 
@@ -76,7 +84,7 @@ export default function SettingsScreenTimeScreen() {
       }`
     : 'Nothing logged yet';
   const linkedLine = record.lastLinked
-    ? `Last sent a number for ${filedDayWords(record.lastLinked.date, today)}`
+    ? `Last sent ${formatHm(record.lastLinked.minutes)} for ${filedDayWords(record.lastLinked.date, today)}`
     : 'No Shortcut has sent a number yet';
 
   return (
@@ -110,8 +118,8 @@ export default function SettingsScreenTimeScreen() {
           <Block device="margin">
             <Text className="font-serif text-[14px] leading-6 text-ink">
               On the Log tab, type <Text className="font-mono text-[12px]">screen 3h20</Text> or{' '}
-              <Text className="font-mono text-[12px]">st 200</Text>, or use the Screen time chip on
-              the keypad. Before noon the number is filed to yesterday, from noon to today; add{' '}
+              <Text className="font-mono text-[12px]">st 200</Text>, or tap Screen time under Quick
+              add. Before noon the number is filed to yesterday, from noon to today; add{' '}
               <Text className="font-mono text-[12px]">today</Text> or{' '}
               <Text className="font-mono text-[12px]">yesterday</Text> to choose. One number per
               day: a second one replaces the first, and the Log tab offers an Undo.
@@ -154,12 +162,13 @@ export default function SettingsScreenTimeScreen() {
         <View className="mt-4">
           <Block device="margin">
             <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
-              ARC saves the number without asking, marks it as from Shortcuts, and shows an Undo the
-              next time you open it. It refuses anything but whole minutes from 1 to{' '}
-              {SCREEN_TIME_MAX_MINUTES} and a real date no later than today and no more than{' '}
-              {LINK_MAX_DAYS_BACK} days back, and says why on the screen the link opens. Not yet
-              tried on the phone: whether iOS opens ARC from an automation while the phone is
-              locked.
+              For today or yesterday, ARC saves the number without asking and marks it as from
+              Shortcuts. The Undo is on the screen the link opens, and once on the Log tab the next
+              time you open it. For an older day, or a day that holds a number you typed, it asks
+              first. It refuses anything but whole minutes from 1 to {SCREEN_TIME_MAX_MINUTES} and a
+              real date no later than today and no more than {LINK_MAX_DAYS_BACK} days back, and
+              says why on the screen the link opens. Not yet tried on the phone: whether iOS opens
+              ARC from an automation while the phone is locked.
             </Text>
           </Block>
         </View>

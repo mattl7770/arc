@@ -6,10 +6,10 @@
  * A `wearable_data` row: `metric_type = 'screen_time_min'`, `unit = 'min'`,
  * `source_device = 'manual'`, `source_raw_id` NULL. No migration: the metric
  * type is free text and `manual` is already an allowed source (0021). The row
- * reads back through every path a typed metric already has — the Log feed
- * (`listEntriesOn`), the keypad's line (`recentSummary`), the Coach's metric
- * discovery (read-tools.ts) — and one declaration in src/lib/log/metrics.ts
- * names it.
+ * reads back through the keypad's line (`recentSummary`) and the Coach's metric
+ * discovery (read-tools.ts), and one declaration in src/lib/log/metrics.ts
+ * names it. It is deliberately NOT in the Log feed (`listEntriesOn`): a day's
+ * total typed the next morning has no capture time on the day it is about.
  *
  * ## One row per day, and the newest write wins
  *
@@ -26,14 +26,23 @@
  * and widening it is a table rebuild. So provenance rides in `metadata`, which
  * is free JSON: `{"via":"typed"}` or `{"via":"shortcuts"}`.
  *
- * The same JSON carries `replaced` — the full previous row (id, value,
- * created_at, metadata) for every row the write removed. That is what makes
- * Undo a restore rather than a delete: {@link undoScreenTime} removes the new
- * row and puts the old one back exactly as it was, id and timestamp included.
- * And because it lives in the row rather than in a screen's memory, the Undo
- * outlives the process — which is the whole point for a write a Shortcut made
- * at 23:55 while the owner was asleep and iOS reclaimed the app before he
- * opened it again.
+ * The same JSON carries `replaced` — each row the write removed, as its id,
+ * value, created_at and door. That is what makes Undo a restore rather than a
+ * delete: {@link undoScreenTime} removes the new row and puts the old one back,
+ * id, value, timestamp and door included. And because it lives in the row
+ * rather than in a screen's memory, the Undo outlives the process — which is
+ * the point for a write a Shortcut made at 23:55 while the owner was asleep
+ * and iOS reclaimed the app before he opened it again.
+ *
+ * **Undo is one level deep, and that is what keeps the row small.** A snapshot
+ * does not carry the snapshot's own `replaced`. The first build did — each
+ * write stored the previous row's metadata whole, as a string — and every
+ * level re-escaped the one below it, so the metadata DOUBLED with each
+ * replace: 15 bytes, then 863 after five writes to a day, 3 MB after
+ * eighteen, until `JSON.stringify` threw and the day could never be saved
+ * again. Every screen offers exactly one Undo (the newest write's), so the
+ * chain bought nothing a person could reach. Now a row's metadata is bounded
+ * by the number of rows it replaced, which is one.
  *
  * ## A repeated write is not a second write
  *
@@ -41,6 +50,20 @@
  * nothing and reports `wrote: false`. A link a Shortcut opens twice, or a
  * screen that mounts twice, therefore leaves one row whose `replaced` still
  * names what the FIRST write took off the record — not a copy of itself.
+ *
+ * ## The Shortcuts cursor
+ *
+ * Two facts about the link are not facts about any one row, so they live in
+ * the integration-cursor KV (`health_sync_state`, 0021; free JSON under a key
+ * with no CHECK, which workout-ingest.ts already uses the same way) under
+ * `screen_time`:
+ *
+ *   - **`lastLink`** — the last valid link a Shortcut opened. Settings reads
+ *     "has a Shortcut ever sent a number" from here, because the rows cannot
+ *     say it: a typed correction replaces the Shortcut's row the next morning.
+ *   - **`receiptSeenThrough`** — the newest write the Log tab's receipt has
+ *     already shown, so a Shortcuts write is reported once
+ *     (src/lib/screen-time/entry.ts `pickReceipt`).
  *
  * Depends only on the {@link Database} interface, so db/log.test.mjs runs it
  * against node:sqlite with the real migrations.
@@ -80,8 +103,11 @@ type Row = {
   metadata: string;
 };
 
-/** A removed row, kept whole so Undo can put it back byte for byte. */
-type Snapshot = { id: string; value: number; created_at: string; metadata: string };
+/**
+ * A removed row, kept so Undo can put it back: its id, value, timestamp and
+ * door — and NOT its own `replaced` (the header says why).
+ */
+type Snapshot = { id: string; value: number; created_at: string; via: ScreenTimeVia };
 
 type Meta = { via?: unknown; replaced?: unknown };
 
@@ -100,15 +126,25 @@ function viaOf(meta: Meta): ScreenTimeVia {
 
 function snapshotsOf(meta: Meta): Snapshot[] {
   if (!Array.isArray(meta.replaced)) return [];
-  return meta.replaced.filter(
-    (s): s is Snapshot =>
-      !!s &&
-      typeof s === 'object' &&
-      typeof (s as Snapshot).id === 'string' &&
-      typeof (s as Snapshot).value === 'number' &&
-      typeof (s as Snapshot).created_at === 'string' &&
-      typeof (s as Snapshot).metadata === 'string'
-  );
+  const out: Snapshot[] = [];
+  for (const s of meta.replaced as unknown[]) {
+    if (!s || typeof s !== 'object') continue;
+    const o = s as Record<string, unknown>;
+    if (
+      typeof o.id !== 'string' ||
+      typeof o.value !== 'number' ||
+      typeof o.created_at !== 'string'
+    ) {
+      continue;
+    }
+    out.push({
+      id: o.id,
+      value: o.value,
+      created_at: o.created_at,
+      via: o.via === 'shortcuts' ? 'shortcuts' : 'typed',
+    });
+  }
+  return out;
 }
 
 function toEntry(row: Row): ScreenTimeEntry {
@@ -119,10 +155,7 @@ function toEntry(row: Row): ScreenTimeEntry {
     minutes: row.value,
     via: viaOf(meta),
     createdAt: row.created_at,
-    replaced: snapshotsOf(meta).map((s) => ({
-      minutes: s.value,
-      via: viaOf(readMeta(s.metadata)),
-    })),
+    replaced: snapshotsOf(meta).map((s) => ({ minutes: s.value, via: s.via })),
   };
 }
 
@@ -172,7 +205,7 @@ export function recordScreenTime(
     id: r.id,
     value: r.value,
     created_at: r.created_at,
-    metadata: r.metadata,
+    via: viaOf(readMeta(r.metadata)),
   }));
   const metadata = JSON.stringify(replaced.length > 0 ? { via, replaced } : { via });
   db.transaction(() => {
@@ -187,10 +220,12 @@ export function recordScreenTime(
 }
 
 /**
- * Take a write back: remove the row `id` and restore every row it replaced,
- * exactly as they were. Returns false — and changes nothing — when `id` is no
- * longer on record (already undone, or replaced by a newer write since the
- * receipt was drawn), so an Undo can only ever take back the write it names.
+ * Take a write back: remove the row `id` and restore the rows it replaced —
+ * id, value, timestamp and door. One level: a restored row carries no Undo of
+ * its own (the header says why). Returns false — and changes nothing — when
+ * `id` is no longer on record (already undone, or replaced by a newer write
+ * since the receipt was drawn), so an Undo can only ever take back the write
+ * it names.
  */
 export function undoScreenTime(db: Database, id: string): boolean {
   const row = rowById(db, id);
@@ -204,7 +239,7 @@ export function undoScreenTime(db: Database, id: string): boolean {
         row.date,
         SCREEN_TIME_METRIC,
         s.value,
-        s.metadata,
+        JSON.stringify({ via: s.via }),
         s.created_at,
       ];
       db.run(
@@ -270,11 +305,10 @@ export function screenTimeSeries(
 }
 
 /**
- * The newest Shortcuts write for a day on or after `since`, or null — the Log
- * tab's receipt for a number an automation filed while the app was closed.
- * Bounded by day rather than by a "seen" flag: once its day is older than
- * yesterday a newer write has replaced it or the automation has stopped, and
- * either way the line has nothing left to report.
+ * The newest Shortcuts write for a day on or after `since`, or null — the
+ * candidate the Log tab's receipt considers for a number an automation filed
+ * while the app was closed. Whether it is still news is `pickReceipt`'s call
+ * (src/lib/screen-time/entry.ts), against {@link receiptSeenThrough}.
  */
 export function recentShortcutsWrite(db: Database, since: string): ScreenTimeEntry | null {
   const row = db.get<Row>(
@@ -284,4 +318,75 @@ export function recentShortcutsWrite(db: Database, since: string): ScreenTimeEnt
     [since]
   );
   return row ? toEntry(row) : null;
+}
+
+// --- The Shortcuts cursor (health_sync_state, key 'screen_time') -------------
+
+const STATE_KEY = 'screen_time';
+
+/** The last valid link a Shortcut opened: when, and what it carried. */
+export type ShortcutsLink = { at: string; date: string; minutes: number };
+
+type ScreenTimeState = { lastLink: ShortcutsLink | null; receiptSeenThrough: string | null };
+
+function readState(db: Database): ScreenTimeState {
+  const state: ScreenTimeState = { lastLink: null, receiptSeenThrough: null };
+  const row = db.get<{ value: string }>('SELECT value FROM health_sync_state WHERE key = ?', [
+    STATE_KEY,
+  ]);
+  if (!row) return state;
+  const parsed = readMeta(row.value) as Record<string, unknown>;
+  const link = parsed.lastLink as Record<string, unknown> | null | undefined;
+  if (
+    link &&
+    typeof link === 'object' &&
+    typeof link.at === 'string' &&
+    typeof link.date === 'string' &&
+    typeof link.minutes === 'number'
+  ) {
+    state.lastLink = { at: link.at, date: link.date, minutes: link.minutes };
+  }
+  if (typeof parsed.receiptSeenThrough === 'string') {
+    state.receiptSeenThrough = parsed.receiptSeenThrough;
+  }
+  return state;
+}
+
+function writeState(db: Database, state: ScreenTimeState): void {
+  db.run(
+    `INSERT INTO health_sync_state (id, key, value) VALUES (?, ?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    [newId(db), STATE_KEY, JSON.stringify(state)]
+  );
+}
+
+/**
+ * Record that a Shortcut opened a valid link — whether or not it wrote (a
+ * repeat, or one waiting on a confirm card, still proves the automation ran).
+ * `at` defaults to now, in the same ISO shape as the rows' `created_at`.
+ */
+export function noteShortcutsLink(
+  db: Database,
+  date: string,
+  minutes: number,
+  at: string = new Date().toISOString()
+): void {
+  writeState(db, { ...readState(db), lastLink: { at, date, minutes } });
+}
+
+/** The last valid link a Shortcut opened, or null if none ever has. */
+export function lastShortcutsLink(db: Database): ShortcutsLink | null {
+  return readState(db).lastLink;
+}
+
+/** The newest write the Log tab's receipt has already shown, or null. */
+export function receiptSeenThrough(db: Database): string | null {
+  return readState(db).receiptSeenThrough;
+}
+
+/** Advance the receipt's cursor to `createdAt`. Never moves it backwards. */
+export function markReceiptSeen(db: Database, createdAt: string): void {
+  const state = readState(db);
+  if (state.receiptSeenThrough !== null && state.receiptSeenThrough >= createdAt) return;
+  writeState(db, { ...state, receiptSeenThrough: createdAt });
 }

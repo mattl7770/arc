@@ -3843,22 +3843,26 @@ console.log('48. screen time reaches the Coach — payload only, no schema moved
   recordScreenTime(db, yesterday, 200, 'typed');
   const st = run('get_today_snapshot', db).screenTime;
   st &&
-  st.date === yesterday &&
-  st.value === 200 &&
-  st.unit === 'min' &&
-  st.hm === '3h 20m' &&
-  st.source === 'typed by the user' &&
-  st.partial === undefined
+  st.today === undefined &&
+  st.yesterday?.date === yesterday &&
+  st.yesterday.value === 200 &&
+  st.yesterday.unit === 'min' &&
+  st.yesterday.hm === '3h 20m' &&
+  st.yesterday.source === 'typed by the user' &&
+  st.yesterday.partial === undefined
     ? ok('yesterday’s total is in the snapshot with its date, "3h 20m" and its door')
     : bad('snapshot screenTime', JSON.stringify(st));
 
+  // Today's so-far figure joins yesterday's total rather than replacing it:
+  // the finished day is the one worth reasoning about.
   recordScreenTime(db, TODAY, 45, 'shortcuts');
   const today = run('get_today_snapshot', db);
-  today.screenTime?.date === TODAY &&
-  today.screenTime.partial === true &&
-  today.screenTime.source === 'Shortcuts automation' &&
+  today.screenTime?.today?.date === TODAY &&
+  today.screenTime.today.partial === true &&
+  today.screenTime.today.source === 'Shortcuts automation' &&
+  today.screenTime.yesterday?.value === 200 &&
   today.wearables.availableMetrics.includes('screen_time_min')
-    ? ok('a number for today is marked partial, and screen_time_min is an available metric')
+    ? ok('today is marked partial and yesterday stays beside it; screen_time_min is available')
     : bad('today screenTime', JSON.stringify(today.screenTime));
   // It is not a sync. On a device whose only rows are screen time, the wearables
   // plane must not tell the model Apple Health "HAS synced today".
