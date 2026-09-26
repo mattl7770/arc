@@ -25,6 +25,19 @@ export type CoachToolContext = {
    */
   now: Date;
   /**
+   * The turn's clock SOURCE, read afresh — for a staleness re-read that has to
+   * see TIME move, never for deriving what is written (that is {@link now},
+   * one instant per call, and it stays so).
+   *
+   * A planned notification is the case (2026-09-25, docs/coach-domains.md
+   * §10c): its row does not change when it fires, only the clock does, so a
+   * cancel card drawn at 07:25 for a 07:30 nudge and approved at 07:31 would
+   * mark cancelled a line that already reached the lock screen. The nudges
+   * domain reads this past the gate and refuses. Absent in headless calls that
+   * pass only `{ now }`, where `now` is the only clock there is.
+   */
+  clock?: () => Date;
+  /**
    * THE STALENESS SLOT — what the confirmation card PRINTED as "was X", so
    * `execute` can check it is still true.
    *

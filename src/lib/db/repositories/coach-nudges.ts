@@ -206,9 +206,14 @@ export function listNudgesFrom(db: Database, day: string): CoachNudgeRow[] {
  * Pending rows whose moment is still ahead, soonest first — regardless of the
  * on/off switch and of quiet hours. Both are applied by {@link upcomingNudges};
  * the off switch and a pass's replacement need to see every row, held back or
- * not.
+ * not — and so does the Coach's card for the off switch, which counts what
+ * {@link saveNudgeSettings} is about to cancel (src/lib/ai/domains/nudge-domains.ts).
  */
-function upcomingRows(db: Database, now: Date, dayStartsAt: string): UpcomingNudge[] {
+export function upcomingRows(
+  db: Database,
+  now: Date,
+  dayStartsAt: string = getDayStartsAt()
+): UpcomingNudge[] {
   // Yesterday onward: under a late day boundary a small-hours nudge belongs to
   // the logical day before the calendar one.
   const from = shiftISODate(todayISODate(now, dayStartsAt), -1);

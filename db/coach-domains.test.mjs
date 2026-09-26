@@ -17,6 +17,9 @@
  *   §4 the seals — what is not registrable, and the shipped pack
  *   §5 retired names still answer as writes, so no receipt is lost
  *   §6 STALENESS: the row moved while the card was open
+ *   §7 the owner's 2026-09-25 parity answers
+ *   §8 the notification controls (0064) from chat: four settings fields and a
+ *      planned nudge's cancel
  *
  * §4d is DELETION BY PARITY (the owner's 2026-09-23 call): whatever a screen
  * deletes, the Coach may delete through that screen's own function, behind a
@@ -73,6 +76,16 @@ import {
   updateKnowledgeEntry,
 } from '../src/lib/db/repositories/knowledge.ts';
 import { listEntriesOn, logCapture, logMetric, logNote } from '../src/lib/db/repositories/logs.ts';
+import {
+  applyNudgeReply,
+  cancelNudge,
+  getNudge,
+  getNudgeSettings,
+  markNudgeDelivered,
+  saveNudgeSettings,
+  upcomingNudges,
+} from '../src/lib/db/repositories/coach-nudges.ts';
+import { parseNudgeReply } from '../src/lib/notifications/nudge-plan.ts';
 import { removeLogCapture } from '../src/lib/health/publish.ts';
 import { insertKnowledgeChunk } from '../src/lib/db/repositories/rag.ts';
 import {
@@ -763,6 +776,8 @@ console.log('4d. removal: parity with the screens, behind a card that names what
     exercise_catalog: /status: "archived"/,
     progress_photos: /Data › Progress photos/,
     reports: /Data › Reports/,
+    // 0064: the Coach tab CANCELS a planned notification; nothing deletes one.
+    nudges: /Cancel ends one, edit_record \{ status: "cancelled" \}/,
   };
   const misnamed = Object.entries(REFUSED)
     .filter(([key, where]) => {
@@ -1836,6 +1851,407 @@ console.log('7. 2026-09-25 — memories, knowledge, captures, a load basis and a
     /export function takeFood[\s\S]*?deleteFood\(db, id\)/.test(foods)
       ? ok('parity both ways: Add food deletes through takeFood → deleteFood, the Coach’s function')
       : bad('food parity');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. The notification controls (0064), from chat (2026-09-25). Settings ›
+// Coach's three controls are four fields of the `settings` domain, written
+// through saveNudgeSettings; a planned nudge is cancelled through the Coach
+// tab's cancelNudge. Proved as §7 is: the card from real rows, the approved
+// write, the REAL service seam with a row (or the clock) moving while the card
+// is open, and a declined card writing nothing.
+console.log('8. 2026-09-25 — the notification settings and a planned nudge, from chat');
+{
+  // A fixed afternoon, so every nudge planned below is legal whatever the
+  // wall clock reads when the suite runs (quiet hours 21:30–07:00 by default,
+  // at least five minutes ahead, at most thirty-six hours).
+  const T0 = new Date(2026, 8, 25, 13, 10);
+  const DAY = todayISODate(T0);
+  const NEXT = shiftISODate(DAY, 1);
+  const deleteRecord = toolByName('delete_record');
+  const listReminders = toolByName('list_reminders');
+  const at = () => ({ now: T0 });
+  const cardAt = (db, domain, id, fields) =>
+    editRecord.confirmSummary({ domain, id, fields }, db, at());
+  const approveAt = (db, domain, id, fields) => {
+    const context = at();
+    const line = editRecord.confirmSummary({ domain, id, fields }, db, context);
+    return { line, result: JSON.parse(editRecord.execute(db, { domain, id, fields }, context)) };
+  };
+  /** Plan nudges the way a pass does — its NUDGE lines, through the rules. */
+  const plan = (db, ...lines) =>
+    applyNudgeReply(db, parseNudgeReply(lines.map((l) => `NUDGE ${l}`).join('\n')), T0).added;
+  /**
+   * One Coach turn through `streamCoachReply`, on a clock the gate can move:
+   * the card is drawn at T0, and `gate` may advance `clock.now` before it
+   * answers — the user deciding for as long as it takes a nudge to fire.
+   */
+  const turn = async (db, name, input, gate) => {
+    globalThis.__ARC_TEST_DB__ = db;
+    const replies = [toolUseReply(name, input), textReply('Understood.')];
+    globalThis.__ARC_TEST_FETCH__ = async () => responseOf(replies.shift());
+    await apiKeyStore.setKey('test-key');
+    const clock = { now: T0 };
+    let request = null;
+    const result = await streamCoachReply(
+      [{ id: 'u8', role: 'user', content: 'go ahead', createdAt: 0 }],
+      {
+        onToken: () => {},
+        now: () => clock.now,
+        confirmWrite: async (req) => {
+          request = req;
+          return gate(req, clock);
+        },
+      }
+    );
+    await apiKeyStore.clearKey();
+    return { request, call: result.toolCalls[0] };
+  };
+  const refused = (call, pattern, verb) =>
+    call?.isError === true &&
+    pattern.test(call.result) &&
+    new RegExp(`Nothing ${verb}`).test(call.result) &&
+    call.receipt === undefined;
+  const declined = (call) => call?.declined === true && call.receipt === undefined;
+
+  // --- 8a. The settings are READ where the rest of the settings are ----------
+  {
+    const { db } = freshDb();
+    const discovery = JSON.parse(queryRecords.execute(db, { domain: 'settings' }, at()));
+    const names = ['nudges_enabled', 'quiet_start', 'quiet_end', 'checkin_time'];
+    names.every(
+      (n) => typeof discovery.fields[n] === 'string' && !/read-only/.test(discovery.fields[n])
+    )
+      ? ok('the settings discovery call names the four notification fields, all editable')
+      : bad('settings vocabulary', JSON.stringify(discovery.fields));
+    const row = discovery.rows[0];
+    row.nudges_enabled === true &&
+    row.quiet_start === '21:30' &&
+    row.quiet_end === '07:00' &&
+    row.checkin_time === null
+      ? ok('…and the one settings row carries their values: on, 21:30–07:00, no check-in')
+      : bad('settings row', JSON.stringify(row));
+  }
+
+  // --- 8b. The settings CARD says old → new in the screen's words ------------
+  {
+    const { db } = freshDb();
+    const quiet = cardAt(db, 'settings', 'settings', { quiet_start: '22:00', quiet_end: '06:30' });
+    quiet === 'Quiet hours 21:30–07:00 → 22:00–06:30'
+      ? ok(`quiet hours read as a window, old → new ("${quiet}")`)
+      : bad('quiet hours card', quiet);
+    const checkin = cardAt(db, 'settings', 'settings', { checkin_time: '07:30' });
+    checkin === 'Morning check-in off → 07:30'
+      ? ok(`the morning check-in reads off → a time ("${checkin}")`)
+      : bad('check-in card', checkin);
+    const none = cardAt(db, 'settings', 'settings', { quiet_end: '21:30' });
+    none === 'Quiet hours 21:30–07:00 → none'
+      ? ok('equal ends read as "none", the rule quiet hours already follow')
+      : bad('empty window card', none);
+
+    plan(db, `${NEXT} 08:00 Pack the gym bag tonight.`, `${NEXT} 12:30 Walk after lunch.`);
+    const off = cardAt(db, 'settings', 'settings', { nudges_enabled: false });
+    off === 'Coach nudges on → off, which cancels 2 planned notifications'
+      ? ok(`switching nudges off says what it cancels ("${off}")`)
+      : bad('off card', off);
+    const covering = cardAt(db, 'settings', 'settings', { quiet_end: '08:30' });
+    covering === 'Quiet hours 21:30–07:00 → 21:30–08:30, which holds back 1 planned notification'
+      ? ok(`hours that cover a planned nudge say it is held back, not cancelled ("${covering}")`)
+      : bad('covering card', covering);
+    const mixed = cardAt(db, 'settings', 'settings', { weight_unit: 'kg', checkin_time: '07:30' });
+    mixed === 'Edit setting "Settings" — weight_unit lb → kg; Morning check-in off → 07:30'
+      ? ok('a patch mixing a unit and a notification control prints both')
+      : bad('mixed card', mixed);
+    const meta = editRecord.confirmMeta(
+      { domain: 'settings', id: 'settings', fields: { nudges_enabled: false } },
+      db,
+      at()
+    );
+    meta.kind === 'edit' && meta.selfEvident === false
+      ? ok('…on the long edit card')
+      : bad('settings meta', JSON.stringify(meta));
+
+    const same = throwText(() => cardAt(db, 'settings', 'settings', { quiet_start: '21:30' }));
+    const cleared = throwText(() => cardAt(db, 'settings', 'settings', { quiet_start: null }));
+    const loose = throwText(() => cardAt(db, 'settings', 'settings', { quiet_end: '7:00' }));
+    const hour = throwText(() => cardAt(db, 'settings', 'settings', { checkin_time: '25:00' }));
+    const flag = throwText(() => cardAt(db, 'settings', 'settings', { nudges_enabled: 'no' }));
+    /Nothing would change/.test(same ?? '') &&
+    /both ends/.test(cleared ?? '') &&
+    /24-hour "HH:MM"/.test(loose ?? '') &&
+    /24-hour "HH:MM"/.test(hour ?? '') &&
+    /true or false/.test(flag ?? '')
+      ? ok(
+          'a no-op, a cleared quiet end, a loose time, a 25th hour and a word for a flag refuse at card time'
+        )
+      : bad('settings refusals', [same, cleared, loose, hour, flag].join(' | '));
+  }
+
+  // --- 8c. …and the approved write is Settings › Coach's own save ------------
+  {
+    const { db } = freshDb();
+    approveAt(db, 'settings', 'settings', { quiet_start: '22:00', quiet_end: '06:30' });
+    approveAt(db, 'settings', 'settings', { checkin_time: '07:30' });
+    let s = getNudgeSettings(db);
+    s.quietStart === '22:00' && s.quietEnd === '06:30' && s.checkinTime === '07:30'
+      ? ok('approving writes quiet hours and the check-in through saveNudgeSettings')
+      : bad('settings not written', JSON.stringify(s));
+    approveAt(db, 'settings', 'settings', { checkin_time: null });
+    getNudgeSettings(db).checkinTime === null
+      ? ok('…and null turns the morning check-in off, as the screen’s switch does')
+      : bad('check-in not cleared');
+
+    const [first, second] = plan(
+      db,
+      `${NEXT} 08:00 Pack the gym bag tonight.`,
+      `${NEXT} 12:30 Walk after lunch.`
+    );
+    approveAt(db, 'settings', 'settings', { nudges_enabled: false });
+    s = getNudgeSettings(db);
+    s.enabled === false &&
+    getNudge(db, first.id).status === 'cancelled' &&
+    getNudge(db, second.id).status === 'cancelled' &&
+    s.quietStart === '22:00'
+      ? ok(
+          'switching nudges off cancels every one planned, as the switch does, and keeps the hours'
+        )
+      : bad('off not applied', JSON.stringify({ s, first: getNudge(db, first.id) }));
+
+    // PARITY, as source: the domain writes through the screen's function.
+    const domain = readFileSync(
+      new URL('../src/lib/ai/domains/nudge-domains.ts', import.meta.url),
+      'utf8'
+    );
+    const screen = readFileSync(new URL('../app/settings-coach.tsx', import.meta.url), 'utf8');
+    domain.includes('saveNudgeSettings(db, settings, now)') &&
+    screen.includes('saveNudgeSettings(getDb(), patch)')
+      ? ok(
+          'Settings › Coach and the settings domain save through the one function, saveNudgeSettings'
+        )
+      : bad('settings parity');
+  }
+
+  // --- 8d. The settings through the real seam: moved, and declined -----------
+  {
+    const { db } = freshDb();
+    const moved = await turn(
+      db,
+      'edit_record',
+      { domain: 'settings', id: 'settings', fields: { quiet_start: '22:00' } },
+      () => {
+        saveNudgeSettings(db, { quietStart: '23:00' }, T0); // moved on Settings › Coach
+        return true;
+      }
+    );
+    moved.request?.summary === 'Quiet hours 21:30–07:00 → 22:00–07:00' &&
+    refused(
+      moved.call,
+      /^quiet_start changed while the card was open \(was 21:30, now 23:00\)/,
+      'written'
+    ) &&
+    getNudgeSettings(db).quietStart === '23:00'
+      ? ok('quiet hours moved on their screen while the card was open refuse the Coach’s')
+      : bad('settings staleness', JSON.stringify(moved));
+    // The OTHER end moves: not a value the card printed as "was", but the
+    // window it printed — so the redrawn line catches it.
+    const other = await turn(
+      db,
+      'edit_record',
+      { domain: 'settings', id: 'settings', fields: { quiet_start: '22:30' } },
+      () => {
+        saveNudgeSettings(db, { quietEnd: '06:00' }, T0);
+        return true;
+      }
+    );
+    refused(other.call, /That setting changed while the card was open/, 'written') &&
+    other.call.result.includes('23:00–07:00 → 22:30–07:00') &&
+    getNudgeSettings(db).quietStart === '23:00'
+      ? ok('…and so does the other end moving, through the printed window')
+      : bad('settings line staleness', JSON.stringify(other.call));
+
+    const [planned] = plan(db, `${NEXT} 08:00 Pack the gym bag tonight.`);
+    const no = await turn(
+      db,
+      'edit_record',
+      { domain: 'settings', id: 'settings', fields: { nudges_enabled: false } },
+      () => false
+    );
+    declined(no.call) &&
+    getNudgeSettings(db).enabled === true &&
+    getNudge(db, planned.id).status === 'pending'
+      ? ok('a declined off switch writes nothing, and the planned nudge stays planned')
+      : bad('declined settings', JSON.stringify(no.call));
+  }
+
+  // --- 8e. A planned nudge: read, carded, cancelled through the tab's Cancel -
+  {
+    const { db } = freshDb();
+    const [gym, walk] = plan(
+      db,
+      `${NEXT} 08:00 Pack the gym bag tonight.`,
+      `${NEXT} 12:30 Walk after lunch.`
+    );
+    const listed = JSON.parse(listReminders.execute(db, {}, at())).coachNotifications;
+    listed?.length === 2 && listed[0].id === gym.id && listed[1].id === walk.id
+      ? ok('list_reminders hands out each planned notification’s id, soonest first')
+      : bad('coachNotifications ids', JSON.stringify(listed));
+    EDIT_DOMAIN_KEYS.includes('nudges') &&
+    !QUERY_DOMAIN_KEYS.includes('nudges') &&
+    !REMOVABLE_DOMAIN_KEYS.includes('nudges')
+      ? ok('nudges are editable, read by list_reminders alone, and not removable')
+      : bad('nudges enums');
+    const steered = throwText(() => queryRecords.execute(db, { domain: 'nudges' }, at()));
+    /read by list_reminders/.test(steered ?? '')
+      ? ok('…and query_records asked for them names list_reminders')
+      : bad('nudges steer', String(steered));
+    const noDelete = throwText(() =>
+      deleteRecord.confirmSummary({ domain: 'nudges', id: gym.id }, db, at())
+    );
+    /Cancel ends one/.test(noDelete ?? '') && getNudge(db, gym.id).status === 'pending'
+      ? ok('delete_record refuses a nudge and names the Cancel — the row is a record, not a draft')
+      : bad('nudge delete', String(noDelete));
+
+    const line = cardAt(db, 'nudges', gym.id, { status: 'cancelled' });
+    line === 'Cancel planned notification "Pack the gym bag tonight." — tomorrow, 08:00'
+      ? ok(`the cancel card names the line and when it goes out, as the tab does ("${line}")`)
+      : bad('nudge card', line);
+    const meta = editRecord.confirmMeta(
+      { domain: 'nudges', id: gym.id, fields: { status: 'cancelled' } },
+      db,
+      at()
+    );
+    meta.kind === 'status' && meta.selfEvident === false
+      ? ok('…on the long status card: a cancel cannot be undone')
+      : bad('nudge meta', JSON.stringify(meta));
+    const wrong = throwText(() => cardAt(db, 'nudges', gym.id, { status: 'delivered' }));
+    /must be one of: cancelled/.test(wrong ?? '')
+      ? ok('cancelled is the only status the Coach may set — the tab has no other control')
+      : bad('nudge status set', String(wrong));
+
+    approveAt(db, 'nudges', gym.id, { status: 'cancelled' });
+    getNudge(db, gym.id).status === 'cancelled' &&
+    upcomingNudges(db, T0)
+      .map((n) => n.id)
+      .join() === walk.id
+      ? ok('approving cancels it through cancelNudge: off the list, the other still planned')
+      : bad('nudge not cancelled', JSON.stringify(getNudge(db, gym.id)));
+    const again = throwText(() => cardAt(db, 'nudges', gym.id, { status: 'cancelled' }));
+    /was cancelled, or replaced by a newer plan/.test(again ?? '')
+      ? ok('…and a cancelled one refuses a second card, saying so')
+      : bad('cancel twice', String(again));
+
+    // THE STATES THE TAB DOES NOT LIST, each refused in words.
+    const late = throwText(() =>
+      editRecord.confirmSummary(
+        { domain: 'nudges', id: walk.id, fields: { status: 'cancelled' } },
+        db,
+        { now: new Date(2026, 8, 26, 12, 31) }
+      )
+    );
+    /already went out\. Nothing cancelled/.test(late ?? '')
+      ? ok('a nudge whose moment has passed refuses: it went out')
+      : bad('gone out', String(late));
+    const { db: held } = freshDb();
+    const [early] = plan(held, `${NEXT} 08:00 Pack the gym bag tonight.`);
+    saveNudgeSettings(held, { quietEnd: '08:30' }, T0);
+    const heldBack = throwText(() => cardAt(held, 'nudges', early.id, { status: 'cancelled' }));
+    /inside quiet hours \(21:30–08:30\), so it is held back/.test(heldBack ?? '')
+      ? ok(
+          'a nudge held back by quiet hours refuses: the tab does not list it, so no Cancel reaches it'
+        )
+      : bad('held back', String(heldBack));
+    const { db: opened } = freshDb();
+    const [tapped] = plan(opened, `${NEXT} 08:00 Pack the gym bag tonight.`);
+    markNudgeDelivered(opened, tapped.id);
+    /already went out and was opened/.test(
+      throwText(() => cardAt(opened, 'nudges', tapped.id, { status: 'cancelled' })) ?? ''
+    )
+      ? ok('a nudge he already opened refuses')
+      : bad('opened nudge');
+    /No planned notification with id nope\. Call list_reminders first\./.test(
+      throwText(() => cardAt(db, 'nudges', 'nope', { status: 'cancelled' })) ?? ''
+    )
+      ? ok('an unknown id names the read that hands ids out')
+      : bad('unknown nudge id');
+
+    const domain = readFileSync(
+      new URL('../src/lib/ai/domains/nudge-domains.ts', import.meta.url),
+      'utf8'
+    );
+    const hook = readFileSync(new URL('../src/hooks/use-coach-nudges.ts', import.meta.url), 'utf8');
+    domain.includes('cancelNudge(db, row.id)') && hook.includes('cancelNudge(getDb(), id)')
+      ? ok(
+          'the Coach tab’s Cancel and the nudges domain cancel through the one function, cancelNudge'
+        )
+      : bad('nudge parity');
+  }
+
+  // --- 8f. A planned nudge through the real seam -----------------------------
+  {
+    const { db } = freshDb();
+    const [gym, walk] = plan(
+      db,
+      `${NEXT} 08:00 Pack the gym bag tonight.`,
+      `${NEXT} 12:30 Walk after lunch.`
+    );
+    const cancelled = await turn(
+      db,
+      'edit_record',
+      { domain: 'nudges', id: walk.id, fields: { status: 'cancelled' } },
+      () => true
+    );
+    cancelled.request?.summary ===
+      'Cancel planned notification "Walk after lunch." — tomorrow, 12:30' &&
+    cancelled.request.kind === 'status' &&
+    cancelled.call?.receipt === cancelled.request.summary &&
+    getNudge(db, walk.id).status === 'cancelled'
+      ? ok('through the service: the card, the approval, the receipt and the cancelled row')
+      : bad('service cancel', JSON.stringify(cancelled));
+
+    // FIRED while the card was open: the row did not move, the clock did.
+    const fired = await turn(
+      db,
+      'edit_record',
+      { domain: 'nudges', id: gym.id, fields: { status: 'cancelled' } },
+      (_req, clock) => {
+        clock.now = new Date(2026, 8, 26, 8, 1);
+        return true;
+      }
+    );
+    fired.request?.summary ===
+      'Cancel planned notification "Pack the gym bag tonight." — tomorrow, 08:00' &&
+    refused(fired.call, /already went out/, 'cancelled') &&
+    getNudge(db, gym.id).status === 'pending'
+      ? ok('a nudge that fired while the card was open refuses — what went out stays in the record')
+      : bad('fired staleness', JSON.stringify(fired));
+    const declinedTurn = await turn(
+      db,
+      'edit_record',
+      { domain: 'nudges', id: gym.id, fields: { status: 'cancelled' } },
+      () => false
+    );
+    declined(declinedTurn.call) && getNudge(db, gym.id).status === 'pending'
+      ? ok('a declined cancel card writes nothing')
+      : bad('declined nudge', JSON.stringify(declinedTurn.call));
+
+    // REPLACED while the card was open: a pass restates the plan without it.
+    const replaced = await turn(
+      db,
+      'edit_record',
+      { domain: 'nudges', id: gym.id, fields: { status: 'cancelled' } },
+      () => {
+        plan(db, `${NEXT} 09:00 Walk before breakfast.`);
+        return true;
+      }
+    );
+    const fresh = upcomingNudges(db, T0);
+    refused(replaced.call, /replaced by a newer plan/, 'cancelled') &&
+    getNudge(db, gym.id).status === 'cancelled' &&
+    fresh.length === 1 &&
+    fresh[0].body === 'Walk before breakfast.'
+      ? ok('a nudge a pass replaced while the card was open refuses, and the new plan stands')
+      : bad('replaced staleness', JSON.stringify({ call: replaced.call, fresh }));
   }
 }
 

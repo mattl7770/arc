@@ -1,5 +1,7 @@
 > **BUILT 2026-09-25 (migration 0064, branch `claude/fb-notify`).** The owner accepted all six recommendations on 2026-09-25; the recommended combination was built in its build order — (c) with the total-cap guard, the tap upgrade for (a) with the `checkin` flag (Q5 yes), and the morning check-in as an opt-in, sequenced after the Health sync. The account of what was built, and the three decisions this plan left open (a silent pass does NOT cancel pending nudges; what a tap shows when a check-in gets no answer; the `about` link deferred), is `docs/ai-coach.md` §3 › Coach notifications. This file stays as the plan and its reasoning; where the two differ, the build is the record. Nothing is on a device yet.
 >
+> **Coach parity for the controls, 2026-09-25 (branch `claude/fb-nudgeparity`, no migration).** The chat Coach can now switch nudges off and on, move quiet hours, set or clear the morning check-in, and cancel one planned nudge, each behind a card and through the function the screen calls. §4's "The Scheduled list on the Coach tab cancels one nudge at a time" holds for the Coach as well. The record is `docs/coach-domains.md` §10c.
+>
 > *(Original status line: PLAN — not built, written and fact-checked 2026-09-23.)*
 
 # Coach notifications: plan

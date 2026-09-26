@@ -182,7 +182,11 @@ export async function streamCoachReply(
         // The card VALIDATES against this same instant too, so a knowable
         // failure (a log date in the future, a mode window that ends before it
         // begins) throws before the user spends an Approve tap on it.
-        const context: CoachToolContext = { now: clock() };
+        //
+        // `clock` rides along for one reader only: a staleness re-read that must
+        // see time pass (a planned notification firing while its cancel card is
+        // open). It never decides what is written.
+        const context: CoachToolContext = { now: clock(), clock };
 
         // The line the user approved, held for the receipt below. Stays
         // undefined for reads (nothing to receipt) and for any write that never

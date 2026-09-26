@@ -141,14 +141,17 @@ const editRecordTool: CoachTool = {
   description:
     // The per-domain FIELD vocabulary is not here: 26 domains of field names
     // would be ~650 tokens of cached prefix, and `query_records` returns them
-    // warm. Only the four STATUS vocabularies are, because they are the ones
-    // whose value set cannot be guessed from the field name — and, since
-    // 2026-09-25, the one act that is not a change to ONE row: a combine
-    // (`combine_with`), which no model would guess is an edit at all.
+    // warm. Only the STATUS vocabularies are, because they are the ones whose
+    // value set cannot be guessed from the field name — and, since 2026-09-25,
+    // the one act that is not a change to ONE row: a combine (`combine_with`),
+    // which no model would guess is an edit at all. A planned nudge's
+    // `cancelled` joined them the same day (+7): its domain is read by
+    // list_reminders, so no discovery call would ever teach it.
     'Change ONE existing row: send only the fields that change, and the card shows each as ' +
-    'before → after. Statuses: reminders done (one-offs only) | dismissed; experiments ' +
-    'concluded (with `conclusion`) | abandoned (with `reason`); memories, knowledge and a ' +
-    'custom exercise archived. Meals: `combine_with` [ids] combines those meals with this one. ' +
+    'before → after. Statuses: reminders done (one-offs only) | dismissed; nudges cancelled; ' +
+    'experiments concluded (with `conclusion`) | abandoned (with `reason`); memories, ' +
+    'knowledge and a custom exercise archived. Meals: `combine_with` [ids] combines those ' +
+    'meals with this one. ' +
     'For any other domain call query_records with the domain alone ' +
     'to learn its fields. Get the id from the matching read. Prefer a specific tool where one ' +
     'exists.',
