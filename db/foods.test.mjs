@@ -528,6 +528,33 @@ console.log('9. recents: newest-first, carrying the last-logged portion');
   listRecentFoods(db).length === 2
     ? ok('items whose food is gone drop out of recents (join, no crash)')
     : bad('recents after delete');
+
+  // A TIE (2026-09-25): one logMealWithItems stamps every item it writes in
+  // the same millisecond, so two rows of one food in one meal share a
+  // created_at. The row written LAST is the last portion — never whichever the
+  // scan met first. Pinned both ways round, so neither can pass by accident.
+  const tiedAt = (stamp, items) => {
+    const { mealId: tied } = logMealWithItems(db, {
+      date: TODAY,
+      time: '12:00',
+      name: 'Tied',
+      items,
+    });
+    raw
+      .prepare('UPDATE meal_items SET created_at = ? WHERE meal_id = ?')
+      .run(`${stamp}T12:00:00.000Z`, tied);
+    return listRecentFoods(db).find((r) => r.food.id === b);
+  };
+  const counted = { food_id: b, name: 'Food B', amount: 40, serving_qty: 2, piece_name: 'piece', kcal: 40 };
+  const served = { food_id: b, name: 'Food B', amount: 60, serving_qty: 1.5, kcal: 60 };
+  const servedLast = tiedAt('2040-01-01', [counted, served]);
+  near(servedLast?.lastAmount, 60) && near(servedLast?.lastServingQty, 1.5)
+    ? ok('a same-millisecond tie resolves to the row written last (1.5 servings, 60 g)')
+    : bad('tie, served last', JSON.stringify(servedLast));
+  const countedLast = tiedAt('2041-01-01', [served, counted]);
+  near(countedLast?.lastAmount, 40) && countedLast?.lastServingQty === null
+    ? ok('…and the other way round to the counted row, re-added by its 40 g')
+    : bad('tie, counted last', JSON.stringify(countedLast));
 }
 
 console.log('10. barcode lookup against the grown local cache');

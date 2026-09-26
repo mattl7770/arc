@@ -34,6 +34,7 @@ import { assembleMealItems } from '@/lib/nutrition/composite';
 import {
   type LoggedCountDraft,
   type LoggedCountPlan,
+  loggedPlainPieces,
   parseCount,
   planLoggedCount,
 } from '@/lib/nutrition/review-rows';
@@ -44,7 +45,6 @@ import {
   fmtInt,
   fmtQty,
   macroLine,
-  pieceCount,
   pieceNounFor,
   piecesLabel,
   pluralNoun,
@@ -218,6 +218,11 @@ type ItemEdit = {
   /** What the field is counting — the item's logged unit, which re-portioning
    * never changes. */
   unit: AmountUnit;
+  /** A plain item's count of pieces, `2 eggs`, which a GRAMS edit keeps
+   * (2026-09-25): the eggs were bigger, not more of them. Null on every other
+   * row. While it is set there is no serving stepper — the item's `serving_qty`
+   * counts eggs, not the food's serving — and Save writes the pair back. */
+  pieces: { count: number; name: string } | null;
 };
 
 /** The when-editor's draft. Held apart from the row so backing out writes
@@ -406,7 +411,10 @@ export default function MealDetailScreen() {
     const food = item.food_id ? getFood(getDb(), item.food_id) : undefined;
     // A food-less item with no amount has no portion to re-scale — leave it be.
     if (!food && item.amount == null) return;
-    const canServing = food?.serving_amount != null;
+    // A plain item counted in its own pieces is edited in grams, keeping its
+    // count: its serving_qty is eggs, which the stepper would read as servings.
+    const pieces = loggedPlainPieces(item);
+    const canServing = food?.serving_amount != null && pieces === null;
     const mode: 'serving' | 'amount' =
       canServing && item.serving_qty != null ? 'serving' : 'amount';
     const qty = item.serving_qty ?? 1;
@@ -435,6 +443,7 @@ export default function MealDetailScreen() {
       // The ITEM's unit, not the food's: a food re-declared as a drink after
       // this portion was logged does not restate what was eaten.
       unit: item.unit,
+      pieces,
     });
   };
 
@@ -472,7 +481,16 @@ export default function MealDetailScreen() {
       update = rescaleLoggedItem(item, editing.food, { amount });
     }
     if (!update) return setEditing(null);
-    updateMealItemPortion(getDb(), editing.itemId, update);
+    // A counted item's grams edit writes its count back beside the new grams
+    // — `2 eggs`, now 120 g — rather than the serving count the re-price
+    // computed, which would read two eggs as some fraction of a serving.
+    updateMealItemPortion(
+      getDb(),
+      editing.itemId,
+      editing.pieces
+        ? { ...update, serving_qty: editing.pieces.count, piece_name: editing.pieces.name }
+        : update
+    );
     setEditing(null);
     reload();
   };
@@ -601,19 +619,31 @@ export default function MealDetailScreen() {
     const subLine = [portion, line].filter(Boolean).join(' · ');
     // The one notable micro (2026-09-23) — caffeine on a latte.
     const micro = keyMicroLabel(item);
-    // A plain item counted in its own pieces (2026-09-25) — `2 eggs` — is
-    // corrected as a count, not as grams or catalog servings: its `serving_qty`
-    // counts EGGS, and the serving stepper would read it as servings of the
-    // food. So its tap opens the count sentence, `ATE [2] EGGS`, and Save runs
-    // the plan a counted dish's Save runs.
-    const counted = item.parent_item_id === null && pieceCount(item) !== null;
+    // A plain item counted in its own pieces (2026-09-25) — `2 eggs` — has two
+    // handles, and a tap opens both: the count sentence, `ATE [2] EGGS` (more
+    // eggs — every figure scales), and the grams editor beneath it (bigger eggs
+    // — the count is kept). Its `serving_qty` counts EGGS, so the serving
+    // stepper is never drawn for it. Focusing ATE hands the row to the count
+    // editor — one editor, one Save, one accent — and the grams editor below
+    // gives way to the count's Save line, so nothing above the field being
+    // typed into moves.
+    const counted = loggedPlainPieces(item) !== null;
     // Editable when there's something to re-scale from: a catalog food
     // (re-derive), an existing amount (proportional), or a count of pieces.
     const canEdit = counted || item.food_id != null || item.amount != null;
-    const isEditing = counted ? countEdit?.parentId === item.id : editing?.itemId === item.id;
+    const gramsOpen = editing?.itemId === item.id;
+    const countOpen = counted && countEdit?.parentId === item.id;
     const toggle = () => {
-      if (counted) return isEditing ? setCountEdit(null) : openCountEdit(item, false);
-      return isEditing ? setEditing(null) : beginEdit(item);
+      if (gramsOpen || countOpen) {
+        if (gramsOpen) setEditing(null);
+        if (countOpen) setCountEdit(null);
+        return;
+      }
+      // A counted row with nothing to re-price grams from still has its count.
+      if (counted && item.food_id == null && item.amount == null) {
+        return openCountEdit(item, false);
+      }
+      beginEdit(item);
     };
     return (
       <View key={item.id}>
@@ -657,18 +687,18 @@ export default function MealDetailScreen() {
             <Ionicons name="close" size={16} color={palette.inkMuted} />
           </Pressable>
         </View>
-        {counted && isEditing && countEdit ? (
-          <View>
-            <LoggedCountRow
-              item={item}
-              edit={countEdit}
-              onOpen={(naming) => openCountEdit(item, naming)}
-              onEdit={setCountEdit}
-            />
-            <CountSaveRow item={item} edit={countEdit} onSave={saveCount} />
-          </View>
+        {counted && (gramsOpen || countOpen) ? (
+          <LoggedCountRow
+            item={item}
+            edit={countOpen ? countEdit : null}
+            onOpen={(naming) => openCountEdit(item, naming)}
+            onEdit={setCountEdit}
+          />
         ) : null}
-        {!counted && isEditing && editing ? (
+        {countOpen && countEdit ? (
+          <CountSaveRow item={item} edit={countEdit} onSave={saveCount} />
+        ) : null}
+        {gramsOpen && editing ? (
           <PortionEditRow
             edit={editing}
             item={item}
@@ -1552,9 +1582,10 @@ function MealTimeEditor({
  * keeps it mounted while the dish turns countable beside it.
  *
  * **A plain item counted in its own pieces** (2026-09-25) draws the counted
- * shape, `ate [2] eggs`, under its own row when tapped: it is always counted
- * (its count came with it, and a plain row is never declared here), so there is
- * never an OF — its pieces are the portion, not a cut of a whole.
+ * shape, `ate [2] eggs`, under its own row when tapped, above the grams editor
+ * that the same tap opens: it is always counted (its count came with it, and a
+ * plain row is never declared here), so there is never an OF — its pieces are
+ * the portion, not a cut of a whole.
  */
 function LoggedCountRow({
   item,
@@ -1794,6 +1825,11 @@ function CountSaveRow({
  *
  * Save is this screen's one accent (only one editor is ever open at a time —
  * opening the when-editor above closes this one, and vice versa).
+ *
+ * On a plain item counted in its own pieces (`edit.pieces`, 2026-09-25) it is
+ * grams only: no stepper, because that item's `serving_qty` counts eggs and a
+ * stepper would re-read it as servings of the food. It is drawn beneath the
+ * item's `ATE [2] EGGS` sentence, and Save keeps the count.
  */
 function PortionEditRow({
   edit,
@@ -1818,7 +1854,7 @@ function PortionEditRow({
   return (
     <View className="pb-3">
       <View className="flex-row items-center gap-2">
-        {edit.food?.serving_amount != null ? (
+        {edit.food?.serving_amount != null && edit.pieces === null ? (
           <View className="flex-row items-center gap-1">
             <Pressable
               accessibilityRole="button"

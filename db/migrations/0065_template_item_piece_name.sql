@@ -33,12 +33,20 @@
 --
 -- ── THE NUMBER: 0065 ──
 --
--- Main's head is 0063 and 0064 is claimed by a sibling branch in flight; the
--- owner's phone is at 0061. The runner is forward-only and silently skips any
--- file at or below a device's `PRAGMA user_version`, so this takes the next
--- number above every claim — re-check `git ls-tree main -- db/migrations/` at
--- merge. A gap below it is harmless (the runner orders, it does not count). The
--- runner stamps user_version = 65.
+-- Main's head is 0063 and 0064 is claimed by a sibling branch in flight
+-- (`claude/fb-notify`, `0064_coach_nudges.sql`); the owner's phone is at 0061.
+-- The runner is forward-only and silently skips any file at or below a
+-- device's `PRAGMA user_version`, so this takes the next number above every
+-- claim. The runner stamps user_version = 65.
+--
+-- ORDERING CONSTRAINT: 0064 must reach main before this file does, or in the
+-- same build. A gap below 0065 is harmless only while no device has run 0065:
+-- a build that ships 0065 alone stamps the phone at 65, and a 0064 arriving in
+-- a later build is then skipped for good — its table never created on the only
+-- copy of the owner's data, with every test still green. If 0064 has not merged
+-- when this branch does, renumber this file to the next free number above
+-- main's head instead (re-check `git ls-tree main -- db/migrations/`), then
+-- `npm run db:bundle`.
 --
 -- ── THE WAY BACK ──
 --

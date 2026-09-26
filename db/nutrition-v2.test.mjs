@@ -6995,6 +6995,32 @@ console.log('77. a plain item counted in pieces: `2 eggs` from the estimate to e
   rows = endCountEdit(setRowsCount(beginCountEdit(rows, eggRow.key), eggRow.key, '3'), eggRow.key);
   rows = setPiecesName(rows, eggRow.key, 'large egg');
 
+  // THE GRAMS HANDLE (the independent review of this build): a counted plain
+  // row keeps its grams field, and a grams edit keeps the count — three BIGGER
+  // eggs, not more of them. The first cut swapped the field for static text,
+  // so correcting egg size meant emptying ATE and losing the count for good.
+  {
+    // Typed into the grams field while an ATE baseline was still frozen.
+    const bigger = setRowAmount(beginCountEdit(rows, eggRow.key), eggRow.key, '180');
+    bigger[0].pieces?.count === 3 &&
+    bigger[0].pieces?.name === 'large egg' &&
+    near(currentPortion(bigger[0]).amount, 180) &&
+    bigger[0].scaleFrom === null &&
+    bigger[0].countFrom === null
+      ? ok('a grams edit on `3 large eggs` keeps the count at 180 g, and drops the stale ATE baseline')
+      : bad('grams edit', JSON.stringify({ p: bigger[0].pieces, from: bigger[0].countFrom }));
+    const savedBigger = rowsToMealItems(bigger)[0];
+    savedBigger.serving_qty === 3 &&
+    savedBigger.piece_name === 'large egg' &&
+    near(savedBigger.amount, 180)
+      ? ok('…Save writes `3 × large egg` at 180 g')
+      : bad('grams edit saved', JSON.stringify(savedBigger));
+    const fourOfThem = setRowsCount(beginCountEdit(bigger, eggRow.key), eggRow.key, '4');
+    near(currentPortion(fourOfThem[0]).amount, 240) && fourOfThem[0].pieces?.count === 4
+      ? ok('…and ATE 4 after it scales from the NEW grams: 240 g, not 200')
+      : bad('ate after grams', JSON.stringify(currentPortion(fourOfThem[0])));
+  }
+
   // A C5 answer that scales the item moves its count: "how many eggs? 4".
   const scaled = applyAnswer(rowsFromEstimate(db, estimate), {
     kind: 'scale_item',
@@ -7039,6 +7065,9 @@ console.log('77. a plain item counted in pieces: `2 eggs` from the estimate to e
   recent?.lastServingQty === null && near(recent?.lastAmount, 150)
     ? ok('the recents rail re-adds a piece-counted egg by its 150 g, not as 3 servings')
     : bad('recents', JSON.stringify(recent && { q: recent.lastServingQty, a: recent.lastAmount }));
+  // Written after the counted egg, and usually in the same millisecond: it is
+  // the last row because it was written last (rowid), not by the clock — the
+  // flake the independent review caught while recents read a bare max().
   addMealItem(db, mealId, itemForPortion(getFood(db, EGG), { servingQty: 1 }));
   listRecentFoods(db).find((r) => r.food.id === EGG)?.lastServingQty === 1
     ? ok('…while a serving-counted log of the same food still re-adds as 1 serving')
@@ -7094,6 +7123,77 @@ console.log('77. a plain item counted in pieces: `2 eggs` from the estimate to e
     ? ok('updateMealItemPortion clears the noun with the count it replaces')
     : bad('portion rewrite kept noun', JSON.stringify(regrammed));
   setItemCount(db, stored.id, 2, 'egg');
+
+  // meal-detail's GRAMS edit on a counted row (the independent review): a tap
+  // opens the grams editor beside ATE, and its Save writes the count back
+  // beside the new grams — the eggs were bigger, not more of them.
+  {
+    const loggedPlainPieces = reviewRowsModule.loggedPlainPieces;
+    const eggNow = listMealItems(db, mealId).find((i) => i.id === stored.id);
+    const breadNow = listMealItems(db, mealId).find((i) => i.id === part.id);
+    const header = listMealItems(db, mealId).find((i) => i.is_composite === 1);
+    const pieces = loggedPlainPieces?.(eggNow);
+    pieces?.count === 2 &&
+    pieces?.name === 'egg' &&
+    loggedPlainPieces(breadNow) === null &&
+    header != null &&
+    loggedPlainPieces(header) === null
+      ? ok('loggedPlainPieces reads `2 eggs` off a plain row — never off a part or a dish header')
+      : bad('loggedPlainPieces', JSON.stringify(pieces));
+    const kcalWas = getMeal(db, mealId).kcal;
+    const bigger = rescaleLoggedItem(eggNow, getFood(db, EGG), { amount: 140 });
+    updateMealItemPortion(db, stored.id, {
+      ...bigger,
+      serving_qty: pieces.count,
+      piece_name: pieces.name,
+    });
+    const regrammedCounted = listMealItems(db, mealId).find((i) => i.id === stored.id);
+    regrammedCounted.serving_qty === 2 &&
+    regrammedCounted.piece_name === 'egg' &&
+    near(regrammedCounted.amount, 140) &&
+    near(regrammedCounted.kcal, 143 * 1.4) &&
+    portionLabel(regrammedCounted) === '2 eggs (140 g)' &&
+    near(getMeal(db, mealId).kcal, kcalWas - eggNow.kcal + regrammedCounted.kcal)
+      ? ok('a grams edit given the pair keeps `2 eggs`, re-prices them at 140 g, and the meal follows')
+      : bad('counted grams edit', JSON.stringify(regrammedCounted));
+    // The pair is kept only where insertMealItem keeps it.
+    updateMealItemPortion(db, part.id, {
+      amount: breadNow.amount,
+      serving_qty: breadNow.serving_qty ?? 2,
+      piece_name: 'slice',
+      kcal: breadNow.kcal,
+      protein_g: breadNow.protein_g,
+      carbs_g: breadNow.carbs_g,
+      fat_g: breadNow.fat_g,
+      fiber_g: breadNow.fiber_g,
+      micros: breadNow.micros,
+    });
+    listMealItems(db, mealId).find((i) => i.id === part.id).piece_name === null
+      ? ok('…and a PART given a noun through it keeps none')
+      : bad('part noun via portion');
+    updateMealItemPortion(db, stored.id, {
+      ...bigger,
+      serving_qty: null,
+      piece_name: 'egg',
+    });
+    listMealItems(db, mealId).find((i) => i.id === stored.id).piece_name === null
+      ? ok('…nor does a row whose count is null: a noun with no count names nothing')
+      : bad('noun without count');
+    // The screen: a tap on a counted row opens the grams editor beside ATE
+    // (no stepper, since serving_qty counts eggs), and its Save sends the pair.
+    const detail = src2('app/meal-detail.tsx');
+    detail.includes('piece_name: editing.pieces.name') &&
+    detail.includes('edit.pieces === null') &&
+    detail.includes('counted && (gramsOpen || countOpen)')
+      ? ok('meal-detail opens grams beside the count, draws no stepper, and saves the pair back')
+      : bad('meal-detail grams handle wiring');
+    // Back to `2 eggs (120 g)` for the template round-trip below.
+    updateMealItemPortion(db, stored.id, {
+      ...rescaleLoggedItem(regrammedCounted, getFood(db, EGG), { amount: 120 }),
+      serving_qty: 2,
+      piece_name: 'egg',
+    });
+  }
 
   // TEMPLATES (0065): the pair survives a round-trip and logs back out.
   const templateId = saveMealAsTemplate(db, mealId, 'Egg breakfast');
@@ -7166,7 +7266,7 @@ console.log('77. a plain item counted in pieces: `2 eggs` from the estimate to e
   const detail = src2('app/meal-detail.tsx');
   const queue = src2('src/lib/nutrition/estimate-queue.ts');
   const review = src2('src/components/nutrition/estimate-review.tsx');
-  detail.includes("const counted = item.parent_item_id === null && pieceCount(item) !== null;") &&
+  detail.includes('const counted = loggedPlainPieces(item) !== null;') &&
   detail.includes('<CountSaveRow item={item} edit={countEdit} onSave={saveCount} />') &&
   queue.includes('serving_qty: item.pieces?.count ?? null,\n          piece_name: item.pieces?.name ?? null,\n        }\n  );') &&
   review.includes('{row.pieces ? <CountRow row={row} handlers={handlers} /> : null}')

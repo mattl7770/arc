@@ -6765,8 +6765,9 @@ console.log('\n28. 2026-09-25 — combine on a past day, and `2 eggs` read as a 
     ['2 eggs']
   );
 
-  // THE REVIEW: `2 eggs` in the amount column, the grams leading the sub-line,
-  // and ATE — never OF — beneath it.
+  // THE REVIEW: `2 eggs` leading the sub-line, the grams field kept in the
+  // amount column (the independent review: with no parts, it is the row's only
+  // handle on its grams), and ATE — never OF — beneath it.
   const noop = () => {};
   const handlers = {
     onAmountChange: noop,
@@ -6815,16 +6816,17 @@ console.log('\n28. 2026-09-25 — combine on a past day, and `2 eggs` read as a 
     { rows: [eggRow], label: 'Items', emptyNote: '', handlers }
   );
   expect('review plate (plain count)', plate, [
-    '>2 eggs<',
-    '100 g · P 13g',
+    '2 eggs · P 13g',
+    'aria-label="Boiled egg grams"',
+    'value="100"',
     'aria-label="Boiled egg, pieces eaten"',
     'value="2"',
     'Name one piece of Boiled egg',
   ]);
   refute('review plate (plain count)', plate, [
-    // No OF on a plain count, and no grams field competing with the count.
+    // No OF on a plain count, and the grams are the field's, not the sub-line's.
     'aria-label="Pieces in Boiled egg"',
-    'aria-label="Boiled egg grams"',
+    '100 g · P 13g',
   ]);
   // Un-counted, the same row is the grams row it always was.
   const grams = render(

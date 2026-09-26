@@ -283,11 +283,14 @@ export type ReviewHandlers = {
 /**
  * One priced row — a plain item, or a part indented inside its composite.
  *
- * `count` is a counted PLAIN item's count, `2 eggs` (2026-09-25). It stands in
- * the amount column where the grams field stood — the count is the row's amount
- * once it has one, as it is a counted dish's — and the grams lead the sub-line
- * as the secondary figure. The count is edited in ONE place, the `ATE [2] EGGS`
- * sentence drawn beneath the row.
+ * `count` is a counted PLAIN item's count, `2 eggs` (2026-09-25). It leads the
+ * sub-line, and the grams field KEEPS the amount column: a counted plain row has
+ * no parts, so that field is the only handle left on its grams, and "the eggs
+ * were bigger" is a correction as ordinary as "it was three eggs". The two
+ * never fight: a grams edit keeps the count (`setRowAmount` moves the grams and
+ * leaves `pieces` alone — bigger eggs, not more of them), and the count is
+ * edited in ONE place, the `ATE [2] EGGS` sentence drawn beneath the row, which
+ * scales the grams with it (more eggs).
  */
 function PricedRow({
   row,
@@ -304,9 +307,7 @@ function PricedRow({
 }) {
   const p = currentPortion(row);
   const macros = MACRO_LINE(p);
-  const subLine = [count && p.amount != null ? fmtAmount(p.amount, row.unit) : '', macros]
-    .filter(Boolean)
-    .join(' · ');
+  const subLine = [count ?? '', macros].filter(Boolean).join(' · ');
   return (
     <View>
       <Divider first={first} />
@@ -321,16 +322,12 @@ function PricedRow({
               </Text>
             </Text>
           </View>
-          {count ? (
-            <Text className="font-mono text-[13px] text-ink">{count}</Text>
-          ) : (
-            <AmountField
-              row={row}
-              value={row.amountText}
-              label={row.name}
-              onChange={(t) => handlers.onAmountChange(row.key, t)}
-            />
-          )}
+          <AmountField
+            row={row}
+            value={row.amountText}
+            label={row.name}
+            onChange={(t) => handlers.onAmountChange(row.key, t)}
+          />
           <Text className="w-12 text-right font-mono text-[13px] text-ink-secondary">
             {p.kcal != null ? fmtInt(p.kcal) : '—'}
           </Text>
@@ -512,9 +509,10 @@ export function ReviewItemsPlate({
             isComposite(row) ? (
               <CompositeRow key={row.key} row={row} first={index === 0} handlers={handlers} />
             ) : (
-              // A counted plain item (2026-09-25) reads `2 eggs` in its amount
-              // column and is edited by the dish's own sentence beneath it —
-              // `ATE [2] EGGS`, a record-shaped count with no OF.
+              // A counted plain item (2026-09-25) reads `2 eggs` at the head of
+              // its sub-line, keeps its grams field, and takes the dish's own
+              // sentence beneath it — `ATE [2] EGGS`, a record-shaped count with
+              // no OF.
               <View key={row.key}>
                 <PricedRow
                   row={row}

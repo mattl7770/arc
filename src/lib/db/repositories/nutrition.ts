@@ -365,32 +365,42 @@ export function addMealItem(db: Database, mealId: string, item: NewMealItem): st
 /** Rewrite an item's portion + macro snapshot (the caller re-scales via
  * src/lib/nutrition/servings.ts) and re-derive the meal's totals.
  *
- * A portion rewrite speaks in grams or in the catalog food's SERVINGS, never in
- * pieces, so it clears `piece_name` (2026-09-25): a `serving_qty` it writes is
- * a serving count, and a noun left beside it would read that count as pieces —
- * `2 × '3 slices'` printed as `2 slices`. A piece count is written only by
- * {@link setItemCount}, which is what meal-detail's editor opens on a counted
- * item. */
+ * **The caller says what `serving_qty` counts** (2026-09-25). With no
+ * `piece_name`, it is the catalog food's SERVING count, and the noun is cleared:
+ * a noun left beside a serving count would read it as pieces — `2 × '3 slices'`
+ * printed as `2 slices`. With one, it is a count of PIECES, and the pair is
+ * written whole: that is meal-detail's grams edit on `2 eggs`, which re-prices
+ * the eggs and keeps the count (bigger eggs, not more of them). A count that
+ * CHANGES is {@link setItemCount}'s, which scales the row with it. The pair is
+ * kept only where {@link insertMealItem} would keep it — a top-level row with a
+ * count — so a part never gains a noun here either. */
 export function updateMealItemPortion(
   db: Database,
   itemId: string,
   portion: Pick<
     NewMealItem,
     'amount' | 'serving_qty' | 'kcal' | 'protein_g' | 'carbs_g' | 'fat_g' | 'fiber_g' | 'micros'
-  >
+  > & { piece_name?: string | null }
 ): void {
-  const row = db.get<{ meal_id: string }>('SELECT meal_id FROM meal_items WHERE id = ?', [itemId]);
+  const row = db.get<{ meal_id: string; parent_item_id: string | null }>(
+    'SELECT meal_id, parent_item_id FROM meal_items WHERE id = ?',
+    [itemId]
+  );
   if (!row) return;
+  const count = portion.serving_qty ?? null;
+  const noun =
+    row.parent_item_id === null && count != null ? portion.piece_name?.trim() || null : null;
   db.transaction(() => {
     // `unit` is deliberately absent: re-portioning answers "how much", and a
     // portion does not change what it is measured in (see rescaleLoggedItem).
     db.run(
-      `UPDATE meal_items SET amount = ?, serving_qty = ?, piece_name = NULL, kcal = ?,
+      `UPDATE meal_items SET amount = ?, serving_qty = ?, piece_name = ?, kcal = ?,
          protein_g = ?, carbs_g = ?, fat_g = ?, fiber_g = ?, micros = ?
        WHERE id = ?`,
       [
         portion.amount ?? null,
-        portion.serving_qty ?? null,
+        count,
+        noun,
         portion.kcal ?? null,
         portion.protein_g ?? null,
         portion.carbs_g ?? null,

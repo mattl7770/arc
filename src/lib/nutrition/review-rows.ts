@@ -103,10 +103,18 @@ import type {
  * The owner, on the decision page: *"Read them as a count too: '2 eggs'."* The
  * model returns `pieces` for eggs, toast and wings, and the review used to drop
  * it on anything without parts, so two eggs read `[100] g`. Now a plain row
- * keeps the model's count and reads the way a counted dish reads: `2 eggs` where
- * its amount is drawn, the grams leading its sub-line, and one sentence beneath
- * it to edit — `ATE [2] EGGS`, the same `CountRow`, the same noun control, the
- * same `piecesLabel`.
+ * keeps the model's count: `2 eggs` leads its sub-line, and one sentence beneath
+ * it edits the count — `ATE [2] EGGS`, the same `CountRow`, the same noun
+ * control, the same `piecesLabel`.
+ *
+ * **Its grams field stays.** A counted dish can drop its header's grams field
+ * because its parts keep theirs; a plain row has no parts, so that field is the
+ * only handle on its grams, and the independent review of this build caught the
+ * first cut taking it away — correcting "the eggs were bigger" then meant
+ * emptying ATE, losing the count for good. The two fields say different things
+ * and neither undoes the other: a GRAMS edit ({@link setRowAmount}) moves the
+ * grams and keeps the count — bigger eggs, not more of them — and a COUNT edit
+ * scales the grams with it — more eggs.
  *
  * **ATE only — never an OF.** OF is a DISH's question: a pizza as priced is
  * eight slices, and while all of it is eaten, re-typing OF re-declares how it
@@ -462,10 +470,21 @@ export function rowsToMealItems(rows: ReviewItem[]): NewMealItem[] {
 
 // --- Edits ------------------------------------------------------------------
 
-/** Set one row's amount text. `key` may name a top-level row or a part. */
+/**
+ * Set one row's amount text. `key` may name a top-level row or a part.
+ *
+ * On a counted PLAIN row (2026-09-25) the count STAYS — `2 eggs` retyped from
+ * 100 g to 120 g is two bigger eggs — exactly as a part's grams edit leaves its
+ * dish's count alone. Only the count edit's baseline goes, for the same reason
+ * a part's edit drops its dish's: it froze grams that no longer stand.
+ */
 export function setRowAmount(rows: ReviewItem[], key: string, text: string): ReviewItem[] {
   return rows.map((row) => {
-    if (row.key === key) return { ...row, amountText: text };
+    if (row.key === key) {
+      return isComposite(row)
+        ? { ...row, amountText: text }
+        : { ...row, amountText: text, scaleFrom: null, countFrom: null };
+    }
     if (!row.components.some((c) => c.key === key)) return row;
     return {
       ...row,
@@ -970,6 +989,33 @@ export function planLoggedCount(
   const eaten = parseCount(draft.eatenText);
   if (eaten == null) return { kind: 'invalid' };
   return { kind: 'set', declare: whole, eaten: eaten === whole ? null : eaten, noun };
+}
+
+/**
+ * A logged PLAIN item's own count of pieces — `2 eggs` — or null (2026-09-25).
+ *
+ * Null on a part (a slice is not a fraction of the cheese), on a dish (its count
+ * is the header's, and its grams live on its parts), and on a `serving_qty` with
+ * no noun beside it, which counts the catalog food's serving, not pieces.
+ *
+ * meal-detail reads it twice. A tap on such a row opens BOTH handles: the count
+ * sentence, `ATE [2] EGGS` (more eggs — every figure scales), and the grams
+ * editor (bigger eggs — the count is written back beside the new grams, through
+ * `updateMealItemPortion`'s `piece_name`). A row with no parts has no other place
+ * its grams could be corrected.
+ */
+export function loggedPlainPieces(item: {
+  parent_item_id: string | null;
+  is_composite: number;
+  serving_qty: number | null;
+  piece_name: string | null;
+}): { count: number; name: string } | null {
+  return item.parent_item_id === null &&
+    item.is_composite !== 1 &&
+    item.serving_qty != null &&
+    item.piece_name != null
+    ? { count: item.serving_qty, name: item.piece_name }
+    : null;
 }
 
 // --- Answering a clarifying question (backlog C5) ---------------------------

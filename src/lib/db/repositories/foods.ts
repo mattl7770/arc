@@ -139,9 +139,7 @@ type RecentRow = FoodRow & {
 /**
  * Foods most recently logged, newest first, each with the portion it was last
  * logged at — so the recents rail re-adds "what you had last time" in one tap.
- * Relies on SQLite's documented bare-column-with-max() behavior: the
- * last_amount / last_serving_qty values come from the same row that supplied
- * max(created_at).
+ * "Last" is the row written last ({@link readRecentFoods}).
  *
  * `last_serving_qty` is a count of the FOOD's serving, so it is read only where
  * the item has no `piece_name` (2026-09-25): a grounded `2 eggs` counts pieces,
@@ -149,23 +147,7 @@ type RecentRow = FoodRow & {
  * log six. Such a row re-adds by its amount instead, which is the same portion.
  */
 export function listRecentFoods(db: Database, limit: number = 12): RecentFood[] {
-  const rows = db.all<RecentRow>(
-    `SELECT f.*, mi.amount AS last_amount,
-            CASE WHEN mi.piece_name IS NULL THEN mi.serving_qty END AS last_serving_qty,
-            max(mi.created_at) AS last_logged_at
-     FROM meal_items mi
-     JOIN foods f ON f.id = mi.food_id
-     GROUP BY f.id
-     ORDER BY last_logged_at DESC, f.id
-     LIMIT ?`,
-    [limit]
-  );
-  return rows.map(({ last_amount, last_serving_qty, last_logged_at, ...food }) => ({
-    food,
-    lastAmount: last_amount,
-    lastServingQty: last_serving_qty,
-    lastLoggedAt: last_logged_at,
-  }));
+  return readRecentFoods(db, false, limit);
 }
 
 /**
@@ -190,15 +172,39 @@ export function listRecentFoods(db: Database, limit: number = 12): RecentFood[] 
  * takes the manual fallback, saves the food, and eats it.
  */
 export function listRecentBarcodeFoods(db: Database, limit: number = 6): RecentFood[] {
+  return readRecentFoods(db, true, limit);
+}
+
+/**
+ * The two recents rails' one query: each food's LAST logged row, newest first.
+ *
+ * **Which row is "last" is decided here, never left to SQLite** (2026-09-25).
+ * This was a bare column beside `max(created_at)`, whose value comes from
+ * whichever row the scan met first at the max — and `created_at` is
+ * millisecond text, so one `logMealWithItems` stamps every item it writes with
+ * the same value. Two rows of one food in one meal (`2 eggs` beside `1 × egg`)
+ * tied, and the portion the rail re-added was an accident of scan order. The
+ * tie now breaks on `rowid`, SQLite's own insertion order and the tie-break
+ * `ai_messages` and `body_metrics` already use, so "last" is the row written
+ * last. `row_number()` is the window function 0042 already runs on the device.
+ */
+function readRecentFoods(db: Database, barcodeOnly: boolean, limit: number): RecentFood[] {
   const rows = db.all<RecentRow>(
-    // A piece count is not a serving count — {@link listRecentFoods}.
-    `SELECT f.*, mi.amount AS last_amount,
-            CASE WHEN mi.piece_name IS NULL THEN mi.serving_qty END AS last_serving_qty,
-            max(mi.created_at) AS last_logged_at
-     FROM meal_items mi
-     JOIN foods f ON f.id = mi.food_id
-     WHERE f.barcode IS NOT NULL
-     GROUP BY f.id
+    `WITH latest AS (
+       SELECT food_id, amount, serving_qty, piece_name, created_at,
+              row_number() OVER (
+                PARTITION BY food_id ORDER BY created_at DESC, rowid DESC
+              ) AS rn
+       FROM meal_items
+       WHERE food_id IS NOT NULL
+     )
+     SELECT f.*, l.amount AS last_amount,
+            -- A piece count is not a serving count (listRecentFoods).
+            CASE WHEN l.piece_name IS NULL THEN l.serving_qty END AS last_serving_qty,
+            l.created_at AS last_logged_at
+     FROM latest l
+     JOIN foods f ON f.id = l.food_id
+     WHERE l.rn = 1${barcodeOnly ? ' AND f.barcode IS NOT NULL' : ''}
      ORDER BY last_logged_at DESC, f.id
      LIMIT ?`,
     [limit]
