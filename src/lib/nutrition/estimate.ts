@@ -99,12 +99,16 @@ export type MealEstimateItem = {
   /**
    * How many countable pieces the model PRICED, and what one is called — a
    * whole pizza comes back `{slice, 8}`, three slices on a plate `{slice, 3}`
-   * (0059).
+   * (0059), two eggs `{egg, 2}`.
    *
-   * Read only on a composite header and ignored anywhere else: on a plain item
-   * the count would land in three places built for a catalog SERVING count (the
-   * recents rail's re-add, a template round-trip, meal-detail's serving-mode
-   * predicate), where `3 × slice` and `3 × '1 slice'` are not the same claim.
+   * Read on a composite header and — since 2026-09-25 (the owner: *"read them
+   * as a count too: '2 eggs'"*) — on a plain top-level item. It used to be
+   * dropped there, because a count would have landed in three places built for
+   * a catalog SERVING count (the recents rail's re-add, a template round-trip,
+   * meal-detail's serving-mode predicate). All three now read the pair: a piece
+   * count always travels WITH its noun, and a `serving_qty` beside a
+   * `piece_name` is never read as servings of the food. Parts still never carry
+   * one — a slice is not a fraction of the cheese.
    *
    * It is the model performing §4.1's DECLARATION — "what is priced here is N
    * pieces" — so a wrong answer costs one keypad entry and nothing else.
@@ -289,10 +293,19 @@ export type MealEstimationRequest = {
  * vitamin D and B12; a bowl of rice records none of them. Sparse by
  * construction, which is the point: an absent key is "not recorded", and the
  * micros screen already says its totals can run low.
+ *
+ * **Shared, not forked (2026-09-25).** Every prompt that asks for the shortlist
+ * — the meal estimator, the revision, and the describe-a-food catalog entry
+ * (C2) — reads these two constants, so the keys and the bar cannot drift
+ * between the path a meal takes and the path a food takes into the catalog.
  */
-const NOTABLE_MICRO_KEYS = MICROS.map((m) => m.key)
+export const NOTABLE_MICRO_KEYS = MICROS.map((m) => m.key)
   .filter((key) => key !== 'sodium_mg' && key !== 'caffeine_mg')
   .join(', ');
+
+/** The notable-source bar, word for word in every prompt that asks for the
+ *  shortlist: a tenth of a day's value, the FDA's "good source" line. */
+export const NOTABLE_SOURCE_BAR = "gives 10%+ of a day's value";
 
 export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   'You estimate the nutrition of a meal from a photo and/or a text description for a',
@@ -320,7 +333,7 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '- "micros" are for the portion, not per 100: sodium_mg and caffeine_mg on any item that',
   '  plausibly carries them (salted or restaurant-made; coffee, tea, cola, dark chocolate);',
   `  ${NOTABLE_MICRO_KEYS} only where the portion`,
-  "  gives 10%+ of a day's value. OMIT the key when you would be guessing — absent means",
+  `  ${NOTABLE_SOURCE_BAR}. OMIT the key when you would be guessing — absent means`,
   '  "not recorded", 0 means "measured none".',
   '',
   'Questions (optional, and USUALLY ABSENT):',
@@ -782,11 +795,11 @@ export function parseMealEstimate(replyText: string): MealEstimate {
       // that returned nothing usable serialises back to NULL rather than {}.
       micros: components ? null : serializeMicros(coerceMicros(e.micros)),
       components,
-      // A count of pieces is a fact about a DISH WITH PARTS (0059). On a plain
-      // item it is dropped rather than carried: `serving_qty` there counts the
-      // catalog food's own serving through a live join, and `3 × slice` beside
-      // `3 × '1 slice'` is two vocabularies in one column.
-      pieces: components ? parsePieces(e.pieces) : null,
+      // A count of pieces (0059): of a dish's slices, or — since 2026-09-25 —
+      // of a plain item's own pieces, `2 eggs`. It travels with its noun
+      // everywhere, so a `serving_qty` counting pieces is never mistaken for
+      // one counting the catalog food's serving (`piece_name` says which).
+      pieces: parsePieces(e.pieces),
     });
   }
   if (items.length === 0) {
@@ -878,9 +891,10 @@ export type MealRevisionItem = {
   /** The parts of a composite dish (0058) — printed indented beneath it, so a
    *  correction to the pepperoni is a correction to a part the model can see. */
   components?: MealRevisionItem[];
-  /** A composite's count of pieces and their noun (0059) — printed in the
-   *  header's tail as `8 × slice`, so a correction can move it and a correction
-   *  about something else leaves it where it is. */
+  /** A count of pieces and their noun (0059) — a composite's, printed in the
+   *  header's tail as `8 × slice`, or (2026-09-25) a plain item's, printed at
+   *  the head of its figures as `2 × egg` — so a correction can move it and a
+   *  correction about something else leaves it where it is. */
   pieces?: { name: string; count: number } | null;
 };
 
@@ -898,8 +912,10 @@ export type MealRevisionSubject = {
  * revision cannot differ by whether the phone was online when it was typed.
  *
  * A composite goes as a header with its parts and, where it has one, its count
- * of pieces (0059) — the pair is only ever stored on a header. Nothing about
- * the units is restated (0047's rule).
+ * of pieces (0059); a plain item goes with its own count where it has one
+ * (2026-09-25), and never with a catalog SERVING count — a `serving_qty` with
+ * no `piece_name` beside it is not a count of pieces. Parts never carry one.
+ * Nothing about the units is restated (0047's rule).
  */
 export function loggedToRevisionItems(tree: MealItemNode[]): MealRevisionItem[] {
   const plain = (i: MealItemWithServing): MealRevisionItem => ({
@@ -913,17 +929,18 @@ export function loggedToRevisionItems(tree: MealItemNode[]): MealRevisionItem[] 
     fiber_g: i.fiber_g,
     micros: i.micros,
   });
+  const pieces = (i: MealItemWithServing) =>
+    i.serving_qty != null && i.piece_name != null
+      ? { name: i.piece_name, count: i.serving_qty }
+      : null;
   return tree.map((node) =>
     node.kind === 'composite'
       ? {
           ...plain(node.item),
-          pieces:
-            node.item.serving_qty != null && node.item.piece_name != null
-              ? { name: node.item.piece_name, count: node.item.serving_qty }
-              : null,
+          pieces: pieces(node.item),
           components: node.components.map(plain),
         }
-      : plain(node.item)
+      : { ...plain(node.item), pieces: pieces(node.item) }
   );
 }
 
@@ -961,7 +978,7 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   '- "micros" are for the portion stated, not per 100. An item you add or re-estimate takes them',
   "  on an estimate's terms: sodium_mg and caffeine_mg where it plausibly carries them;",
   `  ${NOTABLE_MICRO_KEYS} only where the portion`,
-  "  gives 10%+ of a day's value; omitted where you would be guessing.",
+  `  ${NOTABLE_SOURCE_BAR}; omitted where you would be guessing.`,
   '  Any other item keeps every key it was shown, scaled if its portion moved.',
   '- Use the notes field to say what you changed, in one short sentence.',
   '',
@@ -1036,23 +1053,25 @@ export function buildMealRevisionRequest(
     // parts it has, and the parts are printed beneath it. "no numbers recorded"
     // would be a lie about a dish that is fully priced by its components.
     //
-    // The one COUNT the model is ever shown is a header's piece count (0059),
-    // printed through `countLabel` — `8 × slice`, the shape of the model's own
-    // `pieces` JSON. The screens print the same count as `8 slices`
-    // (`piecesLabel`, 2026-09-23): the owner reads those, the model reads this.
-    // A catalog item's serving count is deliberately NOT printed — the
-    // row shows `57 g, 104 kcal, …` as it always has — so `2 × 3 slices` never
-    // sits beside `8 × slice` and there is no vocabulary to confuse.
+    // The one COUNT the model is ever shown is a count of PIECES (0059) — a
+    // header's, and since 2026-09-25 a plain item's (`2 × egg, 100 g, …`) —
+    // printed through `countLabel`, the shape of the model's own `pieces` JSON.
+    // The screens print the same count as `8 slices` / `2 eggs` (`piecesLabel`,
+    // 2026-09-23): the owner reads those, the model reads this. A catalog
+    // item's SERVING count is deliberately NOT printed — the row shows
+    // `57 g, 104 kcal, …` as it always has — so `2 × 3 slices` never sits beside
+    // `8 × slice` and there is no vocabulary to confuse.
     const components = item.components ?? [];
-    const count = item.pieces ? `${countLabel(item.pieces.count, item.pieces.name)}, ` : '';
+    const count = item.pieces ? countLabel(item.pieces.count, item.pieces.name) : null;
+    const lead = count ? `${count}, ` : '';
     const tail =
       components.length > 0
-        ? ` — ${count}${components.length} parts`
+        ? ` — ${lead}${components.length} parts`
         : parts.length > 0
-          ? ` — ${parts.join(', ')}`
+          ? ` — ${lead}${parts.join(', ')}`
           : // An unpriced item says so in words. A blank tail would read as
             // zero, and the model would return zeros for it.
-            ' — no numbers recorded';
+            ` — ${lead}no numbers recorded`;
     return [
       `${indent}- ${item.name}${tail}`,
       ...components.flatMap((part) => line(part, `${indent}  `)),
@@ -1145,7 +1164,14 @@ export type FoodEntryEstimate = {
   carbs_g_100g: number | null;
   fat_g_100g: number | null;
   fiber_g_100g: number | null;
-  /** Per-100-of-basis sodium/caffeine, or null when the model recorded neither. */
+  /**
+   * Per-100-of-basis micros, or null when the model recorded none: sodium and
+   * caffeine where the food plausibly carries them, and — since 2026-09-25, the
+   * owner's "yes, same rule as the estimator" — the rest of the shortlist only
+   * where a serving is a notable source ({@link NOTABLE_MICRO_KEYS},
+   * {@link NOTABLE_SOURCE_BAR}). Through the one vocabulary filter
+   * (`coerceMicros`), so an invented key never reaches the row.
+   */
   micros: JsonText | null;
 };
 
@@ -1159,6 +1185,27 @@ export type FoodEntryEstimate = {
  * trips a CHECK is a field the user has to notice is missing; the schema limits
  * (a macro ≤ 100 g per 100, kcal ≤ 950) are cheap to state and they are the two
  * the model would otherwise break by pricing a serving instead of a hundred.
+ *
+ * **The shortlist, 2026-09-25.** Asked *"when you create a food by describing
+ * it, should the AI also fill the other micros where the food is a notable
+ * source?"*, the owner said *"yes, same rule as the estimator"*. So the micros
+ * bullet reads the estimator's own two constants — the keys past sodium and
+ * caffeine, and the 10% bar — rather than restating them: a key added to the
+ * vocabulary is asked for here and there at once. The bar is judged per
+ * SERVING (the FDA's "good source" line is per serving), while the figure
+ * given is per 100, like every other figure on the row. Paid inside the 500
+ * ceiling (db/coach-eval.test.mjs), which was not raised: 469 → 468.
+ *
+ *   +48  the shortlist and the bar
+ *   −33  the sodium/caffeine bullet rewritten in the estimator's shape: its
+ *        two lists become the estimator's examples plus energy drinks and
+ *        canned food ("cured" and "processed" are salted, "matcha" is tea);
+ *        "in milligrams … under micros" is "micros are PER 100 too", the keys
+ *        naming their own units; and "and they are not the same claim" goes —
+ *        the two definitions before it ARE the rule, the estimator's own trim
+ *        of 2026-09-23
+ *   −8   `{<key>: number}` on the schema line, the keys named once
+ *   −7   the drinks list, eight examples to four (the estimator's trim of C4)
  */
 export const FOOD_ENTRY_SYSTEM_PROMPT = [
   'You fill in ONE catalog entry for a longevity-focused food logger, from a plain-English',
@@ -1167,17 +1214,17 @@ export const FOOD_ENTRY_SYSTEM_PROMPT = [
   'Rules:',
   '- One food, never a meal. Name it the way a label would ("Rotisserie chicken thigh, skin',
   '  on"); "brand" only for a branded product, else null.',
-  '- "basis" is what the food is MEASURED IN: "ml" for anything DRUNK — coffee, tea, juice,',
-  '  soda, beer, wine, milk, a smoothie or shake — and "g" for everything eaten.',
+  '- "basis" is what the food is MEASURED IN: "ml" for anything DRUNK — coffee, juice, beer,',
+  '  milk, a smoothie — and "g" for everything eaten.',
   '- Give a household serving when one is natural ("1 thigh", "1 can"): "serving_name" plus',
   '  "serving_amount" in the basis. Both null when nothing natural exists.',
   '- Every macro figure is PER 100 of the basis, never per serving. A macro cannot exceed 100',
   '  and kcal cannot exceed 950 — if yours do, you have priced a serving by mistake.',
-  '- Give sodium and caffeine in milligrams PER 100, under "micros", where the food plausibly',
-  '  carries them: sodium for anything salted, cured, canned, processed or restaurant-made;',
-  '  caffeine for coffee, tea, matcha, cola, energy drinks, dark chocolate, pre-workout. OMIT',
-  '  the key when you would be guessing — absent means "not recorded", 0 means "measured',
-  '  none", and they are not the same claim.',
+  '- "micros" are PER 100 too: sodium_mg and caffeine_mg where the food plausibly carries them',
+  '  (salted, canned or restaurant-made; coffee, tea, cola, energy drinks, dark chocolate);',
+  `  ${NOTABLE_MICRO_KEYS} only where a serving`,
+  `  ${NOTABLE_SOURCE_BAR}. OMIT the key when you would be guessing — absent means`,
+  '  "not recorded", 0 means "measured none".',
   '- Use null for any figure you cannot estimate: a blank is honest, an invented number is not.',
   '',
   'Respond with ONLY a JSON object, no prose, matching:',
@@ -1185,7 +1232,7 @@ export const FOOD_ENTRY_SYSTEM_PROMPT = [
   ' "serving_name": string|null, "serving_amount": number|null,',
   ' "kcal_100": number|null, "protein_g_100": number|null, "carbs_g_100": number|null,',
   ' "fat_g_100": number|null, "fiber_g_100": number|null,',
-  ' "micros": {"sodium_mg": number, "caffeine_mg": number}|null}',
+  ' "micros": {<key>: number}|null}',
 ].join('\n');
 
 /** Build the food-entry request: the system prompt above, and the description. */

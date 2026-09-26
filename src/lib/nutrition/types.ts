@@ -186,15 +186,18 @@ export type MealItemRow = {
    * its children's sum would let a forgetful query DOUBLE the pizza. */
   is_composite: SqliteBool;
   /**
-   * The singular noun ONE piece of this dish is called — `slice`, `wing`,
-   * `roll` (0059). Non-null only on a composite HEADER, beside a non-null
-   * {@link MealItemRow.serving_qty}, which is the count of them.
+   * The singular noun ONE piece is called — `slice`, `wing`, `roll` (0059), or
+   * `egg` (2026-09-25). Non-null only on a TOP-LEVEL row — a composite header,
+   * or a plain item counted in its own pieces — beside a non-null
+   * {@link MealItemRow.serving_qty}, which is then the count of them. Never on
+   * a part.
    *
    * A header has no `food_id` and so can never reach the live
    * `foods.serving_name` join a catalog item's count is named by; this column is
    * its own noun. The two vocabularies stay apart on purpose: `'3 slices'` is a
    * SERVING PHRASE and `slice` is a PIECE NOUN, so `2 × 3 slices` is six and
-   * `3 × slice` is three.
+   * `3 × slice` is three. On a plain item this column is what says WHICH one its
+   * `serving_qty` is: set, a count of pieces; NULL, a count of the food's serving.
    */
   piece_name: string | null;
   created_at: Timestamp;
@@ -224,10 +227,11 @@ export type NewMealItemFields = {
   confidence?: EstimateConfidence | null;
   /** Per-portion micronutrient snapshot as a JSON string (serializeMicros). */
   micros?: JsonText | null;
-  /** The noun `serving_qty` counts on a composite HEADER (0059) — `slice`,
-   * `wing`, `roll`, in the singular. Written only on a header, and only beside
-   * a `serving_qty`; ignored (stored NULL) on a part or a plain item, whose
-   * count names the catalog food's serving through the live join instead. */
+  /** The noun `serving_qty` counts when it counts PIECES (0059) — `slice`,
+   * `wing`, `egg`, in the singular. Written on a top-level row (a composite
+   * header, or since 2026-09-25 a plain item) and only beside a `serving_qty`;
+   * ignored (stored NULL) on a part. Absent, a plain item's count names the
+   * catalog food's serving through the live join instead. */
   piece_name?: string | null;
 };
 
@@ -356,6 +360,10 @@ export type MealTemplateItemRow = {
   fiber_g: number | null;
   unit: AmountUnit;
   micros: JsonText | null;
+  /** The noun `serving_qty` counts when this line is counted in its own pieces
+   *  — `egg` in `2 eggs` (0065). NULL when `serving_qty` counts the catalog
+   *  food's serving, or there is no count. */
+  piece_name: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 };

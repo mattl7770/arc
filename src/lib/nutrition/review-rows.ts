@@ -97,6 +97,40 @@ import type {
  * **The invariant that keeps that honest:** `countFrom` is never consumed
  * against parts it did not describe. Every writer that drops `scaleFrom` drops
  * `countFrom` with it, and the two are always taken in the same breath.
+ *
+ * ## "2 eggs" — a PLAIN item counted in its own pieces (2026-09-25)
+ *
+ * The owner, on the decision page: *"Read them as a count too: '2 eggs'."* The
+ * model returns `pieces` for eggs, toast and wings, and the review used to drop
+ * it on anything without parts, so two eggs read `[100] g`. Now a plain row
+ * keeps the model's count: `2 eggs` leads its sub-line, and one sentence beneath
+ * it edits the count — `ATE [2] EGGS`, the same `CountRow`, the same noun
+ * control, the same `piecesLabel`.
+ *
+ * **Its grams field stays.** A counted dish can drop its header's grams field
+ * because its parts keep theirs; a plain row has no parts, so that field is the
+ * only handle on its grams, and the independent review of this build caught the
+ * first cut taking it away — correcting "the eggs were bigger" then meant
+ * emptying ATE, losing the count for good. The two fields say different things
+ * and neither undoes the other: a GRAMS edit ({@link setRowAmount}) moves the
+ * grams and keeps the count — bigger eggs, not more of them — and a COUNT edit
+ * scales the grams with it — more eggs.
+ *
+ * **ATE only — never an OF.** OF is a DISH's question: a pizza as priced is
+ * eight slices, and while all of it is eaten, re-typing OF re-declares how it
+ * was cut and moves not one gram. Two eggs are not a whole cut into two; the
+ * pieces ARE the portion, and "it was three eggs" means a third egg's worth of
+ * food — which is what ATE does (every figure × 3/2). An OF here would offer
+ * exactly the wrong arithmetic for the commonest correction, so a plain row's
+ * count has the shape a RECORD's count has: one number, `wholeCount` null, and
+ * emptied-and-left it un-counts, the grams where they stood.
+ *
+ * The same principle holds, one row instead of several parts: the count says how
+ * many pieces the row, AS IT STANDS, is; a count edit scales the row by `new /
+ * baseline` from the focus snapshot (`scaleFrom` holds the row itself), live and
+ * non-compounding; a fraction of a piece prints honestly (`1.5 eggs`). Saved, the
+ * pair lands on the item whole (`rowsToMealItems`), and a grounded row keeps its
+ * food: the noun is what tells a piece count from a serving count downstream.
  */
 
 /** The portion snapshot an amount edit re-scales from. */
@@ -138,11 +172,13 @@ export type ReviewItem = ReviewRow & {
   components: ReviewRow[];
   expanded: boolean;
   /** The parts as they stood when a whole-dish field was focused — the
-   *  baseline that keeps live scaling from compounding. Null when not editing. */
+   *  baseline that keeps live scaling from compounding. Null when not editing.
+   *  On a counted PLAIN row it holds the row itself, as it stood when its count
+   *  field was focused (2026-09-25). */
   scaleFrom: ReviewRow[] | null;
-  /** How many pieces were EATEN — the count the parts, as they stand, add up
-   *  to — and the noun for one of them (0059). The `ATE` number. Null on a
-   *  plain item and on an uncounted composite. */
+  /** How many pieces were EATEN — the count the parts (or a plain row), as they
+   *  stand, add up to — and the noun for one of them (0059). The `ATE` number.
+   *  Null on an uncounted row. */
   pieces: ReviewPieces | null;
   /**
    * How many pieces the dish AS PRICED is — the `OF` number in `ate 3 of 8`
@@ -151,7 +187,8 @@ export type ReviewItem = ReviewRow & {
    *
    * **Null beside a count is a RECORD's count** — a count of what was eaten,
    * with no whole known (rows built from a logged meal: `countIsEaten`). Such a
-   * row reads `ATE [3] SLICES`, with no OF to mistake for the pizza's size.
+   * row reads `ATE [3] SLICES`, with no OF to mistake for the pizza's size. A
+   * counted PLAIN row is always this shape: `ATE [2] EGGS` (2026-09-25).
    *
    * **View state only, never saved.** It is the spike's rejected denominator:
    * once the parts are scaled to three slices, "8" is history of the estimate,
@@ -331,6 +368,20 @@ function toRow(
  * the model is handed the record's count — what was eaten — and told to keep
  * it, so what comes back is a count of the portion, not of a dish priced whole.
  * Those rows carry no whole (`wholeCount` null) and read `ATE [3] SLICES`.
+ *
+ * A PLAIN item's count (2026-09-25) is read too — `2 eggs` — and never has a
+ * whole, fresh estimate or not: its pieces are the portion, not a cut of one.
+ *
+ * **A counted dish opens by default** (2026-09-25; the independent check's
+ * note that ATE/OF needed a tap first). Once a composite is counted its header
+ * has no field of its own — the grams field goes, because the count is edited
+ * in one place — so a counted dish drawn collapsed offered no handle at all on
+ * the sheet whose whole job is checking the model's numbers, and the count is
+ * the model's guess most worth checking. An UNCOUNTED dish still opens closed:
+ * its header keeps the grams field, the fast handle, and a pizza reads as one
+ * thing you ate until you ask about its parts. The logged meal screen keeps
+ * every dish closed — a record is read far more than it is corrected, and its
+ * collapsed row already says `3 slices (270 g)`.
  */
 export function rowsFromEstimate(
   db: Database,
@@ -338,22 +389,23 @@ export function rowsFromEstimate(
   { countIsEaten = false }: { countIsEaten?: boolean } = {}
 ): ReviewItem[] {
   return estimate.items.map((item, i) => {
-    // The model's own count of what it priced (0059), read only on a composite:
-    // a count of pieces is a fact about a dish with parts, and on a plain item
-    // it would land in three places built for a catalog SERVING count.
-    const pieces = item.components && item.components.length > 0 ? (item.pieces ?? null) : null;
+    const composite = item.components != null && item.components.length > 0;
+    // The model's own count of what it priced (0059) — of a dish's pieces, or
+    // of a plain item's own (2026-09-25).
+    const pieces = item.pieces ?? null;
     return {
       ...toRow(db, { ...item, micros: item.micros ?? null }, `${i}-${item.name}`),
       components: (item.components ?? []).map((part, j) =>
         toRow(db, { ...part, micros: part.micros ?? null }, `${i}-${j}-${part.name}`)
       ),
-      expanded: false,
+      expanded: composite && pieces !== null,
       scaleFrom: null,
       pieces,
       // The count is of what was PRICED, so the dish as priced is that many
       // pieces and all of them are on the plate: `ate [8] of [8] slices`. A
-      // record's count is of what was eaten, and has no whole to offer.
-      wholeCount: countIsEaten ? null : (pieces?.count ?? null),
+      // record's count is of what was eaten, and has no whole to offer; nor
+      // does a plain item's, whose pieces are the portion itself.
+      wholeCount: composite && !countIsEaten ? (pieces?.count ?? null) : null,
       countText: null,
       wholeText: null,
       countFrom: null,
@@ -384,7 +436,17 @@ export function rowsToMealItems(rows: ReviewItem[]): NewMealItem[] {
     };
   };
   return rows.map((row) => {
-    if (!isComposite(row)) return priced(row);
+    if (!isComposite(row)) {
+      // A plain row's own count of pieces (2026-09-25) lands on the item whole —
+      // the count EATEN and its noun — resolved as a blur would resolve it, so
+      // an ATE emptied with Save tapped mid-edit saves the row un-counted.
+      const settled = settleCount(row);
+      return {
+        ...priced(settled),
+        serving_qty: settled.pieces?.count ?? null,
+        piece_name: settled.pieces?.name ?? null,
+      };
+    }
     // The header's own numbers are never sent — the repository would drop them
     // anyway (invariant 2), and sending them would suggest they mean something.
     // Its COUNT is not one of them (0059): a count is a fact about the whole
@@ -408,10 +470,21 @@ export function rowsToMealItems(rows: ReviewItem[]): NewMealItem[] {
 
 // --- Edits ------------------------------------------------------------------
 
-/** Set one row's amount text. `key` may name a top-level row or a part. */
+/**
+ * Set one row's amount text. `key` may name a top-level row or a part.
+ *
+ * On a counted PLAIN row (2026-09-25) the count STAYS — `2 eggs` retyped from
+ * 100 g to 120 g is two bigger eggs — exactly as a part's grams edit leaves its
+ * dish's count alone. Only the count edit's baseline goes, for the same reason
+ * a part's edit drops its dish's: it froze grams that no longer stand.
+ */
 export function setRowAmount(rows: ReviewItem[], key: string, text: string): ReviewItem[] {
   return rows.map((row) => {
-    if (row.key === key) return { ...row, amountText: text };
+    if (row.key === key) {
+      return isComposite(row)
+        ? { ...row, amountText: text }
+        : { ...row, amountText: text, scaleFrom: null, countFrom: null };
+    }
     if (!row.components.some((c) => c.key === key)) return row;
     return {
       ...row,
@@ -517,8 +590,28 @@ export function scaleComposite(rows: ReviewItem[], key: string, factor: number):
  *  scaling baseline — one snapshot, so neither can compound against the other. */
 export function beginCompositeScale(rows: ReviewItem[], key: string): ReviewItem[] {
   return rows.map((row) =>
-    row.key === key ? { ...row, scaleFrom: row.components, countFrom: countNow(row) } : row
+    row.key === key ? { ...row, scaleFrom: scaleBaseOf(row), countFrom: countNow(row) } : row
   );
+}
+
+/** A top-level row as a priced row alone — what a counted PLAIN row's count
+ *  field scales from (2026-09-25). */
+function asPricedRow(row: ReviewItem): ReviewRow {
+  return {
+    key: row.key,
+    name: row.name,
+    foodId: row.foodId,
+    food: row.food,
+    confidence: row.confidence,
+    base: row.base,
+    amountText: row.amountText,
+    unit: row.unit,
+  };
+}
+
+/** What a scaling snapshot freezes: a dish's parts, or a plain row itself. */
+function scaleBaseOf(row: ReviewItem): ReviewRow[] {
+  return isComposite(row) ? row.components : [asPricedRow(row)];
 }
 
 /** The count state as the row holds it now — what a snapshot freezes. A null
@@ -657,10 +750,14 @@ export function endCountEdit(rows: ReviewItem[], key: string): ReviewItem[] {
  * - **Otherwise** every part scales by `count / baseline` from the frozen
  *   snapshot, non-compounding exactly as {@link scaleCompositeTo} is, and the
  *   count eaten becomes the number typed. The dish as priced does not move.
+ *
+ * A counted PLAIN row (2026-09-25) takes the same edit on itself:
+ * {@link setPlainCount}.
  */
 export function setCompositeCount(rows: ReviewItem[], key: string, text: string): ReviewItem[] {
   return rows.map((row) => {
-    if (row.key !== key || !isComposite(row)) return row;
+    if (row.key !== key) return row;
+    if (!isComposite(row)) return row.pieces ? setPlainCount(row, text) : row;
     const from = row.countFrom ?? countNow(row);
     const base = row.scaleFrom ?? row.components;
     // Read out of the snapshot before the closure below, so the narrowing holds.
@@ -681,6 +778,43 @@ export function setCompositeCount(rows: ReviewItem[], key: string, text: string)
       amountText: '',
     };
   });
+}
+
+/**
+ * The ATE field of a counted PLAIN row changed — `ate [2] eggs` retyped as 3
+ * (2026-09-25). The dish's arithmetic, on the row itself:
+ *
+ * - **Not a count** (empty, `0`, `101`) shows the row as it stood at focus, and
+ *   the count it had then; emptied and LEFT, it un-counts on blur
+ *   ({@link settleCount} — a plain row's count has no whole, so ATE is the
+ *   field that says what it is).
+ * - **Otherwise** the row scales by `count / baseline` from the snapshot taken
+ *   at focus — amount, macros, fiber and micros together, through the same
+ *   `scaleRow` a dish's parts scale through — so typing `3`, `30`, backspace
+ *   never compounds, and the count eaten becomes the number typed.
+ *
+ * There is no declaration here: a plain row is counted by the model or not at
+ * all, and a row with no count draws no count field.
+ */
+function setPlainCount(row: ReviewItem, text: string): ReviewItem {
+  const from = row.countFrom ?? countNow(row);
+  const base = row.scaleFrom?.[0] ?? asPricedRow(row);
+  const baseline = from.count;
+  if (baseline == null || baseline <= 0) {
+    return { ...row, countText: text, countFrom: from, scaleFrom: [base] };
+  }
+  const name = row.pieces?.name ?? 'piece';
+  const count = parseCount(text);
+  const now = count == null ? base : scaleRow(base, count / baseline);
+  return {
+    ...row,
+    base: now.base,
+    amountText: now.amountText,
+    countText: text,
+    countFrom: from,
+    scaleFrom: [base],
+    pieces: { name, count: count ?? baseline },
+  };
 }
 
 /**
@@ -790,6 +924,10 @@ export function setPiecesName(rows: ReviewItem[], key: string, name: string): Re
 // meal-detail stages a draft and writes on Save (its rule for anything already
 // in the day's totals), so what Save will do is decided HERE, purely, and the
 // sentence stated above the Save button reads the same plan it executes.
+//
+// A PLAIN item counted in its own pieces (2026-09-25) is always the counted
+// case — `ate [2] eggs` — and Save runs the same plan through `setItemCount` /
+// `clearItemCount`, which scale the row itself where a dish scales its parts.
 
 /** A count draft on a logged composite. A null text is an untouched field. */
 export type LoggedCountDraft = {
@@ -853,6 +991,33 @@ export function planLoggedCount(
   return { kind: 'set', declare: whole, eaten: eaten === whole ? null : eaten, noun };
 }
 
+/**
+ * A logged PLAIN item's own count of pieces — `2 eggs` — or null (2026-09-25).
+ *
+ * Null on a part (a slice is not a fraction of the cheese), on a dish (its count
+ * is the header's, and its grams live on its parts), and on a `serving_qty` with
+ * no noun beside it, which counts the catalog food's serving, not pieces.
+ *
+ * meal-detail reads it twice. A tap on such a row opens BOTH handles: the count
+ * sentence, `ATE [2] EGGS` (more eggs — every figure scales), and the grams
+ * editor (bigger eggs — the count is written back beside the new grams, through
+ * `updateMealItemPortion`'s `piece_name`). A row with no parts has no other place
+ * its grams could be corrected.
+ */
+export function loggedPlainPieces(item: {
+  parent_item_id: string | null;
+  is_composite: number;
+  serving_qty: number | null;
+  piece_name: string | null;
+}): { count: number; name: string } | null {
+  return item.parent_item_id === null &&
+    item.is_composite !== 1 &&
+    item.serving_qty != null &&
+    item.piece_name != null
+    ? { count: item.serving_qty, name: item.piece_name }
+    : null;
+}
+
 // --- Answering a clarifying question (backlog C5) ---------------------------
 
 /** Case-insensitive name match — the model writes "Espresso", the row holds
@@ -912,8 +1077,9 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
         components: [],
         expanded: false,
         scaleFrom: null,
-        // An answer adds a PLAIN item, and a plain item is never counted in
-        // pieces (0059) — the count lives on a dish with parts.
+        // An answer's added item carries no count: the effect's vocabulary has
+        // no `pieces` (and the prompt's ceiling has no room to add one), so it
+        // reads in its unit, as it always has.
         pieces: null,
         wholeCount: null,
         countText: null,
@@ -945,11 +1111,12 @@ export function applyAnswer(rows: ReviewItem[], effect: QuestionEffect): ReviewI
         expanded: row.expanded,
         scaleFrom: null,
         countFrom: null,
-        // A plain row has no count of pieces; carried rather than re-derived so
-        // this stays exhaustive over ReviewItem.
-        pieces: row.pieces,
+        // A plain row's own count of pieces (2026-09-25) is a fact about the
+        // whole row, so what scales the row moves it: "how many eggs? 3" is a
+        // scale of 3/2, and it reads `3 eggs`. It never has a whole.
+        pieces: row.pieces ? { ...row.pieces, count: row.pieces.count * effect.factor } : null,
         wholeCount: row.wholeCount,
-        countText: row.countText,
+        countText: null,
         wholeText: row.wholeText,
       };
     if (!row.components.some((c) => c.key === targetKey)) return row;
@@ -1102,7 +1269,8 @@ export function rowsToRevisionSubject(name: string, rows: ReviewItem[]): MealRev
         ? // The count rides with the dish (0059): the model is shown `8 × slice,
           // 3 parts` and told to keep it unless the correction moves it.
           { ...line(row), pieces: row.pieces, components: row.components.map(line) }
-        : line(row)
+        : // …and with a plain row (2026-09-25): `2 × egg, 100 g, …`.
+          { ...line(row), pieces: row.pieces }
     ),
   };
 }

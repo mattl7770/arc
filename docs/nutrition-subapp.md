@@ -1678,7 +1678,7 @@ The grep, and what each site does now:
 
 ### Combine — several meals that were one
 
-**The entry point** is the day list where the meals sit: `Combine` on the Eaten-today plate's own label line, in the label voice, drawn only on a day with two meals that could combine. It turns the rows into checkboxes (a leading square, in ink, never the accent; a meal waiting on its estimate is drawn disabled, its own line already saying why) and adds a foot to the same plate (`src/components/nutrition/combine-meals.tsx`): the **Name** field, the consequence in future tense, and an outlined **Combine N meals**. The resting screen gains one word; no row changes until asked. A swipe or long-press was refused for the reason the water tile's long-press was deleted — an invisible affordance is one the owner never finds. Combining lives on the Eat tab (today's list); the history day view gets the Undo row but not the entry point.
+**The entry point** is the day list where the meals sit: `Combine` on the Eaten-today plate's own label line, in the label voice, drawn only on a day with two meals that could combine. It turns the rows into checkboxes (a leading square, in ink, never the accent; a meal waiting on its estimate is drawn disabled, its own line already saying why) and adds a foot to the same plate (`src/components/nutrition/combine-meals.tsx`): the **Name** field, the consequence in future tense, and an outlined **Combine N meals**. The resting screen gains one word; no row changes until asked. A swipe or long-press was refused for the reason the water tile's long-press was deleted — an invisible affordance is one the owner never finds. Combining lives on the Eat tab (today's list); the history day view gets the Undo row but not the entry point. *(Since 2026-09-25 it has the entry point too — the owner: "also allow combine on past days, from History". §16.)*
 
 **What the result keeps** — `planCombine` (`src/lib/nutrition/combine.ts`, pure) decides, and `combineMeals` runs the same plan in one transaction:
 
@@ -1815,3 +1815,76 @@ No model was called.
 - **Whether 127 mg matches his latte.** Two shots is an assumption about his café. If his is a single, the seed row cannot be corrected, because nothing edits a food's micros. His own food (Add food) or a Describe is the way, and a Log again of that copies his figure, never the seed's.
 - **Whether 20 mg is the right line.** A cola (28 mg) beside a salty dinner now shows its caffeine rather than the sodium. Only his own meals show whether that is the figure he wants on the row.
 - **The keyboard and the receipt.** Tapping × with a grams field focused keeps the keyboard up (`keyboardShouldPersistTaps="handled"`), and the offer survives the keyboard going down, since a blur that moves no figure keeps it. The hand decides whether that reads right.
+
+## 16. Round 10 — three answers from the decision page, and a counted dish that opens (2026-09-25, migration `0065`)
+
+Three of the owner's answers on the round-two decision page, verbatim, and one note from the independent check:
+
+- *"Also allow combine on past days, from History."*
+- *"When you create a food by describing it, should the AI also fill the other micros where the food is a notable source? Yes, same rule as the estimator."*
+- *"Read them as a count too: '2 eggs'."*
+- The check's note: a counted composite starts collapsed, so ATE/OF needs a tap first.
+
+### Combine on a past day
+
+History's Meals plate carries the Eat tab's own `Combine` control on its label line, and everything behind it is the Eat tab's: one hook, `useCombineMeals` (`src/hooks/use-combine-meals.ts`), holds the choice, the typed name and the last refusal, draws the plan with `planCombine` and writes through `combineWithUndo`; the foot is `CombineFooter`; the toggle and the leading square are `CombineToggle` / `CombineMark` (`combine-meals.tsx`), shared by both lists' rows. The Eat tab was moved onto the same hook, so the two lists cannot drift.
+
+**Nothing assumed today, and nothing in the write needed to change.** `planCombine` checks the chosen meals share a day (any day); `combineMeals` keeps the earliest meal's own row, date included; `uncombineMeals` restores each absorbed row verbatim; the Undo offer is scoped to the kept meal's `date`, which History already draws (`useUndoOffer('list', view.date)`); `pendingAmong` reads the queue for any meal. What History lacked was the queue: `readNutritionDay` now reads `pendingEstimates` for the day in view, so a photo logged offline whose day has passed is refused by name, and its row says `Estimate pending — offline` as on the Eat tab.
+
+The hook keys its choice by the day drawn: stepping the picker drops a half-made choice rather than carrying it onto another day's meals. The control is ink and outlined, so History still spends no accent.
+
+### A described food fills the shortlist
+
+The describe-a-food prompt (C2, `FOOD_ENTRY_SYSTEM_PROMPT`) asked for sodium and caffeine only. It now reads the estimator's own two constants — `NOTABLE_MICRO_KEYS` (the vocabulary past sodium and caffeine) and `NOTABLE_SOURCE_BAR` (`gives 10%+ of a day's value`) — exported from `estimate.ts` and read by the meal prompt, the revision prompt and this one, so a key added to `micros.ts` is asked for on all three paths at once. The meal and revision prompts are byte-identical to before. The bar is judged **per serving** (the FDA's "good source" line is per serving) while the figure is given **per 100**, like every figure on the row.
+
+The parser needed nothing: `parseFoodEntry` already put `micros` through `coerceMicros`, the one vocabulary filter, so an invented key or `"about 380"` is dropped and a food that returned nothing stores NULL. **The ceiling was not raised** — 469 → 468 of 500; the accounting is on the constant. The screen now **reads the micros out** before Save writes them (`microsLine`, `format.ts`): one mono line under the macros, `Sodium 61 mg · Vitamin D 13.1 mcg · Vitamin B12 3.2 mcg · Omega-3 2.2 g`. There are no fields for micros anywhere in the app, and a figure that rode to the row unseen would be an inferred number nobody checked.
+
+### "2 eggs" — a plain item counted in its own pieces
+
+The model already returned `pieces` for eggs, toast and wings; the parser dropped it on anything without parts, because a count there would have landed in three places built for a catalog **serving** count — the recents rail's re-add, a template round-trip and meal-detail's serving-mode predicate — where `3 × slice` and `3 × '1 slice'` are different claims. Those three are what changed, and the parser now keeps the count.
+
+**The rule that makes it safe:** a count of pieces always travels with its noun, and **`piece_name` is what says which vocabulary a `serving_qty` is in** — set, a count of pieces; NULL, a count of the food's serving, exactly as before. Every reader keys off it:
+
+| reader | before | after |
+| --- | --- | --- |
+| parser (`parseMealEstimate`) | `pieces` dropped on a plain item | kept; the same shape rules (noun, 0 < count ≤ 100) |
+| review sheet | `[100] g` | the **`[100] g` field kept**, **`2 eggs · P 13g`** as the sub-line, and **`ATE [2] EGGS`** beneath — the dish's `CountRow`, noun control and `piecesLabel`. A grams edit keeps the count; ATE scales the grams |
+| Save (`rowsToMealItems`, the offline drain's `toMealItems`) | pair dropped | the pair lands on the item whole, grounded food kept |
+| `insertMealItem` | noun kept only on a header | kept on any top-level row; a part never carries one |
+| meal-detail | the serving stepper read `2` as two servings | a tap opens **both** handles: `ATE [2] EGGS` (focusing it hands the row to the dish's count Save, through `setItemCount` / `clearItemCount`) and, beneath it, a grams-only editor with no stepper, whose Save keeps the count |
+| `updateMealItemPortion` | left a noun beside a serving count it wrote | the caller says what `serving_qty` counts: no `piece_name`, a serving count, and the noun is cleared; with one, a piece count, and the pair is written whole (top-level rows only, never beside a null count) |
+| recents rails | `last_serving_qty` read regardless | NULL where `piece_name` is set, so the rail re-adds by the amount (three servings of a food whose serving is `3 eggs` would have been nine). "Last" is now the row written last: a same-millisecond tie breaks on `rowid`, where it used to be whichever row a bare `max()` met first |
+| templates | no column | **`0065`** adds `meal_template_items.piece_name`; save and log copy the pair; the template screen reads `2 eggs (100 g)` |
+| Log again (`relogMeal`) | pair copied, noun dropped at insert | kept |
+| revision (Adjust, a typed answer) | count not shown | the model sees `2 × egg, 100 g, …` and is already told to keep `pieces`; the reply reads as a record's count |
+| As logged plate | grams | `2 eggs` |
+| Coach payload (`meals`, `meal_templates` reads) | no count at all — not even a dish's | `count: "2 eggs"` / `"3 slices"` on any counted row, absent otherwise |
+
+**ATE only — never an OF.** OF is a dish's question: a pizza as priced is eight slices, and while all of it is eaten, re-typing OF re-declares how it was cut and moves not one gram. Two eggs are not a whole cut in two — the pieces are the portion — so "it was three eggs" means a third egg's worth of food, which is what ATE does (every figure × 3/2). An OF on a plain row would offer exactly the wrong arithmetic for the commonest correction. So a plain count always has the shape a record's count has: one number, no whole, and emptied-and-left it un-counts with the grams where they stood. The same principle holds on one row: the count says how many pieces the row, as it stands, is; ATE scales from the focus snapshot, live and non-compounding; a C5 `scale_item` answer moves the count with the row ("how many eggs? 4" reads `4 eggs`); a `set_amount` answer moves the grams and keeps the count (the eggs were bigger).
+
+**The grams handle stays** (the independent review of this build). The first cut swapped a counted plain row's grams field for static `2 eggs`, on the review and on meal-detail, copying the counted dish — but a dish can drop its header's grams field because its parts keep theirs, and a plain row has no parts. Correcting "the eggs were bigger" then meant emptying ATE, which un-counts the row, and a plain row cannot be re-counted afterwards. Now both screens keep the grams field beside the count, and the two fields never undo each other: **grams** move the grams and keep the count (bigger eggs — `setRowAmount` on the review; on meal-detail, `updateMealItemPortion` given the pair back), and **ATE** scales every figure (more eggs).
+
+**No declaration on a plain row.** A plain item is counted by the model or not at all; a row with no count draws no count field, because a count line under every row of rice and oil would be noise. The trade, stated: a plain count cleared on meal-detail cannot be re-declared there, only re-logged or revised. `setItemCount` itself does declare (a first piece count on a row counted in servings writes the pair and moves nothing), so a later surface can offer it without a new writer.
+
+**Why a migration, and why only one table.** The brief's test was whether storage forbade a noun on a plain item. `meal_items` did not: 0059 took no cross-column CHECK and left the invariant to the writers, and the writers are what changed. `meal_template_items` had no column at all — 0059 put the noun on one table because a template flattens composites and no header ever reached one, but a counted plain item is a leaf. Without the column, `2 eggs` would have logged back out of a template as `2 × 1 egg` through the live join, the exact lie 0059 was built to refuse. So `0065` is one nullable text column, no backfill, no CHECK — 0059's shape. Numbered 0065 because a sibling branch (`claude/fb-notify`) holds `0064_coach_nudges.sql`. **Ordering constraint:** 0064 must reach main before 0065, or in the same build. A build that ships 0065 alone stamps the phone at 65, and the runner then skips a later 0064 for good. If 0064 has not merged when this branch does, renumber this file above main's head and re-bundle.
+
+### A counted dish opens on the review
+
+Once a composite is counted its header has no field of its own — the grams field goes, because the count is edited in one place — so a counted dish drawn collapsed offered **no handle at all** on the sheet whose whole job is checking the model's numbers, and the count is the model's guess most worth checking. `rowsFromEstimate` now opens a counted dish; an uncounted one still opens closed, because its header keeps the grams field, the fast handle, and a pizza reads as one thing until you ask about its parts. The logged meal screen keeps every dish closed: a record is read far more than it is corrected, and its collapsed row already says `3 slices (270 g)`.
+
+### Verification
+
+- `db/nutrition-v2.test.mjs` **§75**: a past day combines through `combineWithUndo`, keeps its own date and total, is offered on that day's list and not today's, leaves today's rows byte-identical, and splits again exactly; a past meal waiting on its estimate refuses by name; History's wiring is pinned to the shared hook. **§76**: the three prompts read one shortlist and one bar; per-100 micros, no key named twice, under 500; a salmon reply keeps omega-3, vitamin D and B12 and drops an invented key and `"about 380"`; the row stores them and 150 g carries 3.3 g omega-3; `microsLine`. **§77**: grounding keeps `2 eggs` beside a food whose serving is `3 eggs`; a record-shaped count with no whole; a counted dish opens and an uncounted one does not; ATE scales the row non-compounding and un-counts when left empty; a grams edit keeps `3 large eggs` at 180 g, drops the stale ATE baseline, saves the pair, and a later ATE 4 scales from the new grams (240 g); a `scale_item` answer reads `4 eggs`; Save, the stored row and `portionLabel`, a part never counted; the recents rail re-adds by grams while a serving log still re-adds by servings; `setItemCount` scales micros too and round-trips exactly; a part refused; a serving-counted row declares; `clearItemCount`; `updateMealItemPortion` clears the noun, and given the pair keeps `2 eggs` re-priced at 140 g with the meal following, never on a part or beside a null count; `loggedPlainPieces` never reads a part or a header; meal-detail's grams-beside-count wiring pinned; the template round-trip; Log again; the revision subject and request; the reply as a record's count; the Coach's two payloads. §50, §55 and §61 updated for the new contract.
+- `db/foods.test.mjs` **§9**: a same-millisecond tie between two rows of one food resolves to the row written last, pinned both ways round.
+- `db/migrate.test.mjs` **§14**: 0065 on a populated database staged at 63 — every existing line NULL and otherwise byte-identical.
+- `db/screens-render.test.mjs` **§31**: History's control on a past day, the pending line, no control on a one-meal day; meal-detail `2 eggs (100 g)`; As logged `2 eggs`; the review plate's `2 eggs · P 13g` sub-line, the grams field kept at `100`, ATE and noun control with no OF; a fresh counted dish drawn open with ATE and OF.
+
+No model was called.
+
+### What only the phone can settle
+
+- **Whether the model returns `pieces` for eggs and toast** as it does for slices. The rule is unchanged (it never said "composites only"); only real replies show it.
+- **A plain row with its sentence beneath**, on a narrow phone: three counted items is three extra lines on the review.
+- **Whether a counted pizza drawn open** makes a long review feel long.
+- **History's control** on a day scrolled past its grid.
+- **meal-detail's two handles on `2 eggs`**: the indented `ATE [2] EGGS` line above a flush grams editor, and whether focusing ATE (which swaps the grams Save for the count's) reads as one editor rather than two.

@@ -7524,5 +7524,172 @@ console.log('\n29. Screen time — the keypad, the receipt, the link, Data and S
   saveNudgeSettings(db, { checkinTime: null, quietStart: '21:30' });
 }
 
+console.log('\n31. 2026-09-25 — combine on a past day, and `2 eggs` read as a count');
+{
+  // A day of its own, well behind every other section's meals.
+  const past = shiftISODate(todayISODate(), -10);
+  logMeal(db, { date: past, time: '12:30', name: 'Soup', kcal: 220 });
+  logMeal(db, { date: past, time: '12:40', name: 'Bread roll', kcal: 150 });
+  queueNewMealEstimate(
+    db,
+    { date: past, time: '19:00', name: 'a green curry' },
+    { kind: 'text', description: 'a green curry' }
+  );
+  // HISTORY: the Eat tab's own control on the day's label line, resting — no
+  // row is a checkbox until it is asked for — and the queued meal says why it
+  // has no numbers, as it does on the Eat tab.
+  const day = render('nutrition-history (a past day to combine)', NutritionHistoryScreen, {
+    date: past,
+  });
+  expect('nutrition-history (a past day to combine)', day, [
+    'Combine meals that were one meal',
+    '>Combine<',
+    'Estimate pending — offline',
+  ]);
+  refute('nutrition-history (a past day to combine)', day, [
+    'role="checkbox"',
+    'Tap the meals that were one meal.',
+  ]);
+  // A day with one meal has nothing to combine, and draws no control.
+  const lone = shiftISODate(todayISODate(), -11);
+  logMeal(db, { date: lone, time: '08:00', name: 'Porridge', kcal: 300 });
+  refute(
+    'nutrition-history (one meal)',
+    render('nutrition-history (one meal)', NutritionHistoryScreen, { date: lone }),
+    ['Combine meals that were one meal']
+  );
+
+  // THE RECORD: a plain item counted in its own pieces reads as a count.
+  const { mealId: eggsId } = logMealWithItems(db, {
+    date: past,
+    time: '08:10',
+    name: 'Eggs',
+    items: [
+      { name: 'Boiled egg', amount: 100, kcal: 143, protein_g: 13, serving_qty: 2, piece_name: 'egg' },
+    ],
+  });
+  const eggs = render('meal-detail (plain count)', MealDetailScreen, { id: eggsId });
+  expect('meal-detail (plain count)', eggs, ['2 eggs (100 g)']);
+  refute('meal-detail (plain count)', eggs, ['2 × egg', '2 × 1 egg']);
+  expect(
+    'meal-revise "As logged" (plain count)',
+    render(
+      'meal-revise "As logged" (plain count)',
+      AsLoggedPlate,
+      {},
+      { tree: assembleMealItems(listMealItems(db, eggsId)), volume: 'ml' }
+    ),
+    ['2 eggs']
+  );
+
+  // THE REVIEW: `2 eggs` leading the sub-line, the grams field kept in the
+  // amount column (the independent review: with no parts, it is the row's only
+  // handle on its grams), and ATE — never OF — beneath it.
+  const noop = () => {};
+  const handlers = {
+    onAmountChange: noop,
+    onRemove: noop,
+    onToggle: noop,
+    onScale: noop,
+    onScaleTo: noop,
+    onScaleBegin: noop,
+    onScaleEnd: noop,
+    onCountChange: noop,
+    onWholeChange: noop,
+    onCountBegin: noop,
+    onCountEnd: noop,
+    onPiecesName: noop,
+  };
+  const eggRow = {
+    key: 'egg',
+    name: 'Boiled egg',
+    foodId: null,
+    food: undefined,
+    confidence: 'high',
+    unit: 'g',
+    base: {
+      amount: 100,
+      kcal: 143,
+      protein_g: 13,
+      carbs_g: null,
+      fat_g: null,
+      fiber_g: null,
+      micros: null,
+    },
+    amountText: '100',
+    components: [],
+    expanded: false,
+    scaleFrom: null,
+    pieces: { name: 'egg', count: 2 },
+    wholeCount: null,
+    countText: null,
+    wholeText: null,
+    countFrom: null,
+  };
+  const plate = render(
+    'review plate (plain count)',
+    ReviewItemsPlate,
+    {},
+    { rows: [eggRow], label: 'Items', emptyNote: '', handlers }
+  );
+  expect('review plate (plain count)', plate, [
+    '2 eggs · P 13g',
+    'aria-label="Boiled egg grams"',
+    'value="100"',
+    'aria-label="Boiled egg, pieces eaten"',
+    'value="2"',
+    'Name one piece of Boiled egg',
+  ]);
+  refute('review plate (plain count)', plate, [
+    // No OF on a plain count, and the grams are the field's, not the sub-line's.
+    'aria-label="Pieces in Boiled egg"',
+    '100 g · P 13g',
+  ]);
+  // Un-counted, the same row is the grams row it always was.
+  const grams = render(
+    'review plate (plain, uncounted)',
+    ReviewItemsPlate,
+    {},
+    { rows: [{ ...eggRow, pieces: null }], label: 'Items', emptyNote: '', handlers }
+  );
+  expect('review plate (plain, uncounted)', grams, ['aria-label="Boiled egg grams"']);
+  refute('review plate (plain, uncounted)', grams, ['pieces eaten', '2 eggs']);
+
+  // ITEM 4: a counted dish arrives OPEN from the estimate, so ATE and OF are
+  // on screen without a tap; its parts are drawn beneath the header.
+  const { rowsFromEstimate } = await import('../src/lib/nutrition/review-rows.ts');
+  const { parseMealEstimate } = await import('../src/lib/nutrition/estimate.ts');
+  const opened = rowsFromEstimate(
+    db,
+    parseMealEstimate(
+      JSON.stringify({
+        title: 'Pizza',
+        items: [
+          {
+            name: 'Pepperoni pizza',
+            confidence: 'medium',
+            pieces: { name: 'slice', count: 8 },
+            components: [
+              { name: 'Pizza crust', amount: 400, kcal: 1000 },
+              { name: 'Mozzarella', amount: 320, kcal: 900 },
+            ],
+          },
+        ],
+      })
+    )
+  );
+  const pizza = render(
+    'review plate (counted dish, fresh)',
+    ReviewItemsPlate,
+    {},
+    { rows: opened, label: 'Items', emptyNote: '', handlers }
+  );
+  expect('review plate (counted dish, fresh)', pizza, [
+    'aria-label="Pepperoni pizza, pieces eaten"',
+    'aria-label="Pieces in Pepperoni pizza"',
+    'Mozzarella',
+  ]);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

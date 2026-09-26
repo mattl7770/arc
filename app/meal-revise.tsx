@@ -31,7 +31,7 @@ import {
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
 import { useEstimateQuestions } from '@/hooks/use-estimate-questions';
 import { useReviewDraft } from '@/hooks/use-review-draft';
-import { fmtAmount, fmtInt, piecesLabel } from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt, pieceCount } from '@/lib/nutrition/format';
 import type { MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
 import type { VolumeUnit } from '@/lib/user/types';
 
@@ -475,7 +475,8 @@ export default function MealReviseScreen() {
  * straight off `fmtAmount` and never asked whether the dish had a count, so a
  * three-slice pizza read `270 g` here while the meal screen said `3 slices`. It
  * now prints the count, through the one formatter every surface uses; the
- * grams are still on the plate, on the parts drawn beneath it.
+ * grams are still on the plate, on the parts drawn beneath it. A plain item
+ * counted in its own pieces reads the same way, `2 eggs` (2026-09-25).
  *
  * Exported for db/screens-render.test.mjs, and only for that: the screen draws
  * it only once a model key is set, and rendering it on its own lets the suite
@@ -497,11 +498,8 @@ export function AsLoggedPlate({ tree, volume }: { tree: MealItemNode[]; volume: 
             : { amount: node.item.amount, unit: node.item.unit, kcal: node.item.kcal };
         const parts = node.kind === 'composite' ? node.components : [];
         const amount =
-          node.kind === 'composite' && node.item.serving_qty != null && node.item.piece_name != null
-            ? piecesLabel(node.item.serving_qty, node.item.piece_name)
-            : shown.amount !== null
-              ? fmtAmount(Math.round(shown.amount), shown.unit, volume)
-              : null;
+          pieceCount(node.item) ??
+          (shown.amount !== null ? fmtAmount(Math.round(shown.amount), shown.unit, volume) : null);
         return (
           <View key={node.item.id}>
             <Divider first={index === 0} />

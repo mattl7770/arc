@@ -1,3 +1,4 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import { Divider } from '@/components/ui/block';
@@ -5,9 +6,53 @@ import { palette } from '@/constants/theme';
 import { combineConsequence, combinedName, type CombinePlan } from '@/lib/nutrition/combine';
 
 /**
+ * `Combine` / `Cancel` — the one control on a day's meal list that acts on the
+ * list as a whole, on the plate's own label line. The Eat tab's today and a day
+ * in History (2026-09-25) draw this same control, so the two lists offer the
+ * act in the same words and the same place. Label voice, ink-secondary, no
+ * accent: it opens a mode, it is not the day's next action.
+ */
+export function CombineToggle({ active, onPress }: { active: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={active ? 'Stop combining meals' : 'Combine meals that were one meal'}
+      accessibilityState={{ expanded: active }}
+      hitSlop={16}
+      onPress={onPress}
+      className="active:opacity-60">
+      <Text className="font-label text-[11px] uppercase tracking-[1.2px] text-ink-secondary">
+        {active ? 'Cancel' : 'Combine'}
+      </Text>
+    </Pressable>
+  );
+}
+
+/**
+ * The square at a meal row's leading edge while meals are being chosen —
+ * `square-outline`, then `checkbox`, in ink and never the accent; muted on a
+ * meal the combine would refuse (one still waiting on its estimate). Shared by
+ * both lists' rows, so a row being chosen reads the same on either.
+ */
+export function CombineMark({ checked, locked }: { checked: boolean; locked: boolean }) {
+  return (
+    <View className="pt-0.5">
+      <Ionicons
+        name={checked ? 'checkbox' : 'square-outline'}
+        size={18}
+        color={locked ? palette.inkMuted : palette.ink}
+      />
+    </View>
+  );
+}
+
+/**
  * The foot of the Eaten-today plate while meals are being chosen to combine
  * (owner, device, 2026-09-23: *"some way to easily combine multiple food logs
- * that are the same meal"*).
+ * that are the same meal"*) — and, since 2026-09-25, of a past day's Meals
+ * plate in History (*"also allow combine on past days, from History"*), the
+ * same foot over the same plan, through `useCombineMeals`
+ * (src/hooks/use-combine-meals.ts).
  *
  * ## Where the entry point is, and why there
  *

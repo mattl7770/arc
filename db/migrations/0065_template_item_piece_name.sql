@@ -1,0 +1,60 @@
+-- ============================================================================
+-- ARC 0065 — a template keeps a count of pieces: `meal_template_items.piece_name`
+--
+-- Owner, on the decision page (2026-09-25): *"Read them as a count too: '2
+-- eggs'."* A plain countable item the estimator returns with pieces — eggs,
+-- toast, wings — now reads and edits as a count, as a counted composite does
+-- (docs/nutrition-subapp.md §16). For `meal_items` that needed NO schema:
+-- 0059 put `piece_name` on every row and deliberately took no cross-column
+-- CHECK ("put the invariant where it can say something useful when it breaks —
+-- the repository writers and the tests"), so a plain row could always carry
+-- the pair and only the writers kept it off. The writers are what changed.
+--
+-- A TEMPLATE could not carry it. 0018 built `meal_template_items` as a mirror of
+-- `meal_items`' snapshot shape, and 0059 added the noun to one table and not
+-- the other — correctly then, because a template flattens a composite
+-- (`saveMealAsTemplate` keeps LEAVES), so no header, and therefore no count,
+-- ever reached one. A counted PLAIN item is a leaf. Saved without its noun, `2
+-- eggs` would land in the template as `serving_qty = 2` with nothing to say
+-- what it counts, and log back out as a catalog SERVING count — `2 × 1 egg`
+-- through the live join if the food names one, and a bare `100 g` if not. The
+-- first is the exact two-vocabularies-in-one-column lie 0059 was built to
+-- refuse (`2 × '3 slices'` is six slices; `2 slices` is two).
+--
+-- ── ONE COLUMN, NO BACKFILL, NO CHECK ──
+--
+-- The same shape as 0059, for the same reasons: nullable text, NULL on every
+-- row that exists today (no template has ever held a piece count — nothing
+-- could write one), so there is no UPDATE and 0018's AFTER UPDATE trigger never
+-- fires. Non-null only beside a non-null `serving_qty`, and then `serving_qty`
+-- counts pieces; NULL, and it counts the food's serving, as before. No
+-- cross-column CHECK: 0034's lesson, which 0059 applied rather than repeated —
+-- the invariant lives in `insertTemplateItem` and db/nutrition-v2.test.mjs.
+--
+-- ── THE NUMBER: 0065 ──
+--
+-- Main's head is 0063 and 0064 is claimed by a sibling branch in flight
+-- (`claude/fb-notify`, `0064_coach_nudges.sql`); the owner's phone is at 0061.
+-- The runner is forward-only and silently skips any file at or below a
+-- device's `PRAGMA user_version`, so this takes the next number above every
+-- claim. The runner stamps user_version = 65.
+--
+-- ORDERING CONSTRAINT: 0064 must reach main before this file does, or in the
+-- same build. A gap below 0065 is harmless only while no device has run 0065:
+-- a build that ships 0065 alone stamps the phone at 65, and a 0064 arriving in
+-- a later build is then skipped for good — its table never created on the only
+-- copy of the owner's data, with every test still green. If 0064 has not merged
+-- when this branch does, renumber this file to the next free number above
+-- main's head instead (re-check `git ls-tree main -- db/migrations/`), then
+-- `npm run db:bundle`.
+--
+-- ── THE WAY BACK ──
+--
+-- Nullable and unread while NULL: reverting the code leaves a database that
+-- behaves as 0063 left it. Run `npm run db:bundle` after this file changes.
+-- ============================================================================
+
+-- The singular noun for ONE piece of this line — `egg`, `slice`, `wing` — read
+-- beside `serving_qty` as "2 eggs". NULL on every row that exists today, and on
+-- any line whose `serving_qty` counts the catalog food's serving.
+ALTER TABLE meal_template_items ADD COLUMN piece_name text;

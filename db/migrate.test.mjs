@@ -1032,7 +1032,7 @@ console.log("11. A device at 44 — the owner's real stamp — upgrades to head 
     workout_sets: ['distance_m'],
     foods: ['serving_amount', 'basis'],
     meal_items: ['amount', 'unit', 'parent_item_id', 'is_composite', 'piece_name'],
-    meal_template_items: ['amount', 'unit'],
+    meal_template_items: ['amount', 'unit', 'piece_name'],
     protocols: ['carry_over', 'checkoff_mode'],
     workouts: ['started_at', 'away'],
     timezone_changes: ['zone_jan_offset_min', 'zone_jul_offset_min'],
@@ -1520,6 +1520,44 @@ console.log('13. 0064 adds coach_nudges and reminders.checkin over existing remi
   '2000-01-01T00:00:00.000Z'
     ? ok('the updated_at trigger stamps a status change')
     : bad('updated_at trigger');
+  db.close();
+}
+
+// ===========================================================================
+// 14. 0065 — `meal_template_items.piece_name`, on a device that already has
+//     templates. The same shape as 0059 and the same proof: a nullable ADD
+//     COLUMN with no CHECK cannot reject a populated table, every existing line
+//     reads NULL (no template ever held a piece count), and nothing else on a
+//     line moves.
+// ===========================================================================
+console.log('14. 0065 gives a template line a piece noun without touching an existing one');
+{
+  const db = new DatabaseSync(':memory:');
+  // Staged at 63, a device that predates both: the runner applies 0064 (§13)
+  // and then this file, in order.
+  stageAt(db, 63) === 63 ? ok('staged at 63') : bad('stage at 63');
+  db.exec(`
+    INSERT INTO meal_templates (id, name, name_norm) VALUES ('t-1', 'Breakfast', 'breakfast');
+    INSERT INTO meal_template_items (id, template_id, name, amount, unit, serving_qty, kcal)
+      VALUES ('ti-egg', 't-1', 'Egg', 100, 'g', 2, 143);
+    INSERT INTO meal_template_items (id, template_id, name, amount, unit, kcal)
+      VALUES ('ti-oats', 't-1', 'Oats', 50, 'g', 190);
+  `);
+  const before = JSON.stringify(db.prepare('SELECT * FROM meal_template_items ORDER BY id').all());
+  const result = migrate(executor(db), MIGRATIONS);
+  result.applied.includes('0065_template_item_piece_name')
+    ? ok('0065 applied on a populated database (a nullable ADD COLUMN cannot reject rows)')
+    : bad('0065 not applied', JSON.stringify(result.applied));
+  const after = db.prepare('SELECT * FROM meal_template_items ORDER BY id').all();
+  after.every((r) => r.piece_name === null) &&
+  JSON.stringify(after.map(({ piece_name: _gone, ...rest }) => rest)) === before
+    ? ok('every existing line reads piece_name NULL and is otherwise byte-identical')
+    : bad('template lines moved', JSON.stringify(after));
+  db.exec("UPDATE meal_template_items SET piece_name = 'egg' WHERE id = 'ti-egg'");
+  db.prepare("SELECT piece_name FROM meal_template_items WHERE id = 'ti-egg'").get().piece_name ===
+  'egg'
+    ? ok('a line can now say its count is `2 eggs`')
+    : bad('piece_name not writable');
   db.close();
 }
 

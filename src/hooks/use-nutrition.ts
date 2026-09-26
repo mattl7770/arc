@@ -234,6 +234,10 @@ export type NutritionDayView = {
   /** The targets that governed THAT day — not today's. */
   targets: NutritionTargetsRow | null;
   partialMeals: PartialMealMetrics;
+  /** Which of THAT day's meals are still waiting on a queued estimate (0057) —
+   *  a photo logged offline can outlive its day. Read so History's combine
+   *  refuses such a meal the way the Eat tab does, and its row says why. */
+  pendingEstimates: Set<string>;
   /** The first day ever logged, or null — the day picker's back bound. */
   recordStart: string | null;
 };
@@ -263,6 +267,7 @@ export function readNutritionDay(date: string): NutritionDayView {
     itemCounts: mealItemCounts(db, date),
     targets: activeNutritionTargets(db, date) ?? null,
     partialMeals: partialMealMetrics(db, date),
+    pendingEstimates: readPendingEstimates(db, date),
     recordStart: firstMealDate(db),
   };
 }

@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Pressable, Text, View } from 'react-native';
 
+import { CombineFooter, CombineMark, CombineToggle } from '@/components/nutrition/combine-meals';
 import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { DayPicker } from '@/components/ui/day-picker';
@@ -9,6 +10,7 @@ import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
 import { StackHeader } from '@/components/ui/stack-header';
+import { useCombineMeals } from '@/hooks/use-combine-meals';
 import { readNutritionDay, type NutritionDayView } from '@/hooks/use-nutrition';
 import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { getDb } from '@/lib/db/client';
@@ -99,7 +101,22 @@ function timezoneNotesFor(
  * plates** (a record is a table), and the window chips are controls in the label
  * voice. Every number on the screen is mono, because mono measures.
  *
- * Read-only, so **no accent at all** — nothing here is a next action.
+ * **No accent at all** — nothing here is a next action.
+ *
+ * ## Combining a past day's meals (2026-09-25)
+ *
+ * Owner, on the decision page: *"Also allow combine on past days, from
+ * History."* The day's Meals plate carries the Eat tab's own `Combine` control
+ * on its label line, and choosing, naming, the stated consequence and the Undo
+ * are the Eat tab's too — one hook (`useCombineMeals`), one foot
+ * (`CombineFooter`), one plan (`planCombine`), one write and its Undo
+ * (`combineWithUndo`). Nothing in any of them assumes today: the combine keeps
+ * the earliest meal's own row and date, and the Undo is offered on that date's
+ * list, which is the day in view here. Stepping the picker drops a half-made
+ * choice rather than carrying it onto another day's meals. A meal still waiting
+ * on a queued estimate says so on its row, as on the Eat tab, and cannot be
+ * chosen. The control is ink and outlined, so the screen still spends no
+ * accent.
  *
  * Each average is over the days that actually RECORDED that metric (see
  * meanPositive), so a name-only or kcal-only meal doesn't drag the mean toward
@@ -186,16 +203,24 @@ function DayMacroCell({ label, figure }: { label: string; figure: DayFigure }) {
 
 /** One meal row of the day's ledger — the whole row opens the meal's detail,
  *  the same screen the Eat tab opens, so a past meal is corrected where every
- *  other meal is corrected. */
+ *  other meal is corrected. With `select` set it is a CHECKBOX instead, as the
+ *  Eat tab's row is while combining (2026-09-25): the same leading square, and
+ *  a meal waiting on its estimate drawn disabled with its own line saying so. */
 function DayMealRow({
   meal,
   itemCount,
+  estimatePending,
   first,
+  select,
   onPress,
 }: {
   meal: MealRow;
   itemCount: number;
+  /** A queued AI estimate still owes this meal its numbers (0057). */
+  estimatePending: boolean;
   first: boolean;
+  /** Set while meals are being chosen to combine; absent otherwise. */
+  select?: { checked: boolean };
   onPress: () => void;
 }) {
   const macros = macroLine(meal);
@@ -204,20 +229,38 @@ function DayMealRow({
     [macros, itemCount > 0 ? `${itemCount} item${itemCount === 1 ? '' : 's'}` : null]
       .filter(Boolean)
       .join(' · ');
+  const choosing = select !== undefined;
+  const locked = choosing && estimatePending;
   return (
     <View>
       <Divider first={first} />
       <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${meal.name}, details`}
+        accessibilityRole={choosing ? 'checkbox' : 'button'}
+        accessibilityLabel={
+          !choosing
+            ? `${meal.name}, details`
+            : locked
+              ? `${meal.name}, waiting on its estimate, cannot be combined yet`
+              : meal.name
+        }
+        accessibilityState={choosing ? { checked: select.checked, disabled: locked } : undefined}
+        disabled={locked}
         onPress={onPress}
         className="min-h-[46px] flex-row gap-3 py-3 active:opacity-60">
+        {choosing ? <CombineMark checked={select.checked} locked={locked} /> : null}
         <Text className="w-12 pt-0.5 font-mono text-[12px] text-ink-secondary">
           {meal.time ?? '—'}
         </Text>
         <View className="flex-1">
           <Text className="font-serif text-[16px] leading-5 text-ink">{meal.name}</Text>
-          {meal.kcal == null ? (
+          {estimatePending ? (
+            // The Eat tab's own line for a meal a queued estimate still owes its
+            // numbers: "tap to fill it in" would be advice about a meal that is
+            // already being filled.
+            <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
+              Estimate pending — offline
+            </Text>
+          ) : meal.kcal == null ? (
             <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
               Nothing recorded — tap to fill it in
             </Text>
@@ -303,6 +346,9 @@ export default function NutritionHistoryScreen() {
     runUndo();
     reload();
   };
+  // Combine, on the day in view (2026-09-25) — the Eat tab's hook, keyed by
+  // the day DRAWN, so a choice made on one day is gone once the picker moves.
+  const combine = useCombineMeals(view.date, view.meals, view.pendingEstimates, reload);
 
   const selectDay = (next: string) => {
     setDay(next);
@@ -436,18 +482,44 @@ export default function NutritionHistoryScreen() {
       {logged ? (
         <View className="mt-7">
           <Block device="plate">
-            <SectionLabel label="Meals" note={`${fmtInt(kcal.eaten)} kcal`} />
+            {/* The Eat tab's label line: label and tally left, the one control
+                that acts on the list as a whole right. */}
+            <View className="flex-row items-baseline gap-3">
+              <View className="flex-1">
+                <SectionLabel label="Meals" note={`${fmtInt(kcal.eaten)} kcal`} />
+              </View>
+              {combine.choice || combine.combinable ? (
+                <CombineToggle active={combine.choice !== null} onPress={combine.toggle} />
+              ) : null}
+            </View>
             <View className="mt-1">
               {view.meals.map((meal, index) => (
                 <DayMealRow
                   key={meal.id}
                   meal={meal}
                   itemCount={view.itemCounts[meal.id] ?? 0}
+                  estimatePending={view.pendingEstimates.has(meal.id)}
                   first={index === 0}
-                  onPress={() => router.push({ pathname: '/meal-detail', params: { id: meal.id } })}
+                  select={
+                    combine.choice ? { checked: combine.choice.chosen.has(meal.id) } : undefined
+                  }
+                  onPress={() =>
+                    combine.choice
+                      ? combine.toggleChosen(meal.id)
+                      : router.push({ pathname: '/meal-detail', params: { id: meal.id } })
+                  }
                 />
               ))}
             </View>
+            {combine.choice ? (
+              <CombineFooter
+                plan={combine.plan}
+                name={combine.choice.name}
+                refused={combine.choice.refused}
+                onName={combine.setName}
+                onCombine={combine.run}
+              />
+            ) : null}
             {undo ? <UndoRow offer={undo} onUndo={undoLast} /> : null}
           </Block>
         </View>

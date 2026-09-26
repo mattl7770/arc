@@ -97,7 +97,7 @@ import { listWaterEntries, type WaterEntry } from '@/lib/db/repositories/water';
 import { editWaterCapture, removeWaterCapture } from '@/lib/health/publish';
 import type { RoutineDetail } from '@/lib/exercise/types';
 import { deleteMealWithPhotos } from '@/lib/media/meal-photo-store';
-import { fmtAmount, fmtInt, macroLine } from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt, macroLine, pieceCount } from '@/lib/nutrition/format';
 import type { FoodRow, MealRow } from '@/lib/nutrition/types';
 
 import {
@@ -271,6 +271,9 @@ const mealsDomain: CoachDomainEntry = {
                   id: i.id,
                   name: i.name,
                   amount: i.amount,
+                  // A count of pieces, as the screens read it — `2 eggs`,
+                  // `3 slices` (2026-09-25). Absent on a row with none.
+                  ...(pieceCount(i) ? { count: pieceCount(i) } : {}),
                   kcal: i.kcal,
                   protein_g: i.protein_g,
                 })),
@@ -479,6 +482,8 @@ const mealTemplatesDomain: CoachDomainEntry = {
                   name: i.name,
                   amount: i.amount,
                   unit: i.unit,
+                  // `2 eggs` (0065), as the template screen reads it.
+                  ...(pieceCount(i) ? { count: pieceCount(i) } : {}),
                 })),
               }
             : {}),

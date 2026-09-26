@@ -24,6 +24,7 @@ import {
   MealEstimationUnavailableError,
   type FoodEntryEstimate,
 } from '@/lib/nutrition/estimate';
+import { microsLine } from '@/lib/nutrition/format';
 import type { AmountUnit } from '@/lib/nutrition/types';
 
 /**
@@ -59,9 +60,16 @@ import type { AmountUnit } from '@/lib/nutrition/types';
  * Owner: *"Describe a food in words and AI fills the catalog entry's macros —
  * yes."* Type "Costco rotisserie chicken thigh, skin on" and the model returns
  * one catalog entry — name, brand, basis, a household serving, per-100 macros,
- * and sodium/caffeine where they are plausible — which is **rendered into the
- * fields below for review**. It has its own small prompt, not the meal
- * estimator's (src/lib/nutrition/estimate.ts).
+ * sodium/caffeine where they are plausible, and (2026-09-25, *"yes, same rule
+ * as the estimator"*) the rest of the micro shortlist where a serving is a
+ * notable source — which is **rendered into the fields below for review**. It
+ * has its own small prompt, not the meal estimator's, though the shortlist and
+ * its bar are the estimator's own constants (src/lib/nutrition/estimate.ts).
+ *
+ * The micros have no fields (nothing in the app types a micro by hand), so they
+ * are READ under the macros — one mono line, `Sodium 380 mg · Iron 2.1 mg` —
+ * before Save writes them: a figure that rode to the row unseen would be an
+ * inferred number nobody checked.
  *
  * **Nothing is written until Save.** The model's reply lands in the same
  * `useState` the keyboard writes to, so every number is editable before it
@@ -200,10 +208,11 @@ export default function FoodNewScreen() {
   const [carbs, setCarbs] = useState('');
   const [fat, setFat] = useState('');
   const [fiber, setFiber] = useState('');
-  /** The model's per-100 sodium/caffeine, carried straight to the row. There is
-   *  no field for these — the shortlist is read-only on the micros screen — so
-   *  they ride in state rather than through the form. Null for a typed food, and
-   *  for a described one the model had nothing plausible to say about. */
+  /** The model's per-100 micros, carried straight to the row and read out under
+   *  the macros. There is no field for these — the shortlist is read-only on
+   *  the micros screen — so they ride in state rather than through the form.
+   *  Null for a typed food, and for a described one the model had nothing
+   *  notable to say about. */
   const [micros, setMicros] = useState<JsonText | null>(null);
 
   // --- Describe it (C2) ----------------------------------------------------
@@ -568,6 +577,21 @@ export default function FoodNewScreen() {
             fill
           />
         </View>
+
+        {/* The micros the description filled, read before Save writes them.
+            A readout, not fields: nothing in the app types a micro by hand.
+            Mono because it measures; no accent and no signal colour — a figure
+            on a catalog row is not a biological state. */}
+        {microsLine(micros) !== null ? (
+          <View className="mt-3">
+            <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+              {`Micros, per 100 ${unit}`}
+            </Text>
+            <Text className="mt-1 font-mono text-[11px] leading-4 text-ink-secondary">
+              {microsLine(micros)}
+            </Text>
+          </View>
+        ) : null}
 
         {problem ? (
           <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
