@@ -413,6 +413,13 @@ let waterInFlight: Promise<HealthPublishResult> | null = null;
  * row until Health holds what the row says. {@link republishWater} leaves this
  * one row to the walk, which checks it again after its save and corrects what
  * it sent (§20.5, the edit race). One walk runs at a time, so one id is enough.
+ *
+ * Set in the same synchronous step as the re-read before the save, and cleared
+ * in the same step as the read that finds Health right, so an edit that stands
+ * aside is always seen by a later read of the walk's. The `finally` in
+ * runWaterPass clears it for the exits that stop writing the row altogether: a
+ * refused save (the glass is missing from Health, which §20.5 accepts), a throw,
+ * or a row that is gone and cannot be edited.
  */
 let waterSaving: string | null = null;
 
@@ -555,14 +562,20 @@ async function settleSavedWater(
       return;
     }
     const now = waterSampleFor(row);
-    if (
+    const settled =
       now !== null &&
       now.value === inHealth.value &&
-      now.at.getTime() === inHealth.at.getTime()
-    ) {
+      now.at.getTime() === inHealth.at.getTime();
+    if (settled || resaves >= WATER_RESAVE_LIMIT) {
+      // Let go of the row in the SAME step as the read that decided to stop.
+      // Letting go in runWaterPass's `finally` is a microtask later, and an edit
+      // landing in between would stand aside for a walk that never reads the row
+      // again, leaving the old amount in Health (§20.5, 2026-09-25). From here
+      // an edit takes the ordinary path: Health holds this row's one sample and
+      // nothing of the walk's is still in flight for it.
+      waterSaving = null;
       return;
     }
-    if (resaves >= WATER_RESAVE_LIMIT) return;
     await deps.deleteByTag(inHealth.hkIdentifier, id).catch(() => 0);
     if (now === null) return;
     const saved = await deps
