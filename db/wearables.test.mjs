@@ -151,6 +151,32 @@ function freshDb() {
   return { raw, db: database };
 }
 
+/**
+ * Wait until SQLite's clock, the one `created_at` is stamped from, has moved
+ * past `stamp`.
+ *
+ * On a phone the next glass is always a later tap than the one it follows.
+ * Here the steps between two writes can finish inside one tick of that clock,
+ * which on Windows moves in steps of about 2 ms (measured 2026-09-25). A
+ * capture stamped in the same millisecond as the water cursor's own row, after
+ * that row was undone, is out of the walk's sight (water.ts's documented
+ * trade-off, pinned in §24). That, not a race in publish.ts, is why 'edit
+ * resync' failed on about a third of runs (docs/wearables-subapp.md §20.5).
+ * So wherever the suite undoes the cursor's glass and then logs another, it
+ * waits for the condition itself, the clock passing the stamp, rather than for
+ * a length of time.
+ */
+const sqliteClock = new DatabaseSync(':memory:').prepare(
+  "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS t"
+);
+function clockPast(stamp) {
+  if (typeof stamp !== 'string') throw new Error(`clockPast: no stamp (${stamp})`);
+  const deadline = Date.now() + 2000;
+  while (sqliteClock.get().t <= stamp) {
+    if (Date.now() > deadline) throw new Error(`clockPast: SQLite's clock never passed ${stamp}`);
+  }
+}
+
 const row = (overrides = {}) => ({
   date: '2026-07-29',
   metricType: 'hrv',
@@ -2515,6 +2541,8 @@ console.log('24. water is two-way — the walk, the echo, the undo (2026-09-21, 
     : bad('after undo', JSON.stringify(waterDaySeries(db, 1, today)));
 
   // --- An edit replaces what was published, and only that --------------------
+  // The cursor still sits on the glass just undone. The bottle is a later tap.
+  clockPast(getHealthPublishState(db, HEALTH_WATER_PUBLISH_KEY).cursorCreatedAt);
   const bottle = logWater(db, today, 500);
   await publishWaterCaptures(db, new Date(), hk.deps);
   const savesBefore = hk.saves.length;
@@ -2582,6 +2610,8 @@ console.log('24. water is two-way — the walk, the echo, the undo (2026-09-21, 
     : bad('race orphan', JSON.stringify({ raceDeletes, samples: hk.samples }));
 
   // --- A backdated capture lands on its own day ------------------------------
+  // The cursor sits on the glass undone mid-save above.
+  clockPast(getHealthPublishState(db, HEALTH_WATER_PUBLISH_KEY).cursorCreatedAt);
   const yesterday = shiftISODate(today, -1);
   logWater(db, yesterday, 200);
   await publishWaterCaptures(db, new Date(), hk.deps);
@@ -2605,6 +2635,46 @@ console.log('24. water is two-way — the walk, the echo, the undo (2026-09-21, 
   absent.status === 'unavailable' && absent.samplesWritten === 0
     ? ok('no HealthKit module: the water pass is a silent no-op')
     : bad('absent water pass', JSON.stringify(absent));
+
+  // --- The one capture the walk cannot see (2026-09-25, docs §20.5) ---------
+  // What 'edit resync' hit by chance on about a third of runs: the cursor sits
+  // on a glass that was published and then undone, and the next capture is
+  // stamped in the SAME millisecond. The walk's tie-break resolves the cursor's
+  // id to a rowid, the row is gone, so the tie branch matches nothing and the
+  // capture is behind the cursor for good. water.ts takes that direction on
+  // purpose (skip a same-millisecond sibling rather than re-post one). On a
+  // phone it would take an Undo and a new glass inside the undone glass's own
+  // millisecond, with a HealthKit save between them. Forced here, so the answer
+  // is the same on every run.
+  {
+    const { raw: craw, db: cdb } = freshDb();
+    setHealthSyncEnabled(cdb, true);
+    const chk = fakeHealthKit([]);
+    await publishWaterCaptures(cdb, new Date(), chk.deps); // armed, nothing on record
+    const undone = logWater(cdb, today, 250);
+    await publishWaterCaptures(cdb, new Date(), chk.deps);
+    const stamp = getHealthPublishState(cdb, HEALTH_WATER_PUBLISH_KEY).cursorCreatedAt;
+    removeWaterCapture(cdb, undone, chk.deps);
+    await flush();
+    const sibling = logWater(cdb, today, 500);
+    craw.prepare('UPDATE wearable_data SET created_at = ? WHERE id = ?').run(stamp, sibling);
+    const blind = await publishWaterCaptures(cdb, new Date(), chk.deps);
+    blind.samplesAttempted === 0 &&
+    chk.saves.every((s) => s.metadata[ARC_WRITE_METADATA_KEY] !== sibling)
+      ? ok(
+          'a capture stamped in the millisecond of the undone cursor glass is out of the walk’s sight (water.ts, by design)'
+        )
+      : bad('same-millisecond sibling', JSON.stringify({ blind, saves: chk.saves }));
+    clockPast(stamp);
+    const later = logWater(cdb, today, 330);
+    const seen = await publishWaterCaptures(cdb, new Date(), chk.deps);
+    seen.samplesWritten === 1 &&
+    chk.saves[chk.saves.length - 1].metadata[ARC_WRITE_METADATA_KEY] === later
+      ? ok(
+          '...and one stamped after that millisecond is walked: why this suite waits for the clock before the next glass'
+        )
+      : bad('later capture', JSON.stringify({ seen, saves: chk.saves }));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2716,7 +2786,9 @@ console.log('24b. a glass goes out when it is logged, and says when it cannot (2
     : bad('undo after publish on log', JSON.stringify(hk.samples));
 
   // --- A full pass already walking: the tap does not join a pass that read before it ---
-  // Hold the saves so the first pass is caught mid-walk.
+  // Hold the saves so the first pass is caught mid-walk. The cursor sits on the
+  // glass just undone, so the next one is a later tap.
+  clockPast(getHealthPublishState(db, HEALTH_WATER_PUBLISH_KEY).cursorCreatedAt);
   const release = hk.hold();
   const first = logWaterCapture(db, today, 250, hk.deps);
   await settle(); // its pass has started and is waiting on the save
@@ -3086,6 +3158,35 @@ console.log('24b. a glass goes out when it is logged, and says when it cannot (2
     afterD.length === 1 && afterD[0].value === 350
       ? ok('...and once the walk is done with it, an edit re-sends it the ordinary way')
       : bad('edit after the walk', JSON.stringify(afterD));
+
+    // Corrected in the walk's LAST step: after the re-read that finds Health
+    // already right, before the walk lets go of the row. The walk used to let go
+    // in runWaterPass's `finally`, a microtask later, so an edit landing between
+    // the two stood aside for a walk that never read the row again, and Health
+    // kept the old amount (2026-09-25, docs §20.5). A screen's edit is a task of
+    // its own and cannot land between two microtasks of the walk; the gap is
+    // forced here by queueing the edit from inside that very read.
+    const e = logWater(edb, today, 400);
+    let reads = 0;
+    const editInLastStep = {
+      ...edb,
+      get: (sql, params = []) => {
+        const got = edb.get(sql, params);
+        // Read 1 is the walk's re-read before its save; read 2 is the check after.
+        if (params[0] === e && sql.includes('FROM wearable_data WHERE id = ?') && ++reads === 2) {
+          queueMicrotask(() => editWaterCapture(edb, e, 450, ehk.deps));
+        }
+        return got;
+      },
+    };
+    await publishWaterCaptures(editInLastStep, new Date(), ehk.deps);
+    await settle();
+    const sentE = ehk.samples.filter((s) => tagOf(s) === e);
+    reads === 2 && sentE.length === 1 && sentE[0].value === 450
+      ? ok(
+          'corrected in the walk’s last step: the walk lets go of the row in that step, so the edit re-sends it — one glass, at 450 mL'
+        )
+      : bad('an edit in the walk’s last step was lost', JSON.stringify({ reads, sentE }));
   }
 }
 

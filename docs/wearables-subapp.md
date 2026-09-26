@@ -1791,6 +1791,39 @@ Undo already holds. No UUID is stored, and none needs to be.
 
   The builder's earlier note called this race unreachable at human speed. That was true of a
   single glass, but not of a backlog.
+- **The flaky suite (2026-09-25).** `db/wearables.test.mjs` failed *edit resync*, and sometimes
+  *corrected publish*, on about a third of runs on main: 10 of 30 run one after another, 9 of 30
+  run eight at a time. The report blamed the fire-and-forget re-send, `waterSaving`, `waterQueued`
+  and the `setTimeout(0)` in `publish.ts`. **The race was in the test's clock, not in this code.**
+  On every failing run the bottle had never been published: the walk skipped it, so the edit's
+  tagged delete correctly found nothing and correctly sent nothing. The suite publishes a glass,
+  undoes it and logs the bottle, all inside one tick of SQLite's `now`, which moves in steps of
+  about 2 ms on Windows. The cursor still names the undone glass, the bottle carries the same
+  `created_at`, and the tie-break in `publishableWaterAfter` resolves the cursor's id to a rowid
+  that no longer exists, so it matches nothing. That is the direction `water.ts` chose on purpose:
+  skip a same-millisecond sibling rather than re-post one. Forcing the shared stamp failed 10 runs
+  of 10. Waiting for the clock to pass it passed 30 of 30 with eight running at once.
+  - **Why the walk is unchanged.** On the phone this needs an Undo and a new glass inside the
+    undone glass's own millisecond, with a HealthKit save between them. No hand is that fast.
+  - **The test fix.** Wherever the suite undoes the cursor's glass and then logs another, it now
+    waits until SQLite's clock has passed that glass's stamp (`clockPast`). That wait ends on the
+    condition, not after a set time. §24 also pins the blind spot on purpose, by forcing the
+    shared stamp, so it gives the same answer on every run. After the fix the suite passed 30 of
+    30 run one after another, 30 of 30 at eight at a time, and 60 of 60 at twelve.
+  - **One real gap, found in the same audit and closed.** The walk let go of a row
+    (`waterSaving = null`) in `runWaterPass`'s `finally`. That ran one microtask after
+    `settleSavedWater`'s last read had found Health right. An edit landing between the two stood
+    aside for a walk that would never read the row again, so Health kept the old amount. No part
+    of the app could put an edit there. A tap is a task of its own, all of one task's microtasks
+    run before the next task starts, and the Coach's edit follows the tap on its confirmation card.
+    Still, the rule above did not hold under every ordering. The walk now lets go in the same
+    synchronous step as that read, and at the re-save limit, so a later edit takes the ordinary
+    path. §24b forces the gap by queueing the edit from inside that read. Before the fix, Health
+    held 400 mL against ARC's 450 on every run. After it, Health holds one glass at 450.
+  - **Still open, and not reachable by hand.** An edit's re-send and an Undo landing within one
+    HealthKit round trip leave an orphan, because the re-send's save lands after the Undo's delete
+    has looked. Each needs its own tap, and the Coach needs a confirmation card for each. Closing
+    it would mean the re-send takes the walk's gate, which is a larger change than this fix.
 - **One switch.** With sync off the row is still deleted, but ARC writes nothing to Health in
   either direction.
 
