@@ -1082,9 +1082,18 @@ function compareTrend(latest: number, prior: readonly TrendPoint[]): Trend | nul
 
 /**
  * A movement's direction of travel and the metric it was read from — the Train
- * hub's arrow, and the metric exercise detail opens its Trend on, so the row
- * and the screen it opens can never disagree. The first metric of
- * {@link directionMetricsFor} with a direction wins; null when none has one.
+ * hub's arrow, and the metric exercise detail opens its Trend on. The first
+ * metric of {@link directionMetricsFor} with a direction wins; null when none
+ * has one.
+ *
+ * The row and the screen it opens agree because the screen's first direction
+ * line is this figure, computed the same way ({@link trendView}: `trendOf`
+ * over `sessionSeriesFrom(rows, metric)`) on every range chip. The change
+ * across a range is a second line under it, naming its range, and is allowed
+ * to point the other way: a lift up 20% on the month can be down 8% on the
+ * last three sessions, and both are true. (One edge is outside this: the hub
+ * reads each movement's latest eight sessions, so when five or more of them
+ * were away sessions its baseline holds fewer home sessions than detail's.)
  */
 export function directionOf(
   rows: readonly RecordRow[],
@@ -1314,16 +1323,15 @@ export function defaultTrendRange(points: readonly TrendPoint[], today: DateStri
  *
  * The same arithmetic as {@link trendOf}, with the baseline taken from the far
  * end of the range instead of from just behind the latest session — the
- * question a range asks is "where has this gone over three months?". With four
- * home sessions or fewer in the range the two baselines are the same sessions,
- * so the two figures agree.
+ * question a range asks is "where has this gone over three months?".
  *
- * The Train hub's arrow keeps {@link trendOf}. It is a glance at momentum, read
- * for every movement at once from its latest eight sessions
- * (`trainedExercises`), and VoiceOver reads it with what it measured ("on the
- * previous 3 sessions"). What must agree between the row and the screen it
- * opens is the chart, and that still holds: the Trend opens on the row's
- * metric ({@link defaultTrendMetric}).
+ * It is exercise detail's SECOND direction line. The first is the Train hub's
+ * own figure ({@link trendOf}, momentum: the latest against the three before
+ * it), so the row the owner tapped and the screen it opens say the same thing
+ * first, whatever chip is selected. This line is drawn under it only when its
+ * baseline is different sessions ({@link trendView}): when the range holds
+ * exactly the latest home session and the ones the first line compared it
+ * with, the two are one figure and this line would only repeat it.
  */
 export function rangeTrendOf(points: readonly TrendPoint[]): Trend | null {
   const home = points.filter((p) => p.away !== true);
@@ -1419,12 +1427,27 @@ export type TrendView = {
   ranges: readonly TrendRange[];
   /** The points drawn, oldest → newest. */
   series: TrendPoint[];
-  /** The range's direction ({@link rangeTrendOf}), or null. */
+  /**
+   * The FIRST direction line: the Train hub's own figure for this metric
+   * ({@link trendOf}, the latest home session against the three before it) —
+   * the same on every range chip. Null when nothing is drawn, or when the
+   * session it is read from is not on the chart (a range holding only away
+   * sessions).
+   */
   trend: Trend | null;
+  /**
+   * The SECOND line: the change across the range ({@link rangeTrendOf}). Null
+   * when it would be the first line again — its baseline the same sessions —
+   * or when the range has no direction.
+   */
+  rangeTrend: Trend | null;
   headline: { value: number; label: string } | null;
-  /** The direction line with its figures marked, and as VoiceOver says it. */
+  /** The first line with its figures marked ("+6% on the previous 3 sessions"), and as VoiceOver says it. */
   phrase: PhrasePart[] | null;
   spoken: string | null;
+  /** The second line, naming its range ("+19% on the first 3 sessions on record"), and spoken. */
+  rangePhrase: PhrasePart[] | null;
+  rangeSpoken: string | null;
   extent: string | null;
   /** Why nothing is drawn, when nothing is. */
   emptyNote: string | null;
@@ -1438,6 +1461,17 @@ export type TrendView = {
  * Train hub's arrow opens on the chart it was read from) and the range to
  * {@link defaultTrendRange} for that metric's series. A picked range survives
  * a change of metric. Null for a movement with nothing to trend.
+ *
+ * **Two direction lines, and why** (review, 2026-09-25). The first is the hub
+ * row's figure: `trendOf` over `sessionSeriesFrom(rows, metric)`, exactly what
+ * {@link directionOf} computes, so the "−8%" the owner tapped is the first
+ * thing the screen says under the chart, on every chip. The second is the
+ * change across the chosen range, naming it. The two answer different
+ * questions and can point opposite ways — latest against the last three,
+ * latest against where the range began — which is why neither replaces the
+ * other. The second is left out when its baseline is the first line's own
+ * sessions: the range then holds exactly the latest home session and the
+ * `compared` home sessions before it, and the figure would be repeated.
  */
 export function trendView(
   rows: readonly RecordRow[],
@@ -1456,7 +1490,17 @@ export function trendView(
   const range = choice.range ?? defaultTrendRange(all, today);
   const series = inTrendRange(all, range, today);
   const drawn = series.length >= 2;
-  const trend = drawn ? rangeTrendOf(series) : null;
+  const homeInRange = series.filter((p) => p.away !== true).length;
+  // The hub's figure, as `directionOf` computes it. Its latest session is the
+  // latest home session on record, which is on the chart exactly when the
+  // range holds any home session; otherwise the line would describe a session
+  // the chart does not show, and the headline could not be the one it reads.
+  const trend = drawn && homeInRange > 0 ? trendOf(sessionSeriesFrom(rows, metric)) : null;
+  const across = drawn ? rangeTrendOf(series) : null;
+  // A range's home sessions are the latest ones on record, so its baseline is
+  // the first line's exactly when it holds the latest plus the `compared`
+  // before it.
+  const rangeTrend = across && !(trend && homeInRange === trend.compared + 1) ? across : null;
   return {
     metrics,
     metric,
@@ -1464,9 +1508,12 @@ export function trendView(
     ranges: all.length >= 2 ? TREND_RANGES : [],
     series,
     trend,
-    headline: drawn ? trendHeadline(series, trend) : null,
-    phrase: trend ? rangeTrendPhraseParts(trend, range) : null,
-    spoken: trend ? rangeTrendPhrase(trend, range, { spoken: true }) : null,
+    rangeTrend,
+    headline: drawn ? trendHeadline(series, trend ?? across) : null,
+    phrase: trend ? trendPhraseParts(trend) : null,
+    spoken: trend ? trendPhrase(trend, { spoken: true }) : null,
+    rangePhrase: rangeTrend ? rangeTrendPhraseParts(rangeTrend, range) : null,
+    rangeSpoken: rangeTrend ? rangeTrendPhrase(rangeTrend, range, { spoken: true }) : null,
     extent: trendExtent(series, today),
     emptyNote: drawn ? null : trendRangeEmptyNote(metric, rows, range, today),
     away: drawn && series.some((p) => p.away === true),

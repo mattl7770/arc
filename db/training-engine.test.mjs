@@ -1833,7 +1833,7 @@ console.log('14. range chips on the Trend: 1M · 3M · 1Y · All (owner, 2026-09
   const four = seven.slice(-4);
   JSON.stringify(rangeTrendOf(four)) === JSON.stringify(trendOf(four)) &&
   JSON.stringify(rangeTrendOf(seven.slice(-2))) === JSON.stringify(trendOf(seven.slice(-2)))
-    ? ok('…with four home sessions or fewer in the range it IS the hub’s figure: the baselines are the same sessions')
+    ? ok('…over the same four home sessions or fewer the two rules are one figure — when detail leaves its second line out')
     : bad('range/hub agreement');
   const withAway = [p(90, true), p(100), p(104), p(140, true)];
   const awayTrend = rangeTrendOf(withAway);
@@ -1894,34 +1894,103 @@ console.log('14. range chips on the Trend: 1M · 3M · 1Y · All (owner, 2026-09
   opened.range === 'all' &&
   opened.ranges.join() === '1m,3m,1y,all' &&
   opened.series.length === 7 &&
-  phraseText(opened.phrase) === '+19% on the first 3 sessions on record' &&
+  phraseText(opened.phrase) === '+6% on the previous 3 sessions' &&
+  phraseText(opened.rangePhrase) === '+19% on the first 3 sessions on record' &&
   opened.extent === `May 13 2025 – Sun · 7 sessions`
-    ? ok('opened: e1RM, All (seven sessions over 500 days), the year on a date from last year')
+    ? ok('opened: e1RM, All (seven sessions over 500 days), the hub’s +6% then +19% on record, the year on a date from last year')
     : bad('opened view', JSON.stringify({ ...opened, series: opened.series.length }));
+  // The second line per chip. 3M holds exactly the latest home session and the
+  // three before it — its baseline IS the first line's — so it has none.
   const perRange = {
     '1m': ['+4% on the first session of the last month', 2],
-    '3m': ['+6% on the first 3 sessions of the last 3 months', 4],
+    '3m': [null, 4],
     '1y': ['+14% on the first 3 sessions of the last year', 6],
     all: ['+19% on the first 3 sessions on record', 7],
   };
   const wrongRange = TREND_RANGES.filter((r) => {
     const v = view(r);
-    const [phrase, n] = perRange[r];
+    const [second, n] = perRange[r];
     return (
       v.range !== r ||
-      phraseText(v.phrase) !== phrase ||
+      phraseText(v.phrase) !== '+6% on the previous 3 sessions' ||
+      (second == null ? v.rangePhrase !== null : phraseText(v.rangePhrase ?? []) !== second) ||
       v.series.length !== n ||
       !v.extent?.endsWith(`· ${n} sessions`) ||
       v.headline?.value !== v.series[v.series.length - 1].value
     );
   });
   wrongRange.length === 0
-    ? ok('each chip: its sessions, its extent, and a direction that names it (+4% · +6% · +14% · +19%)')
-    : bad('per-range views', wrongRange.map((r) => `${r}: ${phraseText(view(r).phrase ?? [])}`).join('; '));
+    ? ok('each chip: its sessions, its extent, the hub’s +6% first, and a second line naming the range (+4% · none · +14% · +19%)')
+    : bad(
+        'per-range views',
+        wrongRange
+          .map((r) => `${r}: ${phraseText(view(r).phrase ?? [])} / ${phraseText(view(r).rangePhrase ?? [])}`)
+          .join('; ')
+      );
   const hub = directionOf(rows, 'reps,load', 'total');
-  hub.metric === opened.metric && trendToken(hub.trend) === '+6%' && trendToken(view('3m').trend) === '+6%'
-    ? ok('the hub keeps its own rule (+6% on the previous 3) and opens detail on its metric; 3M agrees here')
-    : bad('hub vs detail', JSON.stringify(hub));
+  const disagree = TREND_RANGES.filter(
+    (r) => JSON.stringify(view(r).trend) !== JSON.stringify(hub.trend)
+  );
+  hub.metric === opened.metric && trendToken(hub.trend) === '+6%' && disagree.length === 0
+    ? ok('the first line IS the hub row’s figure (directionOf), on every chip, and detail opens on its metric')
+    : bad('hub vs detail', `${JSON.stringify(hub)} disagrees on ${disagree.join()}`);
+
+  // The review's case: down on the last three, up on the month. The row reads
+  // −8%; the screen it opens must say −8% first, then +20% across the month —
+  // never "+20%" alone under a row that said "−8%".
+  const squat = (weightKg) => ({ exercise: 'Front Squat', exerciseId: 'front-squat', reps: 5, weightKg });
+  [
+    [27, 100],
+    [23, 100],
+    [19, 100],
+    [15, 130],
+    [11, 130],
+    [7, 130],
+    [3, 120],
+  ].forEach(([back, kg]) =>
+    logWorkout(db, { date: shiftISODate(TODAY, -back), kind: 'strength' }, [squat(kg)])
+  );
+  const squatRows = workingSets(db, 'front-squat');
+  const squatHub = directionOf(squatRows, 'reps,load', 'total');
+  const squatView = trendView(squatRows, 'reps,load', 'total', { metric: null, range: null }, TODAY);
+  squatView.range === '1m' &&
+  trendPhrase(squatHub.trend) === '−8% on the previous 3 sessions' &&
+  JSON.stringify(squatView.trend) === JSON.stringify(squatHub.trend) &&
+  phraseText(squatView.phrase) === '−8% on the previous 3 sessions' &&
+  phraseText(squatView.rangePhrase) === '+20% on the first 3 sessions of the last month' &&
+  squatView.rangeSpoken === 'up 20 percent on the first 3 sessions of the last month'
+    ? ok('down on the last three, up on the month: −8% first (the row’s own), then +20% naming the month')
+    : bad(
+        'opposite directions',
+        `${phraseText(squatView.phrase ?? [])} / ${phraseText(squatView.rangePhrase ?? [])}`
+      );
+
+  // A range holding only away sessions: the hub's figure is read from a home
+  // session that is not on the chart, so neither line is drawn and the large
+  // figure is the away one, marked. One home session in range brings the first
+  // line back, its headline the home value.
+  const row = (weightKg) => ({ exercise: 'Barbell Row', exerciseId: 'barbell-row', reps: 8, weightKg });
+  logWorkout(db, { date: shiftISODate(TODAY, -100), kind: 'strength' }, [row(60)]);
+  logWorkout(db, { date: shiftISODate(TODAY, -90), kind: 'strength' }, [row(62)]);
+  logWorkout(db, { date: shiftISODate(TODAY, -20), kind: 'strength', away: true }, [row(70)]);
+  logWorkout(db, { date: shiftISODate(TODAY, -6), kind: 'strength', away: true }, [row(72)]);
+  const rowRows = workingSets(db, 'barbell-row');
+  const awayMonth = trendView(rowRows, 'reps,load', 'total', { metric: null, range: '1m' }, TODAY);
+  const awayQuarter = trendView(rowRows, 'reps,load', 'total', { metric: null, range: '3m' }, TODAY);
+  awayMonth.series.length === 2 &&
+  awayMonth.trend === null &&
+  awayMonth.phrase === null &&
+  awayMonth.rangePhrase === null &&
+  awayMonth.headline?.label === 'Latest · away gym' &&
+  awayQuarter.series.length === 3 &&
+  phraseText(awayQuarter.phrase) === '+3% on the previous session' &&
+  awayQuarter.rangePhrase === null &&
+  awayQuarter.headline?.label === 'Latest at home'
+    ? ok('only away sessions in range: no direction line, the away figure marked; one home session brings the row’s figure back')
+    : bad(
+        'away-only range',
+        JSON.stringify([awayMonth.phrase, awayMonth.headline, awayQuarter.phrase, awayQuarter.headline])
+      );
   const picked = view('1y', 'top_weight');
   picked.range === '1y' && picked.metric === 'top_weight' && picked.series.length === 6
     ? ok('a picked range holds across a change of metric')
@@ -1935,6 +2004,7 @@ console.log('14. range chips on the Trend: 1M · 3M · 1Y · All (owner, 2026-09
   const noneThisMonth = trendView(curlRows, 'reps,load', 'total', { metric: null, range: '1m' }, TODAY);
   noneThisMonth.headline === null &&
   noneThisMonth.phrase === null &&
+  noneThisMonth.rangePhrase === null &&
   noneThisMonth.ranges.length === 4 &&
   noneThisMonth.emptyNote === 'Nothing to plot in the last month. Choose a longer range.'
     ? ok('1M with no session in it: no chart, the chips stay, and the note names the range and the way out')

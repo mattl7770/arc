@@ -60,7 +60,7 @@ import {
   liveSessionOpen,
   liveSessionQuiet,
   liveSlotLoss,
-  liveStartOf,
+  liveStartFor,
   parseLiveDraft,
   type DraftBlock as LiveBlock,
   type DraftSet as LiveSet,
@@ -539,7 +539,11 @@ export type LiveLeaveOutcome = 'settled' | 'drop' | LeaveGuard;
 /**
  * **The way out of the live logger**, whole: the `beforeRemove` handler calls
  * this and nothing else, and db/screens-render.test.mjs drives it over a real
- * slot, so the path the screen takes is the path the suite takes.
+ * slot. What the screen passes in cannot be driven there (a server render runs
+ * no effects), so it goes through two pieces the suite can reach instead: the
+ * `start` snapshot is `liveStartFor`, and `session` is the same `liveState`
+ * object the snapshot was taken from. The suite pins that wiring from the
+ * source.
  *
  * In order:
  *
@@ -787,13 +791,18 @@ function WorkoutLive({
   const [restEndsAt, setRestEndsAt] = useState<number | null>(() =>
     draft?.restEndsAt != null && draft.restEndsAt > Date.now() ? draft.restEndsAt : null
   );
-  // What Start put on the screen (2026-09-25), taken once on the way in: the
-  // baseline the quiet drop measures "nothing typed" against. Only a NEW
-  // session has one — resuming is choosing to come back to a session, and an
-  // edit has a stored copy — so only a new session can be dropped by leaving.
-  const [start] = useState<LiveStart | null>(() =>
-    draft || workoutId ? null : liveStartOf({ blocks, startedAt, away, restEndsAt })
+  // The four things the owner can change about a live session, as ONE object:
+  // the Start snapshot below is taken from it and the way out compares against
+  // it, so the two can never be fed different fields.
+  const liveState = useMemo<LiveSessionState>(
+    () => ({ blocks, startedAt, away, restEndsAt }),
+    [blocks, startedAt, away, restEndsAt]
   );
+  // What Start put on the screen (2026-09-25), taken once on the way in: the
+  // baseline the quiet drop measures "nothing typed" against. `liveStartFor`
+  // decides who gets one (only a NEW session) and is pinned in
+  // db/exercise.test.mjs; db/screens-render.test.mjs pins that this is the call.
+  const [start] = useState<LiveStart | null>(() => liveStartFor({ draft, workoutId }, liveState));
   // The id of the pending OS rest-alert (to cancel/replace it). null when none.
   //
   // A RESUMED session adopts the alert its draft carries (`restAlertId`,
@@ -1144,7 +1153,7 @@ function WorkoutLive({
           writeFailed: writeFailedRef.current,
           sessionId,
           start,
-          session: { blocks, startedAt, away, restEndsAt },
+          session: liveState,
         },
         {
           db: getDb(),
@@ -1164,7 +1173,7 @@ function WorkoutLive({
     // `disarmRestAlert` is a render-scoped closure over refs and a state
     // setter only; re-subscribing for it would re-subscribe on every tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigation, editing, dirty, sessionId, start, blocks, startedAt, away, restEndsAt]);
+  }, [navigation, editing, dirty, sessionId, start, liveState]);
 
   /**
    * Throw the unfinished session away — the control that took over from the

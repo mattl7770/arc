@@ -39,6 +39,7 @@ import {
   TREND_RANGE_LABEL,
   TREND_RANGE_WORDS,
   trendView,
+  type PhrasePart,
   type RepMax,
   type TrendMetric,
   type TrendRange,
@@ -535,6 +536,25 @@ function trendChip(chip: {
   );
 }
 
+/** One direction line under the Trend: prose in the serif, its figures in mono. */
+function directionLine(parts: readonly PhrasePart[], spoken: string | null, margin: string) {
+  return (
+    <Text
+      accessibilityLabel={spoken ?? undefined}
+      className={`${margin} font-serif text-[12px] leading-5 text-ink-secondary`}>
+      {parts.map((part, i) =>
+        part.measured ? (
+          <Text key={i} className="font-mono text-[11px]">
+            {part.text}
+          </Text>
+        ) : (
+          part.text
+        )
+      )}
+    </Text>
+  );
+}
+
 /**
  * Trend — a readout about the lift, so: measured field. One value per session,
  * switchable between the metrics this movement has (Fitbod's e1RM, max weight,
@@ -542,11 +562,13 @@ function trendChip(chip: {
  * 1M · 3M · 1Y · All (owner: *"Add range chips"*).
  *
  * Every figure here is a field of `view` (`trendView`,
- * src/lib/exercise/records.ts): the default range, the points, the direction
- * across the range and the words that name it, the extent line and the empty
- * note. This only draws. The direction compares the latest HOME session in
- * the range with the first ones in it and says which range it measured; away
- * sessions are plotted hollow and never compared (0055).
+ * src/lib/exercise/records.ts): the default range, the points, the two
+ * direction lines, the extent line and the empty note. This only draws. The
+ * first line is the Train hub row's own figure (the latest HOME session
+ * against the three before it), the same on every chip, so the screen never
+ * opens by contradicting the row that led here; the second, when it says
+ * something the first does not, is the change across the chosen range and
+ * names it. Away sessions are plotted hollow and never compared (0055).
  *
  * Hook-free and exported, so db/screens-render.test.mjs draws it on each range
  * and presses its chips through the element tree (the routine editor's
@@ -624,24 +646,12 @@ export function TrendField({
               height={36}
             />
           </View>
-          {/* A why-line that names its range: the words in the serif, the
-              figures in mono ("Serif speaks, mono measures", 00-design-spec.md
-              §3). */}
-          {view.phrase ? (
-            <Text
-              accessibilityLabel={view.spoken ?? undefined}
-              className="mt-2 font-serif text-[12px] leading-5 text-ink-secondary">
-              {view.phrase.map((part, i) =>
-                part.measured ? (
-                  <Text key={i} className="font-mono text-[11px]">
-                    {part.text}
-                  </Text>
-                ) : (
-                  part.text
-                )
-              )}
-            </Text>
-          ) : null}
+          {/* The why-lines, each saying what it compared: the hub row's own
+              figure first, then the change across the range when that is a
+              different figure. Words in the serif, figures in mono ("Serif
+              speaks, mono measures", 00-design-spec.md §3). */}
+          {view.phrase ? directionLine(view.phrase, view.spoken, 'mt-2') : null}
+          {view.rangePhrase ? directionLine(view.rangePhrase, view.rangeSpoken, 'mt-0.5') : null}
           {view.extent ? (
             <Text className="mt-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
               {view.extent}

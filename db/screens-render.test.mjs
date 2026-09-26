@@ -70,7 +70,7 @@ import {
   readWorkoutDraft,
   saveWorkoutDraft,
 } from '../src/lib/db/repositories/workout-drafts.ts';
-import { DRAFT_VERSION, liveStartOf } from '../src/lib/exercise/draft.ts';
+import { DRAFT_VERSION, liveStartFor, parseLiveDraft } from '../src/lib/exercise/draft.ts';
 import { workingSets } from '../src/lib/db/repositories/training-stats.ts';
 import { TREND_RANGE_WORDS, TREND_RANGES, trendView } from '../src/lib/exercise/records.ts';
 import { DEFAULT_UNIT_PREFERENCES } from '../src/lib/user/types.ts';
@@ -2341,17 +2341,18 @@ const db = getDb();
     expect('exercise detail (bodyweight pull-up)', pullUp, [
       'Most reps',
       'Session reps',
-      // The Trend opens on reps, and says which way they are going. Since the
-      // range chips (2026-09-25) the line also names its range: three sessions
-      // from March 2025 open on All, and three home sessions is few enough that
-      // "the first 2 on record" are the hub's "previous 2".
-      'aria-label="up 29 percent on the first 2 sessions on record"',
+      // The Trend opens on reps, and says which way they are going — first in
+      // the hub row's own words, on every range chip (review, 2026-09-25).
+      'aria-label="up 29 percent on the previous 2 sessions"',
       '11 reps',
       'No sets with added weight yet.',
     ]);
     refute('exercise detail (bodyweight pull-up)', pullUp, [
       'An estimated-1RM trend needs two weighted sessions.',
       'Nothing logged yet.',
+      // Three home sessions opening on All: "the first 2 on record" ARE the
+      // previous 2, so the range line would only repeat the figure above it.
+      'on the first 2 sessions on record',
     ]);
     // A friendlier bar elsewhere, logged last: the large figure is the home
     // session the "+29%" is about, and says so.
@@ -2359,7 +2360,7 @@ const db = getDb();
     expect(
       'exercise detail (pull-up, away last)',
       render('exercise detail (pull-up, away last)', ExerciseDetailScreen, { id: 'pull-up' }),
-      ['Latest at home', '11 reps', 'aria-label="up 29 percent on the first 2 sessions on record"']
+      ['Latest at home', '11 reps', 'aria-label="up 29 percent on the previous 2 sessions"']
     );
 
     // Sets of fifteen carry no e1RM. The hub reads "+10%" from the top weight,
@@ -2377,7 +2378,7 @@ const db = getDb();
     });
     expect('exercise detail (high reps)', legExt, [
       'Latest',
-      'aria-label="up 10 percent on the first session on record"',
+      'aria-label="up 10 percent on the previous session"',
     ]);
     refute('exercise detail (high reps)', legExt, [
       'An estimated-1RM trend needs two weighted sessions.',
@@ -6762,7 +6763,9 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
     away: false,
     restEndsAt: null,
   };
-  const start = liveStartOf(started);
+  // The baseline comes through `liveStartFor`, the call the screen's own
+  // initializer makes (pinned below), not a hand-built one.
+  const start = liveStartFor({ draft: null, workoutId: undefined }, started);
   const writtenAtStart = (sessionId, state) =>
     saveWorkoutDraft(db, 'live', {
       version: DRAFT_VERSION,
@@ -6868,27 +6871,70 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
     render('workout-live (resumed after the kill)', WorkoutLiveScreen, { resume: '1' }),
     ['Barbell Bench Press', 'Barbell Row', 'Discard workout']
   );
-  const resumedBack = leave('quiet-killed', started, null, T0 + 5_000);
-  resumedBack.outcome === 'leave' && resumedBack.stopped === 0 && slotHolds()
+  // The resumed screen's baseline, as its initializer takes it: over the draft
+  // it reopened, which `liveStartFor` answers with none.
+  const resumedDraft = parseLiveDraft(readWorkoutDraft(db, 'live')?.value);
+  const resumedStart = liveStartFor({ draft: resumedDraft, workoutId: undefined }, started);
+  const resumedBack = leave('quiet-killed', started, resumedStart, T0 + 5_000);
+  resumedDraft !== null &&
+  resumedStart === null &&
+  resumedBack.outcome === 'leave' &&
+  resumedBack.stopped === 0 &&
+  slotHolds()
     ? ok('resumed after the kill and left at once: kept — only a NEW session is dropped')
-    : bad('resumed kept', JSON.stringify(resumedBack));
+    : bad('resumed kept', JSON.stringify({ resumedStart, resumedBack }));
   clearWorkoutDraft(db, 'live');
 
   // The other ways out are unchanged.
+  const editStart = liveStartFor({ draft: null, workoutId: 'stored-session' }, typed);
   const settled = leave('x', started, start, T0 + 1_000, { settled: true });
   const failedTyped = leave('x', typed, start, T0 + 1_000, { writeFailed: true });
   const failedQuiet = leave('x', started, start, T0 + 1_000, { writeFailed: true });
-  const edit = leave('', typed, null, T0 + 1_000, { editing: true, dirty: true });
+  const edit = leave('', typed, editStart, T0 + 1_000, { editing: true, dirty: true });
   settled.outcome === 'settled' &&
   settled.stopped === 0 &&
   failedTyped.outcome === 'ask-unsaved-copy' &&
   failedTyped.prevented === 1 &&
   failedQuiet.outcome === 'drop' &&
   failedQuiet.prevented === 0 &&
+  editStart === null &&
   edit.outcome === 'ask-discard-changes' &&
   edit.prevented === 1
     ? ok('settled leaves; a failed write still asks, unless there is nothing typed to lose; an edit with changes still asks')
-    : bad('other ways out', JSON.stringify([settled, failedTyped, failedQuiet, edit]));
+    : bad('other ways out', JSON.stringify([settled, failedTyped, failedQuiet, editStart, edit]));
+
+  // What a server render cannot run: the screen's own inputs to all of the
+  // above. Its Start snapshot is `liveStartFor` over the screen's draft and
+  // workout id, and the snapshot and the way out read ONE `liveState` object
+  // built from the four session states — so a snapshot that stopped being
+  // taken, or a leave fed a different session, fails here rather than
+  // silently turning the drop off. (The shape is pinned from the source; the
+  // behaviour of each piece is pinned above and in db/exercise.test.mjs §15.)
+  const liveSource = readFileSync(new URL('../app/workout-live.tsx', import.meta.url), 'utf8');
+  const leaveCall = liveSource.slice(
+    liveSource.indexOf("addListener('beforeRemove'"),
+    liveSource.indexOf('dispatch: (action) => navigation.dispatch(action)')
+  );
+  const feeds = {
+    'one liveState from the four states': /const liveState = useMemo<LiveSessionState>\(\s*\(\) => \(\{ blocks, startedAt, away, restEndsAt \}\),\s*\[blocks, startedAt, away, restEndsAt\]\s*\)/.test(
+      liveSource
+    ),
+    'the snapshot is liveStartFor over draft, workoutId and liveState':
+      /const \[start\] = useState<LiveStart \| null>\(\(\) =>\s*liveStartFor\(\{ draft, workoutId \}, liveState\)\s*\)/.test(
+        liveSource
+      ),
+    'beforeRemove calls leaveLiveLogger': /^\s*addListener\('beforeRemove', \(e\) => \{\s*leaveLiveLogger\(/.test(
+      leaveCall
+    ),
+    'the leave gets the snapshot and liveState': /\bstart,\s*session: liveState,/.test(leaveCall),
+    'the leave reads the clock when it runs': /at: Date\.now\(\),/.test(leaveCall),
+  };
+  const unfed = Object.entries(feeds)
+    .filter(([, holds]) => !holds)
+    .map(([what]) => what);
+  unfed.length === 0
+    ? ok('the logger feeds the drop what it tests: liveStartFor for the snapshot, one liveState for both sides')
+    : bad('workout-live feeds', unfed.join('; '));
 
   // --- the Trend's range chips ---------------------------------------------------
   // Owner: "Add range chips". Seven hip-thrust sessions over 500 days, dated in
@@ -6941,11 +6987,18 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
     '>3M<',
     '>1Y<',
     '>All<',
+    // First the hub row's figure, then the change across the range.
+    'aria-label="up 6 percent on the previous 3 sessions"',
     'aria-label="up 19 percent on the first 3 sessions on record"',
     '· 7 sessions',
   ]);
+  hipDetail.indexOf('up 6 percent on the previous 3 sessions') <
+  hipDetail.indexOf('up 19 percent on the first 3 sessions on record')
+    ? ok('exercise detail: the hub row’s figure is the first line, the range’s the second')
+    : bad('exercise detail: direction line order');
 
-  // Each chip, drawn: its sessions, and a direction that names it.
+  // Each chip, drawn: its sessions, the hub's figure on every one, and a
+  // second line naming the range when it says something the first does not.
   const hipRows = workingSets(db, 'hip-thrust');
   let pressed = null;
   const fieldProps = (range) => ({
@@ -6957,9 +7010,12 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
       pressed = r;
     },
   });
+  // 3M holds exactly the latest home session and the three before it, so its
+  // range line would be the first line again ("+6% on the first 3 sessions of
+  // the last 3 months") and is left out.
   const perChip = {
     '1m': ['up 4 percent on the first session of the last month', 2],
-    '3m': ['up 6 percent on the first 3 sessions of the last 3 months', 4],
+    '3m': [null, 4],
     '1y': ['up 14 percent on the first 3 sessions of the last year', 6],
     all: ['up 19 percent on the first 3 sessions on record', 7],
   };
@@ -6967,7 +7023,13 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
     const [spoken, sessions] = perChip[range];
     const name = `trend field (${range})`;
     const html = render(name, TrendField, {}, fieldProps(range));
-    expect(name, html, [`aria-label="${spoken}"`, `· ${sessions} sessions`, 'Latest']);
+    expect(name, html, [
+      'aria-label="up 6 percent on the previous 3 sessions"',
+      ...(spoken ? [`aria-label="${spoken}"`] : []),
+      `· ${sessions} sessions`,
+      'Latest',
+    ]);
+    if (!spoken) refute(name, html, ['of the last 3 months']);
     selectedChips(fieldProps(range)).join() === range
       ? ok(`${name}: only its own chip is selected`)
       : bad(`${name}: selected chips`, selectedChips(fieldProps(range)).join() || 'none');
@@ -7008,7 +7070,44 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
   ]);
   refute('trend field (1M, nothing in it)', emptyHtml, ['Latest']);
 
-  for (const id of hipIds) deleteWorkout(db, id);
+  // The review's case (2026-09-25): a lift whose last three sessions are down
+  // on the three before them, but up on where the month began. The hub row
+  // says −8%; the screen it opens must say −8% first, in the same words, and
+  // then — separately, naming its range — the +20% across the month. Before
+  // the fix it said only "+20%".
+  const squatIds = [
+    [27, 100],
+    [23, 100],
+    [19, 100],
+    [15, 130],
+    [11, 130],
+    [7, 130],
+    [3, 120],
+  ].map(([back, kg]) => {
+    const date = shiftISODate(today, -back);
+    const id = logWorkout(db, { date, kind: 'strength' }, [
+      { exercise: 'Front Squat', exerciseId: 'front-squat', reps: 5, weightKg: kg },
+    ]);
+    db.run('UPDATE workouts SET created_at = ? WHERE id = ?', [`${date}T12:00:00.000Z`, id]);
+    return id;
+  });
+  const hubSquat = render('exercise hub (front squat, down on 3, up on the month)', ExerciseScreen);
+  expect('exercise hub (front squat, down on 3, up on the month)', hubSquat, [
+    'down 8 percent on the previous 3 sessions.',
+  ]);
+  const squatDetail = render('exercise detail (front squat)', ExerciseDetailScreen, {
+    id: 'front-squat',
+  });
+  expect('exercise detail (front squat)', squatDetail, [
+    'aria-label="down 8 percent on the previous 3 sessions"',
+    'aria-label="up 20 percent on the first 3 sessions of the last month"',
+    '· 7 sessions',
+  ]);
+  squatDetail.indexOf('down 8 percent on the previous 3 sessions') <
+  squatDetail.indexOf('up 20 percent on the first 3 sessions of the last month')
+    ? ok('the row says −8%, and the screen it opens says −8% first, then +20% across the month')
+    : bad('front squat: line order');
+  for (const id of [...hipIds, ...squatIds]) deleteWorkout(db, id);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -620,10 +620,19 @@ export function liveFocusDecision(
  * the back gesture — two to six seconds, and a slow read of a six-exercise
  * list fits inside ten. Past it the owner has had time to begin (walk to the
  * rack, load the bar), and the rule from 2026-09-23 takes over: a session is
- * kept from its first exercise. The price of a wrong drop is bounded by the
- * number too. An untouched session holds nothing Start cannot rebuild except
- * its start instant, and Finish stores the duration in whole minutes, where a
- * start ten seconds late rounds away.
+ * kept from its first exercise.
+ *
+ * **What a wrong drop costs is not bounded by the window.** An untouched
+ * session holds nothing Start cannot rebuild except its start instant, but the
+ * drop is silent, so the owner learns of it only when he next looks for the
+ * session — at the Train hub, possibly many minutes later — and a Start pressed
+ * then dates the session from then. That is the 2026-09-23 loss come back on
+ * one narrow path: Start from a saved workout, swipe back inside ten seconds to
+ * glance at Home, warm up, open Train to no card. The repair is the start
+ * stepper on the new session, and only if he notices. What keeps the path
+ * narrow is the window: the glance has to come inside ten seconds, with nothing
+ * touched first. Whether that trade is right is his to settle on the device
+ * (docs/exercise-subapp.md §16.4).
  */
 export const QUIET_LEAVE_MS = 10_000;
 
@@ -653,6 +662,24 @@ const sessionFingerprint = (s: LiveSessionState): string =>
 /** The baseline for {@link liveSessionUntouched}, taken once, when Start builds the session. */
 export function liveStartOf(state: LiveSessionState): LiveStart {
   return { at: state.startedAt, state: sessionFingerprint(state) };
+}
+
+/**
+ * The baseline the live logger takes on the way in — its `start` initializer
+ * calls this and nothing else, so what decides which sessions can be dropped
+ * is pinned here rather than in a component a server render cannot run.
+ *
+ * Only a NEW session gets one. A screen opened on a resumed draft gets null
+ * (resuming is choosing to come back to a session), and so does one opened on
+ * a stored workout (an edit has a saved copy, and leaving it asks as before) —
+ * including a `workoutId` that names nothing, which is never treated as a
+ * fresh Start.
+ */
+export function liveStartFor(
+  opened: { draft: LiveDraft | null; workoutId: string | null | undefined },
+  state: LiveSessionState
+): LiveStart | null {
+  return opened.draft != null || opened.workoutId ? null : liveStartOf(state);
 }
 
 /**

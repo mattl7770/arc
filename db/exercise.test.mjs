@@ -40,6 +40,7 @@ import {
   liveSessionUntouched,
   liveSlotLoss,
   liveSlotState,
+  liveStartFor,
   liveStartOf,
   mayClearLiveSlot,
   openSessionLine,
@@ -1771,6 +1772,29 @@ console.log('15. a Start taken straight back is dropped quietly (owner, 2026-09-
     ? ok('no Start baseline — a resumed session, an edit — is never dropped by leaving')
     : bad('null start');
 
+  // --- who gets a baseline: `liveStartFor`, the logger's initializer ------------
+  // The screen's `start` state is this call and nothing else (the render suite
+  // pins that from the source), so the three ways a logger opens are decided
+  // here.
+  const asNew = liveStartFor({ draft: null, workoutId: undefined }, started);
+  const reopened = parseLiveDraft({
+    version: DRAFT_VERSION,
+    sessionId: 'r',
+    routineId: null,
+    ingestId: null,
+    ...started,
+  });
+  const asResumed = liveStartFor({ draft: reopened, workoutId: undefined }, started);
+  // No database here, so this id names nothing — still never a fresh Start.
+  const asEdit = liveStartFor({ draft: null, workoutId: 'stored-session' }, started);
+  reopened !== null &&
+  JSON.stringify(asNew) === JSON.stringify(start) &&
+  liveSessionQuiet(asNew, started, T0 + 4_000) &&
+  asResumed === null &&
+  asEdit === null
+    ? ok('a NEW session gets the Start baseline; a resumed draft and a workout id get none')
+    : bad('liveStartFor', JSON.stringify({ asNew, asResumed, asEdit }));
+
   // --- every change the owner can make keeps it ---------------------------------
   const withSet = (over) => ({
     ...started,
@@ -1892,6 +1916,12 @@ console.log('15. a Start taken straight back is dropped quietly (owner, 2026-09-
     openSessionLine(back, new Date(T0 + 60_000)) === 'Workout in progress · started 18:00'
       ? ok('killed 4 s after Start: the next launch offers it back, start instant intact')
       : bad('kill inside the window', JSON.stringify(back)?.slice(0, 120));
+    // …and the logger that reopens it takes no baseline, so backing straight
+    // out of the resumed screen, even at once, keeps it.
+    const reopenedStart = back ? liveStartFor({ draft: back, workoutId: undefined }, back) : 'x';
+    reopenedStart === null && !liveSessionQuiet(reopenedStart, back, T0 + 5_000)
+      ? ok('…and the resumed logger takes no Start baseline, so leaving it at once keeps it')
+      : bad('resumed baseline', JSON.stringify(reopenedStart));
     raw.close();
   }
   rmSync(dir, { recursive: true, force: true });
