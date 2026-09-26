@@ -1,3 +1,5 @@
+> **See also `garmin-risk.md` (2026-09-26): how detectable the in-app link is, the risk in numbers, every option scored.**
+>
 > **PLAN — not built (written and fact-checked 2026-09-25).** The owner asked for "all data but minimal involvement"; this supersedes the recommendation in `garmin-hrv-routes.md` (file import) with a staged path: Pulse Ox on, a full export and a Health Sync test today; an in-app Garmin link (unofficial API) in the next EAS build, once he accepts the trade. Nothing is built until he answers §6.
 
 # Garmin CIRQA: all the data, with as little of your time as possible
