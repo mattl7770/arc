@@ -18,6 +18,7 @@ import { localDayUtcRange, shiftISODate, todayISODate } from '../src/lib/db/date
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
+  correctCapture,
   getCapture,
   listEntriesOn,
   listTodayEntries,
@@ -57,8 +58,17 @@ import {
 } from '../src/lib/screen-time/entry.ts';
 import { listMission } from '../src/lib/db/repositories/mission.ts';
 import { logSymptom } from '../src/lib/db/repositories/symptoms.ts';
-import { setHealthSyncEnabled } from '../src/lib/db/repositories/user.ts';
-import { removeLogCapture, restoreLogCapture } from '../src/lib/health/publish.ts';
+import {
+  getPreferences,
+  setHealthSyncEnabled,
+  setUnitPreference,
+} from '../src/lib/db/repositories/user.ts';
+import {
+  editLogCapture,
+  removeLogCapture,
+  restoreLogCapture,
+} from '../src/lib/health/publish.ts';
+import { captureDraft, captureDraftPatch, saveCaptureEdit } from '../src/lib/log/capture-edit.ts';
 import { removeCaptureWithUndo } from '../src/lib/log/capture-undo.ts';
 import { closeUndo, currentUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
 import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
@@ -1262,6 +1272,273 @@ console.log('22. every capture removes, and its Undo puts back row and Health sa
   feedRow(noteId) === 'null'
     ? ok('closing the offer leaves the removal standing')
     : bad('closed offer restored the note');
+}
+
+// ---------------------------------------------------------------------------
+// 23. A capture corrected on the Log tab (owner, 2026-09-26: "Yes, an edit on
+// the Log tab, and the Coach too."). Every kind the feed lists, through the
+// tap's own path — the row opened (`captureDraft`), the draft changed, Save
+// (`saveCaptureEdit` → `editLogCapture`, the one function the Coach's
+// `captures` edit calls too) — with a recording Apple Health seam, so the
+// Health half (a weight's and a glass's tagged sample, replaced) is proved
+// beside the record half, and every side effect the delete traced is checked.
+console.log('23. every capture corrects through the Log tab’s own path, and its Health copy follows');
+{
+  const { db } = freshDb();
+  /** A recording Health seam: which tags it was asked to delete, what it saved. */
+  const seam = (inHealth = new Set()) => {
+    const deleted = [];
+    const saved = [];
+    return {
+      deleted,
+      saved,
+      deps: {
+        isAvailable: () => true,
+        save: async (identifier, unit, value, start, _end, metadata) => {
+          saved.push({ identifier, unit, value, at: start.toISOString(), metadata });
+          return true;
+        },
+        deleteByTag: async (identifier, id) => {
+          deleted.push(`${identifier}:${id}`);
+          return inHealth.has(id) ? 1 : 0;
+        },
+      },
+    };
+  };
+  const whole = (table, id) =>
+    JSON.stringify(db.get(`SELECT rowid AS r, * FROM ${table} WHERE id = ?`, [id]) ?? null);
+  const units = () => getPreferences(db).units;
+  const row = (id) => listEntriesOn(db, TODAY, units()).find((e) => e.id === id);
+  /** The Save tap: the row opened to what it shows, the draft changed, Save. */
+  const tap = (id, change, deps) => {
+    const capture = getCapture(db, id, units());
+    const draft = { ...captureDraft(capture, units()), ...change };
+    return saveCaptureEdit(db, capture, draft, units(), deps);
+  };
+  setHealthSyncEnabled(db, true);
+  const missionBefore = JSON.stringify(listMission(db, TODAY));
+
+  // WORDS — a note and a supplement line. The line is the whole record.
+  const noteId = logNote(db, TODAY, 'Slept badly');
+  const creatineId = logCapture(db, TODAY, 'supplement', 'Creatine · 5 g', { protocol: true });
+  const noteTime = row(noteId).time;
+  const quiet = seam();
+  const n = tap(noteId, { text: '  Slept badly, 3am wake ' }, quiet.deps);
+  const c = tap(creatineId, { text: 'Creatine · 10 g' }, quiet.deps);
+  n.saved &&
+  c.saved &&
+  row(noteId).title === 'Slept badly, 3am wake' &&
+  row(noteId).time === noteTime &&
+  row(creatineId).title === 'Creatine · 10 g'
+    ? ok('a note and a supplement line take new words, trimmed, and keep their time')
+    : bad('word edits', JSON.stringify({ n, c, note: row(noteId), line: row(creatineId) }));
+  JSON.parse(db.get('SELECT value FROM log_entries WHERE id = ?', [creatineId]).value).protocol ===
+  true
+    ? ok('…and the supplement keeps its "Part of a protocol" flag: only the line changed')
+    : bad('protocol flag lost');
+
+  // NUMBERS that stay in ARC — a dose (a generic metric) and HRV typed by hand.
+  logMetric(db, TODAY, 'dose', 5);
+  logMetric(db, TODAY, 'hrv', 62);
+  const doseId = listEntriesOn(db, TODAY).find((e) => e.category === 'Dose').id;
+  const hrvId = listEntriesOn(db, TODAY).find((e) => e.category === 'HRV').id;
+  const d = tap(doseId, { value: '10' }, quiet.deps);
+  const h = tap(hrvId, { value: '58' }, quiet.deps);
+  const doseValue = JSON.parse(db.get('SELECT value FROM log_entries WHERE id = ?', [doseId]).value);
+  d.saved &&
+  h.saved &&
+  row(doseId).title === '10 mg' &&
+  doseValue.canonical === 10 &&
+  doseValue.metricKey === 'dose' &&
+  db.get('SELECT value FROM wearable_data WHERE id = ?', [hrvId]).value === 58
+    ? ok('a dose corrects its number and the line drawn from it; HRV its value')
+    : bad('number edits', JSON.stringify({ d, h, doseValue }));
+  quiet.deleted.length === 0 && quiet.saved.length === 0
+    ? ok('…and none of the four touches Apple Health: none of them is ever published')
+    : bad('an unpublished kind reached Health', JSON.stringify(quiet));
+
+  // A SYMPTOM — its name and severity, each without the other.
+  const symptomId = logSymptom(db, {
+    date: TODAY,
+    time: '14:00',
+    name: 'Headache',
+    severity: 6,
+    bodyArea: 'forehead',
+    notes: null,
+  });
+  tap(symptomId, { severity: '4' }, quiet.deps);
+  const afterSeverity = row(symptomId).title;
+  tap(symptomId, { text: 'Tension headache' }, quiet.deps);
+  const afterName = row(symptomId).title;
+  tap(symptomId, { severity: '' }, quiet.deps);
+  const stored = db.get('SELECT name, severity, time, body_area FROM symptoms WHERE id = ?', [
+    symptomId,
+  ]);
+  afterSeverity === 'Headache · 4/10' &&
+  afterName === 'Tension headache · 4/10' &&
+  row(symptomId).title === 'Tension headache' &&
+  stored.severity === null &&
+  stored.time === '14:00' &&
+  stored.body_area === 'forehead'
+    ? ok('a symptom corrects its severity, then its name, then goes unrated — each keeping the rest')
+    : bad('symptom edits', JSON.stringify({ afterSeverity, afterName, stored }));
+  const eleven = tap(symptomId, { severity: '11' }, quiet.deps);
+  !eleven.saved && /1 to 10/.test(eleven.error) && row(symptomId).title === 'Tension headache'
+    ? ok('a severity of 11 is refused with the line saying why, and nothing is written')
+    : bad('severity 11', JSON.stringify(eleven));
+
+  JSON.stringify(listMission(db, TODAY)) === missionBefore
+    ? ok('today’s mission is untouched: an ad-hoc capture ticks no item, so a correction moves none')
+    : bad('the mission moved');
+
+  // UNTOUCHED — saving the figure the row prints writes nothing and sends
+  // nothing: 176.4 lb converted back is 80.0136 kg, not the 80 kg on record.
+  logMetric(db, TODAY, 'weight', 80);
+  const weightId = listEntriesOn(db, TODAY).find((e) => e.category === 'Weight').id;
+  const bodyId = weightId.split(':')[0];
+  const bodyRow = whole('body_metrics', bodyId);
+  const untouched = seam(new Set([bodyId]));
+  const same = tap(weightId, {}, untouched.deps);
+  captureDraft(getCapture(db, weightId, units()), units()).value === '176.4' &&
+  same.saved &&
+  same.edited === null &&
+  whole('body_metrics', bodyId) === bodyRow &&
+  untouched.deleted.length === 0
+    ? ok('the editor opens to 176.4 lb, and saving it unchanged writes nothing and sends nothing')
+    : bad('untouched weight', JSON.stringify({ same, deleted: untouched.deleted }));
+
+  // WEIGHT, already in Apple Health: the record and the sample, by its tag.
+  const published = seam(new Set([bodyId]));
+  const w = tap(weightId, { value: '174.8' }, published.deps);
+  const resent = await w.edited.health;
+  const body = db.get('SELECT weight_kg, measured_at, created_at FROM body_metrics WHERE id = ?', [
+    bodyId,
+  ]);
+  const sample = published.saved[0];
+  near(body.weight_kg, 174.8 / 2.2046226218) &&
+  row(weightId).title === '174.8 lb' &&
+  resent === true &&
+  JSON.stringify(published.deleted) ===
+    JSON.stringify([`HKQuantityTypeIdentifierBodyMass:${bodyId}`]) &&
+  published.saved.length === 1 &&
+  sample.identifier === 'HKQuantityTypeIdentifierBodyMass' &&
+  near(sample.value, body.weight_kg) &&
+  sample.at === new Date(body.measured_at).toISOString() &&
+  sample.metadata.ARCPublishedFrom === bodyId
+    ? ok('a published weight is corrected in the record and replaced in Apple Health: same tag, same instant, new kg')
+    : bad('published weight', JSON.stringify({ body, deleted: published.deleted, saved: published.saved }));
+
+  // WEIGHT not in Apple Health yet: the record only — the walk sends the new one.
+  const pending = seam();
+  const p2 = tap(weightId, { value: '175' }, pending.deps);
+  const pendingResent = await p2.edited.health;
+  pendingResent === false && pending.saved.length === 0 && row(weightId).title === '175.0 lb'
+    ? ok('a weight Apple Health has not been sent yet is corrected in the record and sends nothing')
+    : bad('pending weight', JSON.stringify(pending));
+
+  // WATER: the water screen's record half, and its sample replaced.
+  logMetric(db, TODAY, 'water', 500);
+  const waterId = listEntriesOn(db, TODAY).find((e) => e.category === 'Water').id;
+  const glass = seam(new Set([waterId]));
+  const g = tap(waterId, { value: '20' }, glass.deps);
+  await g.edited.health;
+  const ml = db.get('SELECT value, created_at FROM wearable_data WHERE id = ?', [waterId]);
+  near(ml.value, 20 * 29.5735295625) &&
+  JSON.stringify(glass.deleted) ===
+    JSON.stringify([`HKQuantityTypeIdentifierDietaryWater:${waterId}`]) &&
+  glass.saved.length === 1 &&
+  glass.saved[0].metadata.ARCPublishedFrom === waterId &&
+  glass.saved[0].at === new Date(ml.created_at).toISOString()
+    ? ok('a glass corrected to 20 oz is replaced in Apple Health at the moment it was drunk')
+    : bad('water edit', JSON.stringify({ ml, glass }));
+
+  // SYNC OFF: ARC touches nothing in Apple Health.
+  setHealthSyncEnabled(db, false);
+  const off = seam(new Set([bodyId, waterId]));
+  const o = tap(weightId, { value: '176' }, off.deps);
+  await o.edited.health;
+  off.deleted.length === 0 && off.saved.length === 0 && row(weightId).title === '176.0 lb'
+    ? ok('with Apple Health sync off, the record is corrected and Health is left alone')
+    : bad('sync off', JSON.stringify(off));
+
+  // A body row holding TWO readings: only the one corrected moves.
+  db.run(
+    `INSERT INTO body_metrics (id, measured_at, weight_kg, waist_cm, source)
+     VALUES ('two-readings', ?, 81, 84, 'manual')`,
+    [new Date().toISOString()]
+  );
+  tap('two-readings:waist_cm', { value: '32' }, off.deps);
+  const two = db.get(`SELECT weight_kg, waist_cm FROM body_metrics WHERE id = 'two-readings'`);
+  two.weight_kg === 81 && near(two.waist_cm, 32 * 2.54)
+    ? ok('a row with two readings keeps the other one when one is corrected')
+    : bad('two readings', JSON.stringify(two));
+
+  // A KG USER edits in kilograms — the unit the row prints.
+  setUnitPreference(db, 'weight', 'kg');
+  const kgDraft = captureDraft(getCapture(db, weightId, units()), units());
+  tap(weightId, { value: '79' }, off.deps);
+  kgDraft.value === '79.8' &&
+  db.get('SELECT weight_kg FROM body_metrics WHERE id = ?', [bodyId]).weight_kg === 79
+    ? ok('a kg user’s editor opens to 79.8 kg, and 79 is stored as exactly 79 kg')
+    : bad('kg edit', JSON.stringify(kgDraft));
+  setUnitPreference(db, 'weight', 'lb');
+
+  // REFUSED, WRITING NOTHING — at the repository and on the tap.
+  const noteBefore = whole('log_entries', noteId);
+  let wrongKey = null;
+  try {
+    editLogCapture(db, noteId, { canonical: 5 }, off.deps);
+  } catch (e) {
+    wrongKey = e.message;
+  }
+  let wrongWords = null;
+  try {
+    correctCapture(db, weightId, { text: 'heavy' });
+  } catch (e) {
+    wrongWords = e.message;
+  }
+  /words, not a number/.test(wrongKey ?? '') &&
+  /a number, not words/.test(wrongWords ?? '') &&
+  whole('log_entries', noteId) === noteBefore
+    ? ok('a number sent for a note, or words for a weight, is refused and writes nothing')
+    : bad('wrong keys', `${wrongKey} | ${wrongWords}`);
+  const blank = tap(noteId, { text: '   ' }, off.deps);
+  const huge = tap(weightId, { value: '5000' }, off.deps);
+  const junk = tap(weightId, { value: 'heavy' }, off.deps);
+  !blank.saved &&
+  blank.error === 'Type the words, or remove the entry.' &&
+  !huge.saved &&
+  huge.error === 'That weight is out of range.' &&
+  !junk.saved &&
+  junk.error === 'Type a number.' &&
+  whole('log_entries', noteId) === noteBefore
+    ? ok('empty words, 5000 lb and a word for a number each say why, and nothing is written')
+    : bad('tap refusals', JSON.stringify({ blank, huge, junk }));
+  const unchangedSymptom = captureDraftPatch(
+    getCapture(db, symptomId, units()),
+    { text: 'Tension headache ', value: '', severity: '' },
+    units()
+  );
+  unchangedSymptom.patch === null
+    ? ok('a draft that says what the row says is no correction at all')
+    : bad('no-op draft', JSON.stringify(unchangedSymptom));
+
+  // NOT A CAPTURE: screen time is a day's total, corrected where it is typed.
+  const screen = recordScreenTime(db, TODAY, 200, 'typed');
+  getCapture(db, screen.id) === undefined &&
+  editLogCapture(db, screen.id, { canonical: 100 }, off.deps) === null &&
+  editLogCapture(db, 'no-such-id', { text: 'x' }, off.deps) === null &&
+  db.get('SELECT value FROM wearable_data WHERE id = ?', [screen.id]).value === 200
+    ? ok('screen time and an unknown id are not captures: nothing is found, nothing is written')
+    : bad('not a capture');
+
+  // AFTER A CORRECTION, the × and its Undo still round-trip the corrected row.
+  const corrected = whole('log_entries', creatineId);
+  const removed = removeLogCapture(db, creatineId, off.deps);
+  void restoreLogCapture(db, removed, off.deps);
+  whole('log_entries', creatineId) === corrected
+    ? ok('a corrected row removes and comes back as corrected')
+    : bad('undo after edit');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

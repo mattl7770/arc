@@ -53,6 +53,14 @@
  * deleted while the save was in flight. Rule 1 stands for what it is about: a
  * burst of history, which no tag makes wise to post.
  *
+ * **And a correction replaces by the same tag (2026-09-26).** When the Log tab
+ * or the Coach corrects a weight, a body-fat or waist reading or a glass
+ * ({@link editLogCapture}), the sample it put in Apple Health is taken out by
+ * its tag and saved again with the corrected value, at the same instant — the
+ * path {@link editWaterCapture} has taken since two-way water. The body walk
+ * re-reads each row after its save lands and replaces a value corrected while
+ * it was in flight ({@link settleSavedBody}), as the water walk does.
+ *
  * **And water goes out when it is logged (2026-09-23), not on the next sync.**
  * {@link logWaterCapture} and {@link logMetricCapture} write the capture and
  * start a water-only walk behind it, through the same single in-flight pass the
@@ -68,10 +76,14 @@ import {
 import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
 import {
+  correctCapture,
   dayInstant,
   logMetric,
   restoreCapture,
   takeCapture,
+  type CaptureRecord,
+  type CapturePatch,
+  type CorrectedCapture,
   type TakenCapture,
 } from '@/lib/db/repositories/logs';
 import { getPreferences, isHealthSyncEnabled } from '@/lib/db/repositories/user';
@@ -281,38 +293,46 @@ async function runPublishPass(
 
   for (const row of publishableBodyAfter(db, cursor, PUBLISH_BATCH_ROWS)) {
     let rowComplete = true;
-    for (const sample of bodySamplesFor(row)) {
-      let entry = tally.get(sample.hkIdentifier);
-      if (!entry) {
-        entry = { label: labelFor(sample.hkIdentifier), attempted: 0, succeeded: 0 };
-        tally.set(sample.hkIdentifier, entry);
+    // From the first save of this row until Health holds what the row says, a
+    // correction's re-send stands aside for it (bodySaving). Cleared on every
+    // way out of this step: settled, refused, or thrown.
+    bodySaving = row.id;
+    try {
+      for (const sample of bodySamplesFor(row)) {
+        let entry = tally.get(sample.hkIdentifier);
+        if (!entry) {
+          entry = { label: labelFor(sample.hkIdentifier), attempted: 0, succeeded: 0 };
+          tally.set(sample.hkIdentifier, entry);
+        }
+        entry.attempted++;
+        samplesAttempted++;
+        const saved = await deps.save(
+          sample.hkIdentifier,
+          sample.hkUnit,
+          sample.value,
+          sample.at,
+          sample.at,
+          { [ARC_WRITE_METADATA_KEY]: sample.sourceRowId }
+        );
+        if (!saved) {
+          rowComplete = false;
+          break;
+        }
+        entry.succeeded++;
+        samplesWritten++;
       }
-      entry.attempted++;
-      samplesAttempted++;
-      const saved = await deps.save(
-        sample.hkIdentifier,
-        sample.hkUnit,
-        sample.value,
-        sample.at,
-        sample.at,
-        { [ARC_WRITE_METADATA_KEY]: sample.sourceRowId }
-      );
-      if (!saved) {
-        rowComplete = false;
-        break;
-      }
-      entry.succeeded++;
-      samplesWritten++;
+      // Advance only over rows published in FULL (rule 2). A half-published row
+      // stays pending: re-saving its accepted samples next pass writes a duplicate
+      // into Health, which is visible and correctable, whereas skipping the
+      // refused one loses the reading outright.
+      if (rowComplete) await settleSavedBody(db, row, deps);
+    } finally {
+      bodySaving = null;
     }
-    // Advance only over rows published in FULL (rule 2). A half-published row
-    // stays pending: re-saving its accepted samples next pass writes a duplicate
-    // into Health, which is visible and correctable, whereas skipping the
-    // refused one loses the reading outright.
     if (!rowComplete) {
       stalled = true;
       break;
     }
-    await settleSavedBody(db, row, deps);
     cursor = { createdAt: row.createdAt, id: row.id };
   }
 
@@ -335,17 +355,25 @@ async function runPublishPass(
 }
 
 /**
- * After a body row's samples land, take back any whose reading is no longer
- * on the record (2026-09-25) — the body twin of {@link settleSavedWater}'s
- * first case.
+ * After a body row's samples land, make Health hold what the row holds NOW —
+ * the body twin of {@link settleSavedWater}.
  *
- * The walk reads its batch when the pass begins, and a weight deleted on the
- * Log tab after that read is still in the batch: its save lands after the
- * deletion's own tagged delete has looked and found nothing. So each saved
- * row is read again, and a sample whose column is gone — the row deleted, or
- * that one reading cleared — is removed by the row's tag. Best-effort and
- * never throws: a rejection here would end the pass before its cursor is
- * saved, and the next pass would re-post every row saved before it.
+ * The walk reads its batch when the pass begins, so a reading changed on the
+ * Log tab after that read is still in the batch as it WAS:
+ *
+ * - **Deleted** (2026-09-25): its save lands after the deletion's own tagged
+ *   delete has looked and found nothing. A sample whose column is gone — the
+ *   row deleted, or that one reading cleared — is removed by the row's tag.
+ * - **Corrected** (2026-09-26): the correction's re-send stood aside for this
+ *   row ({@link bodySaving}), so the walk replaces what it sent with the value
+ *   the row holds now, same instant, same tag. Then it reads again, since the
+ *   re-save was in flight too.
+ *
+ * {@link bodySaving} is let go in the same step as the read that finds Health
+ * right, so a correction landing after it takes the ordinary path. Best-effort
+ * and never throws: a rejection here would end the pass before its cursor is
+ * saved, and the next pass would re-post every row saved before it. A refused
+ * re-save leaves the reading missing from Health rather than wrong there.
  */
 async function settleSavedBody(
   db: Database,
@@ -354,13 +382,44 @@ async function settleSavedBody(
 ): Promise<void> {
   const deleteByTag = deps.deleteByTag;
   if (!deleteByTag) return;
-  const now = getPublishableBody(db, sent.id);
-  const still = new Set(now ? bodySamplesFor(now).map((s) => s.hkIdentifier) : []);
-  for (const sample of bodySamplesFor(sent)) {
-    if (still.has(sample.hkIdentifier)) continue;
-    await deleteByTag(sample.hkIdentifier, sent.id).catch(() => 0);
+  let inHealth = bodySamplesFor(sent);
+  for (let resaves = 0; ; resaves++) {
+    const row = getPublishableBody(db, sent.id);
+    const now = new Map((row ? bodySamplesFor(row) : []).map((s) => [s.hkIdentifier, s]));
+    const stale = inHealth.filter((sample) => {
+      const held = now.get(sample.hkIdentifier);
+      return !held || held.value !== sample.value || held.at.getTime() !== sample.at.getTime();
+    });
+    // The same bound as water's: a second correction inside one save is
+    // already beyond what a person can do.
+    if (stale.length === 0 || resaves >= WATER_RESAVE_LIMIT) {
+      bodySaving = null;
+      return;
+    }
+    const kept = inHealth.filter((sample) => !stale.includes(sample));
+    for (const sample of stale) {
+      await deleteByTag(sample.hkIdentifier, sent.id).catch(() => 0);
+      const held = now.get(sample.hkIdentifier);
+      if (!held) continue; // gone from the record: gone from Health
+      const saved = await deps
+        .save(held.hkIdentifier, held.hkUnit, held.value, held.at, held.at, {
+          [ARC_WRITE_METADATA_KEY]: held.sourceRowId,
+        })
+        .catch(() => false);
+      if (saved) kept.push(held);
+    }
+    inHealth = kept;
   }
 }
+
+/**
+ * The body row the walk is saving right now, from its first save until Health
+ * holds what the row says — {@link waterSaving}'s twin. A correction's
+ * re-send ({@link republishCapture}) leaves this one row to the walk, which
+ * re-reads it after its saves land and replaces what it sent. One walk runs at
+ * a time, so one id is enough.
+ */
+let bodySaving: string | null = null;
 
 // --- Water (2026-09-21) -----------------------------------------------------------
 
@@ -654,22 +713,47 @@ export function editWaterCapture(
 }
 
 async function republishWater(db: Database, id: string, deps: WaterPublishDeps): Promise<void> {
+  await republishCapture(db, WATER_PUBLISH_METRIC.hkIdentifier, id, deps);
+}
+
+/**
+ * Replace the one sample a capture row published under `identifier` with what
+ * the row holds now — a glass or a body reading, by the row's tag. Resolves to
+ * whether a sample was re-sent.
+ *
+ * Only what was out there is replaced: the tagged delete doubles as the
+ * question "was it published?", and a row the walk has not reached yet needs
+ * nothing — it carries the corrected value when it gets there. History from
+ * before the walk was armed was never sent, so it is never sent now either
+ * (rule 1). The replacement keeps the original instant and the tag, so it is
+ * the same reading with a new value rather than a new reading.
+ *
+ * Best-effort and never rejects: if the re-save is refused after the delete
+ * succeeded, the reading is missing from Health rather than wrong there, and
+ * ARC's own record is untouched.
+ */
+async function republishCapture(
+  db: Database,
+  identifier: string,
+  id: string,
+  deps: WaterPublishDeps
+): Promise<boolean> {
   // The walk is saving this very row. Its save may land after the delete below
   // has looked, or before it, so either answer here could be wrong; the walk
-  // re-reads the row once its save lands and replaces the amount itself
-  // (settleSavedWater). Two re-sends at once would leave two glasses.
-  if (waterSaving === id) return;
+  // re-reads the row once its save lands and replaces the value itself
+  // (settleSavedWater, settleSavedBody). Two re-sends at once would leave two.
+  const walking = identifier === WATER_PUBLISH_METRIC.hkIdentifier ? waterSaving : bodySaving;
+  if (walking === id) return false;
   try {
-    const removed = await deps.deleteByTag(WATER_PUBLISH_METRIC.hkIdentifier, id);
-    if (removed === 0) return;
-    const row = getPublishableWater(db, id);
-    const sample = row ? waterSampleFor(row) : null;
-    if (!sample) return;
-    await deps.save(sample.hkIdentifier, sample.hkUnit, sample.value, sample.at, sample.at, {
+    const removed = await deps.deleteByTag(identifier, id);
+    if (removed === 0) return false;
+    const sample = publishedSample(db, identifier, id);
+    if (!sample) return false;
+    return await deps.save(sample.hkIdentifier, sample.hkUnit, sample.value, sample.at, sample.at, {
       [ARC_WRITE_METADATA_KEY]: sample.sourceRowId,
     });
   } catch {
-    // Best-effort: see the note on editWaterCapture.
+    return false;
   }
 }
 
@@ -679,8 +763,7 @@ async function republishWater(db: Database, id: string, deps: WaterPublishDeps):
  * The Apple Health type a capture published under, or null for one ARC never
  * publishes (a note, a supplement, a symptom, HRV or resting HR typed by hand).
  */
-function publishedIdentifier(taken: TakenCapture): string | null {
-  const { capture } = taken;
+function publishedIdentifier(capture: CaptureRecord): string | null {
   if (capture.kind === 'wearable') {
     return capture.metricType === WATER_PUBLISH_METRIC.metricType
       ? WATER_PUBLISH_METRIC.hkIdentifier
@@ -736,7 +819,7 @@ export function removeLogCapture(
 ): RemovedCapture | null {
   const taken = takeCapture(db, feedId, getPreferences(db).units);
   if (!taken) return null;
-  const identifier = publishedIdentifier(taken);
+  const identifier = publishedIdentifier(taken.capture);
   let health: Promise<number> = Promise.resolve(0);
   try {
     if (identifier !== null && mayTouchHealth(db, deps)) {
@@ -766,7 +849,7 @@ export function restoreLogCapture(
   deps: WaterPublishDeps = NATIVE_WATER_DEPS
 ): Promise<boolean> {
   restoreCapture(db, removed.taken);
-  const identifier = publishedIdentifier(removed.taken);
+  const identifier = publishedIdentifier(removed.taken.capture);
   if (identifier === null) return Promise.resolve(false);
   const id = removed.taken.capture.rowId;
   return removed.health
@@ -779,6 +862,58 @@ export function restoreLogCapture(
       });
     })
     .catch(() => false);
+}
+
+// --- A capture corrected on the Log tab (2026-09-26) -------------------------------
+
+/** What {@link editLogCapture} did — the record half and the Health half. */
+export type EditedCapture = CorrectedCapture & {
+  /**
+   * Whether a corrected sample was sent to Apple Health: false when none had
+   * gone out yet (the walk sends the corrected value when it gets there), when
+   * sync is off, when the kind is never published, or when the walk is saving
+   * this row right now and replaces it itself. The screen ignores it; the
+   * headless suite awaits it.
+   */
+  health: Promise<boolean>;
+};
+
+/**
+ * Correct one capture on the Log tab's record AND every side effect it had —
+ * the ONE function the Log tab's editor and the Coach's `captures` edit both
+ * call (owner, 2026-09-26: *"Yes, an edit on the Log tab, and the Coach
+ * too."*). The record half is `correctCapture`
+ * (src/lib/db/repositories/logs.ts), which traces each kind; what it cannot
+ * reach is the sample a weight, a body-fat or waist reading, or a glass put
+ * into Apple Health, which is replaced here by the row's tag — the path
+ * {@link editWaterCapture} has taken since two-way water, now for the body
+ * channel too.
+ *
+ * ARC's row changes first and synchronously; the Health half is best-effort,
+ * gated on the same one switch as every Health write, and never runs for a
+ * patch that changed nothing. Null when the feed lists no such capture; throws,
+ * writing nothing, when the patch does not fit it.
+ */
+export function editLogCapture(
+  db: Database,
+  feedId: string,
+  patch: CapturePatch,
+  deps: WaterPublishDeps = NATIVE_WATER_DEPS
+): EditedCapture | null {
+  const corrected = correctCapture(db, feedId, patch, getPreferences(db).units);
+  if (!corrected) return null;
+  let health: Promise<boolean> = Promise.resolve(false);
+  if (corrected.changed) {
+    try {
+      const identifier = publishedIdentifier(corrected.after);
+      if (identifier !== null && mayTouchHealth(db, deps)) {
+        health = republishCapture(db, identifier, corrected.after.rowId, deps);
+      }
+    } catch {
+      // The record half is done; a Health seam that throws must not undo it.
+    }
+  }
+  return { ...corrected, health };
 }
 
 // --- A glass goes out when it is logged (2026-09-23) --------------------------------

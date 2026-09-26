@@ -59,7 +59,13 @@ import {
   updateFood,
 } from '@/lib/db/repositories/foods';
 import { listLabReports } from '@/lib/db/repositories/labs';
-import { getCapture, listEntriesOn, type CaptureRecord } from '@/lib/db/repositories/logs';
+import {
+  captureTitleFor,
+  getCapture,
+  listEntriesOn,
+  planCaptureCorrection,
+  type CaptureRecord,
+} from '@/lib/db/repositories/logs';
 import {
   deleteTemplate,
   getTemplate,
@@ -103,10 +109,16 @@ import {
   type LoadBasis,
 } from '@/lib/exercise/load-basis';
 import { repMaxesFrom } from '@/lib/exercise/records';
-import { metricByWearableType } from '@/lib/log/metrics';
+import { capturePatchFrom, captureSpec, type CaptureFields } from '@/lib/log/capture-edit';
+import { metricByWearableType, roundForDisplay } from '@/lib/log/metrics';
 import { getPreferences, isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { listWaterEntries, type WaterEntry } from '@/lib/db/repositories/water';
-import { editWaterCapture, removeLogCapture, removeWaterCapture } from '@/lib/health/publish';
+import {
+  editLogCapture,
+  editWaterCapture,
+  removeLogCapture,
+  removeWaterCapture,
+} from '@/lib/health/publish';
 import type { CatalogExercise, RoutineDetail } from '@/lib/exercise/types';
 import { deleteMealWithPhotos } from '@/lib/media/meal-photo-store';
 import { combinedName, planCombine } from '@/lib/nutrition/combine';
@@ -361,10 +373,11 @@ const mealsDomain: CoachDomainEntry = {
     },
     run: (db, row) => deleteMealWithPhotos(db, row.id),
   },
-  // The line the owner's Q2(b) answer SUPERSEDED (ADR 2026-09-19). It is
-  // replaced by a narrower one, not simply dropped: a logged metric and a
-  // capture still have no repository edit path and no screen delete, so the
-  // Coach still cannot touch them — by parity, not by policy.
+  // The line the owner's Q2(b) answer SUPERSEDED (ADR 2026-09-19). It was
+  // replaced by a narrower one, not simply dropped, because a logged metric and
+  // a capture then had no repository edit path and no screen delete. Both have
+  // since arrived on the Log tab — the delete 2026-09-25, the edit 2026-09-26 —
+  // and the `captures` domain retires what was left of the line.
   retires: [
     'editing or deleting anything already logged — a meal, workout, metric, capture (its screen in Eat, Train or Data)',
   ],
@@ -745,12 +758,91 @@ const waterDomain: CoachDomainEntry = {
 
 // --- captures (the Log feed, by day) -----------------------------------------
 
+/**
+ * A weight, body-fat or waist reading, or a glass: the kinds that put a copy
+ * in Apple Health, which a removal or a correction reaches too while sync is
+ * on (src/lib/health/publish.ts). Neither card claims it with sync off,
+ * because then ARC does not touch Health at all.
+ */
+function publishedKind(capture: CaptureRecord): boolean {
+  return (
+    capture.kind === 'body' ||
+    (capture.kind === 'wearable' && metricByWearableType(capture.metricType ?? '')?.key === 'water')
+  );
+}
+
+/** "weight", "body-fat", but "HRV" — a label as it reads inside a sentence. */
+function inSentence(label: string): string {
+  return /^[A-Z][a-z]/.test(label) ? label[0]!.toLowerCase() + label.slice(1) : label;
+}
+
+/**
+ * The correction card, in the Log tab's words: the line as the row prints it
+ * now → as it will print it, then the day and time it was logged.
+ *
+ *   `Change weight 176.4 lb → 174.8 lb — 2026-09-26 07:12 · and any copy in Apple Health`
+ *   `Change Creatine · 5 g → Creatine · 10 g — 2026-09-26 08:30`
+ *   `Change the note “Slept badly” → “Slept badly, 3am wake” — 2026-09-26 07:40`
+ *   `Change Headache · 6/10 → Headache · 4/10 — 2026-09-26 14:02`
+ *
+ * `after` is drawn by `captureTitleFor` from the plan `editLogCapture`
+ * re-runs, so the card prints exactly the line the Log tab will show.
+ */
+function captureEditLine(db: Database, capture: CaptureRecord, after: string): string {
+  const what = capture.note
+    ? 'the note '
+    : capture.measure
+      ? `${inSentence(capture.category)} `
+      : '';
+  const quote = (line: string) => (capture.note ? `“${line}”` : line);
+  return (
+    `Change ${what}${quote(capture.title)} → ${quote(after)} — ${capture.date} ${capture.time}` +
+    (publishedKind(capture) && isHealthSyncEnabled(db) ? ' · and any copy in Apple Health' : '')
+  );
+}
+
+/** The words of a capture: never empty, and never null — removing is delete_record's. */
+const captureTextField: DomainField = {
+  editable: true,
+  note: 'the words: a note, a supplement, medication or therapy line, or a symptom’s name',
+  parse: (fields, key) => {
+    const value = fields[key];
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new Error(
+        `"${key}" must be the corrected words, not empty. To remove the entry, use delete_record.`
+      );
+    }
+    return value.trim();
+  },
+};
+
+/** A measurement, in the unit its line prints — the user's own units. */
+const captureValueField: DomainField = {
+  editable: true,
+  note:
+    'a measurement, in the unit its line shows (lb or kg, oz or ml, in or cm; body fat %, ' +
+    'HRV ms, resting HR bpm, a dose mg)',
+  parse: (fields, key) => {
+    const value = fields[key];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      throw new Error(`"${key}" must be a positive number, in the unit the entry's line shows.`);
+    }
+    return value;
+  },
+};
+
 const capturesDomain: CoachDomainEntry = {
   key: 'captures',
   label: 'logged entry',
   fields: {
     title: ro('the line as the Log tab shows it'),
     category: ro('Note, Supplement, Medication, Therapy, Symptom or a metric'),
+    // EDITABLE since 2026-09-26 (owner: *"Yes, an edit on the Log tab, and the
+    // Coach too."*). Each row takes only its own: words, a number, or a
+    // symptom's name and severity. Never the time — see logs.ts `CaptureEdit`.
+    text: captureTextField,
+    value: captureValueField,
+    severity: numberField('a symptom’s severity, 1–10, or null for unrated', { min: 1, max: 10 }),
   },
   // The by-day read the app never had: the log tools have always backdated and
   // nothing could read a past day back (`listEntriesOn`, repositories/logs.ts).
@@ -776,12 +868,45 @@ const capturesDomain: CoachDomainEntry = {
           'query_records { domain: "captures", from: "YYYY-MM-DD" }.'
       );
     }
-    return {
-      id: capture.id,
-      name: capture.title,
-      values: { title: capture.title, category: capture.category },
-      raw: capture,
-    };
+    // The editable fields' current values, keyed as `fields` is and in the
+    // units the line prints, so the card's "was" and the staleness re-read
+    // speak the same unit as the patch.
+    const edit = capture.edit;
+    const values: Record<string, unknown> = { title: capture.title, category: capture.category };
+    if (edit?.kind === 'text') values.text = edit.text;
+    if (edit?.kind === 'symptom') {
+      values.text = edit.name;
+      values.severity = edit.severity;
+    }
+    if (edit?.kind === 'measure') {
+      const spec = captureSpec(edit, getPreferences(db).units);
+      values.value = spec ? roundForDisplay(spec, edit.canonical) : edit.canonical;
+    }
+    return { id: capture.id, name: capture.title, values, raw: capture };
+  },
+  // THE CORRECTION, through the Log tab's own save: `editLogCapture`, the
+  // record and the copy a weight or a glass put in Apple Health. Read-modify-
+  // write by construction — the patch names only what changes, and a symptom
+  // sent a severity keeps its name. The card is drawn from the plan the write
+  // re-runs, and throws at card time for anything knowable: a field the row
+  // does not have, a figure out of range, a patch that changes nothing.
+  summarize: ({ db, row, patch }) => {
+    const capture = row!.raw as CaptureRecord;
+    const units = getPreferences(db!).units;
+    const correction = capturePatchFrom(capture, patch as CaptureFields, units);
+    if (Object.keys(correction).length === 0) {
+      throw new Error('Nothing would change — the entry already reads that way.');
+    }
+    const { next } = planCaptureCorrection(capture, correction);
+    return captureEditLine(db!, capture, captureTitleFor(next, units));
+  },
+  edit: (db, row, patch) => {
+    const capture = row.raw as CaptureRecord;
+    const correction = capturePatchFrom(capture, patch as CaptureFields, getPreferences(db).units);
+    const edited = editLogCapture(db, row.id, correction);
+    if (!edited?.changed) {
+      throw new Error('That entry could not be corrected — it is no longer on the Log tab.');
+    }
   },
   // HARD since 2026-09-25, and it REFUSED until then by parity: the Log tab
   // drew a capture and offered no delete, and repositories/logs.ts had none to
@@ -799,14 +924,10 @@ const capturesDomain: CoachDomainEntry = {
     mode: 'hard',
     gone: (db, row) => {
       const capture = row.raw as CaptureRecord;
-      const published =
-        capture.kind === 'body' ||
-        (capture.kind === 'wearable' &&
-          metricByWearableType(capture.metricType ?? '')?.key === 'water');
       return [
         `${capture.date} ${capture.time}`,
         capture.note ? 'Note' : capture.category,
-        published && isHealthSyncEnabled(db) ? 'and any copy in Apple Health' : null,
+        publishedKind(capture) && isHealthSyncEnabled(db) ? 'and any copy in Apple Health' : null,
       ]
         .filter((p): p is string => p !== null)
         .join(' · ');
@@ -817,7 +938,11 @@ const capturesDomain: CoachDomainEntry = {
       }
     },
   },
-  retires: ['correcting or deleting a logged metric or a capture — its row in the Log tab'],
+  retires: [
+    'correcting or deleting a logged metric or a capture — its row in the Log tab',
+    // 2026-09-26: the edit made the rest of the line false.
+    'correcting a logged metric or a capture — its row in the Log tab',
+  ],
 };
 
 // --- protocol adherence ------------------------------------------------------

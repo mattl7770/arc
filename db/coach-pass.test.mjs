@@ -34,6 +34,9 @@ import {
 } from '../src/lib/ai/pass-schedule.ts';
 import {
   carriesNumber,
+  checkinAfterQuiet,
+  CHECKIN_AFTER_QUIET_MIN,
+  DEFAULT_NUDGE_SETTINGS,
   inQuietHours,
   parseNudgeReply,
   planNudges,
@@ -948,8 +951,12 @@ console.log(
 {
   const { db } = freshDb();
   const s0 = nudgeRepo.getNudgeSettings(db);
-  s0.enabled && s0.quietStart === '21:30' && s0.quietEnd === '07:00' && s0.checkinTime === null
-    ? ok('defaults: on, quiet 21:30–07:00, morning check-in off (the owner’s answers)')
+  s0.enabled &&
+  s0.quietStart === '21:30' &&
+  s0.quietEnd === '07:00' &&
+  s0.checkinTime === '07:05' &&
+  s0.checkinFollowsQuiet === true
+    ? ok('defaults: on, quiet 21:30–07:00, morning check-in ON at 07:05 (the owner’s answers)')
     : bad('defaults', JSON.stringify(s0));
   nudgeRepo.applyNudgeReply(
     db,
@@ -981,18 +988,124 @@ console.log(
     NOW,
     ZERO
   );
-  junk.quietEnd === '07:00' && junk.checkinTime === null
+  junk.quietEnd === '07:00' && junk.checkinTime === '07:05' && junk.checkinFollowsQuiet
     ? ok('a time that is not a clock is ignored, never stored')
     : bad('junk stored', JSON.stringify(junk));
   nudgeRepo.saveNudgeSettings(db, { checkinTime: '07:15' }, NOW, ZERO).checkinTime === '07:15' &&
   nudgeRepo.saveNudgeSettings(db, { checkinTime: null }, NOW, ZERO).checkinTime === null
-    ? ok('the morning check-in turns on at a time and off again')
+    ? ok('the morning check-in moves to a time of his own and turns off again')
     : bad('check-in time');
   nudgeRepo.saveNudgeSettings(db, { enabled: false }, NOW, ZERO);
   nudgeRepo.upcomingNudges(db, NOW, ZERO).length === 0 &&
   nudgeRepo.listNudgesFrom(db, TODAY).every((r) => r.status === 'cancelled')
     ? ok('turning nudges off cancels every one still ahead, at once')
     : bad('off did not cancel');
+}
+
+console.log(
+  'N4b. the morning check-in: on by default, just after quiet hours end, and it follows them'
+);
+{
+  // The owner, 2026-09-26: "Turn it on, just after quiet hours end." Nothing
+  // of 0064's was on his phone, so the default lives in code — the stored rule
+  // is 'follow' or absent — and no migration was needed.
+  CHECKIN_AFTER_QUIET_MIN === 5 &&
+  DEFAULT_NUDGE_SETTINGS.checkinTime === '07:05' &&
+  DEFAULT_NUDGE_SETTINGS.checkinFollowsQuiet === true
+    ? ok('“just after” is five minutes: the default check-in is 07:05, after quiet hours end at 07:00')
+    : bad('default timing', JSON.stringify(DEFAULT_NUDGE_SETTINGS));
+  checkinAfterQuiet('21:30', '06:30') === '06:35' &&
+  checkinAfterQuiet('22:00', '23:58') === '00:03' &&
+  checkinAfterQuiet('01:00', '05:55') === '06:00'
+    ? ok('the time is the end plus five, across the hour and across midnight')
+    : bad('checkinAfterQuiet arithmetic');
+  checkinAfterQuiet('21:30', '21:30') === '07:05'
+    ? ok('with no quiet hours (equal ends) it falls back to 07:05, never to an evening "morning"')
+    : bad('empty window', checkinAfterQuiet('21:30', '21:30'));
+
+  const { db } = freshDb();
+  const prefs = () => JSON.parse(db.get('SELECT preferences FROM users').preferences).coachNudges;
+  const save = (patch) => nudgeRepo.saveNudgeSettings(db, patch, NOW, ZERO);
+
+  // FOLLOWS: moving quiet hours moves the check-in, because he never set it.
+  let s = save({ quietEnd: '06:30' });
+  s.checkinTime === '06:35' && s.checkinFollowsQuiet && prefs().checkin === 'follow'
+    ? ok('moving quiet hours to end at 06:30 moves the check-in to 06:35; the rule is stored, not the time')
+    : bad('follows quiet end', JSON.stringify({ s, stored: prefs() }));
+  s = save({ quietStart: '22:30' });
+  s.checkinTime === '06:35'
+    ? ok('…and moving only the start leaves it where the end puts it')
+    : bad('start move', JSON.stringify(s));
+
+  // HIS OWN TIME: set on the wheel, it stays put whatever quiet hours do.
+  s = save({ checkinTime: '07:30' });
+  s.checkinTime === '07:30' && !s.checkinFollowsQuiet && prefs().checkin === '07:30'
+    ? ok('a time set on the wheel is his: it no longer follows')
+    : bad('pinned', JSON.stringify({ s, stored: prefs() }));
+  s = save({ quietEnd: '08:00' });
+  s.checkinTime === '07:30' && !s.checkinFollowsQuiet
+    ? ok('…and moving quiet hours leaves it at 07:30 — even inside them, since it is exempt')
+    : bad('pinned moved', JSON.stringify(s));
+  s = save({ checkinTime: '08:05' });
+  s.checkinTime === '08:05' && !s.checkinFollowsQuiet
+    ? ok('a time he sets that happens to equal the followed one is still his')
+    : bad('pinned equal', JSON.stringify(s));
+
+  // FOLLOW AGAIN: the control under the time puts it back.
+  s = save({ checkinTime: '07:30' });
+  s = save({ checkinFollowsQuiet: true });
+  s.checkinTime === '08:05' && s.checkinFollowsQuiet && prefs().checkin === 'follow'
+    ? ok('“Follow quiet hours” puts it back at the end plus five (08:05), moving again')
+    : bad('follow again', JSON.stringify(s));
+  s = save({ checkinFollowsQuiet: false });
+  s.checkinTime === '08:05' && !s.checkinFollowsQuiet
+    ? ok('no longer following, alone, keeps it where it goes out now')
+    : bad('unfollow', JSON.stringify(s));
+
+  // OFF, and the switch back on.
+  s = save({ checkinTime: null });
+  s.checkinTime === null && !s.checkinFollowsQuiet && prefs().checkin === 'off'
+    ? ok('off is off: no time, not following')
+    : bad('off', JSON.stringify(s));
+  s = save({ quietEnd: '06:00' });
+  s.checkinTime === null
+    ? ok('…and moving quiet hours does not turn it back on')
+    : bad('off moved', JSON.stringify(s));
+  s = save({ checkinFollowsQuiet: false });
+  s.checkinTime === null
+    ? ok('…nor does “not following” on its own')
+    : bad('off unfollow', JSON.stringify(s));
+  s = save({ checkinFollowsQuiet: true });
+  s.checkinTime === '06:05' && s.checkinFollowsQuiet
+    ? ok('the switch turns it on FOLLOWING quiet hours — 06:05 — never at a fixed hour')
+    : bad('switch on', JSON.stringify(s));
+
+  // A blob written before 2026-09-26 carries checkinTime, and null was the
+  // old opt-in default: it reads as the new default; a time is kept.
+  const user = (json) => db.run('UPDATE users SET preferences = ?', [JSON.stringify(json)]);
+  user({ coachNudges: { enabled: true, quietStart: '21:30', quietEnd: '07:00', checkinTime: null } });
+  const legacyOff = nudgeRepo.getNudgeSettings(db);
+  user({
+    coachNudges: { enabled: true, quietStart: '21:30', quietEnd: '07:00', checkinTime: '07:15' },
+  });
+  const legacyTime = nudgeRepo.getNudgeSettings(db);
+  legacyOff.checkinTime === '07:05' &&
+  legacyOff.checkinFollowsQuiet &&
+  legacyTime.checkinTime === '07:15' &&
+  !legacyTime.checkinFollowsQuiet
+    ? ok('a pre-default blob: a null check-in reads as the new default, a set time is kept')
+    : bad('legacy blob', JSON.stringify({ legacyOff, legacyTime }));
+  user({ coachNudges: { checkin: 'sometimes' } });
+  nudgeRepo.getNudgeSettings(db).checkinTime === '07:05'
+    ? ok('junk in the stored rule reads as the default, never as a throw')
+    : bad('junk rule', JSON.stringify(nudgeRepo.getNudgeSettings(db)));
+
+  // ONE RULE: the pure preview the Coach's card reads is what the save writes.
+  const current = nudgeRepo.getNudgeSettings(db);
+  const preview = nudgeRepo.nextNudgeSettings(current, { quietEnd: '06:45' });
+  JSON.stringify(preview) === JSON.stringify(save({ quietEnd: '06:45' }))
+    ? ok('nextNudgeSettings previews exactly what saveNudgeSettings writes')
+    : bad('preview drift', JSON.stringify(preview));
 }
 
 console.log('N5. the directive: nudge instructions only when on, in the pass, naming no scenario');

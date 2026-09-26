@@ -1,10 +1,10 @@
 /**
  * The Coach's own notifications (0064), as the domain registry sees them — the
- * planned nudges the Coach tab lists with a Cancel on each, and the four
- * settings Settings › Coach gives them (docs/coach-domains.md §10c).
+ * planned nudges the Coach tab lists with a Cancel on each, and the settings
+ * Settings › Coach gives them (docs/coach-domains.md §10c).
  *
  * The notifications build put both on screens and deferred the Coach's half to
- * the registry. This is that half, and it adds no tool: the settings are four
+ * the registry. This is that half, and it adds no tool: the settings are five
  * more fields of the `settings` domain (fields cost nothing on the wire), and a
  * planned nudge is one more status domain, like a reminder.
  *
@@ -60,6 +60,7 @@ import {
   cancelNudge,
   getNudge,
   getNudgeSettings,
+  nextNudgeSettings,
   saveNudgeSettings,
   sentNudgesFrom,
   upcomingNudges,
@@ -67,6 +68,7 @@ import {
   type UpcomingNudge,
 } from '@/lib/db/repositories/coach-nudges';
 import {
+  CHECKIN_AFTER_QUIET_MIN,
   inQuietHours,
   isClock,
   nudgeDayLabel,
@@ -194,7 +196,7 @@ const nudgesDomain: CoachDomainEntry = {
 
 export const NUDGE_DOMAINS: CoachDomainEntry[] = [nudgesDomain];
 
-// --- The four settings, as fields of the `settings` domain -------------------
+// --- The settings, as fields of the `settings` domain ------------------------
 
 /**
  * A quiet-hours end: always a time. Unlike `timeField`, `null` is refused —
@@ -218,7 +220,8 @@ function clockField(note: string): DomainField {
   };
 }
 
-type NudgeFieldName = 'nudges_enabled' | 'quiet_start' | 'quiet_end' | 'checkin_time';
+type NudgeFieldName =
+  'nudges_enabled' | 'quiet_start' | 'quiet_end' | 'checkin_time' | 'checkin_follows_quiet';
 
 /** Field name → the `NudgeSettings` key `saveNudgeSettings` takes. */
 const SETTING_KEYS: Record<NudgeFieldName, keyof NudgeSettings> = {
@@ -226,6 +229,7 @@ const SETTING_KEYS: Record<NudgeFieldName, keyof NudgeSettings> = {
   quiet_start: 'quietStart',
   quiet_end: 'quietEnd',
   checkin_time: 'checkinTime',
+  checkin_follows_quiet: 'checkinFollowsQuiet',
 };
 
 export const NUDGE_SETTING_FIELDS: Record<NudgeFieldName, DomainField> = {
@@ -234,7 +238,17 @@ export const NUDGE_SETTING_FIELDS: Record<NudgeFieldName, DomainField> = {
   ),
   quiet_start: clockField('"HH:MM" — quiet hours begin; a nudge timed inside them does not go out'),
   quiet_end: clockField('"HH:MM" — quiet hours end'),
-  checkin_time: timeField('"HH:MM" of the daily morning check-in notification, or null for off'),
+  checkin_time: timeField(
+    '"HH:MM" of the daily morning check-in notification — a time set here stays put when ' +
+      'quiet hours move — or null for off'
+  ),
+  // 2026-09-26: the check-in is on by default, 5 minutes after quiet hours end,
+  // and moves with them until a time is set (nudge-plan.ts). This is how the
+  // Coach says which, and how it puts one back to following.
+  checkin_follows_quiet: boolField(
+    `true while the check-in sits ${CHECKIN_AFTER_QUIET_MIN} minutes after quiet hours end and ` +
+      'moves with them; true turns it back to that'
+  ),
 };
 
 export function isNudgeSettingField(name: string): name is NudgeFieldName {
@@ -249,7 +263,55 @@ export function nudgeSettingValues(db: Database): Record<NudgeFieldName, unknown
     quiet_start: settings.quietStart,
     quiet_end: settings.quietEnd,
     checkin_time: settings.checkinTime,
+    checkin_follows_quiet: settings.checkinFollowsQuiet,
   };
+}
+
+/** The nudge fields of a patch, as the `Partial<NudgeSettings>` the repository takes. */
+function settingsPatch(patch: Record<string, unknown>): Partial<NudgeSettings> {
+  const settings: Partial<NudgeSettings> = {};
+  for (const [field, key] of Object.entries(SETTING_KEYS)) {
+    if (field in patch) (settings as Record<string, unknown>)[key] = patch[field];
+  }
+  return settings;
+}
+
+/** The field values the settings row carries, as the `NudgeSettings` they came from. */
+function settingsFrom(values: Record<string, unknown>): NudgeSettings {
+  return {
+    enabled: values.nudges_enabled as boolean,
+    quietStart: values.quiet_start as string,
+    quietEnd: values.quiet_end as string,
+    checkinTime: (values.checkin_time as string | null) ?? null,
+    checkinFollowsQuiet: values.checkin_follows_quiet === true,
+  };
+}
+
+/**
+ * The morning check-in's clause, from the rule the write itself runs
+ * (`nextNudgeSettings`), or null when the patch leaves it as it was. Said
+ * whenever the TIME or the FOLLOWING changes, so moving quiet hours prints the
+ * check-in moving with them:
+ *
+ *   `Morning check-in 07:05 → 06:35, following quiet hours`
+ *   `Morning check-in 07:05 → 07:30, no longer following quiet hours`
+ *   `Morning check-in 07:30 → 07:05, following quiet hours`
+ *   `Morning check-in 07:05 → off`
+ */
+function checkinClause(before: NudgeSettings, after: NudgeSettings): string | null {
+  const was = before.checkinTime;
+  const now = after.checkinTime;
+  if (was === now && before.checkinFollowsQuiet === after.checkinFollowsQuiet) return null;
+  const change = was === now ? `stays at ${now ?? 'off'}` : `${was ?? 'off'} → ${now ?? 'off'}`;
+  const following =
+    now === null
+      ? ''
+      : after.checkinFollowsQuiet
+        ? ', following quiet hours'
+        : before.checkinFollowsQuiet
+          ? ', no longer following quiet hours'
+          : '';
+  return `Morning check-in ${change}${following}`;
 }
 
 /** "21:30–07:00", or "none" when the ends are equal (`inQuietHours`' own rule). */
@@ -265,7 +327,12 @@ function windowText(start: unknown, end: unknown): string {
  *   `Coach nudges on → off, which cancels 2 planned notifications`
  *   `Quiet hours 21:30–07:00 → 22:00–06:30, which holds back 1 planned notification`
  *   `Quiet hours 21:30–08:30 → 21:30–07:00, which lets 1 held-back notification go out`
- *   `Morning check-in off → 07:30`
+ *   `Morning check-in 07:05 → 07:30, no longer following quiet hours`
+ *
+ * Moving quiet hours while the check-in follows them (the default since
+ * 2026-09-26) adds the check-in's own clause after the hours', because the
+ * write moves it too: `…; Morning check-in 07:05 → 06:35, following quiet
+ * hours`.
  *
  * Every count is taken at {@link latest}: at card time that is the card's
  * instant, and past the gate it is the approval's, so a nudge that fires while
@@ -330,12 +397,19 @@ export function describeNudgeSettings(
     );
   }
 
-  if ('checkin_time' in patch && next.checkin_time !== was.checkin_time) {
-    clauses.push(
-      `Morning check-in ${(was.checkin_time as string | null) ?? 'off'} → ` +
-        `${(next.checkin_time as string | null) ?? 'off'}`
+  // A time and "follow quiet hours" in one patch are two answers to one
+  // question; the screen never sends both, and neither may the Coach.
+  if (patch.checkin_follows_quiet === true && 'checkin_time' in patch) {
+    throw new Error(
+      'Send checkin_time (a time of the user’s own, or null for off) or checkin_follows_quiet: ' +
+        'true, not both.'
     );
   }
+  // After the quiet-hours clause, because a followed check-in moving is a
+  // consequence of the hours moving.
+  const current = settingsFrom(was);
+  const checkin = checkinClause(current, nextNudgeSettings(current, settingsPatch(patch)));
+  if (checkin !== null) clauses.push(checkin);
   return clauses;
 }
 
@@ -351,9 +425,6 @@ export function saveNudgeSettingFields(
   patch: Record<string, unknown>,
   context: CoachToolContext
 ): void {
-  const settings: Partial<NudgeSettings> = {};
-  for (const [field, key] of Object.entries(SETTING_KEYS)) {
-    if (field in patch) (settings as Record<string, unknown>)[key] = patch[field];
-  }
+  const settings = settingsPatch(patch);
   if (Object.keys(settings).length > 0) saveNudgeSettings(db, settings, latest(context));
 }

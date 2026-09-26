@@ -74,6 +74,7 @@ import {
   WATER_PUBLISH_METRIC,
 } from '../src/lib/health/mapping.ts';
 import {
+  editLogCapture,
   editWaterCapture,
   logMetricCapture,
   logWaterCapture,
@@ -3510,6 +3511,108 @@ console.log('27. a weight deleted while its save is in flight comes back out of 
   getHealthPublishState(db).cursorId === 'body-kept'
     ? ok('…and the cursor still moves past both rows')
     : bad('body settle cursor', JSON.stringify(getHealthPublishState(db)));
+}
+
+// ---------------------------------------------------------------------------
+// 28. A weight corrected on the Log tab reaches Apple Health — after the walk,
+// before it, and WHILE its own save is in flight (2026-09-26). The correction
+// replaces a published sample by the row's tag (`editLogCapture` →
+// `republishCapture`); one the walk has not reached needs nothing; and one
+// corrected while the walk is saving it is left to the walk, which re-reads
+// the row after its save lands and replaces what it sent (`settleSavedBody`,
+// `bodySaving`) — so Health ends with ONE sample, at the corrected value.
+console.log('28. a weight corrected before, after and during its save ends as one sample, corrected');
+{
+  const { db } = freshDb();
+  setHealthSyncEnabled(db, true);
+  addBody(db, {
+    id: 'body-old',
+    createdAt: '2026-09-26T06:00:00.000Z',
+    measuredAt: '2026-09-26T06:00:00.000Z',
+    weightKg: 80,
+  });
+  await publishBodyMetrics(db, new Date('2026-09-26T06:01:00.000Z'), recorder().deps); // arms
+
+  /** Apple Health as a list of samples, with the tagged delete the seam offers. */
+  const health = [];
+  const seam = (onSave = () => {}) => ({
+    isAvailable: () => true,
+    save: async (identifier, _unit, value, start, _end, metadata) => {
+      await onSave(value);
+      health.push({ identifier, value, at: start.toISOString(), tag: metadata[ARC_WRITE_METADATA_KEY] });
+      return true;
+    },
+    deleteByTag: async (identifier, tag) => {
+      const before = health.length;
+      for (let i = health.length - 1; i >= 0; i--) {
+        if (health[i].identifier === identifier && health[i].tag === tag) health.splice(i, 1);
+      }
+      return before - health.length;
+    },
+  });
+  const tagged = (id) => health.filter((h) => h.tag === id);
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  // BEFORE the walk reaches it: the record only; the walk sends the new value.
+  addBody(db, {
+    id: 'body-early',
+    createdAt: '2026-09-26T07:00:00.000Z',
+    measuredAt: '2026-09-26T07:00:00.000Z',
+    weightKg: 81,
+  });
+  const early = editLogCapture(db, 'body-early:weight_kg', { canonical: 81.5 }, seam());
+  const earlyResent = await early.health;
+  earlyResent === false && tagged('body-early').length === 0
+    ? ok('a weight corrected before the walk reached it sends nothing yet')
+    : bad('early correction', JSON.stringify(health));
+  await publishBodyMetrics(db, new Date('2026-09-26T07:05:00.000Z'), seam());
+  tagged('body-early').length === 1 && tagged('body-early')[0].value === 81.5
+    ? ok('…and the walk then sends the corrected 81.5 kg when it gets there')
+    : bad('walk after early correction', JSON.stringify(health));
+
+  // AFTER: a published weight is replaced — one sample, new value, same instant.
+  const after = editLogCapture(db, 'body-early:weight_kg', { canonical: 82 }, seam());
+  const afterResent = await after.health;
+  const replaced = tagged('body-early');
+  afterResent === true &&
+  replaced.length === 1 &&
+  replaced[0].value === 82 &&
+  replaced[0].at === '2026-09-26T07:00:00.000Z'
+    ? ok('a published weight corrected to 82 kg is replaced: one sample, same instant, same tag')
+    : bad('after correction', JSON.stringify(replaced));
+
+  // DURING: corrected while the walk's save of that row is in flight. The
+  // correction stands aside; the walk replaces what it sent once it lands.
+  addBody(db, {
+    id: 'body-racing',
+    createdAt: '2026-09-26T08:00:00.000Z',
+    measuredAt: '2026-09-26T08:00:00.000Z',
+    weightKg: 83,
+  });
+  let during = null;
+  const racingSeam = seam(async (value) => {
+    if (value === 83 && during === null) {
+      during = editLogCapture(db, 'body-racing:weight_kg', { canonical: 84 }, seam());
+      await flush();
+    }
+  });
+  await publishBodyMetrics(db, new Date('2026-09-26T08:05:00.000Z'), racingSeam);
+  const duringResent = await during.health;
+  const racing = tagged('body-racing');
+  duringResent === false && racing.length === 1 && racing[0].value === 84
+    ? ok('corrected mid-save: the correction stands aside and the walk leaves ONE sample, at 84 kg')
+    : bad('in-flight correction', JSON.stringify({ duringResent, racing }));
+  getHealthPublishState(db).cursorId === 'body-racing'
+    ? ok('…and the cursor moves past it as it would have')
+    : bad('cursor after in-flight correction', JSON.stringify(getHealthPublishState(db)));
+
+  // And once the walk has let go of the row, a correction takes the ordinary path.
+  const later = editLogCapture(db, 'body-racing:weight_kg', { canonical: 85 }, seam());
+  (await later.health) === true &&
+  tagged('body-racing').length === 1 &&
+  tagged('body-racing')[0].value === 85
+    ? ok('…and a correction after the walk let go replaces it by the ordinary path')
+    : bad('post-walk correction', JSON.stringify(tagged('body-racing')));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

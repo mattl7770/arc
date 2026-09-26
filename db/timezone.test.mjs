@@ -127,6 +127,7 @@ import { offsetAt } from '../src/lib/timezone/offset-history.ts';
 import {
   applyNudgeReply,
   getNudge,
+  saveNudgeSettings,
   upcomingNudges,
 } from '../src/lib/db/repositories/coach-nudges.ts';
 import { parseNudgeReply } from '../src/lib/notifications/nudge-plan.ts';
@@ -1599,6 +1600,15 @@ console.log('\n17. the two seam behaviours, both deliberate and both stated');
     });
     return scheduled;
   };
+  // Each fixture below is about ONE item, and asserts the whole schedule. The
+  // morning check-in is on by default since 2026-09-26 and would ride along,
+  // so these databases turn it off: the check-in's own timing is pinned in
+  // db/notifications.test.mjs §6b.
+  const quietDb = () => {
+    const made = freshDb();
+    saveNudgeSettings(made.db, { checkinTime: null });
+    return made;
+  };
 
   // WESTBOUND. The landing rolled the clock back to 13:00; the 21:00 item is
   // still ahead, and it is genuinely still owed — the day is 32 hours long. The
@@ -1606,7 +1616,7 @@ console.log('\n17. the two seam behaviours, both deliberate and both stated');
   // may therefore buzz twice in one calendar day is the cost, and it is the
   // right cost: the item was not done.
   {
-    const { db } = freshDb();
+    const { db } = quietDb();
     createReminder(db, { title: 'Magnesium', time: '21:00', repeat: 'once', date: '2026-09-12' });
     const scheduled = await scheduleOf(db, new Date(2026, 8, 12, 13, 0));
     eq('westbound: the still-owed item is on the rebuilt schedule', scheduled.length, 1);
@@ -1622,7 +1632,7 @@ console.log('\n17. the two seam behaviours, both deliberate and both stated');
   // not decide to nudge for something that may well have been taken on the
   // plane. The item stays on the list; only the buzz goes.
   {
-    const { db } = freshDb();
+    const { db } = quietDb();
     createReminder(db, { title: 'Magnesium', time: '07:00', repeat: 'once', date: '2026-09-12' });
     const scheduled = await scheduleOf(db, new Date(2026, 8, 12, 9, 0));
     eq('eastbound: a passed item is not buzzed today', scheduled.length, 0);
@@ -1636,7 +1646,7 @@ console.log('\n17. the two seam behaviours, both deliberate and both stated');
   // AppState event. This function opens by cancelling the WHOLE OS schedule, so
   // two overlapping passes either double every nudge or drop them.
   {
-    const { db } = freshDb();
+    const { db } = quietDb();
     createReminder(db, { title: 'Evening', time: '21:00', repeat: 'once', date: '2026-09-12' });
     let live = 0;
     let overlapped = false;

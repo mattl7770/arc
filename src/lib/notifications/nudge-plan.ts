@@ -41,6 +41,27 @@ export const NUDGE_MAX_CHARS = 140;
 export const DEFAULT_QUIET_START = '21:30';
 export const DEFAULT_QUIET_END = '07:00';
 
+/**
+ * How long after quiet hours end the morning check-in goes out, while it
+ * follows them. The owner's answer of 2026-09-26: *"Turn it on, just after
+ * quiet hours end."*
+ *
+ * Five minutes rather than the end itself, for two reasons:
+ *
+ *   - **The end of quiet hours is the Coach's first allowed minute.** Start is
+ *     inside the window and end is not (`inQuietHours`), so a nudge at 07:00 is
+ *     allowed, and it is the time a model reaching for "first thing" picks.
+ *     The check-in in the same minute would land as a second buzz on top of it.
+ *   - **A Sleep Focus set to the same end is a boundary.** Quiet hours are most
+ *     likely set to match the phone's own sleep schedule, and a notification
+ *     timed for the very minute that Focus lifts may be delivered while it is
+ *     still on — quietly, into Notification Center. Five minutes clears that
+ *     margin. Whether iOS actually does this is for the phone to settle.
+ *
+ * Five and not fifteen: "just after" is the owner's phrase.
+ */
+export const CHECKIN_AFTER_QUIET_MIN = 5;
+
 /** What Settings › Coach stores under `users.preferences.coachNudges`. */
 export type NudgeSettings = {
   /** Off cancels everything pending and takes the instructions out of the pass. */
@@ -49,18 +70,48 @@ export type NudgeSettings = {
   quietEnd: string;
   /**
    * The morning check-in ("doorbell", plan §3(e)1): a fixed daily notification
-   * at a time he picks, reading "Morning check-in" with no health content.
-   * Null is off, which is the default — it is opt-in.
+   * reading "Morning check-in" with no health content. This is the time it
+   * goes out, however that time was decided; null is off.
+   *
+   * ON by default since 2026-09-26 (the owner: *"Turn it on, just after quiet
+   * hours end"*), at {@link checkinAfterQuiet} of the quiet hours.
    */
   checkinTime: string | null;
+  /**
+   * True while the check-in has no time of his own: it sits
+   * {@link CHECKIN_AFTER_QUIET_MIN} after quiet hours end and moves when he
+   * moves them. Setting a time on the wheel ends that, and the time then stays
+   * where he put it whatever the quiet hours do — the check-in is exempt from
+   * quiet hours for the same reason (he chose the time). Always false while
+   * the check-in is off.
+   */
+  checkinFollowsQuiet: boolean;
 };
 
 export const DEFAULT_NUDGE_SETTINGS: NudgeSettings = {
   enabled: true,
   quietStart: DEFAULT_QUIET_START,
   quietEnd: DEFAULT_QUIET_END,
-  checkinTime: null,
+  checkinTime: checkinAfterQuiet(DEFAULT_QUIET_START, DEFAULT_QUIET_END),
+  checkinFollowsQuiet: true,
 };
+
+/**
+ * The morning check-in's time while it follows quiet hours: their end plus
+ * {@link CHECKIN_AFTER_QUIET_MIN}, across midnight if it must.
+ *
+ * With NO quiet hours (both ends equal — `inQuietHours`' "none") there is no
+ * end to follow, and equal ends can sit at any hour: 21:30–21:30 would
+ * otherwise put a *morning* check-in at 21:35. So an empty window follows the
+ * default end instead, 07:00 — where it would sit had he never moved them.
+ */
+export function checkinAfterQuiet(quietStart: string, quietEnd: string): string {
+  const end = quietStart === quietEnd ? DEFAULT_QUIET_END : quietEnd;
+  const [h, m] = end.split(':').map(Number);
+  const total = (h! * 60 + m! + CHECKIN_AFTER_QUIET_MIN) % 1440;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
+}
 
 // --- Clock strings -------------------------------------------------------------
 

@@ -585,7 +585,8 @@ function startReminderSyncPass(
  * those times:
  *
  *   1. his reminders, in the list's clock order;
- *   2. the morning check-in, if he turned it on;
+ *   2. the morning check-in, unless he turned it off (on by default since
+ *      2026-09-26, five minutes after quiet hours end);
  *   3. protocol items AND Coach nudges, merged and soonest first — a nudge for
  *      tomorrow morning outranks a protocol item six days out, which is the
  *      order iOS would have kept them in anyway.

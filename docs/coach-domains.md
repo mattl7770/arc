@@ -5,7 +5,10 @@
 **Parity answers 2026-09-25** (§10b): memories, knowledge and the Log tab's captures deletable; a
 catalog food deletable on its screen too; a load basis correctable; meals combinable.
 **Notification controls 2026-09-25** (§10c): Settings › Coach's nudges switch, quiet hours and
-morning check-in are settings fields; a planned nudge is cancellable, as on the Coach tab.
+morning check-in are settings fields; a planned nudge is cancellable, as on the Coach tab. The
+check-in's follow-quiet-hours rule (2026-09-26) is a fifth field.
+**Captures editable 2026-09-26** (§10d): a Log-tab capture is corrected on the Log tab and through
+`edit_record`, by one function; the last CANNOT line about logged rows is gone.
 Spec of record for `src/lib/ai/domains/*` and `src/lib/ai/tools/record-tools.ts`.
 Read this before adding a domain, a field, or a removal policy.
 
@@ -270,11 +273,11 @@ are different on purpose.
 | `appointments` | title, provider, when, location, notes, status · **create** | hard | a booking that never happened is not a day |
 | `muscle_anchors` | freshness | hard (= clear) | an override of a derived figure |
 | `protocols` | name, type, description, active, carry-over, check-off mode, start date | hard (was **refuse**) | `content` is not a field: `update_protocol` takes the complete set |
-| `settings` | date of birth, sex, five units, day boundary, goal direction, water target · **`nudges_enabled`, `quiet_start`, `quiet_end`, `checkin_time`** (2026-09-25) | — | Q3(a). The API key, app lock, Health sync and backups are **not here**. The four notification controls are Settings › Coach's `saveNudgeSettings` (§10c) |
+| `settings` | date of birth, sex, five units, day boundary, goal direction, water target · **`nudges_enabled`, `quiet_start`, `quiet_end`, `checkin_time`** (2026-09-25) · **`checkin_follows_quiet`** (2026-09-26) | — | Q3(a). The API key, app lock, Health sync and backups are **not here**. The notification controls are Settings › Coach's `saveNudgeSettings` (§10c) |
 | reminders · experiments | `status` | refuse | the Commit A fold; the status IS the removal |
 | `nudges` | `status: cancelled` (2026-09-25) | refuse | the Coach tab's Cancel, `cancelNudge`; the row stays, marked cancelled (§10c) |
 | memories · knowledge | `status` | hard (was **refuse**, 2026-09-25) | the archive is still the restorable answer; the delete is each screen's own (§10b) |
-| `captures` | — | hard (was **refuse**, 2026-09-25) | the Log tab's × — record and Apple Health copy, one function (§10b) |
+| `captures` | **`text`, `value`, `severity`** (2026-09-26) | hard (was **refuse**, 2026-09-25) | the Log tab's × and its editor — record and Apple Health copy, one function each (§10b, §10d) |
 
 **`own` WAS the undo, and it is gone** (2026-09-23, §10a). It derived "did this thread's Coach write
 it?" from `ai_messages.tool_calls` (`idsWrittenInConversation`, with `conversationId` threaded into
@@ -406,9 +409,9 @@ clause +23; `loadBasis` and `combine_with` as fields 0). Prompt **3,648 → 3,64
 lost "or deleting", which had become false. The Haiku pass prefix 7,024 → 7,020.
 
 **What stays refused, and why.** Progress photos and reports (the owner opened only memories and
-knowledge). A capture still has no **edit** — no screen corrects one, so the CANNOT line keeps
-"correcting a logged metric or a capture". Workout drafts, the conversation store, the security
-boundary (§7).
+knowledge). A capture still had no **edit** — no screen corrected one, so the CANNOT line kept
+"correcting a logged metric or a capture" (until 2026-09-26, §10d). Workout drafts, the
+conversation store, the security boundary (§7).
 
 ## 10c. The notification controls, from chat (2026-09-25)
 
@@ -491,6 +494,81 @@ reaches the phone.
 because no discovery call can teach it: the domain is read by `list_reminders`. The four settings
 fields cost 0, and `list_reminders`' ids are payload. Prompt **3,644** and the pass prefix **7,020**
 are unchanged.
+
+**The check-in follows quiet hours (2026-09-26).** The owner's answer turned the morning check-in
+on by default, five minutes after quiet hours end, moving with them until he sets a time himself
+(`docs/ai-coach.md` §3 › Coach notifications). The card follows the rule the write runs
+(`nextNudgeSettings`), so a patch that moves quiet hours says the check-in moves too, in a clause of
+its own after the hours': `Quiet hours 21:30–07:00 → 22:00–06:30; Morning check-in 07:05 → 06:35,
+following quiet hours`. A time sent in `checkin_time` is his and stops the following (`Morning
+check-in 07:05 → 07:30, no longer following quiet hours`); a fifth field, `checkin_follows_quiet`,
+reads whether it follows and `true` puts it back. The two in one patch refuse at card time. A new
+field costs 0.
+
+## 10d. A Log-tab capture, corrected (2026-09-26)
+
+The owner's answer: *"Yes, an edit on the Log tab, and the Coach too."* Until then a capture could
+be removed (§10b) and not corrected, so a mistyped weight was deleted and logged again. Now a tap on
+a Log-tab row opens it beneath itself — its words, its figure in the unit the row prints, or a
+symptom's name and 1–10 — and Save writes through **`editLogCapture`**
+(`src/lib/health/publish.ts`). The Coach's `captures` domain gained the same edit through
+`edit_record`, calling the same function.
+
+| The screen | The Coach | The card |
+| --- | --- | --- |
+| The Log tab: tap a row, correct, *Save* (`capture-editor.tsx` → `saveCaptureEdit` → `editLogCapture`) | `edit_record` on `captures`: `text` · `value` (in the unit the line prints) · `severity` → the same `editLogCapture` | `Change weight 176.4 lb → 174.8 lb — 2026-09-26 07:12 · and any copy in Apple Health` · `Change Creatine · 5 g → Creatine · 10 g — …` · `Change the note “Slept badly” → “Slept badly, 3am wake” — …` · `Change Headache · 6/10 → Headache · 4/10 — …` |
+
+**One function, every side effect the delete traced.** The record half is `correctCapture`
+(`src/lib/db/repositories/logs.ts`); `editLogCapture` adds the Apple Health half. What each kind
+reaches, and nothing more:
+
+- a note, or a supplement / medication / therapy line: its words. An ad-hoc row ticks no mission
+  item (`PLANNED_ROW_SQL`) and nothing is stored from it, so nothing else moves; the "Part of a
+  protocol" flag stays.
+- a dose (a generic metric): its number and the line drawn from it.
+- a symptom: its name and severity, each without the other; its time and body area stay. Insights,
+  the trend and the reports compute from the table when read — no status, readiness figure or score
+  is stored from a symptom.
+- HRV or resting HR typed by hand: the value. Readiness reads it when computed; never published.
+- a glass: through `updateWaterEntry`, the water screen's own record half, and its sample in
+  Apple Health replaced by its tag at the moment it was drunk.
+- a weight, body-fat or waist reading: that one column (a row holding two readings keeps the other),
+  and its sample in Apple Health replaced by the row's tag at the same instant — the path
+  `editWaterCapture` has taken since two-way water, now for the body channel
+  (`docs/wearables-subapp.md` §24). Only what went out is replaced: the tagged delete doubles as
+  "was it published?", so a reading the walk has not reached is corrected in the record and goes out
+  corrected. A reading corrected while its own save is in flight is left to the walk, which re-reads
+  it after the save lands and replaces what it sent (`settleSavedBody`, `bodySaving`).
+
+**Never the time.** The time a row shows is the moment it was written (`created_at`), and for a glass
+that is also the instant its Apple Health sample carries and the key the water walk steps along;
+moving it could send a glass twice or never. Neither the editor nor the Coach offers it.
+
+**A figure nobody changed is not rewritten.** The editor opens to the figure the row prints —
+176.4 lb for 80 kg — and 176.4 lb converted back is 80.0136 kg. Saved unchanged it writes nothing
+and sends nothing; the Coach's `value` equal to the printed figure refuses as "Nothing would
+change". The rule is `capturePatchFrom` (`src/lib/log/capture-edit.ts`), one conversion for both.
+
+**Read-modify-write, and the card before the gate.** The patch names only what changes; a symptom
+sent a severity keeps its name. The card is drawn from `planCaptureCorrection` — the plan
+`editLogCapture` re-runs — so a field the row does not have (a number for a note, words for a
+weight), a figure out of range, a severity outside 1–10 and empty words refuse at card time, in the
+editor's own words. The row's values carry the editable fields in the unit the line prints, so a row
+corrected on the Log tab while the card is open refuses by value, and a unit changed under the card
+refuses by the redrawn line: 170 no longer means pounds. A declined card writes nothing. Screen time
+is not a capture (the feed never listed it, and now `getCapture` does not find it either): it is
+corrected where it is typed.
+
+**The ceilings did not move, and the prompt shrank.** Schema **9,103 → 9,107** of 9,250: `captures`
+joins `edit_record`'s enum (+4). The three fields cost 0. Prompt **3,644 → 3,626**: the CANNOT line
+"correcting a logged metric or a capture — its row in the Log tab" became false and left, declared
+in `retires`. The pass prefix 7,020 → 7,002.
+
+Asserted in `db/log.test.mjs` §23 (the tap's path, every kind, every side effect, with a recording
+Health seam), `db/wearables.test.mjs` §28 (a weight corrected before, after and during its save),
+`db/coach-domains.test.mjs` §9 (the cards, the refusals, the approved write, the service path, a
+moved row, a declined card, parity as source) and `db/screens-render.test.mjs` §33 (the row's
+control and each editor).
 
 ## 11. The card learned two things
 

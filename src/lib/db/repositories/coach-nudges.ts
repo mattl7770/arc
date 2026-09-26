@@ -39,6 +39,7 @@ import { shiftISODate, todayISODate, getDayStartsAt } from '../date';
 import { newId } from '../id';
 import { getOrCreateUser } from './user';
 import {
+  checkinAfterQuiet,
   clockOf,
   DEFAULT_NUDGE_SETTINGS,
   inQuietHours,
@@ -87,6 +88,60 @@ function parsePreferences(raw: string): Record<string, unknown> {
   }
 }
 
+/**
+ * How the morning check-in is STORED: one field, three states (2026-09-26).
+ *
+ *   'follow'  on, at `checkinAfterQuiet` of the quiet hours, moving with them —
+ *             the default, and what the switch turns on to;
+ *   'off'     he turned it off;
+ *   'HH:MM'   on, at a time he set himself, which quiet hours never move.
+ *
+ * `NudgeSettings` is what every reader sees instead: the time the check-in
+ * goes out (`checkinTime`, null for off) and whether it follows
+ * (`checkinFollowsQuiet`), so the resync, the card and the screen never
+ * re-derive the rule. The rule is stored, never the derived time, so moving
+ * quiet hours has nothing to rewrite.
+ */
+type StoredCheckin = 'follow' | 'off' | string;
+
+/**
+ * The stored check-in, read. A blob written before 2026-09-26 carries
+ * `checkinTime` instead: a time there was set by him and is kept; `null` was
+ * the old default (off, because it was opt-in) and reads as the new default.
+ * Nothing of 0064's was on a phone when the default changed, so no "off" he
+ * chose can be lost by that reading.
+ */
+function storedCheckin(record: Record<string, unknown>): StoredCheckin {
+  const value = record.checkin;
+  if (value === 'follow' || value === 'off' || isClock(value)) return value;
+  return isClock(record.checkinTime) ? record.checkinTime : 'follow';
+}
+
+function settingsOf(
+  enabled: boolean,
+  quietStart: string,
+  quietEnd: string,
+  checkin: StoredCheckin
+): NudgeSettings {
+  return {
+    enabled,
+    quietStart,
+    quietEnd,
+    checkinTime:
+      checkin === 'off'
+        ? null
+        : checkin === 'follow'
+          ? checkinAfterQuiet(quietStart, quietEnd)
+          : checkin,
+    checkinFollowsQuiet: checkin === 'follow',
+  };
+}
+
+function storedOf(settings: NudgeSettings): StoredCheckin {
+  if (settings.checkinTime === null) return 'off';
+  return settings.checkinFollowsQuiet ? 'follow' : settings.checkinTime;
+}
+
 /** Every field present; junk in the blob reads as the default, never as a throw. */
 export function getNudgeSettings(db: Database): NudgeSettings {
   const section = parsePreferences(getOrCreateUser(db).preferences)[PREF_KEY];
@@ -94,12 +149,51 @@ export function getNudgeSettings(db: Database): NudgeSettings {
     return { ...DEFAULT_NUDGE_SETTINGS };
   }
   const record = section as Record<string, unknown>;
-  return {
-    enabled: typeof record.enabled === 'boolean' ? record.enabled : DEFAULT_NUDGE_SETTINGS.enabled,
-    quietStart: isClock(record.quietStart) ? record.quietStart : DEFAULT_NUDGE_SETTINGS.quietStart,
-    quietEnd: isClock(record.quietEnd) ? record.quietEnd : DEFAULT_NUDGE_SETTINGS.quietEnd,
-    checkinTime: isClock(record.checkinTime) ? record.checkinTime : null,
-  };
+  return settingsOf(
+    typeof record.enabled === 'boolean' ? record.enabled : DEFAULT_NUDGE_SETTINGS.enabled,
+    isClock(record.quietStart) ? record.quietStart : DEFAULT_NUDGE_SETTINGS.quietStart,
+    isClock(record.quietEnd) ? record.quietEnd : DEFAULT_NUDGE_SETTINGS.quietEnd,
+    storedCheckin(record)
+  );
+}
+
+/**
+ * The check-in a patch leaves, from the one it found. In order:
+ *
+ *   - `checkinFollowsQuiet: true` → on, following quiet hours (the switch, and
+ *     "Follow quiet hours" after a time of his own). It wins over a time in
+ *     the same patch, which the screen never sends together;
+ *   - `checkinTime: null` → off;
+ *   - `checkinTime: 'HH:MM'` → his own time, which quiet hours no longer move —
+ *     even when it equals the followed time, because he set it;
+ *   - `checkinFollowsQuiet: false` alone → kept at the time it goes out now,
+ *     no longer moving (off stays off);
+ *   - anything else, a malformed time included, → unchanged.
+ */
+function nextCheckin(current: NudgeSettings, patch: Partial<NudgeSettings>): StoredCheckin {
+  if (patch.checkinFollowsQuiet === true) return 'follow';
+  if (patch.checkinTime === null) return 'off';
+  if (isClock(patch.checkinTime)) return patch.checkinTime;
+  if (patch.checkinFollowsQuiet === false) return current.checkinTime ?? 'off';
+  return storedOf(current);
+}
+
+/**
+ * The settings a patch would leave, PURE — what {@link saveNudgeSettings}
+ * writes, and what the Coach's card reads to say what a patch will do to the
+ * check-in before anything is written (src/lib/ai/domains/nudge-domains.ts).
+ * One rule, so the card and the write cannot disagree.
+ */
+export function nextNudgeSettings(
+  current: NudgeSettings,
+  patch: Partial<NudgeSettings>
+): NudgeSettings {
+  return settingsOf(
+    typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled,
+    isClock(patch.quietStart) ? patch.quietStart : current.quietStart,
+    isClock(patch.quietEnd) ? patch.quietEnd : current.quietEnd,
+    nextCheckin(current, patch)
+  );
 }
 
 /**
@@ -114,6 +208,10 @@ export function getNudgeSettings(db: Database): NudgeSettings {
  * commits every time it settles, so spinning 21:30 towards 22:30 by way of
  * 19:00 would have destroyed a planned nudge he never meant to touch.
  *
+ * Moving quiet hours DOES move the morning check-in, while it follows them
+ * (the default, `checkinFollowsQuiet`): it is read back as their end plus five
+ * minutes. A check-in time he set himself stays put. See {@link nextCheckin}.
+ *
  * A malformed time in the patch is ignored rather than stored. The caller
  * resyncs the OS schedule afterwards; this file does not reach the OS.
  */
@@ -123,22 +221,19 @@ export function saveNudgeSettings(
   now: Date = new Date(),
   dayStartsAt: string = getDayStartsAt()
 ): NudgeSettings {
-  const current = getNudgeSettings(db);
-  const next: NudgeSettings = {
-    enabled: typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled,
-    quietStart: isClock(patch.quietStart) ? patch.quietStart : current.quietStart,
-    quietEnd: isClock(patch.quietEnd) ? patch.quietEnd : current.quietEnd,
-    checkinTime:
-      patch.checkinTime === null
-        ? null
-        : isClock(patch.checkinTime)
-          ? patch.checkinTime
-          : current.checkinTime,
-  };
+  const next = nextNudgeSettings(getNudgeSettings(db), patch);
+  const checkin = storedOf(next);
 
   const user = getOrCreateUser(db);
   const preferences = parsePreferences(user.preferences);
-  preferences[PREF_KEY] = next;
+  // The stored shape, not `next`: the check-in is kept as its rule, so a
+  // followed one is recomputed from whatever quiet hours say at the next read.
+  preferences[PREF_KEY] = {
+    enabled: next.enabled,
+    quietStart: next.quietStart,
+    quietEnd: next.quietEnd,
+    checkin,
+  };
   db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(preferences), user.id]);
 
   if (!next.enabled) {

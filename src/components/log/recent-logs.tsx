@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { UndoRow } from '@/components/nutrition/undo-row';
@@ -17,6 +18,12 @@ const EMPTY_STATE = 'Nothing logged yet today.';
  */
 function removeLabel(entry: LogFeedItem): string {
   return `Remove ${entry.note ? 'the note' : `${entry.category}, ${entry.title}`}, logged at ${entry.time}`;
+}
+
+/** What VoiceOver reads for the row itself, once a tap opens it for correction. */
+function editLabel(entry: LogFeedItem, open: boolean): string {
+  const what = entry.note ? `Note, ${entry.title}` : `${entry.category}, ${entry.title}`;
+  return `${what}, logged at ${entry.time}. ${open ? 'Close' : 'Edit'}.`;
 }
 
 /**
@@ -53,6 +60,14 @@ function removeLabel(entry: LogFeedItem): string {
  * (src/lib/health/publish.ts), which takes a weight's or a glass's copy out of
  * Apple Health too, and the Undo puts both back.
  *
+ * ## …and a tap opens it for correction (owner, 2026-09-26)
+ *
+ * *"Yes, an edit on the Log tab, and the Coach too."* The row itself is the
+ * control, as a water entry's is on the water screen: a tap opens the editor
+ * the screen hands in (src/components/log/capture-editor.tsx) beneath it, in
+ * this same plate, and a second tap closes it. The × stays where it was, its
+ * own target beside the row's.
+ *
  * ## The empty ledger
  *
  * "Empty is authored, never blank" (00-design-spec.md §5), and the mockup's
@@ -73,12 +88,21 @@ function removeLabel(entry: LogFeedItem): string {
 export function RecentLogs({
   entries,
   onRemove,
+  onEdit,
+  editingId = null,
+  editor = null,
   undo = null,
   onUndo,
 }: {
   entries: LogFeedItem[];
   /** Remove one row. Absent, the rows draw no ×. */
   onRemove?: (entry: LogFeedItem) => void;
+  /** Open (or close) one row for correction. Absent, a row is not a control. */
+  onEdit?: (entry: LogFeedItem) => void;
+  /** The row whose editor is open. */
+  editingId?: string | null;
+  /** That editor, drawn under its row. */
+  editor?: ReactNode;
   /** The open Undo for this day's record, drawn under the last row. */
   undo?: UndoWords | null;
   onUndo?: () => void;
@@ -104,33 +128,41 @@ export function RecentLogs({
             <View key={entry.id}>
               <Divider first={index === 0} />
               <View className="flex-row gap-3 py-3">
-                <Text className="w-11 pt-0.5 font-mono text-[11px] text-ink-muted">
-                  {entry.time}
-                </Text>
-                <View className="flex-1">
-                  <Text
-                    className={
-                      entry.note
-                        ? 'font-serif text-[15px] italic leading-5 text-ink-secondary'
-                        : 'font-mono text-[14px] leading-5 text-ink'
-                    }>
-                    {entry.title}
+                <Pressable
+                  accessibilityRole={onEdit ? 'button' : undefined}
+                  accessibilityState={onEdit ? { expanded: editingId === entry.id } : undefined}
+                  accessibilityLabel={onEdit ? editLabel(entry, editingId === entry.id) : undefined}
+                  disabled={!onEdit}
+                  onPress={() => onEdit?.(entry)}
+                  className="flex-1 flex-row gap-3 active:opacity-60">
+                  <Text className="w-11 pt-0.5 font-mono text-[11px] text-ink-muted">
+                    {entry.time}
                   </Text>
-                  <View className="mt-1 flex-row items-center gap-1.5">
-                    {entry.note ? (
-                      <Ionicons
-                        name="reader-outline"
-                        size={11}
-                        color={palette.inkMuted}
-                        accessibilityElementsHidden
-                        importantForAccessibility="no"
-                      />
-                    ) : null}
-                    <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
-                      {entry.note ? 'Note · for Coach' : entry.category}
+                  <View className="flex-1">
+                    <Text
+                      className={
+                        entry.note
+                          ? 'font-serif text-[15px] italic leading-5 text-ink-secondary'
+                          : 'font-mono text-[14px] leading-5 text-ink'
+                      }>
+                      {entry.title}
                     </Text>
+                    <View className="mt-1 flex-row items-center gap-1.5">
+                      {entry.note ? (
+                        <Ionicons
+                          name="reader-outline"
+                          size={11}
+                          color={palette.inkMuted}
+                          accessibilityElementsHidden
+                          importantForAccessibility="no"
+                        />
+                      ) : null}
+                      <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+                        {entry.note ? 'Note · for Coach' : entry.category}
+                      </Text>
+                    </View>
                   </View>
-                </View>
+                </Pressable>
                 {onRemove ? (
                   <Pressable
                     accessibilityRole="button"
@@ -142,6 +174,7 @@ export function RecentLogs({
                   </Pressable>
                 ) : null}
               </View>
+              {editingId === entry.id ? editor : null}
             </View>
           ))}
         </View>

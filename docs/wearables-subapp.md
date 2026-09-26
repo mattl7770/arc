@@ -2353,3 +2353,22 @@ The owner's answer on the round-two decision page — *"Add a delete with an Und
 
 - **That `deleteObjects` with the metadata predicate removes a body sample**, as it does water. The call is identical and HealthKit's rule is per app, not per type, but it has not run on a device for `BodyMass`.
 - **Write access.** A delete needs the same share authorization as a save. A type he refused to share was never published, so there is nothing to delete; a partial grant is the case to watch in the sync log.
+
+## 24. A capture corrected on the Log tab is corrected in Apple Health too (2026-09-26, **no migration**)
+
+The owner's answer — *"Yes, an edit on the Log tab, and the Coach too"* — gave every row of Logged today an editor (`docs/information-architecture.md`, the Log tab; `docs/coach-domains.md` §10d). The two published kinds need the same care as the delete: a corrected glass or weight whose old value stays in the Health app would be the one outcome two-way sync exists to prevent.
+
+**One function for the tab and the Coach, by the same tag.** `editLogCapture` (`publish.ts`) calls `correctCapture` (`repositories/logs.ts`), which writes the row (water through `updateWaterEntry`, a body reading to its one column); for a published kind it then runs `republishCapture`: the tagged delete for that one type, and — only when it removed a sample — the corrected value saved again at the same instant under the same tag. It is `editWaterCapture`'s path (§20.5), which now shares it (`republishWater` delegates). A reading the walk has not reached needs nothing: it goes out corrected. History from before the walk was armed was never sent, so the tagged delete finds nothing and nothing is sent now either — rule 1 holds.
+
+**The body walk's edit race, closed like water's.** A weight corrected while the walk's save of that row is in flight: the correction's delete may look before or after the save lands, so either answer could be wrong, and two re-sends would leave two samples. So the walk marks the row it is saving (`bodySaving`, `waterSaving`'s twin), a correction of that row stands aside, and `settleSavedBody` — which since §23 removed a sample whose reading was gone — now also compares each saved sample with the row as it is now and replaces one whose value moved (bounded like water's, three re-saves). The mark is let go in the same step as the read that finds Health right, and in a `finally` for a refused save or a throw.
+
+**What stays, stated.** With sync off the record is corrected and Health is left alone, as every Health write. A re-save refused after the delete succeeded leaves the reading missing from Health rather than wrong there. The time is never corrected: for a glass it is the sample's instant and the key the water walk steps along.
+
+### Verification
+
+- `db/log.test.mjs` **§23**: every kind corrects through the tap's own path; the unpublished kinds never reach the seam; a published weight is deleted by its tag and re-saved at the new kg, same instant, same tag; an unsent one sends nothing; a glass the same way; sync off touches nothing; a two-reading row keeps the other; an unchanged figure writes and sends nothing.
+- `db/wearables.test.mjs` **§28**: corrected before the walk (it sends the new value), after (one sample, replaced), and during its own save (the correction stands aside; the walk leaves ONE sample at the corrected value; the cursor moves on); after the walk lets go, the ordinary path.
+
+### What only the phone can settle
+
+- **That delete-then-save by tag leaves one `BodyMass` sample** in the Health app at the reading's time, as it does for water. Same calls, not yet run on a device for body.
