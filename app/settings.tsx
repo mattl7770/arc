@@ -297,6 +297,16 @@ export default function SettingsScreen() {
               sub={healthSub}
               onPress={() => router.push('/settings-health')}
             />
+            {/* Beside Apple Health because it is the other place a daily number
+                comes from, and not inside it because Health carries no screen
+                time (docs/spikes/screen-time.md §3). Typed on Log, or sent by a
+                Shortcut; the screen holds the setup (docs/screen-time.md). */}
+            <NavRow
+              icon="phone-portrait-outline"
+              label="Screen time"
+              sub="Typed on Log · or sent by a Shortcut"
+              onPress={() => router.push('/settings-screen-time')}
+            />
           </Block>
         </View>
       </View>

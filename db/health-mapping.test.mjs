@@ -1549,7 +1549,18 @@ console.log('13. accumulating metrics — ONE list, and it cannot quietly grow a
   //     point: the classification did not move, only where it comes from. Had
   //     the literal been left beside the derived entry the set would carry
   //     water_ml twice, and this assertion is what catches that.
-  const expected = ['steps', 'active_energy_kcal', 'resting_energy_kcal', 'workout', 'water_ml'];
+  //
+  //     `screen_time_min` joined 2026-09-25 by hand, like `workout`: no ingest
+  //     spec exists to derive it from (Health carries no screen time), and a
+  //     number typed for TODAY is a so-far total (src/lib/health/accumulating.ts).
+  const expected = [
+    'steps',
+    'active_energy_kcal',
+    'resting_energy_kcal',
+    'workout',
+    'water_ml',
+    'screen_time_min',
+  ];
   const actual = [...ACCUMULATING_METRIC_TYPES].sort();
   actual.join(',') === [...expected].sort().join(',')
     ? ok(`the accumulating set is exactly {${expected.join(', ')}}`)

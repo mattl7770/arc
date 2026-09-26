@@ -1,14 +1,16 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 
 import { Block } from '@/components/ui/block';
+import { Chip } from '@/components/ui/chip';
 import { Screen } from '@/components/ui/screen';
 import { StackHeader } from '@/components/ui/stack-header';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { recentSummary } from '@/lib/db/repositories/logs';
+import { recordScreenTime, screenTimeOn } from '@/lib/db/repositories/screen-time';
 import { logMetricCapture } from '@/lib/health/publish';
 import {
   isLoggableCanonical,
@@ -19,6 +21,17 @@ import {
   type MetricKey,
 } from '@/lib/log/metrics';
 import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
+import { weekdayDate } from '@/lib/protocols/format';
+import {
+  defaultScreenTimeDay,
+  formatHm,
+  keypadPress,
+  keypadReadout,
+  parseDuration,
+  screenTimeDate,
+  type ScreenTimeDay,
+} from '@/lib/screen-time/entry';
+import { noteTypedScreenTime } from '@/lib/screen-time/receipt-store';
 
 /**
  * Single-number entry — the "calibrated instrument" drill-in (direction F,
@@ -72,6 +85,23 @@ import { WATER_QUICK_AMOUNTS } from '@/lib/log/water-amounts';
  * section label of their own, tempting as one is — the "+8 oz" line already says
  * what they do, and every point of height added above the pad comes out of the
  * Log button's clearance on a small phone.
+ *
+ * ## Screen time (2026-09-25)
+ *
+ * The one chip whose number is a duration and whose day is not always today
+ * (src/lib/screen-time/entry.ts). Three things change on it, and each reuses a
+ * slot the screen already has rather than adding height:
+ *
+ *   - **The `.` key types `h`.** A duration has no decimals, and "3h20" is how
+ *     the figure is read off Settings › Screen Time. A bare number is minutes;
+ *     the readout's placeholder, `0h 0m`, is what says the `h` exists.
+ *   - **The day is chosen where water's amounts sit**: Yesterday / Today, with
+ *     the noon rule's answer selected. The line under the readout names the
+ *     chosen day and what it already holds, so the replace is visible before
+ *     it happens — and the button says **Replace** when there is something to
+ *     replace.
+ *   - **Log writes through `recordScreenTime`**, one row per day, and hands the
+ *     id to the Log tab's receipt, where the Undo is.
  */
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', 'del'] as const;
 
@@ -140,10 +170,26 @@ export default function MetricEntryScreen() {
   const [activeKey, setActiveKey] = useState<MetricKey>(initialKey);
   const [value, setValue] = useState('');
   const [recent, setRecent] = useState(() => recentSummary(getDb(), initialKey, today, units));
+  // Screen time's day: the noon rule's answer until a chip says otherwise.
+  const [day, setDay] = useState<ScreenTimeDay>(() => defaultScreenTimeDay(new Date()));
+  // The chip row scrolls horizontally, and the later chips (Screen time is the
+  // eighth) start off-screen at 375 pt. A screen opened ON one of them — from
+  // Quick add or a Data row — scrolls it into view once, on its first layout,
+  // so the selected chip is never the one he cannot see.
+  const chipRow = useRef<ScrollView>(null);
+  const chipShown = useRef(false);
 
   const active = useMemo<MetricDescriptor>(
     () => metricByKey(activeKey) ?? METRICS[0]!,
     [activeKey]
+  );
+  const isScreenTime = active.key === 'screen_time';
+  const screenDate = screenTimeDate(day, new Date());
+  // What the chosen day already holds — read per day, so switching the chip
+  // re-reads it. Null off the screen-time chip.
+  const onRecord = useMemo(
+    () => (isScreenTime ? screenTimeOn(getDb(), screenDate) : null),
+    [isScreenTime, screenDate]
   );
 
   // Preference-aware display contract for the active metric: what unit to show,
@@ -151,6 +197,10 @@ export default function MetricEntryScreen() {
   const spec = useMemo(() => resolveDisplay(active, units), [active, units]);
 
   const press = (key: (typeof KEYS)[number]) => {
+    if (isScreenTime) {
+      setValue((v) => keypadPress(v, key === '.' ? 'h' : key));
+      return;
+    }
     if (key === 'del') {
       setValue((v) => v.slice(0, -1));
       return;
@@ -184,13 +234,33 @@ export default function MetricEntryScreen() {
   // out of this handler. The typed value is in the display unit, so it converts
   // to canonical via the resolved spec; the guard checks the canonical value
   // (unit-independent) against the schema bounds.
-  const canonical = spec.toCanonical(Number(value));
+  //
+  // Screen time is typed as a duration ("3h20"), so it parses rather than
+  // converts. "3h75" parses to nothing and "25h" past a day, and both say so;
+  // "0" and "0h" are a start, not a mistake, and stay quiet.
+  const minutes = isScreenTime && value !== '' ? parseDuration(value) : null;
+  const canonical = isScreenTime ? (minutes ?? NaN) : spec.toCanonical(Number(value));
   const canLog = isLoggableCanonical(active, canonical);
-  const outOfRange = value !== '' && Number(value) > 0 && !canLog;
+  const outOfRange = isScreenTime
+    ? value !== '' && !canLog && (minutes === null || minutes > 0)
+    : value !== '' && Number(value) > 0 && !canLog;
+  const readout = isScreenTime ? keypadReadout(value) : { figure: value || '0', unit: spec.unit };
+  const screenLine = `${weekdayDate(screenDate)} · ${
+    onRecord ? `${formatHm(onRecord.minutes)} on record` : 'nothing on record'
+  }`;
+  const action = isScreenTime && onRecord ? `Replace ${active.label}` : `Log ${active.label}`;
 
   const log = () => {
     if (!canLog) return;
     try {
+      if (isScreenTime) {
+        // One row per day: this replaces what `screenLine` said the day held,
+        // and the Log tab's receipt carries the Undo that puts it back.
+        const write = recordScreenTime(getDb(), screenDate, canonical, 'typed');
+        noteTypedScreenTime(write.id);
+        router.back();
+        return;
+      }
       // `logMetric`, and a water capture starts its Apple Health publish now
       // rather than on the next sync (docs/wearables-subapp.md §20.10).
       logMetricCapture(getDb(), today, active.key, canonical);
@@ -216,6 +286,7 @@ export default function MetricEntryScreen() {
 
       {/* Metric switch chips */}
       <ScrollView
+        ref={chipRow}
         horizontal
         showsHorizontalScrollIndicator={false}
         className="-mx-5 mt-1 grow-0"
@@ -228,6 +299,17 @@ export default function MetricEntryScreen() {
               accessibilityRole="button"
               accessibilityState={{ selected: on }}
               onPress={() => switchMetric(m.key)}
+              onLayout={
+                m.key === initialKey
+                  ? (event) => {
+                      if (chipShown.current) return;
+                      chipShown.current = true;
+                      // x is inside the padded content; 20 is its px-5 gutter.
+                      const x = event.nativeEvent.layout.x - 20;
+                      if (x > 0) chipRow.current?.scrollTo({ x, animated: false });
+                    }
+                  : undefined
+              }
               className={on ? CHIP_ON : CHIP}>
               <Text
                 className={
@@ -262,9 +344,11 @@ export default function MetricEntryScreen() {
                     ? 'font-mono text-6xl font-semibold text-ink'
                     : 'font-mono text-6xl font-semibold text-ink-muted'
                 }>
-                {value || '0'}
+                {readout.figure}
               </Text>
-              <Text className="font-mono text-lg text-ink-muted">{spec.unit}</Text>
+              {readout.unit ? (
+                <Text className="font-mono text-lg text-ink-muted">{readout.unit}</Text>
+              ) : null}
             </View>
             {/*
               `recent` is authored by the repository when there is nothing to
@@ -288,7 +372,9 @@ export default function MetricEntryScreen() {
               }>
               {outOfRange
                 ? `That looks out of range for ${active.label.toLowerCase()}`
-                : recent || '—'}
+                : isScreenTime
+                  ? screenLine
+                  : recent || '—'}
             </Text>
           </View>
         </Block>
@@ -310,6 +396,23 @@ export default function MetricEntryScreen() {
                   +{q.amount} {spec.unit}
                 </Text>
               </Pressable>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Screen time's day, in water's slot. Neutral chips — a selection is
+            chrome, never the accent (00-design-spec.md §2). */}
+        {isScreenTime ? (
+          <View className="mb-3 flex-row gap-2">
+            {(['yesterday', 'today'] as const).map((d) => (
+              <View key={d} className="flex-1">
+                <Chip
+                  label={d === 'yesterday' ? 'Yesterday' : 'Today'}
+                  on={day === d}
+                  onPress={() => setDay(d)}
+                  accessibilityLabel={`File to ${d}, ${weekdayDate(screenTimeDate(d, new Date()))}`}
+                />
+              </View>
             ))}
           </View>
         ) : null}
@@ -337,7 +440,9 @@ export default function MetricEntryScreen() {
             <View key={key} className="w-1/3 p-0.5">
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={key === 'del' ? 'Delete' : key}
+                accessibilityLabel={
+                  key === 'del' ? 'Delete' : key === '.' && isScreenTime ? 'Hours' : key
+                }
                 onPress={() => press(key)}
                 className="h-16 items-center justify-center active:bg-paper-dim">
                 <Text
@@ -347,7 +452,7 @@ export default function MetricEntryScreen() {
                       ? 'font-mono text-2xl font-semibold text-ink-muted'
                       : 'font-mono text-2xl font-semibold text-ink'
                   }>
-                  {key === 'del' ? '⌫' : key}
+                  {key === 'del' ? '⌫' : key === '.' && isScreenTime ? 'h' : key}
                 </Text>
               </Pressable>
             </View>
@@ -370,7 +475,7 @@ export default function MetricEntryScreen() {
             difference between them is fill and ink alone. */}
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Log ${active.label}`}
+          accessibilityLabel={action}
           accessibilityState={{ disabled: !canLog }}
           disabled={!canLog}
           onPress={log}
@@ -385,7 +490,7 @@ export default function MetricEntryScreen() {
                 ? 'font-label text-[12px] font-semibold uppercase tracking-[1px] text-pine-on'
                 : 'font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink-muted'
             }>
-            Log {active.label}
+            {action}
           </Text>
         </Pressable>
       </View>

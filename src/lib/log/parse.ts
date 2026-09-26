@@ -16,6 +16,7 @@
  * Coach (Phase 3, docs/architecture-migration.md).
  */
 import { METRICS, resolveDisplay, type MetricDescriptor, type MetricKey } from './metrics';
+import { parseDuration, type ScreenTimeDay } from '@/lib/screen-time/entry';
 import type { UnitPreferences } from '@/lib/user/types';
 
 export type ParseResult =
@@ -27,8 +28,70 @@ export type ParseResult =
       /** Value as the user effectively typed it, in `displayUnit`. */
       display: number;
       displayUnit: string;
+      /**
+       * Screen time only: the day the user named ("screen 3h20 yesterday").
+       * Absent when none was named, and the caller applies the noon rule
+       * (src/lib/screen-time/entry.ts `defaultScreenTimeDay`).
+       */
+      day?: ScreenTimeDay;
     }
   | { kind: 'note'; text: string };
+
+// --- Screen time: a whole-line grammar ---------------------------------------
+//
+// Screen time does not go through the adjacency matcher below, for two
+// reasons. Its number is a DURATION ("3h20", "3:20", "200 min"), which NUM
+// cannot express. And its short keyword, `st`, is a word in ordinary notes:
+// "walked down 5th st 20 min" would bind "st 20 min" adjacently and file a
+// twenty-minute screen day. So the rule is stricter than adjacency — the WHOLE
+// line has to be the entry:
+//
+//   screen 3h20 · screen time 3h 20m · screentime 200 · st 200 · st: 3:20
+//   3h20 screen time · screen 3h20 yesterday · st yesterday 200
+//
+// `st` only LEADS a line. After a number it is too easily something else —
+// "20 st" is a weight in stone — so the number-first form takes the long
+// keywords only. Anything else on the line and it is not screen time, and it
+// falls through to the other metrics and then to a note: the module's rule
+// that a note is always a valid reading of the input.
+
+const ST_DAY = '(today|yesterday)';
+/** keyword [day] (separator) duration [day] */
+const ST_KEYWORD_FIRST = new RegExp(
+  `^(?:screen\\s*time|screen|st)(?:\\s+${ST_DAY})?(?:\\s*[:=]\\s*|\\s+)(.+?)(?:\\s+${ST_DAY})?$`,
+  'i'
+);
+/** duration keyword [day] — the long keywords only (see above). */
+const ST_NUMBER_FIRST = new RegExp(`^(.+?)\\s+(?:screen\\s*time|screen)(?:\\s+${ST_DAY})?$`, 'i');
+
+function parseScreenTime(text: string): ParseResult | null {
+  const line = text.replace(/\s+/g, ' ');
+  let duration: string | undefined;
+  let days: (string | undefined)[] = [];
+  const kw = ST_KEYWORD_FIRST.exec(line);
+  if (kw) {
+    duration = kw[2];
+    days = [kw[1], kw[3]];
+  } else {
+    const num = ST_NUMBER_FIRST.exec(line);
+    if (!num) return null;
+    duration = num[1];
+    days = [num[2]];
+  }
+  const minutes = duration === undefined ? null : parseDuration(duration);
+  if (minutes === null) return null;
+  const named = [...new Set(days.filter((d): d is string => !!d).map((d) => d.toLowerCase()))];
+  // "st yesterday 200 today" names two days; neither reading is safe.
+  if (named.length > 1) return null;
+  return {
+    kind: 'metric',
+    metric: 'screen_time',
+    canonical: minutes,
+    display: minutes,
+    displayUnit: 'min',
+    ...(named[0] ? { day: named[0] as ScreenTimeDay } : {}),
+  };
+}
 
 /** A number: digits with an optional single decimal. No sign — a leading "-"
  * isn't consumed, so "weight -5" falls through to a note rather than logging 5. */
@@ -97,6 +160,9 @@ function matchMetric(text: string, metric: MetricDescriptor): Hit | undefined {
  */
 export function parseCommand(input: string, units?: UnitPreferences): ParseResult {
   const text = input.trim();
+
+  const screenTime = parseScreenTime(text);
+  if (screenTime) return screenTime;
 
   for (const metric of METRICS) {
     const hit = matchMetric(text, metric);

@@ -15,6 +15,7 @@ import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import { startStatus } from '../src/lib/db/repositories/statuses.ts';
 import { createReminder } from '../src/lib/db/repositories/reminders.ts';
 import { todayISODate } from '../src/lib/db/date.ts';
+import { recordScreenTime } from '../src/lib/db/repositories/screen-time.ts';
 
 let pass = 0;
 let fail = 0;
@@ -678,6 +679,19 @@ console.log('25. future-dated rows cannot poison the windows (deferred item, clo
   gap && gap.headline.includes('10 days')
     ? ok('weight gap counts from the last REAL weigh-in, not a future row')
     : bad('gap detector', JSON.stringify(computeInsights(db, NOW)));
+}
+
+console.log('26. screen time is not an Apple Health sync (2026-09-25)');
+{
+  // Screen time shares wearable_data but is typed or sent by a Shortcut
+  // (docs/screen-time.md). A device whose only rows are screen time must not be
+  // told that "Apple Health holds" anything.
+  const { db } = freshDb();
+  recordScreenTime(db, isoDaysAgo(NOW, 1), 200, 'typed');
+  const brief = generateDailyBrief(db, NOW);
+  !brief.includes('Apple Health')
+    ? ok('a screen-time-only device gets no Apple Health claim in the brief')
+    : bad('screen time read as a Health sync', brief);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

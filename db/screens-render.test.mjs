@@ -179,6 +179,20 @@ import {
 } from '../src/lib/db/repositories/user.ts';
 import { setHealthSyncLog } from '../src/lib/db/repositories/wearables.ts';
 import SettingsHealthScreen from '../app/settings-health.tsx';
+import SettingsScreenTimeScreen from '../app/settings-screen-time.tsx';
+import MetricEntryScreen from '../app/metric-entry.tsx';
+import ScreenTimeLinkScreen from '../app/log/screen-time.tsx';
+import {
+  markReceiptSeen,
+  recordScreenTime,
+  undoScreenTime,
+} from '../src/lib/db/repositories/screen-time.ts';
+import { defaultScreenTimeDay, screenTimeDate } from '../src/lib/screen-time/entry.ts';
+import {
+  forgetTypedScreenTime,
+  noteTypedScreenTime,
+} from '../src/lib/screen-time/receipt-store.ts';
+import { weekdayDate } from '../src/lib/protocols/format.ts';
 import { WaterPublishPointer } from '../src/components/water/publish-pointer.tsx';
 import { WATER_REFUSED_LINE, WATER_UNASKED_LINE } from '../src/lib/health/publish.ts';
 import { insertReport } from '../src/lib/db/repositories/reports.ts';
@@ -3482,7 +3496,7 @@ const db = getDb();
     // Water joined the strip. The NUMERATOR is deliberately not asserted: it
     // counts whichever domains happen to be populated by this point in the
     // shared fixture DB, which is a fact about test ordering, not about Water.
-    ' of 6 tracked',
+    ' of 7 tracked',
   ]);
   refute('data tab (water + no chips)', dataWithWater, ['Set up', 'Later']);
 
@@ -7108,6 +7122,247 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
     ? ok('the row says −8%, and the screen it opens says −8% first, then +20% across the month')
     : bad('front squat: line order');
   for (const id of [...hipIds, ...squatIds]) deleteWorkout(db, id);
+}
+
+// ---------------------------------------------------------------------------
+// 29. Screen time (2026-09-25, docs/screen-time.md) — typed on Log or the
+// keypad, sent by a Shortcut's link, read on Data and in Settings.
+//
+// A server render runs no effects and fires no taps, so what is proved here is
+// what each screen DRAWS from the record, and — for the link, whose write
+// happens in its state initializer on purpose — that rendering it writes
+// exactly once. Every row is taken back at the end, so nothing later reads it.
+console.log('\n29. Screen time — the keypad, the receipt, the link, Data and Settings');
+{
+  const sdb = getDb();
+  const today = todayISODate();
+  const yesterday = shiftISODate(today, -1);
+  const rows = () =>
+    sdb.all(`SELECT * FROM wearable_data WHERE metric_type = 'screen_time_min' ORDER BY date`);
+
+  // --- Nothing on record yet ------------------------------------------------
+  const emptyData = render('data tab (no screen time)', DataScreen);
+  expect('data tab (no screen time)', emptyData, ['Screen time', 'No screen time logged yet']);
+
+  // The keypad on its chip: the `.` key types h, the placeholder names the
+  // format, and the day chips offer both days with the noon rule's selected.
+  const defaultDay = defaultScreenTimeDay(new Date());
+  const defaultDate = screenTimeDate(defaultDay, new Date());
+  const keypad = render('metric-entry (screen time, empty)', MetricEntryScreen, {
+    metric: 'screen_time',
+    from: 'Data',
+  });
+  expect('metric-entry (screen time, empty)', keypad, [
+    'Screen time',
+    '0h 0m',
+    'Yesterday',
+    'Today',
+    '>h<',
+    'aria-label="Hours"',
+    `${weekdayDate(defaultDate)} · nothing on record`,
+    'Log Screen time',
+  ]);
+  refute('metric-entry (screen time, empty)', keypad, ['Replace Screen time']);
+
+  // --- A typed number, and the Log tab's receipt -----------------------------
+  const typed = recordScreenTime(sdb, yesterday, 200, 'typed');
+  noteTypedScreenTime(typed.id);
+  const logTyped = render('log tab (screen time typed)', LogScreen);
+  expect('log tab (screen time typed)', logTyped, [
+    `Screen time filed to yesterday, ${weekdayDate(yesterday)}`,
+    ' · 3h 20m',
+    `Undo screen time 3h 20m for ${weekdayDate(yesterday)}`,
+    // Plan (a)'s door: a Quick add tile, beside Weight's, so the number can be
+    // found on the Log tab without knowing the grammar.
+    'aria-label="Screen time"',
+  ]);
+  // A day's total is not a capture at a moment: it is not in "Logged today",
+  // where it would carry a clock time from the morning after.
+  refute('log tab (screen time typed)', logTyped, ['>3h 20m<']);
+  {
+    const grid = readFileSync(
+      new URL('../src/components/log/quick-add-grid.tsx', import.meta.url),
+      'utf8'
+    );
+    /pathname: '\/metric-entry', params: \{ metric: 'screen_time' \}/.test(grid)
+      ? ok('the Screen time door opens the keypad on its own chip')
+      : bad('the Screen time door lost its keypad route');
+  }
+
+  // After an Undo the receipt says what happened and offers NOTHING — it must
+  // not re-read the record into a fresh Undo, or a double tap takes back two
+  // numbers. A render cannot tap, so this reads the handler, and says so.
+  {
+    const receipt = readFileSync(
+      new URL('../src/components/log/screen-time-receipt.tsx', import.meta.url),
+      'utf8'
+    );
+    const handler = /const undo = \(\) => \{[\s\S]*?\n {2}\};/.exec(receipt)?.[0] ?? '';
+    handler.includes("kind: 'undone'") &&
+    !handler.includes('refresh(') &&
+    !handler.includes('readReceipt(') &&
+    handler.includes('forgetTypedScreenTime(')
+      ? ok('the receipt’s Undo leaves an "Undone" line and re-arms nothing')
+      : bad('the receipt’s Undo re-reads the record', handler.slice(0, 200));
+  }
+
+  // The keypad shows what the chosen day already holds, and says Replace. The
+  // chosen day is the noon rule's, so the number goes on THAT day — whichever
+  // side of noon this suite runs — and comes off again straight after.
+  const held = recordScreenTime(sdb, defaultDate, 95, 'typed');
+  expect(
+    'metric-entry (screen time, on record)',
+    render('metric-entry (screen time, on record)', MetricEntryScreen, { metric: 'screen_time' }),
+    [`${weekdayDate(defaultDate)} · 1h 35m on record`, 'Replace Screen time']
+  );
+  undoScreenTime(sdb, held.id);
+
+  const dataTyped = render('data tab (screen time typed)', DataScreen);
+  expect('data tab (screen time typed)', dataTyped, [
+    'Screen time',
+    'Daily total · last 14 days',
+    '3h 20m',
+    'Yesterday',
+  ]);
+
+  // --- The link ---------------------------------------------------------------
+  // Over a number he TYPED, a link does not write alone: it draws a confirm
+  // card naming both numbers, and the record is untouched until a tap.
+  const link = { minutes: '210', date: yesterday };
+  const asked = render('screen-time link (over a typed number)', ScreenTimeLinkScreen, link);
+  expect('screen-time link (over a typed number)', asked, [
+    '3h 30m',
+    `${weekdayDate(yesterday)} · from Shortcuts, not saved yet`,
+    `${weekdayDate(yesterday)} holds 3h 20m, typed on Log. The Shortcut sent 3h 30m.`,
+    'Replace with 3h 30m',
+    'Keep 3h 20m',
+  ]);
+  refute('screen-time link (over a typed number)', asked, ['>Undo<', 'Saved for']);
+  rows().length === 1 && rows()[0].value === 200
+    ? ok('a link over a typed number writes nothing until the card is answered')
+    : bad('link wrote over a typed number', JSON.stringify(rows()));
+
+  // Over an empty day (or an earlier Shortcuts number) for yesterday, it
+  // writes once, as the Shortcut's, with no tap — the automation's own case.
+  undoScreenTime(sdb, typed.id);
+  forgetTypedScreenTime();
+  const landed = render('screen-time link (filed)', ScreenTimeLinkScreen, link);
+  expect('screen-time link (filed)', landed, [
+    'Screen time',
+    '3h 30m',
+    `${weekdayDate(yesterday)} · from Shortcuts`,
+    `Saved for yesterday, ${weekdayDate(yesterday)}.`,
+    'Undo',
+  ]);
+  const afterLink = rows();
+  afterLink.length === 1 &&
+  afterLink[0].value === 210 &&
+  JSON.parse(afterLink[0].metadata).via === 'shortcuts'
+    ? ok('rendering the link wrote one row, marked as the Shortcut’s')
+    : bad('link write', JSON.stringify(afterLink));
+
+  // The same link again is not a second write.
+  const again = render('screen-time link (repeated)', ScreenTimeLinkScreen, link);
+  expect('screen-time link (repeated)', again, ['Already on record for yesterday']);
+  rows().length === 1 && rows()[0].id === afterLink[0].id
+    ? ok('the same link twice leaves the same single row')
+    : bad('repeated link wrote again', JSON.stringify(rows()));
+
+  // The Log tab finds the Shortcut's write from the record — the path taken
+  // when iOS reclaimed the app before the owner opened it...
+  expect('log tab (screen time from a Shortcut)', render('log tab (shortcut)', LogScreen), [
+    `Shortcuts filed screen time to yesterday, ${weekdayDate(yesterday)}`,
+    ' · 3h 30m',
+  ]);
+  // ...and once it has been shown (stamped when he leaves the tab), it is not
+  // drawn again: a nightly automation is one receipt a night, not a fixture.
+  markReceiptSeen(sdb, afterLink[0].created_at);
+  const seenLog = render('log tab (seen)', LogScreen);
+  expect('log tab (Shortcut write already seen)', seenLog, ['Quick add']);
+  refute('log tab (Shortcut write already seen)', seenLog, ['Shortcuts filed screen time']);
+  expect('data tab (screen time from a Shortcut)', render('data (shortcut)', DataScreen), [
+    'Yesterday · Shortcuts',
+  ]);
+
+  // A bad link writes nothing and says why.
+  const future = shiftISODate(today, 2);
+  const refused = render('screen-time link (future)', ScreenTimeLinkScreen, {
+    minutes: '200',
+    date: future,
+  });
+  expect('screen-time link (future)', refused, [
+    `Nothing saved. ${future} is in the future.`,
+    'The link format and the Shortcut steps are in Settings › Screen time.',
+  ]);
+  refute('screen-time link (future)', refused, ['from Shortcuts', '>Undo<']);
+  rows().length === 1 && rows()[0].value === 210
+    ? ok('a refused link leaves the record as it was')
+    : bad('refused link touched the record', JSON.stringify(rows()));
+
+  // --- Settings ---------------------------------------------------------------
+  // Settings itself cannot be imported here: it reads the backup snapshot,
+  // whose `migrations.generated` import this suite's resolver does not reach
+  // (the same reason §27 reads Settings › Backups as source). So the row that
+  // leads to the setup is pinned the way §27 pins that screen.
+  const settingsSource = readFileSync(new URL('../app/settings.tsx', import.meta.url), 'utf8');
+  settingsSource.includes('label="Screen time"') &&
+  settingsSource.includes("router.push('/settings-screen-time')")
+    ? ok('Settings carries a Screen time row that opens the setup screen')
+    : bad('Settings lost its Screen time row');
+  expect('settings-screen-time', render('settings-screen-time', SettingsScreenTimeScreen), [
+    'On record',
+    `3h 30m for yesterday, ${weekdayDate(yesterday)}, from Shortcuts`,
+    `Last sent 3h 30m for yesterday, ${weekdayDate(yesterday)}`,
+    'only if the check returns a total',
+    'Website Data',
+    'arc://log/screen-time?minutes=N&amp;date=YYYY-MM-DD',
+    'Round Number',
+    'yyyy-MM-dd',
+    'Open URLs.',
+    'For an older day, or a day that holds a number you typed, it asks',
+  ]);
+
+  // A typed correction replaces the Shortcut's row the morning after — and
+  // Settings still says the Shortcut ran, because it reads the Shortcuts
+  // record rather than the rows.
+  const correction = recordScreenTime(sdb, yesterday, 215, 'typed');
+  expect(
+    'settings-screen-time (after a typed correction)',
+    render('settings-screen-time (corrected)', SettingsScreenTimeScreen),
+    [
+      `3h 35m for yesterday, ${weekdayDate(yesterday)}, typed`,
+      `Last sent 3h 30m for yesterday, ${weekdayDate(yesterday)}`,
+    ]
+  );
+  refute(
+    'settings-screen-time (after a typed correction)',
+    render('settings-screen-time (corrected)', SettingsScreenTimeScreen),
+    ['No Shortcut has sent a number yet']
+  );
+  undoScreenTime(sdb, correction.id);
+
+  // A link for a day older than yesterday is accepted but not written alone:
+  // an automation never sends one, and its Undo would never be offered again.
+  const older = shiftISODate(today, -5);
+  const olderLink = render('screen-time link (older day)', ScreenTimeLinkScreen, {
+    minutes: '200',
+    date: older,
+  });
+  expect('screen-time link (older day)', olderLink, [
+    `The Shortcut sent 3h 20m for ${weekdayDate(older)}. ARC saves a Shortcut’s number without asking only for today and yesterday.`,
+    'Save 3h 20m',
+    'Don’t save',
+  ]);
+  rows().length === 1 && rows()[0].date === yesterday
+    ? ok('a link for an older day writes nothing until the card is answered')
+    : bad('older link wrote alone', JSON.stringify(rows()));
+
+  // --- Take it all back ------------------------------------------------------
+  undoScreenTime(sdb, afterLink[0].id);
+  sdb.run(`DELETE FROM health_sync_state WHERE key = 'screen_time'`);
+  rows().length === 0
+    ? ok('Undo of the link empties the day, and the Shortcuts record is cleared')
+    : bad('cleanup', JSON.stringify(rows()));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

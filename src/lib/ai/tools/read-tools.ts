@@ -6,7 +6,7 @@
  * Settings preference), with the unit named so the model never guesses.
  */
 import type { Database } from '@/lib/db/database';
-import { todayISODate } from '@/lib/db/date';
+import { shiftISODate, todayISODate } from '@/lib/db/date';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { completedAheadOf, listMission } from '@/lib/db/repositories/mission';
 import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
@@ -35,6 +35,7 @@ import {
   pastScheduledAppointments,
   upcomingAppointments,
 } from '@/lib/db/repositories/screenings';
+import { screenTimeOn, type ScreenTimeEntry } from '@/lib/db/repositories/screen-time';
 import { listTodaySymptoms } from '@/lib/db/repositories/symptoms';
 import {
   getGoalDirection,
@@ -55,6 +56,7 @@ import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
 import { cadenceText } from '@/lib/protocols/cadence';
 import { parseProtocolContent } from '@/lib/protocols/content';
 import { phaseOn } from '@/lib/protocols/phase';
+import { SCREEN_TIME_METRIC } from '@/lib/screen-time/entry';
 import type { BiomarkerRow } from '@/lib/db/types';
 import {
   DAY_METRIC_LABELS,
@@ -246,6 +248,20 @@ const DECLARED_WEARABLE_METRICS: readonly WearableMetricSpec[] = [
     decimals: 0,
     display: 'volume',
   },
+  {
+    // The day's total off Settings › Screen Time, typed on Log or sent by a
+    // Shortcut (docs/screen-time.md). ONE row per day by construction
+    // (repositories/screen-time.ts replaces), so arbitration has nothing to
+    // pick between. Declared rather than left to discovery so the label says
+    // what the number is — self-reported, from another app's screen — and
+    // `hm` carries "3h 20m" instead of an inferred bare minute count.
+    metricType: SCREEN_TIME_METRIC,
+    label: 'Screen time (daily total, self-reported)',
+    canonicalUnit: 'min',
+    agg: 'arbitrated',
+    decimals: 0,
+    isDuration: true,
+  },
 ];
 
 /** Layer 2: declared ∪ whatever the table actually holds today. */
@@ -298,6 +314,8 @@ const METRIC_ALIASES: Record<string, string> = {
   heart_rate_variability: 'hrv',
   resting_heart_rate: 'rhr',
   respiration: 'respiratory_rate',
+  screen_time: SCREEN_TIME_METRIC,
+  screentime: SCREEN_TIME_METRIC,
 };
 
 /** Body metrics keep their own path — they live in body_metrics, not wearables. */
@@ -656,6 +674,11 @@ const getTodaySnapshot: CoachTool = {
     for (const presence of inventory) {
       // max(date) < today ⇒ nothing today; skip the per-metric query entirely.
       if (presence.lastDate < date) continue;
+      // Screen time shares the table but is not a sync: it is typed or sent by
+      // a Shortcut, and it has its own `screenTime` field below. Counted here
+      // it would let `note` tell the model Apple Health "HAS synced today" on
+      // the strength of a number the owner typed.
+      if (presence.metricType === SCREEN_TIME_METRIC) continue;
       const spec = catalog.get(presence.metricType)!;
       const observed = wearableToday(db, spec, date);
       if (!observed) continue;
@@ -851,13 +874,43 @@ const getTodaySnapshot: CoachTool = {
         // and (before the fix above) a "Connect Apple Health" sentence. Nothing
         // in the payload ever affirmed that the sync was working, so every
         // ambiguity resolved toward "it isn't". Say the true thing out loud.
-        note:
-          inventory.length === 0
-            ? 'No wearable data on this device at all — Apple Health has never synced (Settings › Apple Health).'
-            : syncedTodayCount === 0
-              ? 'Nothing synced for today yet — Apple Health may not have run since midnight. Say so; do not report zeros.'
-              : `Apple Health IS connected and HAS synced today: ${syncedTodayCount} metric(s) in \`today\` carry real values — report them as fact. Names in \`noDataToday\` are missing for TODAY only and say nothing about the rest; names in \`neverRecorded\` have no sensor on this device at all.`,
+        note: inventory.every((row) => row.metricType === SCREEN_TIME_METRIC)
+          ? 'No wearable data on this device at all — Apple Health has never synced (Settings › Apple Health).'
+          : syncedTodayCount === 0
+            ? 'Nothing synced for today yet — Apple Health may not have run since midnight. Say so; do not report zeros.'
+            : `Apple Health IS connected and HAS synced today: ${syncedTodayCount} metric(s) in \`today\` carry real values — report them as fact. Names in \`noDataToday\` are missing for TODAY only and say nothing about the rest; names in \`neverRecorded\` have no sensor on this device at all.`,
       },
+      // Screen time (2026-09-25, docs/screen-time.md) — the day's total the
+      // owner typed or a Shortcut sent. Its OWN field, not only a
+      // `wearables.today` entry, because the number is usually filed the
+      // morning after: today has none at breakfast, and yesterday's is the
+      // one worth having. So: `yesterday` and `today`, each present when that
+      // day has a number, with its date and where it came from; `today`
+      // carries `partial`, a so-far figure. BOTH when both exist — a today
+      // figure must not push out yesterday's finished total. Omitted when
+      // neither does, like `ahead`; older days are one
+      // get_metric_series('screen_time') away.
+      //
+      // TOKEN DELTA: zero. Payload only — no description or schema moved, so
+      // neither ceiling in db/coach-eval.test.mjs §6 does.
+      ...(() => {
+        const day = (entry: ScreenTimeEntry) => ({
+          date: entry.date,
+          value: entry.minutes,
+          unit: 'min',
+          hm: formatDuration(entry.minutes),
+          source: entry.via === 'shortcuts' ? 'Shortcuts automation' : 'typed by the user',
+        });
+        const yesterday = screenTimeOn(db, shiftISODate(date, -1));
+        const today = screenTimeOn(db, date);
+        if (!yesterday && !today) return {};
+        return {
+          screenTime: {
+            ...(yesterday ? { yesterday: day(yesterday) } : {}),
+            ...(today ? { today: { ...day(today), partial: true } } : {}),
+          },
+        };
+      })(),
       // The SAME derivation Home renders for this day (src/lib/home/readiness.ts):
       // identical level, label and pillars, so the two surfaces can never
       // disagree about the verdict. `detail` alone is re-worded — it is Home's

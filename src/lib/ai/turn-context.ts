@@ -31,9 +31,11 @@ import {
   statusDayNumber,
   statusesIn,
 } from '@/lib/db/repositories/statuses';
+import { screenTimeOn } from '@/lib/db/repositories/screen-time';
 import { getGoalDirection, getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { deriveReadiness } from '@/lib/home/readiness';
+import { formatHm } from '@/lib/screen-time/entry';
 import { formatUtcOffset, offsetShift } from '@/lib/timezone/classify';
 import { awayDayNumber } from '@/lib/timezone/trips';
 
@@ -272,6 +274,34 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
   fact('rhr', (v) => `RHR ${Math.round(v)} bpm`);
   if (todayFacts.length > 0) {
     lines.push(`Today so far: ${todayFacts.join(' · ')}`);
+  }
+
+  // --- Screen time (2026-09-25, docs/screen-time.md) — the owner asked for it
+  // as a Coach input. Its own line, not a "Today so far" fact, because the
+  // number is usually filed the morning after: yesterday's total is the one
+  // that exists at breakfast. Named with its date and its door, and only when
+  // yesterday or today has one — about a dozen uncached tokens on those days,
+  // none on the rest. What to make of it is the model's call.
+  //
+  // BOTH days when both exist. Today's figure is a so-far number; it must not
+  // push out yesterday's finished total, which is the one worth reasoning
+  // about — so a 45m typed at lunch sits beside last night's 3h 20m, not in
+  // its place.
+  const screenDays = [screenTimeOn(db, shiftISODate(today, -1)), screenTimeOn(db, today)].filter(
+    (entry) => entry !== null
+  );
+  if (screenDays.length > 0) {
+    lines.push(
+      'Screen time: ' +
+        screenDays
+          .map(
+            (entry) =>
+              `${formatHm(entry.minutes)} on ${entry.date}` +
+              (entry.date === today ? ' so far today' : '') +
+              ` (${entry.via === 'shortcuts' ? 'from a Shortcut' : 'typed'})`
+          )
+          .join(' · ')
+    );
   }
 
   // --- Mission progress — where the day stands and what is next.

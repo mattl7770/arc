@@ -9,7 +9,10 @@
  *   - body metrics (weight/body-fat/waist) → `body_metrics` (canonical kg/cm);
  *   - other numeric metrics (water/HRV/RHR) → `wearable_data` (canonical ml/…),
  *     `source_device = 'manual'`, so a smart bottle or Apple Health can later
- *     add rows to the same metric_type without a migration.
+ *     add rows to the same metric_type without a migration;
+ *   - screen time → the same table, minutes, but ONE row per day: it is routed
+ *     through ./screen-time.ts, which replaces instead of appending. A day's
+ *     total is not a capture at a moment, so it stays out of this feed.
  *
  * Everything crosses through the metric registry (src/lib/log/metrics.ts), so
  * units and persistence targets are defined once.
@@ -18,6 +21,7 @@ import type { Database } from '../database';
 import { clockFromISO, logicalDayUtcRange, todayISODate } from '../date';
 import { newId } from '../id';
 import { getOrCreateDailyLog } from './mission';
+import { latestScreenTime, recordScreenTime } from './screen-time';
 import type { BodyMetricRow, LogEntryRow, WearableDataRow } from '../types';
 import {
   formatCanonical,
@@ -29,6 +33,8 @@ import {
   type MetricDescriptor,
   type MetricKey,
 } from '@/lib/log/metrics';
+import { weekdayDate } from '@/lib/protocols/format';
+import { SCREEN_TIME_METRIC } from '@/lib/screen-time/entry';
 import type { UnitPreferences } from '@/lib/user/types';
 import type { LogFeedItem } from '@/types/log';
 
@@ -101,6 +107,14 @@ export function logMetric(
   }
 
   if (target.kind === 'wearable') {
+    // Screen time is ONE number per day, so it replaces rather than appends —
+    // every door that reaches logMetric gets that rule, not only the Log tab's
+    // (src/lib/db/repositories/screen-time.ts). The Log tab calls
+    // recordScreenTime itself, because it needs the id back for its Undo.
+    if (metric.key === 'screen_time') {
+      recordScreenTime(db, date, Math.round(canonical), 'typed');
+      return;
+    }
     db.run(
       `INSERT INTO wearable_data (id, date, metric_type, value, unit, source_device)
        VALUES (?, ?, ?, ?, ?, 'manual')`,
@@ -254,9 +268,16 @@ export function listEntriesOn(db: Database, date: string, units?: UnitPreference
   }
 
   // 2) Manual wearable metrics — water, HRV, RHR.
+  //
+  // NOT screen time. It is a day's total, not a capture at a moment: typed at
+  // 07:12 on the 25th it is filed under the 24th, and a feed row would say it
+  // was logged at 07:12 on the 24th — a time that never happened on that day,
+  // which the Coach's `captures` domain would then report as fact. It has its
+  // own reads (the Log receipt, Data's row, the Coach's snapshot and series).
   const wearableRows = db.all<WearableDataRow>(
-    `SELECT * FROM wearable_data WHERE date = ? AND source_device = 'manual'`,
-    [date]
+    `SELECT * FROM wearable_data
+     WHERE date = ? AND source_device = 'manual' AND metric_type != ?`,
+    [date, SCREEN_TIME_METRIC]
   );
   for (const r of wearableRows) {
     const metric = metricByWearableType(r.metric_type);
@@ -330,6 +351,8 @@ function formatForUnits(
   canonical: number,
   units?: UnitPreferences
 ): string {
+  // A duration has no unit preference: "3h 20m" under every setting.
+  if (metric.duration) return formatCanonical(metric, canonical);
   return units
     ? formatMeasured(resolveDisplay(metric, units), canonical)
     : formatCanonical(metric, canonical);
@@ -360,6 +383,16 @@ export function recentSummary(
     const ml = row?.total ?? 0;
     if (!ml) return 'No water logged yet today';
     return `${formatForUnits(metric, ml, units)} logged today`;
+  }
+
+  if (metricKey === 'screen_time') {
+    // The latest DAY, not the latest row written: screen time is usually typed
+    // the morning after, so "last written" and "last day" differ, and the day
+    // is what the number is about. And no "usually auto from Apple Health" —
+    // Health carries no screen time (docs/spikes/screen-time.md §3).
+    const latest = latestScreenTime(db, date);
+    if (!latest) return 'No screen time logged yet';
+    return `Last ${formatForUnits(metric, latest.minutes)} · ${weekdayDate(latest.date)}`;
   }
 
   const target = metric.target;

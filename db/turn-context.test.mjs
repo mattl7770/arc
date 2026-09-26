@@ -14,6 +14,7 @@ import { endStatus, startStatus } from '../src/lib/db/repositories/statuses.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
 import { setGoalDirection, updateProfile } from '../src/lib/db/repositories/user.ts';
 import { addGroceryItems } from '../src/lib/db/repositories/grocery.ts';
+import { recordScreenTime } from '../src/lib/db/repositories/screen-time.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
 import { ageOn, buildTurnContext } from '../src/lib/ai/turn-context.ts';
 
@@ -273,6 +274,49 @@ console.log("R. today's numbers ride in the block, so trivial questions cost no 
   !/Today so far/.test(buildTurnContext(quiet, NOW))
     ? ok('no wearable data → no line at all (never a fabricated zero)')
     : bad('empty day still emits the line');
+}
+
+console.log('ST. screen time: yesterday’s total rides in the block, with its date and door');
+{
+  // The owner's answer (2026-09-25): the number is a Coach input. It is usually
+  // filed the morning after, so the line reads YESTERDAY's — which "Today so
+  // far" would never show.
+  const { db } = freshDb();
+  const yesterday = isoDaysAgo(NOW, 1);
+  recordScreenTime(db, yesterday, 200, 'typed');
+  const context = buildTurnContext(db, NOW);
+  const line = context.split('\n').find((l) => l.startsWith('Screen time'));
+  line === `Screen time: 3h 20m on ${yesterday} (typed)`
+    ? ok(`yesterday's number is stated with its date: "${line}"`)
+    : bad('screen time line', String(line));
+
+  // A so-far figure for today joins yesterday's finished total; it does not
+  // replace it. (The first build showed only the latest day, so a 45m at
+  // lunch pushed last night's 3h 20m out of the Coach's context.)
+  recordScreenTime(db, TODAY, 45, 'shortcuts');
+  const both = buildTurnContext(db, NOW)
+    .split('\n')
+    .find((l) => l.startsWith('Screen time'));
+  both ===
+  `Screen time: 3h 20m on ${yesterday} (typed) · 45m on ${TODAY} so far today (from a Shortcut)`
+    ? ok('today’s so-far figure sits beside yesterday’s total, each with its door')
+    : bad('both-days screen time line', String(both));
+
+  const { db: todayOnly } = freshDb();
+  recordScreenTime(todayOnly, TODAY, 45, 'shortcuts');
+  buildTurnContext(todayOnly, NOW)
+    .split('\n')
+    .find((l) => l.startsWith('Screen time')) ===
+  `Screen time: 45m on ${TODAY} so far today (from a Shortcut)`
+    ? ok('a number for today alone names its door and says it is a so-far figure')
+    : bad('today-only screen time line');
+
+  // Older than yesterday is not "the day's" number; the series tool reaches it.
+  const { db: stale } = freshDb();
+  recordScreenTime(stale, isoDaysAgo(NOW, 3), 200, 'typed');
+  !/Screen time/.test(buildTurnContext(stale, NOW))
+    ? ok('a three-day-old number adds no line')
+    : bad('stale screen time line');
 }
 
 console.log('S. the status line: two at once, the exclusion clause, and the revert cue');

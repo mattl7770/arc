@@ -19,9 +19,11 @@
  * {@link DisplaySpec} (unit label, decimals, canonical↔display converters). The
  * type-only import keeps this module pure and DB-free (types erase at build).
  */
+import { formatHm, isScreenTimeMinutes, SCREEN_TIME_METRIC } from '@/lib/screen-time/entry';
 import type { UnitPreferences } from '@/lib/user/types';
 
-export type MetricKey = 'weight' | 'body_fat' | 'waist' | 'hrv' | 'rhr' | 'water' | 'dose';
+export type MetricKey =
+  'weight' | 'body_fat' | 'waist' | 'hrv' | 'rhr' | 'water' | 'dose' | 'screen_time';
 
 /** Where a metric's value lands, and how it's shaped there. */
 export type MetricTarget =
@@ -44,9 +46,16 @@ export type MetricDescriptor = {
   target: MetricTarget;
   /**
    * Lowercase keywords the command parser matches ("weight 178", "log hrv 48").
-   * Empty for metrics with no unambiguous word (none here).
+   * Empty for a metric the generic adjacency matcher must not see: screen
+   * time, whose number is a duration and whose short keyword (`st`) is a word
+   * in ordinary notes, so it has its own whole-line grammar in parse.ts.
    */
   keywords: string[];
+  /**
+   * Minutes-valued: printed "3h 20m" wherever the registry prints it (the Log
+   * feed, the keypad's line), never as a raw minute count.
+   */
+  duration?: boolean;
   /**
    * Explicit unit tokens the parser accepts in free text, each mapping the typed
    * number straight to canonical (e.g. "180 lb" and "82 kg" both land in kg).
@@ -166,6 +175,23 @@ export const METRICS: MetricDescriptor[] = [
     keywords: ['dose'],
     units: { mg: id },
   },
+  {
+    // The day's total off Settings › Screen Time, typed (2026-09-25; the plan is
+    // docs/spikes/screen-time.md, what was built docs/screen-time.md). Same
+    // store as HRV — a `wearable_data` row, `source_device 'manual'` — but ONE
+    // row per day: logMetric hands it to recordScreenTime, which replaces
+    // whatever the day held. Last in the list so the keypad's existing chips
+    // keep their places.
+    key: 'screen_time',
+    label: 'Screen time',
+    displayUnit: 'min',
+    decimals: 0,
+    toCanonical: id,
+    fromCanonical: id,
+    target: { kind: 'wearable', metricType: SCREEN_TIME_METRIC, canonicalUnit: 'min' },
+    keywords: [],
+    duration: true,
+  },
 ];
 
 const BY_KEY = new Map<MetricKey, MetricDescriptor>(METRICS.map((m) => [m.key, m]));
@@ -194,8 +220,9 @@ export function metricByBodyColumn(column: string): MetricDescriptor | undefined
   return BY_BODY_COLUMN.get(column);
 }
 
-/** "178.2 lb", "48 ms" — a canonical stored value rendered for display. */
+/** "178.2 lb", "48 ms", "3h 20m" — a canonical stored value rendered for display. */
 export function formatCanonical(metric: MetricDescriptor, canonical: number): string {
+  if (metric.duration) return formatHm(canonical);
   const display = metric.fromCanonical(canonical);
   return `${display.toFixed(metric.decimals)} ${metric.displayUnit}`;
 }
@@ -216,6 +243,10 @@ export function roundDisplay(metric: MetricDescriptor, display: number): number 
  */
 export function isLoggableCanonical(metric: MetricDescriptor, canonical: number): boolean {
   if (!Number.isFinite(canonical) || canonical <= 0) return false;
+  // Whole minutes, 1 to 24 hours — the same rule the repository enforces
+  // (src/lib/screen-time/entry.ts `isScreenTimeMinutes`), so a "screen 30h"
+  // falls back to a note instead of throwing out of the tap handler.
+  if (metric.key === 'screen_time') return isScreenTimeMinutes(canonical);
   if (metric.target.kind === 'body') {
     switch (metric.target.column) {
       case 'body_fat_pct':

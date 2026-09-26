@@ -328,6 +328,13 @@ export default function RootLayout() {
           {/* INTEGRATOR-MERGE: wearables routes (docs/wearables-subapp.md). */}
           <Stack.Screen name="settings-health" />
           <Stack.Screen name="wearables" />
+          {/* Screen time (docs/screen-time.md): its setup note, pushed from
+              Settings, and the landing screen for the link a Shortcut opens —
+              arc://log/screen-time?minutes=N&date=YYYY-MM-DD. The link lands
+              over whichever tab was open; the `(tabs)` anchor above is what
+              gives its back chevron somewhere to go on a cold start. */}
+          <Stack.Screen name="settings-screen-time" />
+          <Stack.Screen name="log/screen-time" />
           {/* Pushed from the Data tab. */}
           {/* The execution record, behind Data's Mission trend row. That row
               used to navigate to Home, which is today's plan and therefore not
