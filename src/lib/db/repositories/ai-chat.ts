@@ -155,6 +155,27 @@ export function markSupersededTurns<
   }));
 }
 
+/**
+ * A thread re-read from the database, with the screen's UNSENT tail kept.
+ *
+ * A turn that failed before producing anything is never persisted (it left no
+ * trace in the record), but it is on screen with Retry. When something outside
+ * the chat writes to the thread while that bubble is up — a tapped nudge, a
+ * pass's note (0064) — a plain re-read dropped it: the Retry went, and the new
+ * line sat under his question as if it were the answer (review, 2026-09-25).
+ * So the trailing run of turns that are explicitly NOT persisted is carried
+ * over after the re-read rows, where retry still finds it last and walks back
+ * over the new line to the question it answers.
+ */
+export function keepUnsentTail<T extends { persisted?: boolean }>(
+  reloaded: readonly T[],
+  current: readonly T[]
+): T[] {
+  let start = current.length;
+  while (start > 0 && current[start - 1]!.persisted === false) start--;
+  return [...reloaded, ...current.slice(start)];
+}
+
 /** The thread as it should be rendered: stored turns, superseded ones marked. */
 export function listThread(db: Database, conversationId: string): AiThreadEntry[] {
   return markSupersededTurns(listMessages(db, conversationId));

@@ -18,6 +18,7 @@ import {
   appendMessage,
   createConversation,
   getOrCreateActiveConversation,
+  keepUnsentTail,
   landedWriteCalls,
   latestConversation,
   listMessages,
@@ -467,6 +468,31 @@ console.log('13. a finished reply is never "superseded" by a note that follows i
   JSON.stringify(retried.map((m) => m.superseded)) === JSON.stringify([false, true, false])
     ? ok('an unfinished turn followed by its retry is still superseded')
     : bad('retry mark lost', JSON.stringify(retried));
+}
+
+console.log('14. a re-read of the thread keeps a failed turn that never reached it (0064 review)');
+{
+  // He asked something offline; the turn failed before producing anything, so
+  // it has no row — only a bubble with Retry. Then he tapped a nudge, which
+  // wrote the nudge's line to the thread and made the tab re-read it.
+  const question = { id: 'q', role: 'user', content: 'Why is my HRV down?', persisted: true };
+  const failed = { id: 'f', role: 'assistant', content: '', outcome: 'failed', persisted: false };
+  const nudge = { id: 'n', role: 'assistant', content: 'Walk after lunch.', persisted: true };
+  const reread = keepUnsentTail([question, nudge], [question, failed]);
+  reread.map((m) => m.id).join(',') === 'q,n,f'
+    ? ok('the failed bubble survives the re-read, after the new line — Retry is still last')
+    : bad('failed turn dropped', JSON.stringify(reread.map((m) => m.id)));
+  // What `retry` does with it: walk back over every trailing assistant turn to
+  // the question — past the nudge's line — and answer THAT.
+  let at = reread.length - 1;
+  while (at >= 0 && reread[at].role === 'assistant') at--;
+  reread[at]?.id === 'q' && reread[reread.length - 1].outcome === 'failed'
+    ? ok('…so retry still finds the unanswered question behind the nudge’s line')
+    : bad('retry cannot reach the question');
+  keepUnsentTail([question, nudge], [question, { ...nudge, persisted: true }]).length === 2 &&
+  keepUnsentTail([question], [question, { ...failed, persisted: undefined }]).length === 1
+    ? ok('a persisted turn, or a still-streaming one, is never carried twice')
+    : bad('carried a persisted or streaming turn');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

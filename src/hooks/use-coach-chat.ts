@@ -13,6 +13,7 @@ import {
   appendMessage,
   getConversationSummary,
   getOrCreateActiveConversation,
+  keepUnsentTail,
   landedWriteReceipts,
   listRecentMessages,
   markSupersededTurns,
@@ -84,7 +85,9 @@ export type CoachChat = {
    * Re-read the thread from the database — for a turn written from OUTSIDE
    * this hook while the tab is mounted: the coach pass's note, a nudge-plan
    * record, a tapped nudge (0064). Deferred to the end of an in-flight turn,
-   * so a reload can never pull the streaming bubble out from under itself.
+   * so a reload can never pull the streaming bubble out from under itself,
+   * and a failed turn that never reached the database keeps its place, and
+   * its Retry, at the end.
    */
   reload: () => void;
 };
@@ -405,9 +408,10 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           if (reloadWantedRef.current) {
             // Something outside this hook wrote to the thread while the turn
             // ran (the coach pass, a tapped nudge). The turn is persisted by
-            // now, so the database is the whole truth.
+            // now — unless it failed before producing anything, and that
+            // bubble, with its Retry, is kept (keepUnsentTail).
             reloadWantedRef.current = false;
-            setMessages(loadThread(conversationId));
+            setMessages(keepUnsentTail(loadThread(conversationId), messagesRef.current));
           }
           onTurnComplete?.();
         });
@@ -475,7 +479,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
       reloadWantedRef.current = true;
       return;
     }
-    setMessages(loadThread(conversationId));
+    setMessages(keepUnsentTail(loadThread(conversationId), messagesRef.current));
   }, [conversationId, setMessages]);
 
   // Superseded is derived, never stored — the same adjacency rule the DB read

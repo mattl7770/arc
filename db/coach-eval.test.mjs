@@ -1129,6 +1129,13 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // fact they added). The plan priced the flag at ~25 of the headroom.
   // `list_reminders` now also returns `checkin` and the Coach's planned
   // notifications — result fields, 0 schema tokens.
+  //
+  // Same day, after review: the pass is now told the wall clock and the lines
+  // code refused from its last pass, and how to write the lines bare. All of
+  // it in `passDirective` again — NEITHER CEILING MOVED. Measured with this
+  // file's prose proxy, the nudge block is ~347 tokens on an empty day (the
+  // directive is 1,094 characters with nudges off, 2,344 with them on), paid
+  // uncached by the pass alone, plus one line per refusal when there are any.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

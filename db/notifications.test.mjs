@@ -15,7 +15,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { shiftISODate } from '../src/lib/db/date.ts';
+import { setDayStartsAt, shiftISODate } from '../src/lib/db/date.ts';
 import { createReminder } from '../src/lib/db/repositories/reminders.ts';
 import {
   applyNudgeReply,
@@ -349,6 +349,38 @@ console.log('8. permission refused: nothing is scheduled, and the result says so
   getLastNotificationSync()?.permissionGranted === false
     ? ok('the Coach tab can say its list will not reach the lock screen')
     : bad('permission refused', JSON.stringify(result));
+}
+
+console.log('9. a late day boundary: the small-hours nudge is scheduled for the right night');
+{
+  // The sync reads the INSTALLED boundary, as it does on the phone, so it is
+  // installed here and put back afterwards.
+  const { db } = freshDb();
+  saveNudgeSettings(db, { quietStart: '00:00', quietEnd: '00:00' }, NOW, '04:00');
+  const NIGHT = new Date(2026, 6, 27, 23, 0);
+  applyNudgeReply(
+    db,
+    parseNudgeReply(`NUDGE ${TODAY} 01:30 Screens off, lights out.`),
+    NIGHT,
+    '04:00'
+  );
+  setDayStartsAt('04:00');
+  try {
+    const os = recorder();
+    const result = await syncReminderNotifications(db, NIGHT, os.deps);
+    const sent = os.scheduled.find((r) => r.content.data?.kind === 'nudge');
+    sent?.trigger.date.getTime() === new Date(2026, 6, 28, 1, 30).getTime() &&
+    result.scheduledNudges.length === 1
+      ? ok('01:30 of the logical 27th is scheduled for 01:30 on the calendar 28th')
+      : bad('late-boundary schedule', JSON.stringify(os.scheduled));
+    const after = recorder();
+    await syncReminderNotifications(db, new Date(2026, 6, 28, 0, 30), after.deps);
+    after.scheduled.some((r) => r.content.data?.kind === 'nudge')
+      ? ok('a resync after midnight, still the 27th logically, keeps it on the schedule')
+      : bad('dropped after midnight');
+  } finally {
+    setDayStartsAt('00:00');
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -13,7 +13,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 
-import { shiftISODate, todayISODate } from '../src/lib/db/date.ts';
+import { setDayStartsAt, shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { createExperiment } from '../src/lib/db/repositories/experiments.ts';
@@ -22,7 +22,7 @@ import { generateMissionForDay } from '../src/lib/db/repositories/mission-genera
 import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
 import { computeInsights } from '../src/lib/ai/insights.ts';
 import { isoDaysAgo } from '../src/lib/ai/series.ts';
-import { isPassSkip, passDirective, PASS_SKIP } from '../src/lib/ai/coach-pass.ts';
+import { isPassSkip, passDirective, PASS_SKIP, runCoachPass } from '../src/lib/ai/coach-pass.ts';
 import {
   currentSignals,
   duePass,
@@ -33,6 +33,7 @@ import {
   setPassState,
 } from '../src/lib/ai/pass-schedule.ts';
 import {
+  carriesNumber,
   inQuietHours,
   parseNudgeReply,
   planNudges,
@@ -43,7 +44,12 @@ import * as nudgeRepo from '../src/lib/db/repositories/coach-nudges.ts';
 import * as chatRepo from '../src/lib/db/repositories/ai-chat.ts';
 import { createReminder } from '../src/lib/db/repositories/reminders.ts';
 import { waitForHealthSyncIdle } from '../src/lib/health/sync.ts';
-import { routeForNotification } from '../src/lib/notifications/reminders.ts';
+import {
+  coachTapLanding,
+  coachTapParams,
+  routeForNotification,
+  tapKey,
+} from '../src/lib/notifications/reminders.ts';
 import { toolByName } from '../src/lib/ai/tools/index.ts';
 
 let pass = 0;
@@ -936,7 +942,9 @@ console.log('N3. what a pass does to the pending set: silence keeps it, lines re
     : bad('disabled pass planned');
 }
 
-console.log('N4. settings: off cancels what is ahead; quiet hours hold a nudge back, never destroy it');
+console.log(
+  'N4. settings: off cancels what is ahead; quiet hours hold a nudge back, never destroy it'
+);
 {
   const { db } = freshDb();
   const s0 = nudgeRepo.getNudgeSettings(db);
@@ -960,7 +968,10 @@ console.log('N4. settings: off cancels what is ahead; quiet hours hold a nudge b
   // The wheel commits every time it settles, so a spin through 19:00 on the
   // way to 22:00 must not have destroyed anything.
   nudgeRepo.saveNudgeSettings(db, { quietStart: '22:00' }, NOW, ZERO);
-  nudgeRepo.upcomingNudges(db, NOW, ZERO).map((n) => n.time).join(',') === '20:00,08:00'
+  nudgeRepo
+    .upcomingNudges(db, NOW, ZERO)
+    .map((n) => n.time)
+    .join(',') === '20:00,08:00'
     ? ok('moved off it again, the 20:00 nudge is back — a spin through the wheel destroys nothing')
     : bad('held-back nudge lost', JSON.stringify(nudgeRepo.upcomingNudges(db, NOW, ZERO)));
   nudgeRepo.saveNudgeSettings(db, { quietStart: '21:30' }, NOW, ZERO);
@@ -1364,6 +1375,318 @@ console.log('N11. set_reminder’s check-in flag, and list_reminders shows the C
   !('coachNotifications' in run('list_reminders', bare))
     ? ok('…and says nothing about them when there are none')
     : bad('empty coachNotifications shipped');
+}
+
+// ---------------------------------------------------------------------------
+// The independent review of 0064 (2026-09-25): the findings it proved, each
+// pinned here so the fix cannot quietly come undone.
+// ---------------------------------------------------------------------------
+
+console.log('N12. a SKIP stays silent whatever the model wraps its NUDGE lines in');
+{
+  const line = `NUDGE ${TOMORROW} 07:30 Leg day.`;
+  const fence = '```';
+  const wrapped = [
+    ['a label', `SKIP\n\nNotifications:\n${line}`],
+    ['a code fence', `SKIP\n${fence}\n${line}\n${fence}`],
+    ['a horizontal rule', `SKIP\n\n---\n${line}`],
+    ['a label over a bulleted list', `SKIP\n\nPlanned nudges:\n- ${line}`],
+    ['a bold heading', `SKIP\n\n**Notifications**\n${line}`],
+    ['a heading over a fenced block', `SKIP\n\n### Nudges\n${fence}text\n${line}\n${fence}`],
+    ['a numbered list', `SKIP\n1. ${line}\n2. NUDGE ${TOMORROW} 12:30 Walk after lunch.`],
+    ['a numbered list with parentheses', `SKIP\n1) ${line}`],
+  ];
+  for (const [name, reply] of wrapped) {
+    const parsed = parseNudgeReply(reply);
+    parsed.text === 'SKIP' && parsed.proposals.length >= 1 && parsed.malformed.length === 0
+      ? ok(`SKIP then ${name}: the note is the sentinel alone, and the nudge still parses`)
+      : bad(`SKIP then ${name}`, JSON.stringify(parsed));
+  }
+
+  const numbered = parseNudgeReply(`Protein is low.\n1) NUDGE ${TOMORROW} 07:30 Leg day.`);
+  numbered.text === 'Protein is low.' && numbered.proposals[0]?.body === 'Leg day.'
+    ? ok('a numbered nudge line under a real note leaves the note and becomes a proposal')
+    : bad('numbered after a note', JSON.stringify(numbered));
+
+  const longIntro =
+    'Your HRV has dipped three mornings running, and the week ahead is a heavy one to carry:';
+  const prose = parseNudgeReply(`${longIntro}\n${line}`);
+  prose.text === longIntro
+    ? ok('a long sentence above the lines is prose, not a label, and stays')
+    : bad('long intro stripped', JSON.stringify(prose.text));
+  const code = parseNudgeReply(`Try this split:\n${fence}\nA: push\nB: pull\n${fence}\n\n${line}`);
+  code.text === `Try this split:\n${fence}\nA: push\nB: pull\n${fence}`
+    ? ok('a code block in the note that ends just above the lines keeps both its fences')
+    : bad('code block broken', JSON.stringify(code.text));
+  const ruleInNote = parseNudgeReply('Sleep first.\n\n---\n\nThen the rest.');
+  ruleInNote.text === 'Sleep first.\n\n---\n\nThen the rest.' && ruleInNote.lead === null
+    ? ok('with no NUDGE line nothing is scaffolding: a rule in a note stays')
+    : bad('rule stripped from a plain note', JSON.stringify(ruleInNote));
+
+  const { apiKeyStore } = await import('../src/lib/ai/api-key-store.ts');
+  await apiKeyStore.setKey('test-key');
+  await apiKeyStore.hydrate();
+  const { db } = freshDb();
+  const passOf = (text) =>
+    runCoachPass(db, { trigger: { kind: 'daily' }, now: NOW, fetchImpl: wire(text) });
+
+  for (const [name, reply] of wrapped.slice(0, 4)) {
+    const result = await passOf(reply);
+    result.status === 'silent' && result.message === null && result.nudges.proposals.length === 1
+      ? ok(`the pass: SKIP then ${name} is SILENT and still plans (the reviewer’s four replies)`)
+      : bad(
+          `pass with ${name}`,
+          JSON.stringify({ status: result.status, message: result.message })
+        );
+  }
+  const trailing = await passOf(`SKIP\n${line}\nThat one is for the morning.`);
+  trailing.status === 'silent' && trailing.message === null
+    ? ok('SKIP, the lines, then a remark about them: the verdict was SKIP, and it holds')
+    : bad('trailing remark leaked', JSON.stringify(trailing.message));
+  const noteFirst = await passOf(`${line}\nProtein has been low three days running.`);
+  noteFirst.status === 'spoke' && noteFirst.message === 'Protein has been low three days running.'
+    ? ok('lines FIRST and a note after: nothing precedes them, so the note speaks')
+    : bad('note after the lines swallowed', JSON.stringify(noteFirst));
+  const spoke = await passOf(`Protein has been low three days running.\n\nNotifications:\n${line}`);
+  spoke.status === 'spoke' && spoke.message === 'Protein has been low three days running.'
+    ? ok('a real note keeps its words, and loses the label that introduced the lines')
+    : bad('note with a label', JSON.stringify(spoke.message));
+}
+
+console.log('N13. numbers: a figure is kept off the lock screen, a name with a digit is not');
+{
+  const base = { now: NOW, dayStartsAt: ZERO, quietStart: '21:30', quietEnd: '07:00', sent: [] };
+  const body = (text) =>
+    planNudges({ ...base, proposals: [{ day: TOMORROW, time: '08:00', body: text }] });
+  const names = ['B12 with breakfast.', 'Omega-3 with dinner.', 'Vitamin D3 with your eggs.'];
+  names.every((text) => body(text).accepted.length === 1)
+    ? ok('B12, Omega-3 and D3 are names, and pass (they were all vetoed before the review)')
+    : bad('names refused', names.filter((t) => body(t).accepted.length === 0).join(' | '));
+  carriesNumber('CoQ10 with lunch.') === false && carriesNumber('Omega-3s with dinner.') === false
+    ? ok('…as do CoQ10 and a plural')
+    : bad('CoQ10 / plural');
+  const figures = [
+    'HRV 38 this morning, go easy.',
+    'Sleep was 6 hours.',
+    'Drink 500 ml of water.',
+    'Walk at 7:30.',
+    'A 5k easy.',
+    'Zone 2 walk after lunch.',
+  ];
+  figures.every((text) => body(text).rejected[0]?.reason === 'number')
+    ? ok('a reading, a duration, a dose, a clock time, a distance — and Zone 2 — still refused')
+    : bad('figure let through', figures.filter((t) => body(t).accepted.length > 0).join(' | '));
+}
+
+console.log('N14. a restated nudge due within the five-minute lead is kept, not cancelled');
+{
+  const { db } = freshDb();
+  nudgeRepo.applyNudgeReply(
+    db,
+    parseNudgeReply(`NUDGE ${TODAY} 15:00 Walk after lunch.`),
+    NOW,
+    ZERO
+  );
+  const original = nudgeRepo.upcomingNudges(db, NOW, ZERO)[0];
+  const LATE = new Date(NOW);
+  LATE.setHours(14, 57, 0, 0);
+  const out = nudgeRepo.applyNudgeReply(
+    db,
+    parseNudgeReply(
+      `NUDGE ${TODAY} 15:00 Walk after lunch.\nNUDGE ${TOMORROW} 08:00 Pack the gym bag.`
+    ),
+    LATE,
+    ZERO
+  );
+  out.cancelled.length === 0 &&
+  out.kept.length === 1 &&
+  out.added.length === 1 &&
+  nudgeRepo.getNudge(db, original.id).status === 'pending' &&
+  nudgeRepo
+    .upcomingNudges(db, LATE, ZERO)
+    .map((n) => n.time)
+    .join(',') === '15:00,08:00'
+    ? ok(
+        'restated three minutes out, it keeps its row; the new one joins it (the reviewer’s probe)'
+      )
+    : bad('restatement cancelled', JSON.stringify(out));
+  const fresh = nudgeRepo.applyNudgeReply(
+    db,
+    parseNudgeReply(`NUDGE ${TODAY} 15:01 A new line four minutes out.`),
+    LATE,
+    ZERO
+  );
+  fresh.rejected[0]?.reason === 'past'
+    ? ok('…but a NEW line that close is still refused: the exemption is for restatements only')
+    : bad('new line inside the lead accepted', JSON.stringify(fresh));
+}
+
+console.log('N15. the pass knows the time, and hears what was refused last time');
+{
+  const { db } = freshDb();
+  const directive = passDirective(
+    { kind: 'daily' },
+    TODAY,
+    nudgeRepo.nudgeDirectiveFor(db, NOW, ZERO)
+  );
+  directive.includes(`It is now 12:00 on ${TODAY}.`) &&
+  directive.includes('at least 5 minutes after') &&
+  directive.includes('12:00 and within the next 36 hours')
+    ? ok('the directive carries the wall clock, so "today" lines are not a guess')
+    : bad('no clock in the directive', directive);
+  const EVENING = new Date(NOW);
+  EVENING.setHours(19, 42, 0, 0);
+  passDirective(
+    { kind: 'checkin', part: 'evening' },
+    TODAY,
+    nudgeRepo.nudgeDirectiveFor(db, EVENING, ZERO)
+  ).includes('It is now 19:42')
+    ? ok('…and the evening pass is told the actual time, not only "after 18:00"')
+    : bad('evening clock');
+
+  nudgeRepo.applyNudgeReply(
+    db,
+    parseNudgeReply(
+      [
+        `NUDGE ${TOMORROW} 08:00 HRV 38, go easy.`,
+        `NUDGE ${TOMORROW} 23:00 Lights out.`,
+        'NUDGE tomorrow morning Walk.',
+        `NUDGE ${TOMORROW} 09:00 Walk after breakfast.`,
+      ].join('\n')
+    ),
+    NOW,
+    ZERO
+  );
+  const told = passDirective({ kind: 'daily' }, TODAY, nudgeRepo.nudgeDirectiveFor(db, NOW, ZERO));
+  told.includes('Not planned from your last pass:') &&
+  told.includes(`${TOMORROW} 08:00 HRV 38, go easy. (it had a number in it)`) &&
+  told.includes(`${TOMORROW} 23:00 Lights out. (inside quiet hours)`) &&
+  told.includes('NUDGE tomorrow morning Walk. (not in the NUDGE YYYY-MM-DD HH:MM text form)') &&
+  !told.includes('Walk after breakfast. (')
+    ? ok('the next pass is told each refused line and the rule that refused it')
+    : bad('refusals not told', told);
+  nudgeRepo.applyNudgeReply(db, parseNudgeReply('SKIP'), NOW, ZERO);
+  !passDirective({ kind: 'daily' }, TODAY, nudgeRepo.nudgeDirectiveFor(db, NOW, ZERO)).includes(
+    'Not planned'
+  ) && nudgeRepo.getRefusedNudges(db).length === 0
+    ? ok('…and only the LAST pass’s: a pass with nothing refused clears the memory')
+    : bad('refusals outlived the next pass');
+  nudgeRepo.saveNudgeSettings(db, { quietStart: '22:00' }, NOW, ZERO);
+  nudgeRepo.getNudgeSettings(db).quietStart === '22:00'
+    ? ok('the memory sits beside the settings, so a settings save cannot wipe or corrupt it')
+    : bad('settings');
+}
+
+console.log('N16. a late day boundary: a small-hours nudge belongs to the day before');
+{
+  const LATE_BOUNDARY = '04:00';
+  const { db } = freshDb();
+  nudgeRepo.saveNudgeSettings(db, { quietStart: '00:00', quietEnd: '00:00' }, NOW, LATE_BOUNDARY);
+  const NIGHT = new Date(NOW);
+  NIGHT.setHours(23, 0, 0, 0);
+  const out = nudgeRepo.applyNudgeReply(
+    db,
+    parseNudgeReply(`NUDGE ${TODAY} 01:30 Screens off, lights out.`),
+    NIGHT,
+    LATE_BOUNDARY
+  );
+  const fires = new Date(NOW);
+  fires.setDate(fires.getDate() + 1);
+  fires.setHours(1, 30, 0, 0);
+  out.added.length === 1 && out.added[0].when.getTime() === fires.getTime()
+    ? ok('01:30 on the logical day fires at 01:30 on the NEXT calendar day, not 22 hours ago')
+    : bad('small-hours fire instant', JSON.stringify(out));
+  const ZERO_OUT = nudgeRepo.applyNudgeReply(
+    freshDb().db,
+    parseNudgeReply(`NUDGE ${TODAY} 01:30 Screens off, lights out.`),
+    NIGHT,
+    ZERO
+  );
+  ZERO_OUT.rejected[0]?.reason === 'past'
+    ? ok('…where under a midnight boundary the same line is in the past (the boundary is doing it)')
+    : bad('midnight boundary', JSON.stringify(ZERO_OUT));
+
+  const AFTER_MIDNIGHT = new Date(fires);
+  AFTER_MIDNIGHT.setHours(0, 30, 0, 0);
+  const listed = nudgeRepo.upcomingNudges(db, AFTER_MIDNIGHT, LATE_BOUNDARY);
+  const context = nudgeRepo.nudgeDirectiveFor(db, AFTER_MIDNIGHT, LATE_BOUNDARY);
+  listed.length === 1 &&
+  context.today === TODAY &&
+  context.pending.some((n) => n.day === TODAY && n.time === '01:30') &&
+  nudgeRepo.describeNudgePlan({ ...out, kept: [], changed: true }, context.today) ===
+    'Planned notifications\ntoday, 01:30 · Screens off, lights out.'
+    ? ok('at 00:30 it is still that logical day: listed, told to the pass, and called "today"')
+    : bad('after midnight', JSON.stringify({ listed, context }));
+
+  const AFTER_IT = new Date(fires);
+  AFTER_IT.setHours(2, 0, 0, 0);
+  nudgeRepo.upcomingNudges(db, AFTER_IT, LATE_BOUNDARY).length === 0 &&
+  nudgeRepo.nudgeDirectiveFor(db, AFTER_IT, LATE_BOUNDARY).sentToday.some((n) => n.time === '01:30')
+    ? ok('at 02:00 it went out: no longer ahead, and counted as sent on its own logical day')
+    : bad('after it fired');
+  const cap = nudgeRepo.applyNudgeReply(
+    db,
+    parseNudgeReply(
+      `NUDGE ${TODAY} 02:30 One more.\nNUDGE ${TODAY} 03:00 And another.\nNUDGE ${TODAY} 03:30 Too many.`
+    ),
+    AFTER_IT,
+    LATE_BOUNDARY
+  );
+  cap.added.length === 1 && cap.rejected.map((r) => r.reason).join(',') === 'day-cap,day-cap'
+    ? ok('the day cap counts it against the logical day it belongs to')
+    : bad('late-boundary cap', JSON.stringify(cap));
+
+  // The daily pass under the same boundary, told the logical day and the clock.
+  setDayStartsAt(LATE_BOUNDARY);
+  try {
+    const text = passDirective(
+      { kind: 'daily' },
+      todayISODate(AFTER_MIDNIGHT),
+      nudgeRepo.nudgeDirectiveFor(db, AFTER_MIDNIGHT)
+    );
+    text.includes(`It is now 00:30 on ${TODAY}.`)
+      ? ok('a pass at 00:30 is told the logical day it is in, with the real clock')
+      : bad('late-boundary directive', text);
+  } finally {
+    setDayStartsAt(ZERO);
+  }
+}
+
+console.log('N17. the tap lands where its answer is');
+{
+  const plain = { kind: 'reminder', id: 'r1', checkin: false };
+  const checkin = { kind: 'reminder', id: 'r2', checkin: true };
+  const land = (route) => coachTapLanding(coachTapParams(route));
+  JSON.stringify(land(plain)) === JSON.stringify({ highlight: 'r1', scroll: 'top' })
+    ? ok('a plain reminder: its row is marked, and the tab goes to the top where it is')
+    : bad('plain landing', JSON.stringify(land(plain)));
+  JSON.stringify(land(checkin)) === JSON.stringify({ highlight: 'r2', scroll: 'end' })
+    ? ok('a CHECK-IN: the row is marked, but the tab goes to the END, where the Coach answers')
+    : bad('check-in landing', JSON.stringify(land(checkin)));
+  land({ kind: 'nudge', id: 'n1' }).scroll === 'end' && land({ kind: 'checkin' }).scroll === 'end'
+    ? ok('a nudge and the morning check-in go to the end too — the line, or the answer, is there')
+    : bad('nudge / morning landing');
+  JSON.stringify(coachTapLanding({})) === JSON.stringify({ highlight: null, scroll: null })
+    ? ok('no tap, no scroll: an ordinary open of the tab is left alone')
+    : bad('no-tap landing');
+  Object.keys(coachTapParams({ kind: 'mission' })).length === 0
+    ? ok('a protocol item carries nothing for the Coach tab (it lands on Home)')
+    : bad('mission params');
+
+  const response = (identifier, date) => ({
+    notification: { date, request: { identifier, content: { data: { kind: 'checkin' } } } },
+  });
+  const monday = Date.UTC(2026, 8, 28, 14, 30);
+  const tuesday = Date.UTC(2026, 8, 29, 14, 30);
+  tapKey(response('morning', monday)) === tapKey(response('morning', monday))
+    ? ok('one delivery handed over twice on a cold start is one tap')
+    : bad('cold-start double not collapsed');
+  tapKey(response('morning', monday)) !== tapKey(response('morning', tuesday))
+    ? ok('a DAILY repeat fires under the same identifier tomorrow, and that tap is a new one')
+    : bad('repeat swallowed');
+  tapKey({ notification: { request: { content: {} } } }) === null
+    ? ok('no identifier, nothing to remember it by')
+    : bad('key without identifier');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

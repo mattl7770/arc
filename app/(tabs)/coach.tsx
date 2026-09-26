@@ -29,7 +29,7 @@ import { useReminders } from '@/hooks/use-reminders';
 import { useSessionKeySet } from '@/hooks/use-session-key';
 import { useStatuses } from '@/hooks/use-statuses';
 import { getDb } from '@/lib/db/client';
-import { syncReminderNotifications } from '@/lib/notifications/reminders';
+import { coachTapLanding, syncReminderNotifications } from '@/lib/notifications/reminders';
 import type { RailChip } from '@/lib/status/chips';
 import type { ReminderRow } from '@/lib/reminders/types';
 import {
@@ -143,13 +143,27 @@ export default function CoachScreen() {
   // on would spend a model call on wording they never saw. A repeated param
   // arrives as string[] despite the generic, so it is coerced like every other
   // deep-linked param.
-  const params = useLocalSearchParams<{ prompt?: string | string[] }>();
-  const seededPrompt = Array.isArray(params.prompt) ? params.prompt[0] : params.prompt;
-  // THIS route's handle, typed to the one call made on it (dropping the param
-  // once taken — see the composer's seed below). The untyped default is keyed
-  // to a root param list that declares no `prompt`.
+  //
+  // A notification tap routes here too (app/_layout.tsx → coachTapParams):
+  // `reminderId`, plus `checkin` when the Coach speaks first, or `latest` when
+  // the thread's last message is what the tap is about.
+  const params = useLocalSearchParams<{
+    prompt?: string | string[];
+    reminderId?: string | string[];
+    checkin?: string | string[];
+    latest?: string | string[];
+  }>();
+  const seededPrompt = firstParam(params.prompt);
+  // THIS route's handle, typed to the one call made on it (dropping a param
+  // once taken — see the composer's seed and the tap below). The untyped
+  // default is keyed to a root param list that declares none of these.
   const navigation = useNavigation<{
-    setParams: (params: { prompt?: string; reminderId?: string }) => void;
+    setParams: (params: {
+      prompt?: string;
+      reminderId?: string;
+      checkin?: string;
+      latest?: string;
+    }) => void;
   }>();
 
   // The Coach's own planned notifications (0064) and the pass store's view of
@@ -197,6 +211,27 @@ export default function CoachScreen() {
   const chat = useCoachChat({ onTurnComplete });
   const scrollRef = useRef<ScrollView>(null);
 
+  // Only follow the stream to the bottom if the user is already there. If they
+  // scrolled up to re-read an earlier turn, don't yank them back on every token.
+  const atBottomRef = useRef(true);
+  // …unless a tap has just asked for the end (a check-in the Coach is
+  // answering, a nudge's line): then every change follows the end until he
+  // drags the thread himself. `atBottomRef` alone cannot hold it, because the
+  // animated scroll there reports positions short of the end on the way.
+  const pinEndRef = useRef(false);
+  const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    atBottomRef.current = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 80;
+  };
+  const followIfAtBottom = () => {
+    if (atBottomRef.current || pinEndRef.current)
+      scrollRef.current?.scrollToEnd({ animated: true });
+  };
+  const revealEnd = useCallback(() => {
+    pinEndRef.current = true;
+    scrollRef.current?.scrollToEnd({ animated: true });
+  }, []);
+
   // The pass store wrote to the thread (a pass's note, a plan record, a tapped
   // nudge): this tab loaded its turns once, at mount, so it re-reads — and so
   // does the Scheduled list, which the same pass may have changed.
@@ -231,25 +266,51 @@ export default function CoachScreen() {
   // card is the low-risk step taken here.
   //
   // Since 0064 the card DOES mark the row: `highlightId` puts a mark on it and
-  // offers **Talk about this** beneath it, which seeds the composer and drops
-  // the param, so the mark goes with it.
-  const { reminderId } = useLocalSearchParams<{ reminderId?: string }>();
+  // offers **Talk about this** beneath it, which seeds the composer and clears
+  // the mark.
+  //
+  // What a tap asks of the tab is `coachTapLanding`'s call. A CHECK-IN's tap
+  // (Q5), the morning check-in and a nudge go to the END instead: the Coach's
+  // answer, or the nudge's own line, lands there. Scrolling a check-in to the
+  // top — what every reminder tap did until the 2026-09-25 review — put the
+  // answer it was waiting for out of sight.
+  //
+  // The params are dropped once taken, for two reasons: the same reminder can
+  // then be tapped a second time and arrive, and a later reload of the
+  // reminders cannot re-run the scroll (it used to jump the view to the top
+  // after every chat turn). The MARK outlives its param, so it is kept here,
+  // derived during render the way the composer's seed is below.
+  const landing = coachTapLanding({
+    reminderId: firstParam(params.reminderId),
+    checkin: firstParam(params.checkin),
+    latest: firstParam(params.latest),
+  });
+  const [mark, setMark] = useState(() => ({ from: landing.highlight, id: landing.highlight }));
+  if (landing.highlight !== mark.from) {
+    setMark({ from: landing.highlight, id: landing.highlight ?? mark.id });
+  }
+  const tapScroll = landing.scroll;
+  const tapId = landing.highlight;
   useEffect(() => {
-    if (!reminderId) return;
-    if (!reminders.some((r) => r.id === reminderId)) return;
-    scrollRef.current?.scrollTo({ y: 0, animated: true });
-  }, [reminderId, reminders]);
+    if (tapScroll === null) return;
+    navigation.setParams({ reminderId: undefined, checkin: undefined, latest: undefined });
+    if (tapScroll === 'end') {
+      revealEnd();
+      return;
+    }
+    if (reminders.some((r) => r.id === tapId)) {
+      // An earlier tap's pin to the end would drag the view straight back.
+      pinEndRef.current = false;
+      scrollRef.current?.scrollTo({ y: 0, animated: true });
+    }
+  }, [tapScroll, tapId, reminders, navigation, revealEnd]);
 
-  // Only follow the stream to the bottom if the user is already there. If they
-  // scrolled up to re-read an earlier turn, don't yank them back on every token.
-  const atBottomRef = useRef(true);
-  const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
-    atBottomRef.current = contentSize.height - (contentOffset.y + layoutMeasurement.height) < 80;
-  };
-  const followIfAtBottom = () => {
-    if (atBottomRef.current) scrollRef.current?.scrollToEnd({ animated: true });
-  };
+  // The tapped check-in was answered (or the thread already held the answer):
+  // bring the end into view even if he scrolled away while it ran.
+  const checkinOutcome = passThread.checkin;
+  useEffect(() => {
+    if (checkinOutcome?.result === 'spoke' || checkinOutcome?.result === 'shown') revealEnd();
+  }, [checkinOutcome, revealEnd]);
 
   const hasConversation = chat.messages.length > 0;
   const hasReminders = reminders.length > 0;
@@ -295,14 +356,11 @@ export default function CoachScreen() {
   }, []);
 
   // "Talk about this" on the tapped reminder (0064): seeds, never sends, and
-  // drops the param so the row's mark goes with it.
-  const onTalk = useCallback(
-    (reminder: ReminderRow) => {
-      setSeedState((prev) => seedFromTap(prev, talkAboutReminder(reminder.title)));
-      navigation.setParams({ reminderId: undefined });
-    },
-    [navigation]
-  );
+  // clears the row's mark.
+  const onTalk = useCallback((reminder: ReminderRow) => {
+    setSeedState((prev) => seedFromTap(prev, talkAboutReminder(reminder.title)));
+    setMark((prev) => ({ ...prev, id: null }));
+  }, []);
 
   return (
     <View className="flex-1 bg-paper">
@@ -339,6 +397,10 @@ export default function CoachScreen() {
             keyboardDismissMode="interactive"
             scrollEventThrottle={16}
             onScroll={onScroll}
+            onScrollBeginDrag={() => {
+              // He is moving the thread himself: a tap's pin to the end lets go.
+              pinEndRef.current = false;
+            }}
             onContentSizeChange={followIfAtBottom}>
             {/* With the brief gone, reminders are the first thing in the scroll
               view — so the section gap has to move onto whatever follows them
@@ -351,7 +413,7 @@ export default function CoachScreen() {
                 reminders={reminders}
                 onComplete={onCompleteReminder}
                 onDismiss={onDismissReminder}
-                highlightId={reminderId ?? null}
+                highlightId={mark.id}
                 onTalk={onTalk}
               />
             ) : null}
@@ -468,4 +530,9 @@ export default function CoachScreen() {
       </SafeAreaView>
     </View>
   );
+}
+
+/** A repeated param arrives as string[] despite the generic; the first one wins. */
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }

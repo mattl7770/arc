@@ -154,8 +154,10 @@ export function reminderTrigger(reminder: ReminderRow, now: Date): ReminderTrigg
 // --- Native side (guarded; no-ops without the module) ------------------------
 
 type PermissionResult = { granted: boolean; canAskAgain: boolean };
-type NotificationResponse = {
+export type NotificationResponse = {
   notification: {
+    /** When this delivery fired, in ms — what tells two firings of one repeating request apart. */
+    date?: number;
     request: { identifier?: string; content: { data?: Record<string, unknown> } };
   };
 };
@@ -317,6 +319,64 @@ export function routeForNotification(
 }
 
 /**
+ * The Coach tab's route params for a tap (app/_layout.tsx pushes them; the tab
+ * reads them back with {@link coachTapLanding}). Strings, because route params
+ * are strings.
+ *
+ *   reminder  `reminderId`, and `checkin: '1'` when the Coach speaks first;
+ *   nudge     `latest: '1'` — its line is now the thread's last message;
+ *   checkin   `latest: '1'` — the Coach's answer will be.
+ */
+export function coachTapParams(route: NotificationRoute): Record<string, string> {
+  switch (route.kind) {
+    case 'reminder':
+      return route.checkin ? { reminderId: route.id, checkin: '1' } : { reminderId: route.id };
+    case 'nudge':
+    case 'checkin':
+      return { latest: '1' };
+    case 'mission':
+      return {};
+  }
+}
+
+/**
+ * What the Coach tab does with a tap's params: which reminder to mark, and
+ * where to put the view.
+ *
+ *   top  a PLAIN reminder — its row, with "Talk about this", is at the top.
+ *   end  anything the Coach answers or has just said: a check-in reminder
+ *        (Q5), the morning check-in, a nudge. The reply lands at the end of
+ *        the thread, so scrolling to the top — what every reminder tap did
+ *        until the 2026-09-25 review — put the answer out of sight.
+ *
+ * A check-in reminder's row is still marked; only the view goes to the end.
+ */
+export function coachTapLanding(params: {
+  reminderId?: string;
+  checkin?: string;
+  latest?: string;
+}): { highlight: string | null; scroll: 'top' | 'end' | null } {
+  const highlight = params.reminderId ? params.reminderId : null;
+  if (params.checkin === '1' || params.latest === '1') return { highlight, scroll: 'end' };
+  return { highlight, scroll: highlight ? 'top' : null };
+}
+
+/**
+ * Which DELIVERY a response is — the request identifier plus the moment it
+ * fired. A repeating trigger (the daily morning check-in, a daily or weekly
+ * check-in reminder) keeps one identifier across every firing until the next
+ * resync, so the identifier alone would swallow tomorrow's tap of the same
+ * request (review, 2026-09-25). The cold start's double hand-off is ONE
+ * delivery, with one date, so it still collapses. Null when there is no
+ * identifier to key on.
+ */
+export function tapKey(response: NotificationResponse): string | null {
+  const id = response.notification.request.identifier;
+  if (id === undefined) return null;
+  return `${id}@${response.notification.date ?? ''}`;
+}
+
+/**
  * Route notification taps. Handles both a tap that opened the app cold (the
  * response is waiting) and taps while it runs. Returns an unsubscribe.
  *
@@ -327,10 +387,10 @@ export function routeForNotification(
  * **Each tap is routed once (0064).** A cold start can hand the same response
  * to both the waiting-response read and the listener, and the waiting response
  * outlives a JS reload. That was a double navigation before; now a tap can
- * start a paid check-in pass, so a response is remembered by its request
- * identifier and the launching one is cleared once handled. The check-in and
- * nudge paths are idempotent underneath as well (pass-store.ts) — this is the
- * first of two locks, not the only one.
+ * start a paid check-in pass, so a delivery is remembered by {@link tapKey}
+ * and the launching one is cleared once handled. The check-in and nudge paths
+ * are idempotent underneath as well (pass-store.ts) — this is the first of two
+ * locks, not the only one.
  */
 export function registerNotificationRouting(
   onRoute: (route: NotificationRoute) => void
@@ -339,10 +399,10 @@ export function registerNotificationRouting(
   if (!mod || typeof mod.addNotificationResponseReceivedListener !== 'function') return () => {};
   const handle = (response: NotificationResponse | null | undefined): void => {
     if (!response) return;
-    const id = response.notification.request.identifier;
-    if (id !== undefined) {
-      if (routedResponses.has(id)) return;
-      routedResponses.add(id);
+    const key = tapKey(response);
+    if (key !== null) {
+      if (routedResponses.has(key)) return;
+      routedResponses.add(key);
     }
     const route = routeForNotification(response.notification.request.content.data);
     if (route) onRoute(route);
@@ -364,7 +424,7 @@ export function registerNotificationRouting(
   }
 }
 
-/** Request identifiers already routed in this JS session. */
+/** Deliveries ({@link tapKey}) already routed in this JS session. */
 const routedResponses = new Set<string>();
 
 /**

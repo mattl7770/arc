@@ -42,7 +42,9 @@ import {
   NUDGE_HORIZON_HOURS,
   NUDGE_MAX_CHARS,
   NUDGE_MAX_PER_DAY,
+  NUDGE_MIN_LEAD_MIN,
   parseNudgeReply,
+  REFUSAL_WORDS,
   type NudgeDirective,
   type NudgeReply,
 } from '@/lib/notifications/nudge-plan';
@@ -229,9 +231,9 @@ function nudgeInstructions(trigger: PassTrigger, nudges: NudgeDirective): string
       : items.map((item) => `  ${item.day ? `${item.day} ` : ''}${item.time} ${item.body}`);
   return [
     '',
-    `Phone notifications. You may also plan notifications for ${nudges.today} or ${nudges.tomorrow},`,
-    `at most ${NUDGE_MAX_PER_DAY} a day counting any already sent. Plan one only when a word at that`,
-    'moment would help more than the thread does; most days need none.',
+    `Phone notifications. It is now ${nudges.clock} on ${nudges.today}. You may also plan notifications`,
+    `for ${nudges.today} or ${nudges.tomorrow}, at most ${NUDGE_MAX_PER_DAY} a day counting any already sent.`,
+    'Plan one only when a word at that moment would help more than the thread does; most days need none.',
     ...(trigger.kind === 'checkin' && trigger.part === 'evening'
       ? [
           'This is the last look before tomorrow, so it is the pass that can plan for tomorrow morning:',
@@ -240,20 +242,29 @@ function nudgeInstructions(trigger: PassTrigger, nudges: NudgeDirective): string
       : []),
     'End your reply with one line per notification, exactly:',
     'NUDGE YYYY-MM-DD HH:MM text',
-    '- The date is the day it belongs to; the time is 24-hour, at least a few minutes from now and',
-    `  within the next ${NUDGE_HORIZON_HOURS} hours.`,
+    `- The date is the day it belongs to; the time is 24-hour, at least ${NUDGE_MIN_LEAD_MIN} minutes after`,
+    `  ${nudges.clock} and within the next ${NUDGE_HORIZON_HOURS} hours.`,
     `- Quiet hours are ${nudges.quietStart}–${nudges.quietEnd}. A notification timed inside them is dropped, not moved.`,
-    `- It shows on the lock screen: one plain sentence, at most ${NUDGE_MAX_CHARS} characters, no digits,`,
-    '  nothing they would mind being read over their shoulder.',
+    `- It shows on the lock screen: one plain sentence, at most ${NUDGE_MAX_CHARS} characters, no numbers`,
+    '  (a name with a digit in it, like B12, is fine), nothing they would mind being read over',
+    '  their shoulder.',
     '- Write it so it still holds if they have already done the thing.',
     '- NUDGE lines replace everything still pending, so repeat any you want to keep. Write no',
     '  NUDGE line to leave the pending set as it is, or NUDGE NONE to cancel all of it.',
-    '- NUDGE lines are never shown in the thread and may follow SKIP. Do not mention them in your',
-    '  note: the app lists them.',
+    '- NUDGE lines are never shown in the thread and may follow SKIP. Write them bare, one per',
+    '  line, with no heading, list or code block. Do not mention them in your note: the app lists them.',
     'Pending:',
     ...list(nudges.pending),
     'Already sent today:',
     ...list(nudges.sentToday.map(({ time, body }) => ({ time, body }))),
+    // Only when there is something to say: a refusal is otherwise silent, and
+    // the model would write the same line again.
+    ...(nudges.refused.length > 0
+      ? [
+          'Not planned from your last pass:',
+          ...nudges.refused.map(({ line, reason }) => `  ${line} (${REFUSAL_WORDS[reason]})`),
+        ]
+      : []),
   ];
 }
 
@@ -409,16 +420,24 @@ export async function runCoachPass(
       }
     );
 
-    // The NUDGE lines come out FIRST, every one of them, parsed or not: they
-    // are instructions to code, and one that reached the thread would be the
-    // Coach's sentinel shipped as its own words — the isPassSkip lesson. What
-    // is left is the note, and the note alone decides spoke vs silent, so a
-    // pass can say SKIP and still plan a nudge.
+    // The NUDGE lines come out FIRST, every one of them, parsed or not, with
+    // any fence, rule or label wrapped round them: they are instructions to
+    // code, and one that reached the thread would be the Coach's sentinel
+    // shipped as its own words — the isPassSkip lesson. What is left is the
+    // note, and the note alone decides spoke vs silent, so a pass can say SKIP
+    // and still plan a nudge.
     const reply = parseNudgeReply(result.text);
     const text = reply.text.trim();
     // A SKIP means silence, however the model punctuates it and whatever it
     // wrote above it — see isPassSkip for the rule and why it is that rule.
-    const skipped = isPassSkip(text);
+    //
+    // With NUDGE lines in the reply the note ENDS where they begin (the
+    // directive puts them last), so the verdict is also read there: SKIP, the
+    // nudge lines, then a remark about them is a silent pass, not a note that
+    // opens "SKIP". An empty lead (nudge lines first) decides nothing — the
+    // text after them is then the whole note.
+    const lead = reply.lead?.trim() ?? '';
+    const skipped = isPassSkip(text) || (lead.length > 0 && isPassSkip(lead));
     return {
       message: skipped ? null : text,
       status: skipped ? 'silent' : 'spoke',

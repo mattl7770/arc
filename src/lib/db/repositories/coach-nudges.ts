@@ -24,7 +24,10 @@
  *   - A pass whose lines produce at least one ACCEPTED nudge replaces every
  *     nudge still ahead with its own set. A restated one keeps its row (same
  *     day, time and words), so a pass that says the same thing twice changes
- *     nothing and records nothing.
+ *     nothing and records nothing. A restatement is exempt from the five-minute
+ *     lead (`standing` in `planNudges`): the directive tells the model to
+ *     repeat what it wants kept, so refusing the repeat of a nudge due in four
+ *     minutes would have cancelled it just before it landed.
  *   - A pass whose lines are ALL refused by the caps changes nothing. A
  *     formatting slip must not wipe a plan the way a failed pass cannot.
  *   - `NUDGE NONE` is how the model cancels everything ahead on purpose.
@@ -36,16 +39,20 @@ import { shiftISODate, todayISODate, getDayStartsAt } from '../date';
 import { newId } from '../id';
 import { getOrCreateUser } from './user';
 import {
+  clockOf,
   DEFAULT_NUDGE_SETTINGS,
   inQuietHours,
   isClock,
+  NUDGE_MAX_CHARS,
   nudgeDayLabel,
   planNudges,
+  REFUSAL_WORDS,
   type NudgeDirective,
   type NudgeRejection,
   type NudgeReply,
   type NudgeSettings,
   type ProposedNudge,
+  type RefusedNudge,
 } from '@/lib/notifications/nudge-plan';
 import { fireInstant } from '@/lib/notifications/protocol-reminders';
 
@@ -138,6 +145,46 @@ export function saveNudgeSettings(
     for (const nudge of upcomingRows(db, now, dayStartsAt)) cancelNudge(db, nudge.id);
   }
   return next;
+}
+
+// --- What the last pass had refused --------------------------------------------
+
+/**
+ * Its own preferences key, beside the settings rather than inside them, so a
+ * settings save can never wipe it and it can never be mistaken for one.
+ */
+const REFUSED_KEY = 'coachNudgeRefusals';
+/** Enough to learn from; a pass writes two or three lines at most. */
+const REFUSED_MAX = 6;
+
+/** The lines code refused from the last pass that planned with nudges on. */
+export function getRefusedNudges(db: Database): RefusedNudge[] {
+  const raw = parsePreferences(getOrCreateUser(db).preferences)[REFUSED_KEY];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (entry): entry is RefusedNudge =>
+        !!entry &&
+        typeof entry === 'object' &&
+        typeof (entry as RefusedNudge).line === 'string' &&
+        typeof (entry as RefusedNudge).reason === 'string' &&
+        (entry as RefusedNudge).reason in REFUSAL_WORDS
+    )
+    .slice(0, REFUSED_MAX);
+}
+
+/** Replace the memory with this pass's refusals — empty clears it. Writes only on a change. */
+function recordRefusals(db: Database, refused: RefusedNudge[]): void {
+  const next = refused.slice(0, REFUSED_MAX).map(({ line, reason }) => ({
+    line: line.slice(0, NUDGE_MAX_CHARS + 40),
+    reason,
+  }));
+  if (JSON.stringify(next) === JSON.stringify(getRefusedNudges(db))) return;
+  const user = getOrCreateUser(db);
+  const preferences = parsePreferences(user.preferences);
+  if (next.length === 0) delete preferences[REFUSED_KEY];
+  else preferences[REFUSED_KEY] = next;
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(preferences), user.id]);
 }
 
 // --- Reads -----------------------------------------------------------------------
@@ -261,6 +308,10 @@ const UNCHANGED: Omit<NudgeApplyOutcome, 'rejected' | 'malformed'> = {
 /**
  * Apply one pass's nudge lines — the rules in the module header. Writes in one
  * transaction, so the pending set is never half-replaced.
+ *
+ * It also replaces the memory of what was refused ({@link getRefusedNudges})
+ * with this pass's refusals — none clears it — so the next pass is told which
+ * of its lines code dropped and why. Nothing else reports a refusal.
  */
 export function applyNudgeReply(
   db: Database,
@@ -271,22 +322,35 @@ export function applyNudgeReply(
   const settings = getNudgeSettings(db);
   const base = { rejected: [], malformed: reply.malformed.length };
   if (!settings.enabled) return { ...UNCHANGED, ...base };
-  if (reply.proposals.length === 0 && !reply.clear) return { ...UNCHANGED, ...base };
+  const malformed: RefusedNudge[] = reply.malformed.map((line) => ({ line, reason: 'malformed' }));
+  if (reply.proposals.length === 0 && !reply.clear) {
+    recordRefusals(db, malformed);
+    return { ...UNCHANGED, ...base };
+  }
 
   const today = todayISODate(now, dayStartsAt);
+  const ahead = upcomingRows(db, now, dayStartsAt);
+  const bare = ({ day, time, body }: ProposedNudge): ProposedNudge => ({ day, time, body });
   const plan = planNudges({
     proposals: reply.proposals,
     sent: sentNudgesFrom(db, shiftISODate(today, -1), now, dayStartsAt),
+    standing: ahead.map(bare),
     now,
     dayStartsAt,
     quietStart: settings.quietStart,
     quietEnd: settings.quietEnd,
   });
+  recordRefusals(db, [
+    ...plan.rejected.map(({ nudge, reason }) => ({
+      line: `${nudge.day} ${nudge.time} ${nudge.body}`,
+      reason,
+    })),
+    ...malformed,
+  ]);
   if (plan.accepted.length === 0 && !reply.clear) {
     return { ...UNCHANGED, rejected: plan.rejected, malformed: reply.malformed.length };
   }
 
-  const ahead = upcomingRows(db, now, dayStartsAt);
   const sameAs = (a: { day: string; time: string; body: string }, b: typeof a) =>
     a.day === b.day && a.time === b.time && a.body === b.body;
 
@@ -338,12 +402,14 @@ export function nudgeDirectiveFor(
   return {
     today,
     tomorrow: shiftISODate(today, 1),
+    clock: clockOf(now),
     quietStart: settings.quietStart,
     quietEnd: settings.quietEnd,
     pending: upcomingNudges(db, now, dayStartsAt).map(bare),
     sentToday: sentNudgesFrom(db, today, now, dayStartsAt)
       .filter((row) => row.day === today)
       .map(bare),
+    refused: getRefusedNudges(db),
   };
 }
 

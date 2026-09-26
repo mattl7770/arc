@@ -103,8 +103,20 @@ export type ProposedNudge = {
 };
 
 export type NudgeReply = {
-  /** The reply with every NUDGE line taken out — what the thread and Home may show. */
+  /**
+   * The reply with every NUDGE line taken out, and the scaffolding the model
+   * wrapped them in (see {@link parseNudgeReply}) — what the thread and Home
+   * may show.
+   */
   text: string;
+  /**
+   * What the reply said BEFORE its first NUDGE line, scaffolding removed —
+   * null when there was no NUDGE line. The directive puts the nudge lines at
+   * the END of the reply, so this is the note as the model meant it, and its
+   * last line is the verdict (coach-pass.ts reads it for SKIP). Anything the
+   * model wrote after its nudge lines is outside the grammar.
+   */
+  lead: string | null;
   /** Well-formed lines, in the order written. */
   proposals: ProposedNudge[];
   /** `NUDGE NONE`: cancel everything still pending. */
@@ -115,20 +127,101 @@ export type NudgeReply = {
 
 export const EMPTY_NUDGE_REPLY: NudgeReply = {
   text: '',
+  lead: null,
   proposals: [],
   clear: false,
   malformed: [],
 };
 
 /**
- * A line that IS a nudge line: after list bullets, quote marks and markdown
- * emphasis, its first word is `NUDGE` in capitals. Case-sensitive on purpose:
- * the sentinel is a token, and a note that happens to start "Nudge yourself
- * toward bed" is prose that must reach him, not a malformed line to swallow.
+ * A line that IS a nudge line: after list bullets (a numbered item's `1.` or
+ * `1)` included), quote marks and markdown emphasis, its first word is `NUDGE`
+ * in capitals. Case-sensitive on purpose: the sentinel is a token, and a note
+ * that happens to start "Nudge yourself toward bed" is prose that must reach
+ * him, not a malformed line to swallow.
  */
-const NUDGE_LINE = /^[\s>*_`•-]*NUDGE(?![A-Za-z])/;
+const NUDGE_LINE = /^[\s>*_`•-]*(?:\d{1,2}[.)]\s+)?[\s*_`]*NUDGE(?![A-Za-z])/;
+/** What sits in front of the word on a nudge line: a bullet, a quote mark, a list number. */
+const LINE_MARKER = /^[\s>•-]*(?:\d{1,2}[.)]\s+)?/;
 const NONE_LINE = /^NUDGE:?\s+NONE[.!]?$/;
 const FULL_LINE = /^NUDGE:?\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})\s+(.+)$/;
+
+/**
+ * The scaffolding a model puts round a block of lines: a code fence, a
+ * horizontal rule, and a short heading or label directly above it
+ * ("Notifications:", "**Planned nudges**", "### Nudges"). Left behind after the
+ * NUDGE lines go, any of it would sit BELOW a SKIP and make the reply read as
+ * spoken — the 2026-08-11 defect by a new route (review, 2026-09-25). Removed
+ * only where it touches a nudge line; see {@link stripScaffolding}.
+ */
+const FENCE_LINE = /^\s*(?:```|~~~)[\w-]*\s*$/;
+const RULE_LINE = /^\s*([-*_=])(?:\s*\1){2,}\s*$/;
+/** A label is short. A longer sentence above the block is prose, and stays. */
+const LABEL_MAX_CHARS = 60;
+
+function isLabel(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length === 0 || trimmed.length > LABEL_MAX_CHARS) return false;
+  if (/^#{1,6}\s+\S/.test(trimmed)) return true; // a markdown heading
+  if (/^(\*\*|__)[^*_]+\1:?$/.test(trimmed)) return true; // a line that is all bold
+  return /:$/.test(trimmed.replace(/[*_`]+$/, '')); // "Notifications:", "**Nudges:**"
+}
+
+/**
+ * Mark the scaffolding round the nudge lines as removed too. Runs to a fixed
+ * point, so a label above a fence above the lines goes with them:
+ *
+ *   - an OPENING fence goes when the nearest non-blank line below it is a
+ *     nudge line (or a fence or rule that went), and a CLOSING fence when the
+ *     nearest one above it is. Fences are paired in order, so the closing
+ *     fence of a code block in the note, sitting just above the nudge lines,
+ *     is not mistaken for one that opens them;
+ *   - a rule goes when its nearest non-blank neighbour on either side is one;
+ *   - a label goes when the nearest non-blank line BELOW it is one.
+ *
+ * A label never takes anything else with it, and nothing that does not border
+ * a nudge line is touched: a code block in the note, or a label that
+ * introduces prose, stays.
+ */
+function stripScaffolding(lines: string[], removed: boolean[]): void {
+  const nearest = (from: number, step: 1 | -1): number => {
+    for (let j = from + step; j >= 0 && j < lines.length; j += step) {
+      if (lines[j]!.trim().length > 0) return j;
+    }
+    return -1;
+  };
+  // Every fence, in order, alternates opening and closing.
+  const opens = new Map<number, boolean>();
+  let open = false;
+  for (const [index, line] of lines.entries()) {
+    if (!FENCE_LINE.test(line)) continue;
+    open = !open;
+    opens.set(index, open);
+  }
+  const frame = (j: number) => opens.has(j) || RULE_LINE.test(lines[j]!);
+  // A removed nudge line, or a removed fence or rule — never a removed label.
+  const anchor = (j: number) =>
+    j !== -1 && removed[j] === true && (NUDGE_LINE.test(lines[j]!) || frame(j));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (removed[i] || line.trim().length === 0) continue;
+      const fence = opens.get(i);
+      const goes =
+        fence !== undefined
+          ? anchor(nearest(i, fence ? 1 : -1))
+          : RULE_LINE.test(line)
+            ? anchor(nearest(i, 1)) || anchor(nearest(i, -1))
+            : isLabel(line) && anchor(nearest(i, 1));
+      if (goes) {
+        removed[i] = true;
+        changed = true;
+      }
+    }
+  }
+}
 
 /** A real calendar day, checked componentwise (never `new Date('YYYY-MM-DD')`). */
 function realDay(y: number, m: number, d: number): boolean {
@@ -158,6 +251,9 @@ function cleanBody(raw: string): string {
  * whether or not it parses. That is the `isPassSkip` lesson applied a second
  * time: a sentinel that leaks reaches the owner as the Coach's own words, so a
  * half-formed `NUDGE tomorrow morning …` is dropped and counted, never shown.
+ * The fence, rule or short label the model wrapped them in goes with them
+ * ({@link stripScaffolding}), for the same reason: under a SKIP, a leftover
+ * "Notifications:" is what the note would end on.
  *
  * What parses is exactly `NUDGE YYYY-MM-DD HH:MM text` or `NUDGE NONE`. A
  * one-digit hour is padded (that is notation, not a guess); a missing date, a
@@ -165,22 +261,19 @@ function cleanBody(raw: string): string {
  * inferred.
  */
 export function parseNudgeReply(reply: string): NudgeReply {
-  const kept: string[] = [];
+  const lines = reply.split('\n');
+  const removed = lines.map((line) => NUDGE_LINE.test(line));
+  const first = removed.indexOf(true);
   const proposals: ProposedNudge[] = [];
   const malformed: string[] = [];
   let clear = false;
 
-  for (const line of reply.split('\n')) {
-    if (!NUDGE_LINE.test(line)) {
-      kept.push(line);
-      continue;
-    }
-    // Markdown emphasis anywhere on the line and the bullet in front of it,
-    // off. The body loses them anyway (cleanBody), so nothing is lost here.
-    const bare = line
-      .replace(/[*_`]/g, '')
-      .replace(/^[\s>•-]+/, '')
-      .trim();
+  for (const [index, line] of lines.entries()) {
+    if (!removed[index]) continue;
+    // Markdown emphasis anywhere on the line and the bullet or list number in
+    // front of it, off. The body loses them anyway (cleanBody), so nothing is
+    // lost here.
+    const bare = line.replace(/[*_`]/g, '').replace(LINE_MARKER, '').trim();
     if (NONE_LINE.test(bare)) {
       clear = true;
       continue;
@@ -205,14 +298,40 @@ export function parseNudgeReply(reply: string): NudgeReply {
     });
   }
 
-  return { text: kept.join('\n').trim(), proposals, clear, malformed };
+  if (first === -1) return { text: reply.trim(), lead: null, proposals, clear, malformed };
+  stripScaffolding(lines, removed);
+  const kept = (upTo: number) =>
+    lines
+      .slice(0, upTo)
+      .filter((_, index) => !removed[index])
+      .join('\n')
+      .trim();
+  return { text: kept(lines.length), lead: kept(first), proposals, clear, malformed };
 }
 
 // --- The caps --------------------------------------------------------------------
 
+/**
+ * Does the line carry a NUMBER — a reading, a dose, a time, a count?
+ *
+ * Owner's Q3: the line shows in full on the lock screen, with numbers kept
+ * out. The plan he accepted said the MODEL is told so; code backs that up for
+ * the case that matters, a figure standing on its own ("HRV 38", "7 hours",
+ * "500 ml", "7:30"). A digit INSIDE a name that begins with a letter is part
+ * of the name, not a reading, so "B12", "D3", "CoQ10" and "Omega-3" pass —
+ * the first version refused every digit and silently vetoed ordinary
+ * supplement names (review, 2026-09-25). "Zone 2" still counts as a number:
+ * the 2 stands alone, and telling it from "Sleep 6" would be judgment.
+ */
+export function carriesNumber(body: string): boolean {
+  return body
+    .split(/[^A-Za-z0-9-]+/)
+    .some((token) => /[0-9]/.test(token) && !/^[A-Za-z]+-?[0-9]+s?$/.test(token));
+}
+
 /** Why a proposed nudge was dropped. Every one is a rule, none is a judgment. */
 export type NudgeRejection =
-  /** It carries a digit. Owner's Q3: the line shows in full, with numbers kept out. */
+  /** It carries a number ({@link carriesNumber}). Owner's Q3. */
   | 'number'
   | 'too-long'
   /** Its moment is past, or too close to now to be anything but a repeat of the screen. */
@@ -236,6 +355,14 @@ export type PlanInput = {
    * them, so they are not competing for the cap.
    */
   sent: ProposedNudge[];
+  /**
+   * Pending nudges still ahead — what the pass's lines would replace. A line
+   * that restates one exactly (day, time and words) is exempt from the
+   * minimum lead: it is already scheduled, and the directive tells the model
+   * to repeat what it wants kept, so refusing the repeat of a nudge four
+   * minutes out would cancel it at the moment it was about to land.
+   */
+  standing?: ProposedNudge[];
   now: Date;
   dayStartsAt: string;
   quietStart: string;
@@ -247,6 +374,11 @@ export type PlanResult = {
   accepted: PlannedNudge[];
   rejected: { nudge: ProposedNudge; reason: NudgeRejection }[];
 };
+
+/** One nudge exactly: the same day, clock and words. */
+export function nudgeKey(nudge: ProposedNudge): string {
+  return `${nudge.day}|${nudge.time}|${nudge.body}`;
+}
 
 /** Case, spacing and a trailing full stop are not a different message. */
 export function normalizeBody(body: string): string {
@@ -275,12 +407,14 @@ export function planNudges(input: PlanInput): PlanResult {
     slots.add(`${sent.day}|${sent.time}`);
   }
 
+  const standing = new Set((input.standing ?? []).map(nudgeKey));
+
   const accepted: PlannedNudge[] = [];
   const rejected: PlanResult['rejected'] = [];
   const drop = (nudge: ProposedNudge, reason: NudgeRejection) => rejected.push({ nudge, reason });
 
   for (const nudge of input.proposals) {
-    if (/[0-9]/.test(nudge.body)) {
+    if (carriesNumber(nudge.body)) {
       drop(nudge, 'number');
       continue;
     }
@@ -293,7 +427,10 @@ export function planNudges(input: PlanInput): PlanResult {
       drop(nudge, 'unplaceable');
       continue;
     }
-    if (when.getTime() < earliest) {
+    // A restated pending nudge only has to be still ahead; a new one has to be
+    // far enough ahead not to repeat what is on the screen.
+    const floor = standing.has(nudgeKey(nudge)) ? now.getTime() + 1 : earliest;
+    if (when.getTime() < floor) {
       drop(nudge, 'past');
       continue;
     }
@@ -335,12 +472,41 @@ export function planNudges(input: PlanInput): PlanResult {
 export type NudgeDirective = {
   today: string;
   tomorrow: string;
+  /**
+   * The wall clock as the pass starts, `HH:MM`. Without it the model cannot
+   * know which of today's moments are still ahead, and code drops a moment
+   * that has passed — so "today" nudges would land or vanish at random
+   * (review, 2026-09-25).
+   */
+  clock: string;
   quietStart: string;
   quietEnd: string;
   /** Still ahead — what the pass's lines would replace. */
   pending: ProposedNudge[];
   /** Already out today, so it is not said twice. */
   sentToday: ProposedNudge[];
+  /** What code refused from the last pass's lines, and why, so it can learn. */
+  refused: RefusedNudge[];
+};
+
+/**
+ * A line a pass wrote that code refused. Kept until the next pass is told,
+ * because a refusal is otherwise silent: nothing reaches the thread or the
+ * Coach tab, and the model would write the same line again tomorrow.
+ */
+export type RefusedNudge = { line: string; reason: NudgeRejection | 'malformed' };
+
+/** How a refusal is put to the model — plain, and the rule rather than a verdict. */
+export const REFUSAL_WORDS: Record<RefusedNudge['reason'], string> = {
+  number: 'it had a number in it',
+  'too-long': `longer than ${NUDGE_MAX_CHARS} characters`,
+  past: `already past, or under ${NUDGE_MIN_LEAD_MIN} minutes away`,
+  'beyond-horizon': `more than ${NUDGE_HORIZON_HOURS} hours ahead`,
+  'quiet-hours': 'inside quiet hours',
+  'day-cap': `that day already had ${NUDGE_MAX_PER_DAY}`,
+  duplicate: 'the same time or words as another that day',
+  unplaceable: 'that clock time does not exist that day',
+  malformed: 'not in the NUDGE YYYY-MM-DD HH:MM text form',
 };
 
 // --- Words for a day -------------------------------------------------------------

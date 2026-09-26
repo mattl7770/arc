@@ -20,6 +20,7 @@ import { runPendingEstimateSweep } from '@/lib/media/pending-estimate-store';
 import { runProgressPhotoSweep } from '@/lib/media/progress-photo-store';
 import { runRecipePhotoSweep } from '@/lib/media/recipe-photo-store';
 import {
+  coachTapParams,
   configureNotificationPresentation,
   registerNotificationRouting,
   syncReminderNotifications,
@@ -219,23 +220,25 @@ export default function RootLayout() {
       // and the key is loaded, so a tap on a locked phone is answered the
       // moment Face ID is. A Coach nudge's own line goes into the thread as the
       // Coach's latest message before the tab opens, so it is there to reply to.
-      if (route.kind === 'reminder') {
-        if (route.checkin) {
-          coachPassStore.requestCheckin({ kind: 'reminder', reminderId: route.id });
-        }
-        router.push({ pathname: '/(tabs)/coach', params: { reminderId: route.id } });
-      } else if (route.kind === 'mission') {
+      //
+      // What the tab does on arrival rides the params (`coachTapParams`): a
+      // plain reminder's row is at the top; anything the Coach answers or has
+      // just said lands at the END of the thread, so the tab goes there.
+      if (route.kind === 'mission') {
         // A protocol item's own nudge (C10). It lands on HOME, not on
         // protocol-detail: the phone buzzed to say "do this", and Home is where
         // the row is ticked. The detail screen is a reference surface.
         router.push('/');
+        return;
+      }
+      if (route.kind === 'reminder' && route.checkin) {
+        coachPassStore.requestCheckin({ kind: 'reminder', reminderId: route.id });
       } else if (route.kind === 'nudge') {
         coachPassStore.deliverNudge(getDb(), route.id);
-        router.push('/(tabs)/coach');
-      } else {
+      } else if (route.kind === 'checkin') {
         coachPassStore.requestCheckin({ kind: 'morning' });
-        router.push('/(tabs)/coach');
       }
+      router.push({ pathname: '/(tabs)/coach', params: coachTapParams(route) });
     });
     return () => {
       clearTimeout(backupTimer);

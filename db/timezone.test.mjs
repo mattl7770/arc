@@ -124,6 +124,12 @@ import {
 import { awayDayNumber, deriveTrips, TRIP_SETTLE_DAYS, tripOn } from '../src/lib/timezone/trips.ts';
 import { onForeground } from '../src/lib/timezone/foreground.ts';
 import { offsetAt } from '../src/lib/timezone/offset-history.ts';
+import {
+  applyNudgeReply,
+  getNudge,
+  upcomingNudges,
+} from '../src/lib/db/repositories/coach-nudges.ts';
+import { parseNudgeReply } from '../src/lib/notifications/nudge-plan.ts';
 
 let pass = 0;
 let fail = 0;
@@ -1986,6 +1992,58 @@ console.log('\n20. the one-time reach back, and when it is empty');
   observedAt > 0 && observedAt < historyAt && historyAt < windowedAt
     ? ok('the pass observes, then reads the history, then windows — in that order')
     : bad('ordering', JSON.stringify({ observedAt, historyAt, windowedAt }));
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n24. the Coach’s nudges ride the same two seam behaviours (0064)');
+{
+  // A nudge is stored as a logical day plus a wall clock, never as an instant,
+  // so the resync after a landing rebuilds its moment where the body now is —
+  // exactly as §17 does for a reminder. Exercised over the injected `now`, for
+  // the reason §17 gives.
+  const scheduleOf = async (db, now) => {
+    const scheduled = [];
+    await syncReminderNotifications(db, now, {
+      available: () => true,
+      cancelAll: async () => scheduled.splice(0, scheduled.length),
+      ensurePermission: async () => true,
+      schedule: async (request) => {
+        scheduled.push(request);
+      },
+    });
+    return scheduled.filter((request) => request.content.data?.kind === 'nudge');
+  };
+  const planAt = (db, text, now) => applyNudgeReply(db, parseNudgeReply(text), now, '00:00');
+
+  // WESTBOUND: the clock rolled back to 13:00, and 21:00 is still ahead. The
+  // rebuilt schedule carries it once, for 21:00 local.
+  {
+    const { db } = freshDb();
+    planAt(db, 'NUDGE 2026-09-12 21:00 Lights out soon.', new Date(2026, 8, 12, 9, 0));
+    const scheduled = await scheduleOf(db, new Date(2026, 8, 12, 13, 0));
+    eq('westbound: the nudge is on the rebuilt schedule once', scheduled.length, 1);
+    const when = scheduled[0]?.trigger.date;
+    when?.getHours() === 21 && when?.getMinutes() === 0 && when?.getDate() === 12
+      ? ok('… re-anchored to 21:00 local, where the body is standing')
+      : bad('westbound nudge anchor', String(when));
+  }
+
+  // EASTBOUND: the landing moved the clock past 07:00. The nudge's moment has
+  // gone, so it is DROPPED rather than moved — ARC never picks a new moment the
+  // model did not choose — and the row is left as it was, never cancelled.
+  {
+    const { db } = freshDb();
+    const out = planAt(db, 'NUDGE 2026-09-12 07:00 Walk before work.', new Date(2026, 8, 12, 5, 0));
+    const id = out.added[0]?.id;
+    const scheduled = await scheduleOf(db, new Date(2026, 8, 12, 9, 0));
+    eq('eastbound: a nudge whose moment has passed is not scheduled', scheduled.length, 0);
+    eq(
+      '… and is not listed as coming',
+      upcomingNudges(db, new Date(2026, 8, 12, 9, 0), '00:00').length,
+      0
+    );
+    eq('… and its row is left alone, not cancelled', id && getNudge(db, id)?.status, 'pending');
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
