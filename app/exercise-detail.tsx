@@ -29,26 +29,25 @@ import {
 } from '@/lib/exercise/load-basis';
 import { measuresLabel } from '@/lib/exercise/measures';
 import {
-  defaultTrendMetric,
   formatTrendValue,
   recordCellsOf,
   recordKindsFor,
   recordSessionIds,
   repMaxEmptyNote,
   repMaxesFrom,
-  sessionSeriesFrom,
   TREND_METRIC_LABEL,
-  trendEmptyNote,
-  trendHeadline,
-  trendMetricsFor,
-  trendOf,
-  trendPhrase,
-  trendPhraseParts,
+  TREND_RANGE_LABEL,
+  TREND_RANGE_WORDS,
+  trendView,
+  type PhrasePart,
   type RepMax,
   type TrendMetric,
+  type TrendRange,
+  type TrendView,
 } from '@/lib/exercise/records';
 import type { CatalogExercise, PersonalRecords } from '@/lib/exercise/types';
 import type { SessionTopSet } from '@/lib/exercise/progression';
+import type { UnitPreferences } from '@/lib/user/types';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
 /**
@@ -71,9 +70,10 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
  *   Best at each rep count plate  a record, ruled — in both states
  *   History                plate  a record of sessions, ruled — in both states
  *
- * **No accent anywhere on this screen.** The two controls on it — the weight
- * basis and the trend's metric — are selections, drawn in the protocol
- * editor's chip vocabulary (hairline off, ink border on the recessed fill).
+ * **No accent anywhere on this screen.** The controls on it — the weight
+ * basis, and the trend's metric and range (`TrendField`) — are selections,
+ * drawn in the protocol editor's chip vocabulary (hairline off, ink border on
+ * the recessed fill).
  * Every measured value is mono; every absent record is an em-dash rather than a
  * plausible-looking estimate; and every figure is computed in
  * src/lib/exercise/records.ts — this file only draws.
@@ -173,27 +173,25 @@ export default function ExerciseDetailScreen() {
   const { exercise, rows, prs, repMaxes, sessions, recordSessions, sessionCount } = detail;
 
   const [choosingBasis, setChoosingBasis] = useState(false);
+  // The Trend's two chip rows, each null until the owner picks. Until then the
+  // metric is the one the DATA can draw — the Train hub's "+10%" opens on the
+  // chart it was read from — and the range is the shortest that still shows
+  // every session the Trend showed before it had ranges (`trendView`).
   const [metricChoice, setMetricChoice] = useState<TrendMetric | null>(null);
-
-  const metrics = useMemo(
-    () => (exercise ? trendMetricsFor(exercise.measures, exercise.loadBasis) : []),
-    [exercise]
+  const [rangeChoice, setRangeChoice] = useState<TrendRange | null>(null);
+  const view = useMemo(
+    () =>
+      exercise
+        ? trendView(
+            rows,
+            exercise.measures,
+            exercise.loadBasis,
+            { metric: metricChoice, range: rangeChoice },
+            today
+          )
+        : null,
+    [exercise, rows, metricChoice, rangeChoice, today]
   );
-  // Opened on the metric the DATA can draw — the direction's own metric when
-  // there is one, so the Train hub's "+10%" opens on the chart it was read
-  // from (`defaultTrendMetric`). Until the owner picks a chip.
-  const defaultMetric = useMemo(
-    () => (exercise ? defaultTrendMetric(rows, exercise.measures, exercise.loadBasis) : null),
-    [exercise, rows]
-  );
-  const metric: TrendMetric | null =
-    metricChoice != null && metrics.includes(metricChoice) ? metricChoice : defaultMetric;
-  const series = useMemo(
-    () => (metric == null ? [] : sessionSeriesFrom(rows, metric)),
-    [rows, metric]
-  );
-  const trend = useMemo(() => trendOf(series), [series]);
-  const headline = useMemo(() => trendHeadline(series, trend), [series, trend]);
 
   if (!exercise) {
     return (
@@ -393,104 +391,15 @@ export default function ExerciseDetailScreen() {
         </Block>
       </View>
 
-      {/* Trend — a readout about the lift, so: measured field. One value per
-          session (src/lib/exercise/records.ts), switchable between the metrics
-          this movement has — Fitbod's e1RM, max weight, volume and reps
-          charts, as one field. The direction line compares the latest HOME
-          session with the three before it; away sessions are plotted hollow
-          and never compared (0055). */}
-      {metric != null ? (
+      {view != null ? (
         <View className="mt-7">
-          <Block device="field">
-            <SectionLabel label="Trend" note={WEIGHT_METRICS.has(metric) ? basisNote : undefined} />
-            {metrics.length > 1 ? (
-              <View className="mt-2 flex-row flex-wrap gap-2">
-                {metrics.map((m) => {
-                  const selected = m === metric;
-                  return (
-                    <Pressable
-                      key={m}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      accessibilityLabel={`Show ${TREND_METRIC_LABEL[m]} by session`}
-                      onPress={() => setMetricChoice(m)}
-                      className={`min-h-[32px] justify-center rounded-btn border px-2.5 active:bg-paper-dim ${
-                        selected ? 'border-ink bg-paper-dim' : 'border-hairline'
-                      }`}>
-                      <Text
-                        className={`font-label text-[10px] uppercase tracking-[1px] ${
-                          selected ? 'font-semibold text-ink' : 'text-ink-secondary'
-                        }`}>
-                        {TREND_METRIC_LABEL[m]}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            ) : null}
-            {series.length >= 2 && headline != null ? (
-              <>
-                <View className="mt-3 flex-row items-center justify-between">
-                  {/* The figure is the session the direction line is read
-                      from: when the last point is an away session, the home
-                      value, labelled as such (`trendHeadline`). */}
-                  <View>
-                    <Text className="font-mono text-2xl text-ink">
-                      {formatTrendValue(metric, headline.value, units)}
-                    </Text>
-                    <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                      {headline.label}
-                    </Text>
-                  </View>
-                  {/* Away sessions are PLOTTED and MARKED, never hidden (0055):
-                      the session happened and the owner will look for it, but
-                      its loads are not part of the baseline. Hollow, not
-                      coloured — behaviour, not biology. */}
-                  <Sparkline
-                    data={series.map((p) => p.value)}
-                    marked={series.map((p) => p.away === true)}
-                    baseline="auto"
-                    width={140}
-                    height={36}
-                  />
-                </View>
-                {/* A why-line: the words in the serif, the figures in mono
-                    ("Serif speaks, mono measures", 00-design-spec.md §3). */}
-                {trend ? (
-                  <Text
-                    accessibilityLabel={trendPhrase(trend, { spoken: true })}
-                    className="mt-2 font-serif text-[12px] leading-5 text-ink-secondary">
-                    {trendPhraseParts(trend).map((part, i) =>
-                      part.measured ? (
-                        <Text key={i} className="font-mono text-[11px]">
-                          {part.text}
-                        </Text>
-                      ) : (
-                        part.text
-                      )
-                    )}
-                  </Text>
-                ) : null}
-                <Text className="mt-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                  {`${dayLabel(series[0]!.date, today)} – ${dayLabel(
-                    series[series.length - 1]!.date,
-                    today
-                  )} · ${series.length} sessions`}
-                </Text>
-              </>
-            ) : (
-              <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-                {trendEmptyNote(metric, rows)}
-              </Text>
-            )}
-            {/* The key for the mark above — drawn only when there is something
-                marked, so a chart with no away sessions carries no legend. */}
-            {series.length >= 2 && series.some((p) => p.away) ? (
-              <Text className="mt-2 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-                Hollow · away gym — plotted, not counted toward records
-              </Text>
-            ) : null}
-          </Block>
+          <TrendField
+            view={view}
+            units={units}
+            basisNote={basisNote}
+            onMetric={setMetricChoice}
+            onRange={setRangeChoice}
+          />
         </View>
       ) : null}
 
@@ -591,5 +500,176 @@ export default function ExerciseDetailScreen() {
         </Block>
       </View>
     </Screen>
+  );
+}
+
+/**
+ * One chip in either of the Trend's rows — the protocol editor's selection
+ * vocabulary (hairline off, ink border on the recessed fill), no accent. A
+ * plain function rather than a component, so the Pressable sits directly in
+ * the Trend's element tree and the render suite can press it.
+ */
+function trendChip(chip: {
+  key: string;
+  label: string;
+  spoken: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      key={chip.key}
+      accessibilityRole="button"
+      accessibilityState={{ selected: chip.selected }}
+      accessibilityLabel={chip.spoken}
+      onPress={chip.onPress}
+      className={`min-h-[32px] justify-center rounded-btn border px-2.5 active:bg-paper-dim ${
+        chip.selected ? 'border-ink bg-paper-dim' : 'border-hairline'
+      }`}>
+      <Text
+        className={`font-label text-[10px] uppercase tracking-[1px] ${
+          chip.selected ? 'font-semibold text-ink' : 'text-ink-secondary'
+        }`}>
+        {chip.label}
+      </Text>
+    </Pressable>
+  );
+}
+
+/** One direction line under the Trend: prose in the serif, its figures in mono. */
+function directionLine(parts: readonly PhrasePart[], spoken: string | null, margin: string) {
+  return (
+    <Text
+      accessibilityLabel={spoken ?? undefined}
+      className={`${margin} font-serif text-[12px] leading-5 text-ink-secondary`}>
+      {parts.map((part, i) =>
+        part.measured ? (
+          <Text key={i} className="font-mono text-[11px]">
+            {part.text}
+          </Text>
+        ) : (
+          part.text
+        )
+      )}
+    </Text>
+  );
+}
+
+/**
+ * Trend — a readout about the lift, so: measured field. One value per session,
+ * switchable between the metrics this movement has (Fitbod's e1RM, max weight,
+ * volume and reps charts, as one field) and, since 2026-09-25, between ranges:
+ * 1M · 3M · 1Y · All (owner: *"Add range chips"*).
+ *
+ * Every figure here is a field of `view` (`trendView`,
+ * src/lib/exercise/records.ts): the default range, the points, the two
+ * direction lines, the extent line and the empty note. This only draws. The
+ * first line is the Train hub row's own figure (the latest HOME session
+ * against the three before it), the same on every chip, so the screen never
+ * opens by contradicting the row that led here; the second, when it says
+ * something the first does not, is the change across the chosen range and
+ * names it. Away sessions are plotted hollow and never compared (0055).
+ *
+ * Hook-free and exported, so db/screens-render.test.mjs draws it on each range
+ * and presses its chips through the element tree (the routine editor's
+ * `RoutineLinesSection` precedent).
+ */
+export function TrendField({
+  view,
+  units,
+  basisNote,
+  onMetric,
+  onRange,
+}: {
+  view: TrendView;
+  units: UnitPreferences;
+  /** "kg · per hand" — shown for the metrics whose figures are weights. */
+  basisNote: string | undefined;
+  onMetric: (metric: TrendMetric) => void;
+  onRange: (range: TrendRange) => void;
+}) {
+  const { metric, series, headline } = view;
+  return (
+    <Block device="field">
+      <SectionLabel label="Trend" note={WEIGHT_METRICS.has(metric) ? basisNote : undefined} />
+      {view.metrics.length > 1 ? (
+        <View className="mt-2 flex-row flex-wrap gap-2">
+          {view.metrics.map((m) =>
+            trendChip({
+              key: m,
+              label: TREND_METRIC_LABEL[m],
+              spoken: `Show ${TREND_METRIC_LABEL[m]} by session`,
+              selected: m === metric,
+              onPress: () => onMetric(m),
+            })
+          )}
+        </View>
+      ) : null}
+      {/* How far back. Drawn only when there are two sessions to plot at all;
+          a range that holds fewer says so below and names the way out. */}
+      {view.ranges.length > 0 ? (
+        <View className="mt-2 flex-row gap-2">
+          {view.ranges.map((r) =>
+            trendChip({
+              key: r,
+              label: TREND_RANGE_LABEL[r],
+              spoken: `Show ${TREND_RANGE_WORDS[r]}`,
+              selected: r === view.range,
+              onPress: () => onRange(r),
+            })
+          )}
+        </View>
+      ) : null}
+      {headline != null ? (
+        <>
+          <View className="mt-3 flex-row items-center justify-between">
+            {/* The figure is the session the direction line is read from:
+                when the last point is an away session, the home value,
+                labelled as such (`trendHeadline`). */}
+            <View>
+              <Text className="font-mono text-2xl text-ink">
+                {formatTrendValue(metric, headline.value, units)}
+              </Text>
+              <Text className="mt-0.5 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+                {headline.label}
+              </Text>
+            </View>
+            {/* Away sessions are PLOTTED and MARKED, never hidden (0055): the
+                session happened and the owner will look for it, but its loads
+                are not part of the baseline. Hollow, not coloured — behaviour,
+                not biology. */}
+            <Sparkline
+              data={series.map((p) => p.value)}
+              marked={series.map((p) => p.away === true)}
+              baseline="auto"
+              width={140}
+              height={36}
+            />
+          </View>
+          {/* The why-lines, each saying what it compared: the hub row's own
+              figure first, then the change across the range when that is a
+              different figure. Words in the serif, figures in mono ("Serif
+              speaks, mono measures", 00-design-spec.md §3). */}
+          {view.phrase ? directionLine(view.phrase, view.spoken, 'mt-2') : null}
+          {view.rangePhrase ? directionLine(view.rangePhrase, view.rangeSpoken, 'mt-0.5') : null}
+          {view.extent ? (
+            <Text className="mt-1 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+              {view.extent}
+            </Text>
+          ) : null}
+        </>
+      ) : (
+        <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+          {view.emptyNote}
+        </Text>
+      )}
+      {/* The key for the mark above — drawn only when there is something
+          marked, so a chart with no away sessions carries no legend. */}
+      {view.away ? (
+        <Text className="mt-2 font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+          Hollow · away gym — plotted, not counted toward records
+        </Text>
+      ) : null}
+    </Block>
   );
 }

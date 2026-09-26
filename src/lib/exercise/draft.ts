@@ -441,7 +441,8 @@ export function parseManualDraft(raw: unknown): ManualDraft | null {
  * session started from a saved workout, warmed up for, and left to check Home
  * came back as nothing — and starting it again restarts the clock, so the
  * start instant was lost with it. An untouched session left open now costs one
- * Discard; losing a real one cost the owner the session.
+ * Discard; losing a real one cost the owner the session. Since 2026-09-25 one
+ * left within seconds of Start does not cost even that ({@link liveSessionQuiet}).
  */
 export function liveSessionOpen(blocks: readonly DraftBlock[]): boolean {
   return blocks.length > 0;
@@ -609,12 +610,140 @@ export function liveFocusDecision(
   return { kind: 'adopt', draft, serialised };
 }
 
+/**
+ * How long after Start a session left untouched is dropped rather than kept
+ * (owner, 2026-09-25: *"Quietly drop a session with nothing typed if you leave
+ * within a few seconds of starting."*).
+ *
+ * Ten seconds. "A few" read literally, with room for the case it exists for: a
+ * Start tapped by mistake, or tapped to see what a saved workout holds, then
+ * the back gesture — two to six seconds, and a slow read of a six-exercise
+ * list fits inside ten. Past it the owner has had time to begin (walk to the
+ * rack, load the bar), and the rule from 2026-09-23 takes over: a session is
+ * kept from its first exercise.
+ *
+ * **What a wrong drop costs is not bounded by the window.** An untouched
+ * session holds nothing Start cannot rebuild except its start instant, but the
+ * drop is silent, so the owner learns of it only when he next looks for the
+ * session — at the Train hub, possibly many minutes later — and a Start pressed
+ * then dates the session from then. That is the 2026-09-23 loss come back on
+ * one narrow path: Start from a saved workout, swipe back inside ten seconds to
+ * glance at Home, warm up, open Train to no card. The repair is the start
+ * stepper on the new session, and only if he notices. What keeps the path
+ * narrow is the window: the glance has to come inside ten seconds, with nothing
+ * touched first. Whether that trade is right is his to settle on the device
+ * (docs/exercise-subapp.md §16.4).
+ */
+export const QUIET_LEAVE_MS = 10_000;
+
+/** The parts of a live session the owner can change — what "untouched" is measured on. */
+export type LiveSessionState = {
+  blocks: readonly DraftBlock[];
+  startedAt: number;
+  away: boolean;
+  restEndsAt: number | null;
+};
+
+/**
+ * What Start put on the screen: the instant it was pressed and the session as
+ * it stood then, serialised. A NEW session holds one; a resumed session and an
+ * edit of a stored one hold none, and so are never dropped quietly.
+ */
+export type LiveStart = { at: number; state: string };
+
+const sessionFingerprint = (s: LiveSessionState): string =>
+  JSON.stringify({
+    blocks: s.blocks,
+    startedAt: s.startedAt,
+    away: s.away,
+    restEndsAt: s.restEndsAt,
+  });
+
+/** The baseline for {@link liveSessionUntouched}, taken once, when Start builds the session. */
+export function liveStartOf(state: LiveSessionState): LiveStart {
+  return { at: state.startedAt, state: sessionFingerprint(state) };
+}
+
+/**
+ * The baseline the live logger takes on the way in — its `start` initializer
+ * calls this and nothing else, so what decides which sessions can be dropped
+ * is pinned here rather than in a component a server render cannot run.
+ *
+ * Only a NEW session gets one. A screen opened on a resumed draft gets null
+ * (resuming is choosing to come back to a session), and so does one opened on
+ * a stored workout (an edit has a saved copy, and leaving it asks as before) —
+ * including a `workoutId` that names nothing, which is never treated as a
+ * fresh Start.
+ */
+export function liveStartFor(
+  opened: { draft: LiveDraft | null; workoutId: string | null | undefined },
+  state: LiveSessionState
+): LiveStart | null {
+  return opened.draft != null || opened.workoutId ? null : liveStartOf(state);
+}
+
+/**
+ * Is the session exactly what Start put there? Nothing typed into a set, no
+ * set ticked, added or removed, no exercise added, removed or reordered, no
+ * superset bound, the start not moved, Away not on, no rest running.
+ *
+ * Compared on the whole serialised state, not on a list of fields: a field
+ * added to the draft later is covered without anyone remembering to add it
+ * here, and every difference — real, or only a different key order — reads as
+ * a change, which keeps the session. The one error this comparison can make
+ * is keeping too much.
+ *
+ * Something typed and deleted again reads as untouched: the screen is back to
+ * what Start put there, so dropping it loses nothing the owner can see.
+ */
+export function liveSessionUntouched(start: LiveStart, state: LiveSessionState): boolean {
+  return sessionFingerprint(state) === start.state;
+}
+
+/**
+ * **The quiet drop** (owner, 2026-09-25). A NEW session that is still exactly
+ * what Start put there, left within {@link QUIET_LEAVE_MS} of Start, is thrown
+ * away on the way out: its slot is cleared and its rest alert cancelled, and
+ * neither Home nor the Train hub offers it back.
+ *
+ * Everything else is kept exactly as since 2026-09-23 — a session with
+ * anything changed, one left after the window, a resumed one (`start` null:
+ * resuming is choosing to come back to it) and an edit of a stored one.
+ *
+ * `at` is the moment of leaving. A clock that reads earlier than the start
+ * (the device clock was set back) keeps the session: the window cannot be
+ * measured, and keeping is the safe error.
+ *
+ * **A kill inside the window keeps the session.** A kill runs no code, so
+ * nothing here is asked; the draft Start wrote stays in the slot, and Home and
+ * the hub offer it back. That is deliberate. Force-quitting is how the owner
+ * recovers from a misbehaving screen (his note of 2026-09-14: *"losing workout
+ * information when closing app mid workout, necessary for fixing when app
+ * bugs"*), and the slot cannot tell a kill five seconds after Start from one
+ * five minutes after: an untouched session is written once, at Start, and
+ * never again. The five-minute one must come back — a session started from a
+ * saved workout and left while warming up is the case 2026-09-23 fixed — so
+ * both do.
+ */
+export function liveSessionQuiet(
+  start: LiveStart | null,
+  state: LiveSessionState,
+  at: number
+): boolean {
+  if (start == null) return false;
+  const since = at - start.at;
+  return since >= 0 && since < QUIET_LEAVE_MS && liveSessionUntouched(start, state);
+}
+
 /** What backing out of a logger does. */
 export type LeaveGuard = 'leave' | 'ask-unsaved-copy' | 'ask-discard-changes';
 
 /**
  * **The way out**, for both loggers (2026-09-23). It never discards: leaving
- * keeps an unfinished session in its slot, exactly as an iOS kill does.
+ * keeps an unfinished session in its slot, exactly as an iOS kill does. The
+ * live logger asks {@link liveSessionQuiet} before this (2026-09-25): a new
+ * session still exactly as Start left it, left inside the window, is dropped,
+ * and that decision is made there, not here.
  *
  *   - An EDIT of a stored session with changes asks before dropping them —
  *     it has a saved copy, and leaving it means "put it back as it was".

@@ -65,8 +65,15 @@ import {
 } from '../src/lib/db/repositories/grocery.ts';
 
 import { deleteWorkout, logWorkout } from '../src/lib/db/repositories/exercise.ts';
-import { clearWorkoutDraft, saveWorkoutDraft } from '../src/lib/db/repositories/workout-drafts.ts';
-import { DRAFT_VERSION } from '../src/lib/exercise/draft.ts';
+import {
+  clearWorkoutDraft,
+  readWorkoutDraft,
+  saveWorkoutDraft,
+} from '../src/lib/db/repositories/workout-drafts.ts';
+import { DRAFT_VERSION, liveStartFor, parseLiveDraft } from '../src/lib/exercise/draft.ts';
+import { workingSets } from '../src/lib/db/repositories/training-stats.ts';
+import { TREND_RANGE_WORDS, TREND_RANGES, trendView } from '../src/lib/exercise/records.ts';
+import { DEFAULT_UNIT_PREFERENCES } from '../src/lib/user/types.ts';
 import { importProgressPhotos } from '../src/lib/media/progress-photo-store.ts';
 import {
   addVersion,
@@ -89,7 +96,7 @@ import ExerciseScreen from '../app/exercise.tsx';
 import MissionHistoryScreen from '../app/mission-history.tsx';
 import WaterScreen from '../app/water.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
-import ExerciseDetailScreen from '../app/exercise-detail.tsx';
+import ExerciseDetailScreen, { TrendField } from '../app/exercise-detail.tsx';
 import { setExerciseLoadBasis } from '../src/lib/db/repositories/exercise-catalog.ts';
 import RoutineEditScreen, { RoutineLinesSection } from '../app/routine-edit.tsx';
 import { ExerciseOrder, ReorderToggle } from '../src/components/exercise/exercise-order.tsx';
@@ -102,7 +109,7 @@ import {
 // The two set grids. They joined the walk with the stopwatch clock field
 // (2026-09-23): workout-live needed a Reanimated stub and both needed
 // `useNavigation` from the expo-router stub — see db/render-hook.mjs.
-import WorkoutLiveScreen from '../app/workout-live.tsx';
+import WorkoutLiveScreen, { leaveLiveLogger } from '../app/workout-live.tsx';
 import WorkoutLogScreen from '../app/workout-log.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
@@ -2334,7 +2341,8 @@ const db = getDb();
     expect('exercise detail (bodyweight pull-up)', pullUp, [
       'Most reps',
       'Session reps',
-      // The Trend opens on reps, and says which way they are going.
+      // The Trend opens on reps, and says which way they are going — first in
+      // the hub row's own words, on every range chip (review, 2026-09-25).
       'aria-label="up 29 percent on the previous 2 sessions"',
       '11 reps',
       'No sets with added weight yet.',
@@ -2342,6 +2350,9 @@ const db = getDb();
     refute('exercise detail (bodyweight pull-up)', pullUp, [
       'An estimated-1RM trend needs two weighted sessions.',
       'Nothing logged yet.',
+      // Three home sessions opening on All: "the first 2 on record" ARE the
+      // previous 2, so the range line would only repeat the figure above it.
+      'on the first 2 sessions on record',
     ]);
     // A friendlier bar elsewhere, logged last: the large figure is the home
     // session the "+29%" is about, and says so.
@@ -6705,6 +6716,398 @@ console.log('\n27. Slop pass 4 — the retired lines no render here reaches');
   )
     ? ok('the status sheet: "just" cut, the route and the consequence line kept')
     : bad('status sheet closing note');
+}
+
+console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s range chips');
+{
+  const today = todayISODate();
+  // --- the quiet drop, through the logger's own way out ------------------------
+  // Owner: "Quietly drop a session with nothing typed if you leave within a few
+  // seconds of starting." A server render runs no effects, so the screen's
+  // `beforeRemove` never fires here. What it calls is `leaveLiveLogger`, the
+  // whole of the way out, exported for this: it is driven over the real slot,
+  // and Home and the Train hub are drawn after it.
+  const set = (key, over) => ({
+    key,
+    weight: '',
+    reps: '',
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: false,
+    pr: false,
+    ...over,
+  });
+  const block = (key, exerciseId, name, sets) => ({
+    key,
+    exerciseId,
+    name,
+    loggingType: 'weight_reps',
+    measures: 'reps,load',
+    mechanic: 'compound',
+    restSec: 180,
+    prev: [],
+    bestE1rm: null,
+    linkedToNext: false,
+    sets,
+  });
+  const T0 = Date.now();
+  // What Start builds from a saved workout, and writes on mount.
+  const started = {
+    blocks: [
+      block(1, 'barbell-bench-press', 'Barbell Bench Press', [set(1), set(2)]),
+      block(3, 'barbell-row', 'Barbell Row', [set(4)]),
+    ],
+    startedAt: T0,
+    away: false,
+    restEndsAt: null,
+  };
+  // The baseline comes through `liveStartFor`, the call the screen's own
+  // initializer makes (pinned below), not a hand-built one.
+  const start = liveStartFor({ draft: null, workoutId: undefined }, started);
+  const writtenAtStart = (sessionId, state) =>
+    saveWorkoutDraft(db, 'live', {
+      version: DRAFT_VERSION,
+      sessionId,
+      routineId: null,
+      ingestId: null,
+      ...state,
+    });
+  const slotHolds = () => readWorkoutDraft(db, 'live') !== null;
+  const leave = (sessionId, state, baseline, at, over = {}) => {
+    const seen = { prevented: 0, stopped: 0, slotAtStop: null };
+    const outcome = leaveLiveLogger(
+      { preventDefault: () => seen.prevented++, data: { action: { type: 'GO_BACK' } } },
+      {
+        settled: false,
+        editing: false,
+        dirty: false,
+        writeFailed: false,
+        sessionId,
+        start: baseline,
+        session: state,
+        ...over,
+      },
+      {
+        db,
+        at,
+        stop: () => {
+          seen.stopped++;
+          seen.slotAtStop = slotHolds();
+        },
+        dispatch: () => {},
+      }
+    );
+    return { outcome, ...seen };
+  };
+
+  // Start, nothing typed, back out after four seconds: gone, quietly.
+  writtenAtStart('quiet-drop', started);
+  const dropped = leave('quiet-drop', started, start, T0 + 4_000);
+  dropped.outcome === 'drop' &&
+  dropped.prevented === 0 &&
+  dropped.stopped === 1 &&
+  dropped.slotAtStop === true &&
+  !slotHolds()
+    ? ok('left 4 s after Start with nothing typed: nothing asked, writes and the rest alert stopped first, then the slot cleared')
+    : bad('quiet drop', JSON.stringify(dropped));
+  refute('home (after a quiet drop)', render('home (after a quiet drop)', HomeScreen), [
+    'Workout in progress',
+  ]);
+  refute(
+    'exercise hub (after a quiet drop)',
+    render('exercise hub (after a quiet drop)', ExerciseScreen),
+    ['Session in progress']
+  );
+
+  // One weight typed: kept, exactly as since 2026-09-23.
+  const typed = {
+    ...started,
+    blocks: [
+      { ...started.blocks[0], sets: [set(1, { weight: '80' }), set(2)] },
+      started.blocks[1],
+    ],
+  };
+  writtenAtStart('quiet-typed', typed);
+  const keptTyped = leave('quiet-typed', typed, start, T0 + 4_000);
+  keptTyped.outcome === 'leave' && keptTyped.stopped === 0 && keptTyped.prevented === 0 && slotHolds()
+    ? ok('left 4 s after Start with a weight typed: kept, nothing asked')
+    : bad('typed kept', JSON.stringify(keptTyped));
+  expect('home (typed, left at 4 s)', render('home (typed, left at 4 s)', HomeScreen), [
+    'Workout in progress',
+  ]);
+  expect(
+    'exercise hub (typed, left at 4 s)',
+    render('exercise hub (typed, left at 4 s)', ExerciseScreen),
+    ['Session in progress']
+  );
+  clearWorkoutDraft(db, 'live');
+
+  // Nothing typed, but left after the window: kept.
+  writtenAtStart('quiet-late', started);
+  const keptLate = leave('quiet-late', started, start, T0 + 12_000);
+  keptLate.outcome === 'leave' && keptLate.stopped === 0 && slotHolds()
+    ? ok('left 12 s after Start with nothing typed: kept — the window is ten seconds')
+    : bad('late kept', JSON.stringify(keptLate));
+  clearWorkoutDraft(db, 'live');
+
+  // Force-quit 4 s after Start. A kill runs no code, so the way out is never
+  // asked: the draft Start wrote is what the next launch finds, and Home, the
+  // hub and the logger all offer it back. Resuming it and backing straight out
+  // keeps it too — a resumed screen holds no Start baseline.
+  writtenAtStart('quiet-killed', started);
+  expect('home (killed 4 s after Start)', render('home (killed 4 s after Start)', HomeScreen), [
+    'Workout in progress · started ',
+    'Resume',
+  ]);
+  expect(
+    'exercise hub (killed 4 s after Start)',
+    render('exercise hub (killed 4 s after Start)', ExerciseScreen),
+    ['Session in progress']
+  );
+  expect(
+    'workout-live (resumed after the kill)',
+    render('workout-live (resumed after the kill)', WorkoutLiveScreen, { resume: '1' }),
+    ['Barbell Bench Press', 'Barbell Row', 'Discard workout']
+  );
+  // The resumed screen's baseline, as its initializer takes it: over the draft
+  // it reopened, which `liveStartFor` answers with none.
+  const resumedDraft = parseLiveDraft(readWorkoutDraft(db, 'live')?.value);
+  const resumedStart = liveStartFor({ draft: resumedDraft, workoutId: undefined }, started);
+  const resumedBack = leave('quiet-killed', started, resumedStart, T0 + 5_000);
+  resumedDraft !== null &&
+  resumedStart === null &&
+  resumedBack.outcome === 'leave' &&
+  resumedBack.stopped === 0 &&
+  slotHolds()
+    ? ok('resumed after the kill and left at once: kept — only a NEW session is dropped')
+    : bad('resumed kept', JSON.stringify({ resumedStart, resumedBack }));
+  clearWorkoutDraft(db, 'live');
+
+  // The other ways out are unchanged.
+  const editStart = liveStartFor({ draft: null, workoutId: 'stored-session' }, typed);
+  const settled = leave('x', started, start, T0 + 1_000, { settled: true });
+  const failedTyped = leave('x', typed, start, T0 + 1_000, { writeFailed: true });
+  const failedQuiet = leave('x', started, start, T0 + 1_000, { writeFailed: true });
+  const edit = leave('', typed, editStart, T0 + 1_000, { editing: true, dirty: true });
+  settled.outcome === 'settled' &&
+  settled.stopped === 0 &&
+  failedTyped.outcome === 'ask-unsaved-copy' &&
+  failedTyped.prevented === 1 &&
+  failedQuiet.outcome === 'drop' &&
+  failedQuiet.prevented === 0 &&
+  editStart === null &&
+  edit.outcome === 'ask-discard-changes' &&
+  edit.prevented === 1
+    ? ok('settled leaves; a failed write still asks, unless there is nothing typed to lose; an edit with changes still asks')
+    : bad('other ways out', JSON.stringify([settled, failedTyped, failedQuiet, editStart, edit]));
+
+  // What a server render cannot run: the screen's own inputs to all of the
+  // above. Its Start snapshot is `liveStartFor` over the screen's draft and
+  // workout id, and the snapshot and the way out read ONE `liveState` object
+  // built from the four session states — so a snapshot that stopped being
+  // taken, or a leave fed a different session, fails here rather than
+  // silently turning the drop off. (The shape is pinned from the source; the
+  // behaviour of each piece is pinned above and in db/exercise.test.mjs §15.)
+  const liveSource = readFileSync(new URL('../app/workout-live.tsx', import.meta.url), 'utf8');
+  const leaveCall = liveSource.slice(
+    liveSource.indexOf("addListener('beforeRemove'"),
+    liveSource.indexOf('dispatch: (action) => navigation.dispatch(action)')
+  );
+  const feeds = {
+    'one liveState from the four states': /const liveState = useMemo<LiveSessionState>\(\s*\(\) => \(\{ blocks, startedAt, away, restEndsAt \}\),\s*\[blocks, startedAt, away, restEndsAt\]\s*\)/.test(
+      liveSource
+    ),
+    'the snapshot is liveStartFor over draft, workoutId and liveState':
+      /const \[start\] = useState<LiveStart \| null>\(\(\) =>\s*liveStartFor\(\{ draft, workoutId \}, liveState\)\s*\)/.test(
+        liveSource
+      ),
+    'beforeRemove calls leaveLiveLogger': /^\s*addListener\('beforeRemove', \(e\) => \{\s*leaveLiveLogger\(/.test(
+      leaveCall
+    ),
+    'the leave gets the snapshot and liveState': /\bstart,\s*session: liveState,/.test(leaveCall),
+    'the leave reads the clock when it runs': /at: Date\.now\(\),/.test(leaveCall),
+  };
+  const unfed = Object.entries(feeds)
+    .filter(([, holds]) => !holds)
+    .map(([what]) => what);
+  unfed.length === 0
+    ? ok('the logger feeds the drop what it tests: liveStartFor for the snapshot, one liveState for both sides')
+    : bad('workout-live feeds', unfed.join('; '));
+
+  // --- the Trend's range chips ---------------------------------------------------
+  // Owner: "Add range chips". Seven hip-thrust sessions over 500 days, dated in
+  // the past with created_at to match, so no freshness reading moves.
+  const past = (back, kg) => {
+    const date = shiftISODate(today, -back);
+    const id = logWorkout(db, { date, kind: 'strength' }, [
+      { exercise: 'Hip Thrust', exerciseId: 'hip-thrust', reps: 5, weightKg: kg },
+    ]);
+    db.run('UPDATE workouts SET created_at = ? WHERE id = ?', [`${date}T12:00:00.000Z`, id]);
+    return id;
+  };
+  const hipIds = [
+    [500, 100],
+    [300, 105],
+    [200, 110],
+    [80, 115],
+    [60, 118],
+    [20, 120],
+    [5, 125],
+  ].map(([back, kg]) => past(back, kg));
+  const chipLabel = (range) => `Show ${TREND_RANGE_WORDS[range]}`;
+  const findEl = (node, match) => {
+    if (node === null || node === undefined || typeof node !== 'object') return null;
+    if (match(node)) return node;
+    for (const child of React.Children.toArray(node.props?.children ?? [])) {
+      const hit = findEl(child, match);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  // react-native-web drops `accessibilityState.selected` on a button, so which
+  // chip is selected is read from the field's own element tree — what iOS
+  // hands VoiceOver — rather than from the markup.
+  const selectedChips = (props) =>
+    TREND_RANGES.filter(
+      (r) =>
+        findEl(TrendField(props), (el) => el.props?.accessibilityLabel === chipLabel(r))?.props
+          .accessibilityState?.selected === true
+    );
+
+  // The screen opens on All: seven sessions over 500 days are more than 1Y
+  // holds, and the default never hides one the old 24-session view showed.
+  const hipDetail = render('exercise detail (range chips)', ExerciseDetailScreen, {
+    id: 'hip-thrust',
+  });
+  expect('exercise detail (range chips)', hipDetail, [
+    ...TREND_RANGES.map((r) => `aria-label="${chipLabel(r)}"`),
+    '>1M<',
+    '>3M<',
+    '>1Y<',
+    '>All<',
+    // First the hub row's figure, then the change across the range.
+    'aria-label="up 6 percent on the previous 3 sessions"',
+    'aria-label="up 19 percent on the first 3 sessions on record"',
+    '· 7 sessions',
+  ]);
+  hipDetail.indexOf('up 6 percent on the previous 3 sessions') <
+  hipDetail.indexOf('up 19 percent on the first 3 sessions on record')
+    ? ok('exercise detail: the hub row’s figure is the first line, the range’s the second')
+    : bad('exercise detail: direction line order');
+
+  // Each chip, drawn: its sessions, the hub's figure on every one, and a
+  // second line naming the range when it says something the first does not.
+  const hipRows = workingSets(db, 'hip-thrust');
+  let pressed = null;
+  const fieldProps = (range) => ({
+    view: trendView(hipRows, 'reps,load', 'total', { metric: null, range }, today),
+    units: DEFAULT_UNIT_PREFERENCES,
+    basisNote: 'lb · total',
+    onMetric: () => {},
+    onRange: (r) => {
+      pressed = r;
+    },
+  });
+  // 3M holds exactly the latest home session and the three before it, so its
+  // range line would be the first line again ("+6% on the first 3 sessions of
+  // the last 3 months") and is left out.
+  const perChip = {
+    '1m': ['up 4 percent on the first session of the last month', 2],
+    '3m': [null, 4],
+    '1y': ['up 14 percent on the first 3 sessions of the last year', 6],
+    all: ['up 19 percent on the first 3 sessions on record', 7],
+  };
+  for (const range of TREND_RANGES) {
+    const [spoken, sessions] = perChip[range];
+    const name = `trend field (${range})`;
+    const html = render(name, TrendField, {}, fieldProps(range));
+    expect(name, html, [
+      'aria-label="up 6 percent on the previous 3 sessions"',
+      ...(spoken ? [`aria-label="${spoken}"`] : []),
+      `· ${sessions} sessions`,
+      'Latest',
+    ]);
+    if (!spoken) refute(name, html, ['of the last 3 months']);
+    selectedChips(fieldProps(range)).join() === range
+      ? ok(`${name}: only its own chip is selected`)
+      : bad(`${name}: selected chips`, selectedChips(fieldProps(range)).join() || 'none');
+  }
+  selectedChips(fieldProps(null)).join() === 'all'
+    ? ok('trend field (no pick): the default range, All, is the chip selected')
+    : bad('trend field (no pick): selected', selectedChips(fieldProps(null)).join() || 'none');
+
+  // …and each chip, pressed through the element tree, asks for its range.
+  const unpressed = TREND_RANGES.filter((range) => {
+    pressed = null;
+    const chip = findEl(
+      TrendField(fieldProps('all')),
+      (el) => el.props?.accessibilityLabel === chipLabel(range)
+    );
+    chip?.props.onPress();
+    return pressed !== range;
+  });
+  unpressed.length === 0
+    ? ok('trend field: pressing 1M, 3M, 1Y and All each asks for that range')
+    : bad('trend field: chip presses', unpressed.join());
+
+  // A range with nothing in it keeps the chips and says what to do.
+  const emptyMonth = trendView(
+    hipRows.filter((r) => r.date < shiftISODate(today, -40)),
+    'reps,load',
+    'total',
+    { metric: null, range: '1m' },
+    today
+  );
+  const emptyHtml = render('trend field (1M, nothing in it)', TrendField, {}, {
+    ...fieldProps('1m'),
+    view: emptyMonth,
+  });
+  expect('trend field (1M, nothing in it)', emptyHtml, [
+    'Nothing to plot in the last month. Choose a longer range.',
+    `aria-label="${chipLabel('3m')}"`,
+  ]);
+  refute('trend field (1M, nothing in it)', emptyHtml, ['Latest']);
+
+  // The review's case (2026-09-25): a lift whose last three sessions are down
+  // on the three before them, but up on where the month began. The hub row
+  // says −8%; the screen it opens must say −8% first, in the same words, and
+  // then — separately, naming its range — the +20% across the month. Before
+  // the fix it said only "+20%".
+  const squatIds = [
+    [27, 100],
+    [23, 100],
+    [19, 100],
+    [15, 130],
+    [11, 130],
+    [7, 130],
+    [3, 120],
+  ].map(([back, kg]) => {
+    const date = shiftISODate(today, -back);
+    const id = logWorkout(db, { date, kind: 'strength' }, [
+      { exercise: 'Front Squat', exerciseId: 'front-squat', reps: 5, weightKg: kg },
+    ]);
+    db.run('UPDATE workouts SET created_at = ? WHERE id = ?', [`${date}T12:00:00.000Z`, id]);
+    return id;
+  });
+  const hubSquat = render('exercise hub (front squat, down on 3, up on the month)', ExerciseScreen);
+  expect('exercise hub (front squat, down on 3, up on the month)', hubSquat, [
+    'down 8 percent on the previous 3 sessions.',
+  ]);
+  const squatDetail = render('exercise detail (front squat)', ExerciseDetailScreen, {
+    id: 'front-squat',
+  });
+  expect('exercise detail (front squat)', squatDetail, [
+    'aria-label="down 8 percent on the previous 3 sessions"',
+    'aria-label="up 20 percent on the first 3 sessions of the last month"',
+    '· 7 sessions',
+  ]);
+  squatDetail.indexOf('down 8 percent on the previous 3 sessions') <
+  squatDetail.indexOf('up 20 percent on the first 3 sessions of the last month')
+    ? ok('the row says −8%, and the screen it opens says −8% first, then +20% across the month')
+    : bad('front squat: line order');
+  for (const id of [...hipIds, ...squatIds]) deleteWorkout(db, id);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -37,6 +37,7 @@
 import { E1RM_MAX_RIR, E1RM_REP_CAP, PACE_PR_MIN_M } from './constants';
 import { e1rmForSet } from './e1rm';
 import {
+  dayLabel,
   formatClock,
   formatDistance,
   formatPace,
@@ -962,6 +963,14 @@ export function primaryTrendMetric(
 }
 
 /**
+ * How many sessions a series holds unless asked for more. The Train hub's
+ * direction reads through this default; exercise detail's Trend drew exactly
+ * this many until it had ranges (2026-09-25), and its default range still
+ * shows every one of them ({@link defaultTrendRange}).
+ */
+export const TREND_SESSION_LIMIT = 24;
+
+/**
  * One point per SESSION (workout), oldest → newest, the most recent `limit`.
  * A session with no value for the metric (every set blank) is absent, not zero.
  * Away sessions are kept and marked (0055).
@@ -969,7 +978,7 @@ export function primaryTrendMetric(
 export function sessionSeriesFrom(
   rows: readonly RecordRow[],
   metric: TrendMetric,
-  limit = 24
+  limit = TREND_SESSION_LIMIT
 ): TrendPoint[] {
   const order: string[] = [];
   const agg = new Map<string, { date: DateString; away: boolean; value: number | null }>();
@@ -1059,20 +1068,32 @@ export type Trend = {
 export function trendOf(points: readonly TrendPoint[]): Trend | null {
   const home = points.filter((p) => p.away !== true);
   if (home.length < 2) return null;
-  const latest = home[home.length - 1]!;
-  const prior = home.slice(-1 - TREND_WINDOW, -1);
+  return compareTrend(home[home.length - 1]!.value, home.slice(-1 - TREND_WINDOW, -1));
+}
+
+/** The latest value against the mean of `prior` — the arithmetic both directions share. */
+function compareTrend(latest: number, prior: readonly TrendPoint[]): Trend | null {
   const baseline = prior.reduce((a, p) => a + p.value, 0) / prior.length;
   if (!(baseline > 0)) return null;
-  const changePct = ((latest.value - baseline) / baseline) * 100;
+  const changePct = ((latest - baseline) / baseline) * 100;
   const direction = Math.abs(changePct) < TREND_LEVEL_PCT ? 'level' : changePct > 0 ? 'up' : 'down';
-  return { direction, changePct, latest: latest.value, baseline, compared: prior.length };
+  return { direction, changePct, latest, baseline, compared: prior.length };
 }
 
 /**
  * A movement's direction of travel and the metric it was read from — the Train
- * hub's arrow, and the metric exercise detail opens its Trend on, so the row
- * and the screen it opens can never disagree. The first metric of
- * {@link directionMetricsFor} with a direction wins; null when none has one.
+ * hub's arrow, and the metric exercise detail opens its Trend on. The first
+ * metric of {@link directionMetricsFor} with a direction wins; null when none
+ * has one.
+ *
+ * The row and the screen it opens agree because the screen's first direction
+ * line is this figure, computed the same way ({@link trendView}: `trendOf`
+ * over `sessionSeriesFrom(rows, metric)`) on every range chip. The change
+ * across a range is a second line under it, naming its range, and is allowed
+ * to point the other way: a lift up 20% on the month can be down 8% on the
+ * last three sessions, and both are true. (One edge is outside this: the hub
+ * reads each movement's latest eight sessions, so when five or more of them
+ * were away sessions its baseline holds fewer home sessions than detail's.)
  */
 export function directionOf(
   rows: readonly RecordRow[],
@@ -1215,4 +1236,286 @@ export function formatTrendValue(
     case 'distance':
       return formatDistance(value, units);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Ranges — how far back the Trend looks (owner, 2026-09-25: "Add range chips")
+// ---------------------------------------------------------------------------
+
+/** How far back exercise detail's Trend looks. */
+export type TrendRange = '1m' | '3m' | '1y' | 'all';
+
+/** Chip order, shortest first — {@link defaultTrendRange} depends on it. */
+export const TREND_RANGES: readonly TrendRange[] = ['1m', '3m', '1y', 'all'];
+
+export const TREND_RANGE_LABEL: Record<TrendRange, string> = {
+  '1m': '1M',
+  '3m': '3M',
+  '1y': '1Y',
+  all: 'All',
+};
+
+/** The range in words — what the direction line, the empty note and VoiceOver name. */
+export const TREND_RANGE_WORDS: Record<TrendRange, string> = {
+  '1m': 'the last month',
+  '3m': 'the last 3 months',
+  '1y': 'the last year',
+  all: 'everything on record',
+};
+
+const RANGE_MONTHS: Record<Exclude<TrendRange, 'all'>, number> = { '1m': 1, '3m': 3, '1y': 12 };
+
+/**
+ * The same calendar date `months` earlier, clamped to the month's length — a
+ * month before 31 March is 28 (or 29) February. Arithmetic on the YYYY-MM-DD
+ * string, so no time zone is involved; `Date.UTC` only counts a month's days.
+ */
+function monthsBefore(date: DateString, months: number): DateString {
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  const index = y * 12 + (m - 1) - months;
+  const year = Math.floor(index / 12);
+  const month = index - year * 12;
+  const day = Math.min(d, new Date(Date.UTC(year, month + 1, 0)).getUTCDate());
+  const two = (n: number) => String(n).padStart(2, '0');
+  return `${String(year).padStart(4, '0')}-${two(month + 1)}-${two(day)}`;
+}
+
+/**
+ * The first date a range includes, or null for All: on or after the same date
+ * one, three or twelve months before `today`.
+ */
+export function trendRangeStart(range: TrendRange, today: DateString): DateString | null {
+  return range === 'all' ? null : monthsBefore(today, RANGE_MONTHS[range]);
+}
+
+/** The points of a series inside a range, oldest → newest. */
+export function inTrendRange(
+  points: readonly TrendPoint[],
+  range: TrendRange,
+  today: DateString
+): TrendPoint[] {
+  const from = trendRangeStart(range, today);
+  return from == null ? points.slice() : points.filter((p) => p.date >= from);
+}
+
+/**
+ * The range the Trend opens on: **the shortest one that still shows every
+ * session the Trend showed before it had ranges** — the latest
+ * {@link TREND_SESSION_LIMIT}, or all of them when there are fewer.
+ *
+ * So the default never hides a session the owner could see before, and never
+ * draws more history than it has to. For a lift trained twice a week it is
+ * 3M; for a movement started this month, 1M; for one done weekly for a year,
+ * 1Y. With the owner's history as it stands (logging since August 2026) almost
+ * every movement opens on 1M or 3M. A fixed chip could not promise both
+ * halves: 3M hides half of a weekly lift's last 24 sessions, and All draws
+ * years of a daily one. `points` is the whole series, unlimited.
+ */
+export function defaultTrendRange(points: readonly TrendPoint[], today: DateString): TrendRange {
+  const shown = Math.min(TREND_SESSION_LIMIT, points.length);
+  return TREND_RANGES.find((r) => inTrendRange(points, r, today).length >= shown) ?? 'all';
+}
+
+/**
+ * The direction of travel ACROSS a range: the latest home session in it
+ * against the mean of the first up-to-{@link TREND_WINDOW} home sessions in
+ * it. Null with fewer than two home sessions.
+ *
+ * The same arithmetic as {@link trendOf}, with the baseline taken from the far
+ * end of the range instead of from just behind the latest session — the
+ * question a range asks is "where has this gone over three months?".
+ *
+ * It is exercise detail's SECOND direction line. The first is the Train hub's
+ * own figure ({@link trendOf}, momentum: the latest against the three before
+ * it), so the row the owner tapped and the screen it opens say the same thing
+ * first, whatever chip is selected. This line is drawn under it only when its
+ * baseline is different sessions ({@link trendView}): when the range holds
+ * exactly the latest home session and the ones the first line compared it
+ * with, the two are one figure and this line would only repeat it.
+ */
+export function rangeTrendOf(points: readonly TrendPoint[]): Trend | null {
+  const home = points.filter((p) => p.away !== true);
+  if (home.length < 2) return null;
+  return compareTrend(
+    home[home.length - 1]!.value,
+    home.slice(0, Math.min(TREND_WINDOW, home.length - 1))
+  );
+}
+
+function rangeBaselineParts(trend: Trend, range: TrendRange): PhrasePart[] {
+  const first: PhrasePart[] =
+    trend.compared === 1
+      ? [{ text: 'the first session' }]
+      : [{ text: 'the first ' }, { text: `${trend.compared} sessions`, measured: true }];
+  return [...first, { text: range === 'all' ? ' on record' : ` of ${TREND_RANGE_WORDS[range]}` }];
+}
+
+/**
+ * A range's direction as a phrase that names the range it measured:
+ * "`+12%` on the first `3 sessions` of the last 3 months", "level with the
+ * first session of the last month", "`+30%` on the first `3 sessions` on
+ * record". Figures marked, as in {@link trendPhraseParts}.
+ */
+export function rangeTrendPhraseParts(trend: Trend, range: TrendRange): PhrasePart[] {
+  const against = rangeBaselineParts(trend, range);
+  if (trend.direction === 'level') return [{ text: 'level with ' }, ...against];
+  return [{ text: trendToken(trend), measured: true }, { text: ' on ' }, ...against];
+}
+
+/** The same, as one string; `spoken` says it in words for VoiceOver. */
+export function rangeTrendPhrase(
+  trend: Trend,
+  range: TrendRange,
+  options: { spoken?: boolean } = {}
+): string {
+  if (options.spoken && trend.direction !== 'level') {
+    const pct = Math.round(Math.abs(trend.changePct));
+    return `${trend.direction} ${pct} percent on ${phraseText(rangeBaselineParts(trend, range))}`;
+  }
+  return phraseText(rangeTrendPhraseParts(trend, range));
+}
+
+/**
+ * Why a range has nothing to draw. When the movement has two sessions to plot
+ * but this range holds fewer, the range is the reason and the note says so;
+ * otherwise the metric is, and {@link trendEmptyNote} says what is missing.
+ */
+export function trendRangeEmptyNote(
+  metric: TrendMetric,
+  rows: readonly RecordRow[],
+  range: TrendRange,
+  today: DateString
+): string {
+  const all = sessionSeriesFrom(rows, metric, Number.POSITIVE_INFINITY);
+  const inRange = inTrendRange(all, range, today).length;
+  if (range === 'all' || all.length < 2 || inRange >= 2) return trendEmptyNote(metric, rows);
+  return inRange === 0
+    ? `Nothing to plot in ${TREND_RANGE_WORDS[range]}. Choose a longer range.`
+    : `One session to plot in ${TREND_RANGE_WORDS[range]}; a trend needs two. Choose a longer range.`;
+}
+
+/**
+ * A day on the extent line: the hub's day column, with the year added when it
+ * is not this year's — a 1Y or All chart reaches back past January.
+ */
+function extentDay(date: DateString, today: DateString): string {
+  const label = dayLabel(date, today);
+  return date.slice(0, 4) !== today.slice(0, 4) && /\d/.test(label)
+    ? `${label} ${date.slice(0, 4)}`
+    : label;
+}
+
+/** "Jul 3 – Today · 11 sessions" — what the chart spans. Null under two points. */
+export function trendExtent(series: readonly TrendPoint[], today: DateString): string | null {
+  if (series.length < 2) return null;
+  const first = extentDay(series[0]!.date, today);
+  const last = extentDay(series[series.length - 1]!.date, today);
+  return `${first} – ${last} · ${series.length} sessions`;
+}
+
+/** Everything exercise detail's Trend draws — each figure computed here, none in the screen. */
+export type TrendView = {
+  /** The metric chips, in order; the screen draws them when there are two. */
+  metrics: TrendMetric[];
+  metric: TrendMetric;
+  range: TrendRange;
+  /**
+   * The range chips: all four when the movement has two sessions of this
+   * metric to plot at all, none otherwise — with nothing to draw in any range
+   * there is nothing to narrow, and the note says what is missing.
+   */
+  ranges: readonly TrendRange[];
+  /** The points drawn, oldest → newest. */
+  series: TrendPoint[];
+  /**
+   * The FIRST direction line: the Train hub's own figure for this metric
+   * ({@link trendOf}, the latest home session against the three before it) —
+   * the same on every range chip. Null when nothing is drawn, or when the
+   * session it is read from is not on the chart (a range holding only away
+   * sessions).
+   */
+  trend: Trend | null;
+  /**
+   * The SECOND line: the change across the range ({@link rangeTrendOf}). Null
+   * when it would be the first line again — its baseline the same sessions —
+   * or when the range has no direction.
+   */
+  rangeTrend: Trend | null;
+  headline: { value: number; label: string } | null;
+  /** The first line with its figures marked ("+6% on the previous 3 sessions"), and as VoiceOver says it. */
+  phrase: PhrasePart[] | null;
+  spoken: string | null;
+  /** The second line, naming its range ("+19% on the first 3 sessions on record"), and spoken. */
+  rangePhrase: PhrasePart[] | null;
+  rangeSpoken: string | null;
+  extent: string | null;
+  /** Why nothing is drawn, when nothing is. */
+  emptyNote: string | null;
+  /** A hollow point is on the chart, so the key under it is drawn. */
+  away: boolean;
+};
+
+/**
+ * Exercise detail's Trend, whole. `choice` is what the owner picked, each null
+ * until he picks: the metric then defaults to {@link defaultTrendMetric} (the
+ * Train hub's arrow opens on the chart it was read from) and the range to
+ * {@link defaultTrendRange} for that metric's series. A picked range survives
+ * a change of metric. Null for a movement with nothing to trend.
+ *
+ * **Two direction lines, and why** (review, 2026-09-25). The first is the hub
+ * row's figure: `trendOf` over `sessionSeriesFrom(rows, metric)`, exactly what
+ * {@link directionOf} computes, so the "−8%" the owner tapped is the first
+ * thing the screen says under the chart, on every chip. The second is the
+ * change across the chosen range, naming it. The two answer different
+ * questions and can point opposite ways — latest against the last three,
+ * latest against where the range began — which is why neither replaces the
+ * other. The second is left out when its baseline is the first line's own
+ * sessions: the range then holds exactly the latest home session and the
+ * `compared` home sessions before it, and the figure would be repeated.
+ */
+export function trendView(
+  rows: readonly RecordRow[],
+  measures: Measures,
+  basis: LoadBasis | null,
+  choice: { metric: TrendMetric | null; range: TrendRange | null },
+  today: DateString
+): TrendView | null {
+  const metrics = trendMetricsFor(measures, basis);
+  const metric =
+    choice.metric != null && metrics.includes(choice.metric)
+      ? choice.metric
+      : defaultTrendMetric(rows, measures, basis);
+  if (metric == null) return null;
+  const all = sessionSeriesFrom(rows, metric, Number.POSITIVE_INFINITY);
+  const range = choice.range ?? defaultTrendRange(all, today);
+  const series = inTrendRange(all, range, today);
+  const drawn = series.length >= 2;
+  const homeInRange = series.filter((p) => p.away !== true).length;
+  // The hub's figure, as `directionOf` computes it. Its latest session is the
+  // latest home session on record, which is on the chart exactly when the
+  // range holds any home session; otherwise the line would describe a session
+  // the chart does not show, and the headline could not be the one it reads.
+  const trend = drawn && homeInRange > 0 ? trendOf(sessionSeriesFrom(rows, metric)) : null;
+  const across = drawn ? rangeTrendOf(series) : null;
+  // A range's home sessions are the latest ones on record, so its baseline is
+  // the first line's exactly when it holds the latest plus the `compared`
+  // before it.
+  const rangeTrend = across && !(trend && homeInRange === trend.compared + 1) ? across : null;
+  return {
+    metrics,
+    metric,
+    range,
+    ranges: all.length >= 2 ? TREND_RANGES : [],
+    series,
+    trend,
+    rangeTrend,
+    headline: drawn ? trendHeadline(series, trend ?? across) : null,
+    phrase: trend ? trendPhraseParts(trend) : null,
+    spoken: trend ? trendPhrase(trend, { spoken: true }) : null,
+    rangePhrase: rangeTrend ? rangeTrendPhraseParts(rangeTrend, range) : null,
+    rangeSpoken: rangeTrend ? rangeTrendPhrase(rangeTrend, range, { spoken: true }) : null,
+    extent: trendExtent(series, today),
+    emptyNote: drawn ? null : trendRangeEmptyNote(metric, rows, range, today),
+    away: drawn && series.some((p) => p.away === true),
+  };
 }

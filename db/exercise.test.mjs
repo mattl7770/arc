@@ -22,6 +22,7 @@ import {
   weekSummary,
 } from '../src/lib/db/repositories/exercise.ts';
 import {
+  clearOwnLiveDraft,
   clearWorkoutDraft,
   readWorkoutDraft,
   saveWorkoutDraft,
@@ -35,11 +36,16 @@ import {
   leaveGuard,
   liveFocusDecision,
   liveSessionOpen,
+  liveSessionQuiet,
+  liveSessionUntouched,
   liveSlotLoss,
   liveSlotState,
+  liveStartFor,
+  liveStartOf,
   mayClearLiveSlot,
   openSessionLine,
   parseLiveDraft,
+  QUIET_LEAVE_MS,
 } from '../src/lib/exercise/draft.ts';
 import {
   blockSegments,
@@ -1704,6 +1710,221 @@ console.log('14. the review round: every session is kept, and the decisions are 
       ? ok('…and a stored 0-minute duration, untouched, does not hold that Save')
       : bad('stored 0 untouched', JSON.stringify(e));
   }
+}
+
+console.log('15. a Start taken straight back is dropped quietly (owner, 2026-09-25)');
+{
+  const set = (key, over) => ({
+    key,
+    weight: '',
+    reps: '',
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: false,
+    pr: false,
+    ...over,
+  });
+  const block = (key, exerciseId, name, sets) => ({
+    key,
+    exerciseId,
+    name,
+    loggingType: 'weight_reps',
+    measures: 'reps,load',
+    mechanic: 'compound',
+    restSec: 180,
+    prev: [{ reps: 8, weightKg: 80, rpe: null, durationSec: null, distanceM: null }],
+    bestE1rm: 101.25,
+    linkedToNext: false,
+    sets,
+  });
+  // What Start builds from a saved workout: two exercises, every set blank.
+  const T0 = new Date(2026, 8, 25, 18, 0, 0).getTime();
+  const started = {
+    blocks: [
+      block(1, 'barbell-bench-press', 'Barbell Bench Press', [set(1), set(2), set(3)]),
+      block(4, 'barbell-row', 'Barbell Row', [set(5), set(6)]),
+    ],
+    startedAt: T0,
+    away: false,
+    restEndsAt: null,
+  };
+  const start = liveStartOf(started);
+
+  QUIET_LEAVE_MS === 10_000 && start.at === T0
+    ? ok('the window is ten seconds, measured from the instant Start was pressed')
+    : bad('window', `${QUIET_LEAVE_MS} ${start.at}`);
+
+  // --- the window --------------------------------------------------------------
+  liveSessionQuiet(start, started, T0 + 4_000) &&
+  liveSessionQuiet(start, started, T0) &&
+  liveSessionQuiet(start, started, T0 + 9_999)
+    ? ok('untouched and left at 0 s, 4 s or 9.999 s → dropped')
+    : bad('inside the window');
+  !liveSessionQuiet(start, started, T0 + 10_000) && !liveSessionQuiet(start, started, T0 + 600_000)
+    ? ok('untouched but left at 10 s or later → kept, the 2026-09-23 rule')
+    : bad('after the window');
+  !liveSessionQuiet(start, started, T0 - 1)
+    ? ok('a clock that reads earlier than Start (set back) → kept: the window cannot be measured')
+    : bad('clock set back');
+  !liveSessionQuiet(null, started, T0 + 1_000)
+    ? ok('no Start baseline — a resumed session, an edit — is never dropped by leaving')
+    : bad('null start');
+
+  // --- who gets a baseline: `liveStartFor`, the logger's initializer ------------
+  // The screen's `start` state is this call and nothing else (the render suite
+  // pins that from the source), so the three ways a logger opens are decided
+  // here.
+  const asNew = liveStartFor({ draft: null, workoutId: undefined }, started);
+  const reopened = parseLiveDraft({
+    version: DRAFT_VERSION,
+    sessionId: 'r',
+    routineId: null,
+    ingestId: null,
+    ...started,
+  });
+  const asResumed = liveStartFor({ draft: reopened, workoutId: undefined }, started);
+  // No database here, so this id names nothing — still never a fresh Start.
+  const asEdit = liveStartFor({ draft: null, workoutId: 'stored-session' }, started);
+  reopened !== null &&
+  JSON.stringify(asNew) === JSON.stringify(start) &&
+  liveSessionQuiet(asNew, started, T0 + 4_000) &&
+  asResumed === null &&
+  asEdit === null
+    ? ok('a NEW session gets the Start baseline; a resumed draft and a workout id get none')
+    : bad('liveStartFor', JSON.stringify({ asNew, asResumed, asEdit }));
+
+  // --- every change the owner can make keeps it ---------------------------------
+  const withSet = (over) => ({
+    ...started,
+    blocks: [{ ...started.blocks[0], sets: [set(1, over), set(2), set(3)] }, started.blocks[1]],
+  });
+  const changes = {
+    'a weight typed': withSet({ weight: '80' }),
+    'reps typed': withSet({ reps: '8' }),
+    'an RPE typed': withSet({ rpe: '8' }),
+    'a time typed': withSet({ time: '1' }),
+    'a distance typed': withSet({ distance: '2' }),
+    'a set ticked done': withSet({ done: true }),
+    'a set made a warmup': withSet({ setType: 'warmup' }),
+    'a set added': {
+      ...started,
+      blocks: [
+        { ...started.blocks[0], sets: [...started.blocks[0].sets, set(9)] },
+        started.blocks[1],
+      ],
+    },
+    'a set removed': {
+      ...started,
+      blocks: [{ ...started.blocks[0], sets: [set(1), set(2)] }, started.blocks[1]],
+    },
+    'an exercise added': {
+      ...started,
+      blocks: [...started.blocks, block(10, 'lat-pulldown', 'Lat Pulldown', [set(11)])],
+    },
+    'an exercise removed': { ...started, blocks: [started.blocks[0]] },
+    'the order changed': { ...started, blocks: moveBlockSegment(started.blocks, 4, -1) },
+    'a superset bound': {
+      ...started,
+      blocks: [{ ...started.blocks[0], linkedToNext: true }, started.blocks[1]],
+    },
+    'the start moved back 5 min': {
+      ...started,
+      startedAt: shiftSessionStart(T0, -5, T0 + 3_000),
+    },
+    'Away turned on': { ...started, away: true },
+    'a rest running': { ...started, restEndsAt: T0 + 180_000 },
+  };
+  const readAsTouched = Object.entries(changes).filter(
+    ([, state]) =>
+      !liveSessionUntouched(start, state) && !liveSessionQuiet(start, state, T0 + 3_000)
+  );
+  readAsTouched.length === Object.keys(changes).length
+    ? ok(
+        `each of ${readAsTouched.length} changes keeps a session left at 3 s (typed, ticked, added, removed, moved, bound, re-timed, away, resting)`
+      )
+    : bad(
+        'a change read as untouched',
+        Object.keys(changes)
+          .filter((k) => !readAsTouched.some(([name]) => name === k))
+          .join(', ')
+      );
+
+  // --- back to what Start put there reads as untouched ---------------------------
+  const typedThenCleared = withSet({ weight: '' });
+  const tickedThenUnticked = withSet({ done: false, pr: false, prKinds: undefined });
+  const movedAndBack = {
+    ...started,
+    blocks: moveBlockSegment(moveBlockSegment(started.blocks, 4, -1), 4, 1),
+  };
+  liveSessionQuiet(start, typedThenCleared, T0 + 5_000) &&
+  liveSessionQuiet(start, tickedThenUnticked, T0 + 5_000) &&
+  liveSessionQuiet(start, movedAndBack, T0 + 5_000)
+    ? ok('typed and cleared, ticked and unticked, moved and moved back → as Start left it, dropped')
+    : bad('back to the start');
+  // A blank sheet — no exercises yet — has nothing in the slot to drop, and
+  // reading it as quiet only clears an empty slot.
+  const blank = { blocks: [], startedAt: T0, away: false, restEndsAt: null };
+  liveSessionQuiet(liveStartOf(blank), blank, T0 + 2_000) &&
+  !liveSessionQuiet(
+    liveStartOf(blank),
+    { ...blank, blocks: [block(1, 'barbell-row', 'Barbell Row', [set(1)])] },
+    T0 + 2_000
+  )
+    ? ok('a blank sheet stays quiet until an exercise is added — adding one is a change')
+    : bad('blank sheet');
+
+  // --- the slot the drop clears ------------------------------------------------
+  const { db } = freshDb();
+  const draftOf = (sessionId, state) => ({
+    version: DRAFT_VERSION,
+    sessionId,
+    routineId: 'push-day',
+    ingestId: null,
+    ...state,
+  });
+  saveWorkoutDraft(db, 'live', draftOf('mine', started));
+  clearOwnLiveDraft(db, 'mine') && readWorkoutDraft(db, 'live') === null
+    ? ok('the drop empties the slot of its own session')
+    : bad('own clear');
+  saveWorkoutDraft(db, 'live', draftOf('theirs', started));
+  !clearOwnLiveDraft(db, 'mine') && parseLiveDraft(readWorkoutDraft(db, 'live')?.value) !== null
+    ? ok('…and refuses to empty it of another session')
+    : bad('other clear');
+  clearWorkoutDraft(db, 'live');
+  clearOwnLiveDraft(db, 'mine') && readWorkoutDraft(db, 'live') === null
+    ? ok('…and an empty slot stays empty')
+    : bad('empty clear');
+
+  // --- a kill inside the window keeps the session --------------------------------
+  // A kill runs no code: the draft Start wrote on mount is what the next launch
+  // finds. Simulated as §10 does — close the handle, open the same bytes.
+  const dir = mkdtempSync(join(tmpdir(), 'arc-quiet-'));
+  const file = join(dir, 'arc.db');
+  {
+    const { raw, db: before } = freshDb(file);
+    saveWorkoutDraft(before, 'live', draftOf('killed', started));
+    raw.close();
+  }
+  {
+    const { raw, db: after } = freshDb(file);
+    const back = parseLiveDraft(readWorkoutDraft(after, 'live')?.value);
+    back &&
+    back.startedAt === T0 &&
+    back.blocks.length === 2 &&
+    openSessionLine(back, new Date(T0 + 60_000)) === 'Workout in progress · started 18:00'
+      ? ok('killed 4 s after Start: the next launch offers it back, start instant intact')
+      : bad('kill inside the window', JSON.stringify(back)?.slice(0, 120));
+    // …and the logger that reopens it takes no baseline, so backing straight
+    // out of the resumed screen, even at once, keeps it.
+    const reopenedStart = back ? liveStartFor({ draft: back, workoutId: undefined }, back) : 'x';
+    reopenedStart === null && !liveSessionQuiet(reopenedStart, back, T0 + 5_000)
+      ? ok('…and the resumed logger takes no Start baseline, so leaving it at once keeps it')
+      : bad('resumed baseline', JSON.stringify(reopenedStart));
+    raw.close();
+  }
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
