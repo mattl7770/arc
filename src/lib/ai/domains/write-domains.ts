@@ -31,7 +31,10 @@
  * put profile, units, the day boundary, goal direction and the water target
  * within reach, gated like any write. The API key, the app lock, the Health
  * sync toggle and backups are NOT here and are asserted absent — they are the
- * security boundary, not a preference.
+ * security boundary, not a preference. Since 2026-09-25 it is six: Settings ›
+ * Coach's notification controls (nudges on/off, quiet hours, the morning
+ * check-in) ride `saveNudgeSettings`, with their card words in
+ * ./nudge-domains.ts.
  */
 import { clockFromISO, formatLocalDate, todayISODate } from '@/lib/db/date';
 import { deleteWorkout, getWorkoutDetail, replaceWorkout } from '@/lib/db/repositories/exercise';
@@ -98,6 +101,13 @@ import { setProtocolRunning } from '@/lib/protocols/pause';
 import type { AppointmentRow, ScreeningRow } from '@/lib/screenings/types';
 import { GOAL_DIRECTIONS } from '@/lib/user/types';
 
+import {
+  describeNudgeSettings,
+  isNudgeSettingField,
+  NUDGE_SETTING_FIELDS,
+  nudgeSettingValues,
+  saveNudgeSettingFields,
+} from './nudge-domains';
 import {
   boolField,
   dateField,
@@ -767,6 +777,8 @@ const settingsDomain: CoachDomainEntry = {
     day_starts_at: textField('"HH:MM" — when the user’s day rolls over'),
     goal_direction: enumField([...GOAL_DIRECTIONS], 'cut, maintain or gain'),
     water_target_ml: numberField('the daily hydration goal in ml, or null to clear', { min: 1 }),
+    // Settings › Coach › Notifications (0064), since 2026-09-25.
+    ...NUDGE_SETTING_FIELDS,
   },
   // ONE ROW, and it is the settings themselves. `id` is ignored: there is
   // nothing to pick between.
@@ -788,6 +800,7 @@ const settingsDomain: CoachDomainEntry = {
           day_starts_at: getDayStartsAtPreference(db),
           goal_direction: getGoalDirection(db),
           water_target_ml: getWaterTarget(db),
+          ...nudgeSettingValues(db),
         },
       ];
     },
@@ -809,12 +822,32 @@ const settingsDomain: CoachDomainEntry = {
         day_starts_at: getDayStartsAtPreference(db),
         goal_direction: getGoalDirection(db),
         water_target_ml: getWaterTarget(db),
+        ...nudgeSettingValues(db),
       },
       raw: user,
     };
   },
-  summarize: ({ row, patch }) => describeEdit('setting', row!, patch),
-  edit: (db, row, patch) => {
+  // The profile and units print field by field, as they always have. The
+  // notification controls print in the words of their screen — "Quiet hours
+  // 21:30–07:00 → 22:00–06:30" — and say what the write does to anything
+  // planned, because switching nudges off cancels every one still ahead.
+  summarize: ({ db, row, patch, context }) => {
+    const plain: Record<string, unknown> = {};
+    const nudge: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(patch)) {
+      if (isNudgeSettingField(name)) nudge[name] = value;
+      else if (!Object.is(row!.values[name], value)) plain[name] = value;
+    }
+    const clauses = describeNudgeSettings(db!, row!.values, nudge, context);
+    if (Object.keys(plain).length === 0) {
+      if (clauses.length === 0) {
+        throw new Error('Nothing would change — every field you sent already reads that way.');
+      }
+      return clauses.join('; ');
+    }
+    return [describeEdit('setting', row!, plain), ...clauses].join('; ');
+  },
+  edit: (db, row, patch, context) => {
     if ('date_of_birth' in patch || 'biological_sex' in patch) {
       const next = { ...row.values, ...patch } as Record<string, unknown>;
       updateProfile(db, {
@@ -845,6 +878,12 @@ const settingsDomain: CoachDomainEntry = {
     if ('water_target_ml' in patch) {
       setWaterTarget(db, (patch.water_target_ml as number | null) ?? null);
     }
+    // Settings › Coach's own save, at the moment of the approval as the screen
+    // saves at the moment of the tap: off cancels every nudge still ahead of
+    // it, and moving quiet hours holds a covered one back rather than
+    // cancelling it. The OS resync that screen runs next is the Coach tab's
+    // after every turn.
+    saveNudgeSettingFields(db, patch, context);
   },
   // Nothing to delete: a setting is cleared by patching it to null where that
   // is meaningful, and there is no row to remove.

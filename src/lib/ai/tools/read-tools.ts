@@ -1628,7 +1628,11 @@ const listRemindersTool: CoachTool = {
   // `coachNotifications` — the nudges the Coach's own passes planned, which
   // the Coach tab lists beside the reminders. "What is scheduled?" asked in
   // chat must see both, and the chat Coach has no other way to see the second.
-  // Read-only: cancelling one is the tab's Cancel, the way the screen does it.
+  //
+  // Each carries its `id` since 2026-09-25: this read is the `nudges` domain's
+  // (src/lib/ai/domains/nudge-domains.ts), and the id is what
+  // `edit_record { domain: "nudges", status: "cancelled" }` addresses — the
+  // tab's Cancel, through the tab's own `cancelNudge`.
   execute: (db, _input, context) => {
     const today = todayISODate(context.now);
     const reminders = listActiveReminders(db);
@@ -1647,7 +1651,12 @@ const listRemindersTool: CoachTool = {
       ...(reminders.some((r) => r.repeat !== 'once') ? { note: RECURRING_REMINDER_NOTE } : {}),
       ...(planned.length > 0
         ? {
-            coachNotifications: planned.map((n) => ({ day: n.day, time: n.time, text: n.body })),
+            coachNotifications: planned.map((n) => ({
+              id: n.id,
+              day: n.day,
+              time: n.time,
+              text: n.body,
+            })),
           }
         : {}),
     });

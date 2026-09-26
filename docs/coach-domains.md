@@ -4,6 +4,8 @@
 **Deletion widened 2026-09-23** to follow the screens (§10a; ADR in `docs/decisions.md`).
 **Parity answers 2026-09-25** (§10b): memories, knowledge and the Log tab's captures deletable; a
 catalog food deletable on its screen too; a load basis correctable; meals combinable.
+**Notification controls 2026-09-25** (§10c): Settings › Coach's nudges switch, quiet hours and
+morning check-in are settings fields; a planned nudge is cancellable, as on the Coach tab.
 Spec of record for `src/lib/ai/domains/*` and `src/lib/ai/tools/record-tools.ts`.
 Read this before adding a domain, a field, or a removal policy.
 
@@ -248,9 +250,10 @@ clear of Haiku's 4,096-token cache floor, which the pass's whole economics depen
 
 ## 10. The writes (Commit C, 2026-09-19) — twenty-six domains
 
-`edit_record` reaches **18**; `delete_record` reaches **15** (11 until 2026-09-23, when `protocols`
-joined it; 12 until 2026-09-25, when memories, knowledge and captures did — §10b). The two sets are
-different on purpose.
+`edit_record` reaches **19** (18 until 2026-09-25, when `nudges` joined it — §10c); `delete_record`
+reaches **15** (11 until 2026-09-23, when `protocols` joined it; 12 until 2026-09-25, when memories,
+knowledge and captures did — §10b). The registry holds **27** domains since `nudges`. The two sets
+are different on purpose.
 
 | Domain | Editable | Removable | Why |
 | --- | --- | --- | --- |
@@ -267,8 +270,9 @@ different on purpose.
 | `appointments` | title, provider, when, location, notes, status · **create** | hard | a booking that never happened is not a day |
 | `muscle_anchors` | freshness | hard (= clear) | an override of a derived figure |
 | `protocols` | name, type, description, active, carry-over, check-off mode, start date | hard (was **refuse**) | `content` is not a field: `update_protocol` takes the complete set |
-| `settings` | date of birth, sex, five units, day boundary, goal direction, water target | — | Q3(a). The API key, app lock, Health sync and backups are **not here** |
+| `settings` | date of birth, sex, five units, day boundary, goal direction, water target · **`nudges_enabled`, `quiet_start`, `quiet_end`, `checkin_time`** (2026-09-25) | — | Q3(a). The API key, app lock, Health sync and backups are **not here**. The four notification controls are Settings › Coach's `saveNudgeSettings` (§10c) |
 | reminders · experiments | `status` | refuse | the Commit A fold; the status IS the removal |
+| `nudges` | `status: cancelled` (2026-09-25) | refuse | the Coach tab's Cancel, `cancelNudge`; the row stays, marked cancelled (§10c) |
 | memories · knowledge | `status` | hard (was **refuse**, 2026-09-25) | the archive is still the restorable answer; the delete is each screen's own (§10b) |
 | `captures` | — | hard (was **refuse**, 2026-09-25) | the Log tab's × — record and Apple Health copy, one function (§10b) |
 
@@ -333,6 +337,7 @@ guardrail, so it is held to four things, each asserted in `db/coach-domains.test
 | `protocol_versions` | none — Versions restores an old one, never removes it | — | refused | immutable; what a past day was lived under |
 | `lab_reports` | none — `deleteLabReport` has no caller | — | refused, names Data › Labs | parity; its results would CASCADE |
 | `reminders` | none — dismissal ends one | — | refused → `status: dismissed` | — |
+| `nudges` | none — the Coach tab's *Cancel* (`nudges-card.tsx`) marks one cancelled and keeps the row | — | refused → `status: cancelled` | what went out stays in the record (2026-09-25, §10c) |
 | `experiments` | none — concluded or abandoned | — | refused → `status` | — |
 | `exercise_catalog` | none — archive only | — | refused → `status: archived` | `routine_exercises` CASCADE |
 | `settings` · the three compute domains | nothing to delete | — | — | no rows |
@@ -404,6 +409,88 @@ lost "or deleting", which had become false. The Haiku pass prefix 7,024 → 7,02
 knowledge). A capture still has no **edit** — no screen corrects one, so the CANNOT line keeps
 "correcting a logged metric or a capture". Workout drafts, the conversation store, the security
 boundary (§7).
+
+## 10c. The notification controls, from chat (2026-09-25)
+
+The notifications build (migration 0064, `docs/ai-coach.md` §3 › Coach notifications) gave
+Settings › Coach an off switch, quiet hours and the morning check-in, and the Coach tab a list of
+planned nudges with a Cancel on each. It deferred the Coach's half to this registry. That half adds
+no tool.
+
+| The screen | The Coach | The card |
+| --- | --- | --- |
+| Settings › Coach › Notifications: *Coach nudges*, *Quiet from* / *Quiet until*, *Morning check-in* (`app/settings-coach.tsx` → `saveNudgeSettings`) | `edit_record` on `settings`: `nudges_enabled`, `quiet_start`, `quiet_end`, `checkin_time` (null = off) → the same `saveNudgeSettings` | `Quiet hours 21:30–07:00 → 22:00–06:30` · `Morning check-in off → 07:30` · `Coach nudges on → off, which cancels 2 planned notifications` · hours that cover a listed nudge add `, which holds back 1 planned notification`; hours that stop covering a held-back one add `, which lets 1 held-back notification go out` |
+| The Coach tab, *Scheduled by the Coach* › *Cancel* (`nudges-card.tsx` → `useCoachNudges().cancel` → `cancelNudge`) | `edit_record` on `nudges`, `status: "cancelled"` → the same `cancelNudge` | `Cancel planned notification "Leg day. Eat before you lift." — tomorrow, 07:30` |
+
+**The settings print in their screen's words, not as field names.** The rest of the settings
+domain still prints `weight_unit lb → kg`; the four notification fields print as the screen labels
+them, and quiet hours print as one window whichever end moved. Equal ends print `none`, the rule
+`inQuietHours` already follows. The card also says what the write does to anything planned:
+switching nudges off cancels every one still ahead (`saveNudgeSettings` does, and the count comes
+from the same `upcomingRows` it cancels from), and moving the hours over a listed nudge holds it
+back rather than cancelling it. Moving them OFF a held-back nudge releases it: it is listed again and
+goes on the phone at the next resync, so the card says that too (`, which lets 1 held-back
+notification go out`), since the tab was not showing it when the card was approved. `quiet_start` and `quiet_end` refuse `null` (quiet hours always
+have both ends). A mixed patch prints the plain fields first, then the notification clauses.
+
+**A cancel is a status edit, not a removal.** `cancelNudge` marks the row cancelled and keeps it,
+so a delete card ("This row is deleted from your on-device record") would be false. The domain is
+the reminders pattern: `edit_record { status }` is the end, and `delete_record` refuses and names
+the Cancel. `cancelled` is the only value, because the tab has no other control. There is no
+un-cancel and no create: planning a nudge is the pass's (`NUDGE` lines), never a chat write.
+
+**The read stayed where it was.** `list_reminders` has returned the Coach's planned notifications
+(`coachNotifications`) since 0064, so `nudges` is a bespoke-read domain and is absent from
+`query_records`, as §3 requires; asked anyway, it names `list_reminders`. What changed is that each
+entry now carries its `id`, which is what the cancel addresses. The four settings are read where
+the rest are, on `query_records { domain: "settings" }`, and their vocabulary is on its discovery
+call.
+
+**What the Coach can cancel is what the tab lists.** The domain resolves an id against
+`upcomingNudges` (pending, still ahead, nudges on, outside the current quiet hours), the list the tab
+draws. Every other state refuses in words, because a bare "no such row" would leave the model
+guessing: cancelled or replaced by a newer plan, already opened, already gone out, nudges off, or
+held back by quiet hours. A held-back nudge whose time has passed is not "gone out": whether a past
+one went out is `sentNudgesFrom`'s judgment, the one the per-day cap counts by, and it excludes a
+moment inside the current quiet hours. So that refusal says it was held back and did not go out.
+
+**Gone out is a matter of the clock, not the row.** A pending nudge's row does not change when it
+fires. The service reads the clock once per tool call and hands that one instant to both halves
+(`CoachToolContext.now`), so a cancel card drawn at 07:25 for a 07:30 nudge and approved at 07:31
+would, on that instant alone, mark a delivered line cancelled. The off switch has the same hole:
+`saveNudgeSettings` cancels every nudge still ahead of the instant it is given. So the context now
+also carries the clock source (`CoachToolContext.clock`, set by `coach-service.ts`), and every
+"is it still ahead?" in `nudge-domains.ts` reads it (`latest`):
+
+- the cancel's re-read past the gate, which refuses a nudge that has fired;
+- the off switch's count, at card time and again when the line is redrawn past the gate, so a nudge
+  that fires while the card is open changes "cancels N" and the write refuses;
+- the off switch's write, which hands `saveNudgeSettings` the moment of the approval, as the
+  screen's switch hands it the moment of the tap. Where a pass planned another nudge while the card
+  was open and the count came out the same, the one that fired still stays sent.
+
+The clock only decides what has already happened. It never derives a value that is written (no
+day, no time); `now` is unchanged, and `db/coach-tools.test.mjs`'s one-instant straddle test still
+holds. (The first build read the clock on the cancel only; review found the off switch, 2026-09-25.)
+
+**Staleness, as asserted in `db/coach-domains.test.mjs` §8.** Quiet hours moved on Settings ›
+Coach while the card was open refuse by value (`quiet_start changed while the card was open (was
+21:30, now 23:00)`). The other end moving refuses by the redrawn window. A nudge that fired while
+the card was open refuses and stays pending: it went out, and history is not rewritten. The off
+switch approved after a planned nudge fired refuses the same way, by its count; where the count
+held, its write cancels only what is still ahead. A nudge a pass replaced while the card was open
+refuses, and the new plan stands. A declined card writes nothing on either domain.
+
+**Parity with what the screen does next.** Both screens resync the OS schedule after their write
+(`syncReminderNotifications`). The Coach's path gets that from the Coach tab, which resyncs and
+reloads the planned list after every turn (`onTurnComplete`), the same way a Coach-set reminder
+reaches the phone.
+
+**The ceilings did not move.** Schema **9,093 → 9,103** of 9,250: the `nudges` key in
+`edit_record`'s enum (+3) and `nudges cancelled` in its description (+7). The status is named there
+because no discovery call can teach it: the domain is read by `list_reminders`. The four settings
+fields cost 0, and `list_reminders`' ids are payload. Prompt **3,644** and the pass prefix **7,020**
+are unchanged.
 
 ## 11. The card learned two things
 

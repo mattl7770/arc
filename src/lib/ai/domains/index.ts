@@ -13,6 +13,7 @@
  *     delete (`hard`), so `delete_record`'s schema refuses the rest at zero
  *     round trips. Deletion must never be a VALUE the model can set in passing.
  */
+import { NUDGE_DOMAINS } from './nudge-domains';
 import { READ_DOMAINS } from './read-domains';
 import { STATUS_DOMAINS } from './status-domains';
 import { WRITE_DOMAINS } from './write-domains';
@@ -24,6 +25,8 @@ export { EXPERIMENT_ABANDON_NOTE, RECURRING_REMINDER_NOTE } from './status-domai
 /** Every domain, in the order the enums print. */
 export const COACH_DOMAIN_REGISTRY: CoachDomainEntry[] = [
   ...STATUS_DOMAINS,
+  // A planned nudge's one edit is a status, like a reminder's (0064, §10c).
+  ...NUDGE_DOMAINS,
   ...READ_DOMAINS,
   ...WRITE_DOMAINS,
 ];
