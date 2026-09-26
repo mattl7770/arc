@@ -142,11 +142,14 @@ const editRecordTool: CoachTool = {
     // The per-domain FIELD vocabulary is not here: 26 domains of field names
     // would be ~650 tokens of cached prefix, and `query_records` returns them
     // warm. Only the four STATUS vocabularies are, because they are the ones
-    // whose value set cannot be guessed from the field name.
+    // whose value set cannot be guessed from the field name — and, since
+    // 2026-09-25, the one act that is not a change to ONE row: a combine
+    // (`combine_with`), which no model would guess is an edit at all.
     'Change ONE existing row: send only the fields that change, and the card shows each as ' +
     'before → after. Statuses: reminders done (one-offs only) | dismissed; experiments ' +
     'concluded (with `conclusion`) | abandoned (with `reason`); memories, knowledge and a ' +
-    'custom exercise archived. For any other domain call query_records with the domain alone ' +
+    'custom exercise archived. Meals: `combine_with` [ids] combines those meals with this one. ' +
+    'For any other domain call query_records with the domain alone ' +
     'to learn its fields. Get the id from the matching read. Prefer a specific tool where one ' +
     'exists.',
   inputSchema: {
@@ -163,6 +166,7 @@ const editRecordTool: CoachTool = {
   confirmSummary: (input, db, context) => {
     const plan = planEdit(db, input, context);
     const line = plan.entry.summarize!({
+      db,
       op: plan.op,
       row: plan.row,
       patch: plan.patch,
@@ -170,8 +174,16 @@ const editRecordTool: CoachTool = {
     });
     // THE STALENESS SLOT, written here and read past the gate. See
     // CoachToolContext.card — the service layer hands `execute` this same
-    // object, which is the only reason this works.
-    context.card = { domain: plan.entry.key, id: plan.row.id, before: printedBefore(plan) };
+    // object, which is the only reason this works. The whole printed line rides
+    // with the values since 2026-09-25, as it does on `delete_record`: a
+    // combine's card prints four meals' times and figures, none of which is a
+    // value of the row being edited.
+    context.card = {
+      domain: plan.entry.key,
+      id: plan.row.id,
+      before: printedBefore(plan),
+      line,
+    };
     return line;
   },
   confirmMeta: (input, db, context) => {
@@ -179,6 +191,7 @@ const editRecordTool: CoachTool = {
     return {
       kind: plan.op,
       selfEvident: domainSelfEvident(plan.entry, {
+        db,
         op: plan.op,
         row: plan.row,
         patch: plan.patch,
@@ -202,14 +215,34 @@ const editRecordTool: CoachTool = {
           );
         }
       }
+      // …and the line itself, redrawn from the row as it is now. Only reached
+      // when every value the card printed as "was" still holds, so the value's
+      // own message wins wherever there is one.
+      if (card.line !== undefined) {
+        const line = plan.entry.summarize!({
+          db,
+          op: plan.op,
+          row: plan.row,
+          patch: plan.patch,
+          context,
+        });
+        if (line !== card.line) {
+          throw new Error(
+            `That ${plan.entry.label} changed while the card was open (the card said ` +
+              `"${card.line}", it now reads "${line}"). Nothing written. ` +
+              'Read it again and propose once more.'
+          );
+        }
+      }
     }
-    plan.entry.edit!(db, plan.row, plan.patch, context);
+    const made = plan.entry.edit!(db, plan.row, plan.patch, context);
     return json({
       edited: true,
       domain: plan.entry.key,
       id: plan.row.id,
       title: plan.row.name,
       fields: Object.keys(plan.patch),
+      ...(made ?? {}),
     });
   },
 };
@@ -318,10 +351,12 @@ const queryRecordsTool: CoachTool = {
  * approval should be in place but the coach should just be intelligent enough
  * to only delete the right things when it is supposed to."* So the enum is
  * the `hard` domains, and each one's `run` is the delete its own screen calls —
- * a meal or a session the user logged by hand included. (The two exceptions
- * are declared where they live, in src/lib/ai/domains/: the catalog food,
- * which no screen deletes and the Coach still may, and the domains an owner
- * call holds below parity.) There is no rule here about WHICH rows or WHEN:
+ * a meal or a session the user logged by hand included. (The one exception is
+ * declared where it lives, in src/lib/ai/domains/: progress photos and reports,
+ * which an owner call holds below parity. Since 2026-09-25 parity holds both
+ * ways for the catalog food — Add food deletes one too — and memories,
+ * knowledge entries and the Log tab's captures are open.) There is no rule
+ * here about WHICH rows or WHEN:
  * that is the model's judgment, and the user's Approve. What this file owns is
  * that the card is TRUE: it names the row's date and figures, it is drawn from
  * the row as it is now, and the re-read past the gate refuses a row that moved.

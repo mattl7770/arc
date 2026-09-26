@@ -135,7 +135,9 @@ import { planCombine } from '../src/lib/nutrition/combine.ts';
 import { closeUndo, currentUndo, offerUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
 import MealEstimateScreen from '../app/meal-estimate.tsx';
 import FoodNewScreen from '../app/food-new.tsx';
-import FoodSearchScreen from '../app/food-search.tsx';
+import FoodSearchScreen, { PortionEditor } from '../app/food-search.tsx';
+import { foodDeleteConsequence } from '../src/lib/nutrition/food-delete.ts';
+import { listEntriesOn, logCapture, logNote } from '../src/lib/db/repositories/logs.ts';
 import { apiKeyStore } from '../src/lib/ai/api-key-store.ts';
 import ProgressPhotosScreen from '../app/progress-photos.tsx';
 import ProgressPhotoAddScreen from '../app/progress-photo-add.tsx';
@@ -6052,8 +6054,11 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
   card.includes("'This is written to your on-device record, once.'") &&
   // The delete twin was rewritten when the Coach gained real deletion
   // (2026-09-23 ADR): "leaves … once" became "deleted … for good. There is no
-  // undo." — the same fact, now that no undo sits behind it.
-  card.includes("'This row is deleted from your on-device record for good. There is no undo.'") &&
+  // undo." — the same fact, now that no undo sits behind it. The owner then cut
+  // "for good" (2026-09-25, slop doc §11.G): it said the permanence twice. The
+  // fact stays pinned; the doubled half is refuted.
+  card.includes("'This row is deleted from your on-device record. There is no undo.'") &&
+  !card.includes("'This row is deleted from your on-device record for good") &&
   card.includes('Nothing has been written. The Coach is suspended until you answer.')
     ? ok('the card still states where a write goes, that it happens once, and what NOW means')
     : bad('a consequence line went with the tail');
@@ -7755,6 +7760,156 @@ console.log('\n31. 2026-09-25 — combine on a past day, and `2 eggs` read as a 
     'aria-label="Pieces in Pepperoni pizza"',
     'Mozzarella',
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// 32. The owner's parity answers (2026-09-25), on the screens: a × on every
+// Log-tab row and the Undo row it offers; Add food's Delete, armed and at
+// rest, and its Undo; and the three approved lines from the slop walks. A
+// server render taps nothing, so each state is drawn the way the screen draws
+// it — an offer made in the store as the handler makes it, and the expanded
+// row's editor rendered from its own export with the armed consequence.
+console.log('\n32. 2026-09-25 — the Log tab’s ×, Add food’s Delete, and three approved lines');
+{
+  const today = todayISODate();
+  const noop = () => {};
+  const creatine = logCapture(db, today, 'supplement', 'Creatine · 5 g');
+  const note = logNote(db, today, 'Slept badly, 3am wake');
+  const at = (id) => listEntriesOn(db, today).find((e) => e.id === id)?.time;
+  expect('log tab (a × on every row)', render('log tab (a × on every row)', LogScreen), [
+    `Remove Supplements, Creatine · 5 g, logged at ${at(creatine)}`,
+    `Remove the note, logged at ${at(note)}`,
+  ]);
+
+  // A capture removed from TODAY is offered under today's record, and nowhere
+  // else — not on the Eat tab, whose slot this shares.
+  const logOffer = (date) => ({
+    scope: { on: 'log', date },
+    icon: 'scale-outline',
+    said: 'Removed weight',
+    figure: '176.4 lb',
+    spoken: 'Undo removing weight, 176.4 lb',
+    refusal: 'Could not put weight 176.4 lb back.',
+    undo: noop,
+    settle: noop,
+  });
+  offerUndo(logOffer(today));
+  expect('log tab (a capture removed)', render('log tab (a capture removed)', LogScreen), [
+    'Removed weight',
+    ' · 176.4 lb',
+    'Undo removing weight, 176.4 lb',
+    '>Undo<',
+  ]);
+  refute(
+    'nutrition hub (a Log tab removal)',
+    render('nutrition hub (a Log tab removal)', NutritionScreen),
+    ['Removed weight']
+  );
+  closeUndo();
+  offerUndo(logOffer(shiftISODate(today, -1)));
+  refute('log tab (yesterday’s removal)', render('log tab (yesterday’s removal)', LogScreen), [
+    'Removed weight',
+  ]);
+  closeUndo();
+  db.run('DELETE FROM log_entries WHERE id IN (?, ?)', [creatine, note]);
+
+  // ADD FOOD: a deleted food comes back from the closing catalog plate.
+  offerUndo({
+    scope: { on: 'catalog' },
+    icon: 'restaurant-outline',
+    said: 'Deleted Oats from the catalog',
+    figure: null,
+    spoken: 'Undo deleting Oats',
+    refusal: 'Could not put Oats back in the catalog.',
+    undo: noop,
+    settle: noop,
+  });
+  expect('food-search (a food deleted)', render('food-search (a food deleted)', FoodSearchScreen), [
+    'Deleted Oats from the catalog',
+    'Undo deleting Oats',
+    '>Undo<',
+    'Create a food',
+  ]);
+  closeUndo();
+  refute(
+    'food-search (nothing deleted)',
+    render('food-search (nothing deleted)', FoodSearchScreen),
+    ['from the catalog']
+  );
+
+  // The expanded row's editor: the bin at rest, then armed with the
+  // consequence line and the one control that deletes.
+  const food = {
+    id: 'food-oats',
+    name: 'Oats',
+    brand: null,
+    basis: 'g',
+    serving_name: null,
+    serving_amount: null,
+    kcal_100g: 379,
+    is_favorite: 0,
+    source: 'user',
+  };
+  const props = {
+    expanded: { food, portion: { mode: 'amount', qty: 1, amountText: '100' }, section: 'results' },
+    amountPreview: 100,
+    kcalPreview: 379,
+    onStep: noop,
+    onEditAmount: noop,
+    onToggleFavorite: noop,
+    onAdd: noop,
+    onArmDelete: noop,
+    onDelete: noop,
+  };
+  const resting = render(
+    'food-search editor (at rest)',
+    PortionEditor,
+    {},
+    {
+      ...props,
+      deleteConsequence: null,
+    }
+  );
+  expect('food-search editor (at rest)', resting, ['Delete Oats from the catalog', '>Add<']);
+  refute('food-search editor (at rest)', resting, ['Deletes “Oats”', '>Delete<']);
+  const armed = render(
+    'food-search editor (Delete armed)',
+    PortionEditor,
+    {},
+    {
+      ...props,
+      deleteConsequence: foodDeleteConsequence('Oats', {
+        meals: 3,
+        templates: 0,
+        recipes: 0,
+        counted: 0,
+      }),
+    }
+  );
+  expect('food-search editor (Delete armed)', armed, [
+    'Keep Oats in the catalog',
+    'Deletes “Oats” from the catalog. It is used by 3 meals, which keep their own numbers.',
+    '>Delete<',
+    '>Add<',
+  ]);
+
+  // THE THREE APPROVED LINES (docs/ai-slop-candidates-2026-09.md §10.G and
+  // §11.G). Two are an Alert body and a scope-gated note no render here
+  // reaches, so they are read as source with whitespace collapsed; the third
+  // (the Coach's delete card) is pinned in §22 above.
+  const flat = (file) =>
+    readFileSync(new URL(`../${file}`, import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const kb = flat('app/knowledge.tsx');
+  kb.includes('Archived entries can be restored. Deleted ones can’t.') &&
+  !kb.includes('undelete does not')
+    ? ok('knowledge: "Restore exists; undelete does not." is now the two plain sentences')
+    : bad('knowledge delete line');
+  const hr = flat('app/settings-health.tsx');
+  hr.includes(
+    'Heart rate during workouts shows on each session. It was added after you connected, so it has to be asked for on its own.'
+  ) && !hr.includes('ARC can read the heart rate')
+    ? ok('settings-health: the heart-rate ask opens on where the figure shows, rest as it was')
+    : bad('heart-rate ask');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

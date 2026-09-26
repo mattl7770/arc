@@ -5,17 +5,20 @@
  * the same meal"*).
  *
  * The screens call these and nothing lower: `app/meal-detail.tsx` for an item's
- * × and for Delete this meal, `app/nutrition.tsx` for Combine. Keeping the
- * pairing here, rather than in three screens' handlers, is what lets the
+ * × and for Delete this meal, `app/nutrition.tsx` for Combine, and
+ * `app/food-search.tsx` for a catalog food's Delete (2026-09-25). Keeping the
+ * pairing here, rather than in the screens' handlers, is what lets the
  * headless suite drive the same path the tap drives (db/nutrition-v2.test.mjs
- * §61) instead of rebuilding offers by hand: a removal whose Undo was wired to
- * the wrong restore, or to none, fails a test.
+ * §61, db/foods.test.mjs) instead of rebuilding offers by hand: a removal whose
+ * Undo was wired to the wrong restore, or to none, fails a test.
  *
  * Every write is still the repository's own (the parity rule,
  * docs/coach-domains.md): `takeMealItem` is `removeMealItem`, `takeMeal` is
- * `deleteMeal`, each having read what it deletes first.
+ * `deleteMeal`, `takeFood` is `deleteFood` — the function the Coach's
+ * `food_catalog` removal calls — each having read what it deletes first.
  */
 import type { Database } from '@/lib/db/database';
+import { restoreFood, takeFood, type TakenFood } from '@/lib/db/repositories/foods';
 import {
   combineMeals,
   restoreMealItems,
@@ -113,4 +116,29 @@ export function combineWithUndo(
     settle: () => {},
   });
   return combined;
+}
+
+/**
+ * Delete a catalog food — its Delete on Add food (owner, 2026-09-25: *"Add a
+ * delete to the food's own screen, so you and the Coach can both do it."*) —
+ * and offer it back on that screen. The row and every link to it come back
+ * exactly (`restoreFood`); a food whose barcode was cached again meanwhile
+ * cannot, and the row says so. Null when there was no such food.
+ */
+export function deleteFoodWithUndo(db: Database, foodId: string): TakenFood | null {
+  const taken = takeFood(db, foodId);
+  if (!taken) return null;
+  const name = String(taken.food.name);
+  offerUndo({
+    scope: { on: 'catalog' },
+    icon: 'restaurant-outline',
+    said: `Deleted ${name} from the catalog`,
+    figure: null,
+    spoken: `Undo deleting ${name}`,
+    refusal: `Could not put ${name} back in the catalog.`,
+    undo: () => restoreFood(db, taken),
+    // A food owns no files.
+    settle: () => {},
+  });
+  return taken;
 }

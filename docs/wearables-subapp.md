@@ -1749,6 +1749,12 @@ Two smaller rules come with it:
 
 ### 20.5 The undo — what the body channel cannot have
 
+> **Corrected 2026-09-25 (§23).** The body channel could have it all along: `bodySamplesFor` has
+> stamped every body sample with its `body_metrics` row id as `ARCPublishedFrom`, the same tag
+> water uses, since publishing began. "Irreversible" was true of history — which ARC never sends —
+> and never of one capture. A weight, body-fat or waist reading deleted on the Log tab now comes
+> out of Apple Health by that tag.
+
 The brief asked whether the body metrics delete what they published, and asked me to match them.
 **They do not, and cannot:** nothing stores a published weight's HealthKit UUID, so a weight is
 irreversible from inside ARC (§10, rule 1). Matching that for water would leave a phantom glass
@@ -2290,3 +2296,27 @@ whole change.
   only before their data has come through.
 - That iOS reports `background` (not only `inactive`) on a trip to Garmin Connect and back, so
   the return asks for a fresh pass, and that the Face ID sheet at launch does not.
+
+## 23. A capture deleted from the Log tab leaves Apple Health too (2026-09-25, **no migration**)
+
+The owner's answer on the round-two decision page — *"Add a delete with an Undo to each capture on the Log tab; the Coach then gets it too, behind the card"* — gave every row of Logged today a × (`docs/information-architecture.md`, the Log tab). Two kinds of capture had gone somewhere else: a glass of water and a weight, body-fat or waist reading are published to Apple Health. Deleting the row alone would leave the reading in the Health app for good.
+
+**Both are tagged.** Water's sample carries its row's id (§20.5). So does every body sample — `bodySamplesFor` has set `ARCPublishedFrom` to the `body_metrics` id since the channel began, so the tagged delete water uses works for weight unchanged: `deleteObjects(<the type>, metadata ARCPublishedFrom == <row id>)`, with the library's nil-predicate throw and HealthKit's own-samples-only rule as the backstops §20.5 lists.
+
+**One function for the tab and the Coach.** `removeLogCapture` (`publish.ts`) calls `takeCapture` (`repositories/logs.ts`), which reads the row whole and deletes it (water through `deleteWaterEntry`); for a published kind it then runs the tagged delete for that one type, fire-and-forget, gated on the one switch. A body row holding two readings loses only the column removed, and only that type's sample. The Coach's `captures` removal calls the same function.
+
+**The Undo re-sends exactly what came out.** The tagged delete resolves to how many samples it removed; `restoreLogCapture` puts the row back verbatim — its `created_at` and `rowid`, so it returns to its place in the walk — and, only when a sample was removed, saves the same reading at the same instant under the same tag. A capture that had not gone out yet sends nothing: it is back ahead of the cursor, and the next walk sends it.
+
+**The body walk's race, closed like water's.** The body walk reads its batch when a pass begins and saves row after row. A weight deleted after that read is still in the batch; its save lands after the deletion's tagged delete has looked and found nothing. `settleSavedBody` re-reads each saved row and removes by tag any sample whose reading is gone — the twin of `settleSavedWater`'s row-gone case. `PublishDeps` gained an optional `deleteByTag` for it; the native deps carry `deleteHealthQuantityByTag`.
+
+**What stays, stated.** With sync off, ARC touches nothing in Health: the row goes, and a copy already sent stays in the Health app, removable by hand there. And a capture deleted before it went out, then restored after a walk passed its slot, sends nothing on a later walk — the walk only looks ahead of its cursor, and the Undo re-sends only what the deletion removed. For water that needs another glass logged while the Undo is open; for a weight, a full sync in the same window.
+
+### Verification
+
+- `db/log.test.mjs` **§22**: every kind round-trips byte for byte (row and feed line); the unpublished kinds never reach the Health seam; a weight's deletion asks for `BodyMass` by its row's tag and its Undo re-sends 80 kg under the same tag; an unsent weight re-sends nothing; a glass the same way as `DietaryWater`; sync off touches nothing; a two-reading row keeps the other; a double Undo refuses; the × path's offer and its words.
+- `db/wearables.test.mjs` **§27**: a weight deleted while its save is in flight is removed by its tag after the save; the kept one is not; the cursor moves past both.
+
+### What only the phone can settle
+
+- **That `deleteObjects` with the metadata predicate removes a body sample**, as it does water. The call is identical and HealthKit's rule is per app, not per type, but it has not run on a device for `BodyMass`.
+- **Write access.** A delete needs the same share authorization as a save. A type he refused to share was never published, so there is nothing to delete; a partial grant is the case to watch in the sync log.

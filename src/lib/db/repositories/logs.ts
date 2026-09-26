@@ -18,10 +18,12 @@
  * units and persistence targets are defined once.
  */
 import type { Database } from '../database';
-import { clockFromISO, logicalDayUtcRange, todayISODate } from '../date';
+import { clockFromISO, logicalDate, logicalDayUtcRange, todayISODate } from '../date';
 import { newId } from '../id';
+import { restoreRow, snapshotRows, type SnapshotRow } from '../row-snapshot';
 import { getOrCreateDailyLog } from './mission';
 import { latestScreenTime, recordScreenTime } from './screen-time';
+import { deleteWaterEntry } from './water';
 import type { BodyMetricRow, LogEntryRow, WearableDataRow } from '../types';
 import {
   formatCanonical,
@@ -218,54 +220,22 @@ export function listTodayEntries(
  * implementation, so the two can never disagree about what a day is, and the
  * body-metrics window comes from `logicalDayUtcRange` so the day boundary is
  * applied exactly once.
- */
-export function listEntriesOn(db: Database, date: string, units?: UnitPreferences): LogFeedItem[] {
+ */ export function listEntriesOn(
+  db: Database,
+  date: string,
+  units?: UnitPreferences
+): LogFeedItem[] {
   const { startUtc, endUtc } = logicalDayUtcRange(date);
-  const rows: (LogFeedItem & { sortKey: string })[] = [];
+  const rows: FeedRow[] = [];
 
-  // 1) Ad-hoc log_entries — notes and generic metrics.
+  // 1) Ad-hoc log_entries — notes, generic metrics and the capture types.
   const logRows = db.all<LogEntryRow>(
     `SELECT le.* FROM log_entries le
        JOIN daily_logs dl ON dl.id = le.daily_log_id
      WHERE dl.date = ? AND json_extract(le.value, '$.adhoc') = 1`,
     [date]
   );
-  for (const r of logRows) {
-    if (r.type === 'note') {
-      rows.push({
-        id: r.id,
-        time: clockFromISO(r.created_at),
-        title: r.title,
-        category: 'Note',
-        note: true,
-        sortKey: r.created_at,
-      });
-    } else if (r.type === 'metric') {
-      const extras = parseValue(r.value);
-      const metric = extras.metricKey ? metricByKey(extras.metricKey) : undefined;
-      const title =
-        metric && typeof extras.canonical === 'number'
-          ? formatForUnits(metric, extras.canonical, units)
-          : r.title;
-      rows.push({
-        id: r.id,
-        time: clockFromISO(r.created_at),
-        title,
-        category: metric?.label ?? 'Metric',
-        sortKey: r.created_at,
-      });
-    } else {
-      // Capture types (supplement / therapy / medication) — the title carries
-      // the display line already.
-      rows.push({
-        id: r.id,
-        time: clockFromISO(r.created_at),
-        title: r.title,
-        category: CAPTURE_CATEGORY[r.type] ?? 'Logged',
-        sortKey: r.created_at,
-      });
-    }
-  }
+  for (const r of logRows) rows.push(entryItem(r, units));
 
   // 2) Manual wearable metrics — water, HRV, RHR.
   //
@@ -279,19 +249,7 @@ export function listEntriesOn(db: Database, date: string, units?: UnitPreference
      WHERE date = ? AND source_device = 'manual' AND metric_type != ?`,
     [date, SCREEN_TIME_METRIC]
   );
-  for (const r of wearableRows) {
-    const metric = metricByWearableType(r.metric_type);
-    const title = metric
-      ? formatForUnits(metric, r.value, units)
-      : `${r.value}${r.unit ? ` ${r.unit}` : ''}`;
-    rows.push({
-      id: r.id,
-      time: clockFromISO(r.created_at),
-      title,
-      category: metric?.label ?? r.metric_type,
-      sortKey: r.created_at,
-    });
-  }
+  for (const r of wearableRows) rows.push(wearableItem(r, units));
 
   // 3) Manual body metrics — one row can carry more than one measurement.
   const bodyRows = db.all<BodyMetricRow>(
@@ -299,44 +257,337 @@ export function listEntriesOn(db: Database, date: string, units?: UnitPreference
      WHERE source = 'manual' AND measured_at >= ? AND measured_at < ?`,
     [startUtc, endUtc]
   );
-  const BODY_COLUMNS = ['weight_kg', 'body_fat_pct', 'waist_cm'] as const;
   for (const r of bodyRows) {
     for (const column of BODY_COLUMNS) {
-      const value = r[column];
-      if (value == null) continue;
-      const metric = metricByBodyColumn(column);
-      rows.push({
-        id: `${r.id}:${column}`,
-        time: clockFromISO(r.created_at),
-        title: metric ? formatForUnits(metric, value, units) : String(value),
-        category: metric?.label ?? column,
-        sortKey: r.created_at,
-      });
+      if (r[column] != null) rows.push(bodyItem(r, column, units));
     }
   }
 
   // 4) Symptoms — their own table (0004), keyed on the local `date` column.
-  const symptomRows = db.all<{
-    id: string;
-    name: string;
-    severity: number | null;
-    created_at: string;
-  }>(`SELECT id, name, severity, created_at FROM symptoms WHERE date = ?`, [date]);
-  for (const r of symptomRows) {
-    const sev = r.severity != null ? ` · ${r.severity}/10` : '';
-    rows.push({
-      id: r.id,
-      time: clockFromISO(r.created_at),
-      title: `${r.name}${sev}`,
-      category: 'Symptom',
-      sortKey: r.created_at,
-    });
-  }
+  const symptomRows = db.all<SymptomFeedRow>(
+    `SELECT id, date, name, severity, created_at FROM symptoms WHERE date = ?`,
+    [date]
+  );
+  for (const r of symptomRows) rows.push(symptomItem(r));
 
   // Newest first by insertion time.
   rows.sort((a, b) => (a.sortKey < b.sortKey ? 1 : a.sortKey > b.sortKey ? -1 : 0));
   return rows.map(({ sortKey: _sortKey, ...item }) => item);
 }
+
+// --- One row of the feed, per source table ------------------------------------
+//
+// The feed's four branches, each a function, so the Log tab's list and the
+// lookup of ONE capture by its feed id (`getCapture`, below) draw a row the same
+// way — the Coach's card for a capture's deletion quotes exactly the line the
+// Log tab shows.
+
+type FeedRow = LogFeedItem & { sortKey: string };
+
+/** The body columns the feed lists, each as a row of its own. */
+const BODY_COLUMNS = ['weight_kg', 'body_fat_pct', 'waist_cm'] as const;
+export type BodyColumn = (typeof BODY_COLUMNS)[number];
+
+type SymptomFeedRow = {
+  id: string;
+  date: string;
+  name: string;
+  severity: number | null;
+  created_at: string;
+};
+
+function entryItem(r: LogEntryRow, units?: UnitPreferences): FeedRow {
+  const base = { id: r.id, time: clockFromISO(r.created_at), sortKey: r.created_at };
+  if (r.type === 'note') return { ...base, title: r.title, category: 'Note', note: true };
+  if (r.type === 'metric') {
+    const extras = parseValue(r.value);
+    const metric = extras.metricKey ? metricByKey(extras.metricKey) : undefined;
+    const title =
+      metric && typeof extras.canonical === 'number'
+        ? formatForUnits(metric, extras.canonical, units)
+        : r.title;
+    return { ...base, title, category: metric?.label ?? 'Metric' };
+  }
+  // Capture types (supplement / therapy / medication) — the title carries the
+  // display line already.
+  return { ...base, title: r.title, category: CAPTURE_CATEGORY[r.type] ?? 'Logged' };
+}
+
+function wearableItem(r: WearableDataRow, units?: UnitPreferences): FeedRow {
+  const metric = metricByWearableType(r.metric_type);
+  return {
+    id: r.id,
+    time: clockFromISO(r.created_at),
+    title: metric
+      ? formatForUnits(metric, r.value, units)
+      : `${r.value}${r.unit ? ` ${r.unit}` : ''}`,
+    category: metric?.label ?? r.metric_type,
+    sortKey: r.created_at,
+  };
+}
+
+function bodyItem(r: BodyMetricRow, column: BodyColumn, units?: UnitPreferences): FeedRow {
+  const value = r[column] as number;
+  const metric = metricByBodyColumn(column);
+  return {
+    id: `${r.id}:${column}`,
+    time: clockFromISO(r.created_at),
+    title: metric ? formatForUnits(metric, value, units) : String(value),
+    category: metric?.label ?? column,
+    sortKey: r.created_at,
+  };
+}
+
+function symptomItem(r: SymptomFeedRow): FeedRow {
+  const sev = r.severity != null ? ` · ${r.severity}/10` : '';
+  return {
+    id: r.id,
+    time: clockFromISO(r.created_at),
+    title: `${r.name}${sev}`,
+    category: 'Symptom',
+    sortKey: r.created_at,
+  };
+}
+
+// --- One capture: found, taken, put back (2026-09-25) --------------------------
+//
+// Owner, 2026-09-25: *"Add a delete with an Undo to each capture on the Log
+// tab; the Coach then gets it too, behind the card."* Until then no screen and
+// no repository function removed a capture, so by the parity rule the Coach
+// could not either (docs/coach-domains.md §10a).
+//
+// **What a capture's side effects are, traced** — because the delete must take
+// every one of them back, and the Undo must return every one:
+//
+//   - a NOTE, a GENERIC METRIC, a SUPPLEMENT / MEDICATION / THERAPY capture
+//     (`log_entries`, `adhoc`): the row is the whole of it. An ad-hoc row is
+//     outside every mission read (`PLANNED_ROW_SQL`), so it ticks no mission
+//     item and counts toward no adherence; the capture sheet's "Part of a
+//     protocol" switch is a flag on the row and nothing reads it; nothing
+//     references `log_entries` (0029's header walks this). The day's
+//     `daily_logs` row stays: it carries the day's own summary and notes.
+//   - a SYMPTOM (`symptoms`): the row is the whole of it. Insights, the symptom
+//     trend and the reports compute from the table when they are read; nothing
+//     stores a status, a readiness figure or a score derived from one.
+//   - WATER (`wearable_data`, manual): the row, and the sample it published to
+//     Apple Health, tagged with this row's id — removed by that tag, the way
+//     the water screen's Remove does (src/lib/health/publish.ts).
+//   - HRV / RESTING HR typed by hand (`wearable_data`, manual): the row. They
+//     are never published, and readiness reads them when it is computed.
+//   - WEIGHT, BODY FAT, WAIST (`body_metrics`, manual): the row, and the sample
+//     the publish walk sent — tagged with this row's id exactly like water's,
+//     so it is removable by tag too (publish.ts `removeLogCapture`).
+//
+// The Health half needs the native seam and lives in publish.ts; what is here
+// is the record half, which the headless suite drives against real SQLite.
+
+/** Where one Log-tab row lives. */
+export type CaptureKind = 'entry' | 'wearable' | 'body' | 'symptom';
+
+/** One Log-tab row, found by the id the feed lists it under. */
+export type CaptureRecord = LogFeedItem & {
+  /** The logical day it is filed under — the day its Log tab lists it on. */
+  date: string;
+  kind: CaptureKind;
+  /** The table row's own id: the feed id, less a body row's `:column`. */
+  rowId: string;
+  /** The body column this row of the feed is, or null. */
+  column: BodyColumn | null;
+  /** A manual wearable row's `metric_type` (`water_ml`, …), or null. */
+  metricType: string | null;
+  /** A measurement — a number in a unit — rather than a line of words. */
+  measure: boolean;
+};
+
+/**
+ * The capture the Log tab lists as `feedId`, drawn exactly as the feed draws it
+ * — or undefined when there is none. Only what the feed shows is found: an
+ * ad-hoc entry (never a mission row), a MANUAL wearable or body row (never one
+ * a device wrote), a symptom.
+ */
+export function getCapture(
+  db: Database,
+  feedId: string,
+  units?: UnitPreferences
+): CaptureRecord | undefined {
+  const cut = feedId.lastIndexOf(':');
+  if (cut > 0) {
+    const rowId = feedId.slice(0, cut);
+    const column = feedId.slice(cut + 1) as BodyColumn;
+    if (!BODY_COLUMNS.includes(column)) return undefined;
+    const r = db.get<BodyMetricRow>(
+      `SELECT * FROM body_metrics WHERE id = ? AND source = 'manual'`,
+      [rowId]
+    );
+    if (!r || r[column] == null) return undefined;
+    const { sortKey: _s, ...item } = bodyItem(r, column, units);
+    return {
+      ...item,
+      date: logicalDate(new Date(r.measured_at)),
+      kind: 'body',
+      rowId,
+      column,
+      metricType: null,
+      measure: true,
+    };
+  }
+
+  const entry = db.get<LogEntryRow & { log_date: string }>(
+    `SELECT le.*, dl.date AS log_date FROM log_entries le
+       JOIN daily_logs dl ON dl.id = le.daily_log_id
+     WHERE le.id = ? AND json_extract(le.value, '$.adhoc') = 1`,
+    [feedId]
+  );
+  if (entry) {
+    const { sortKey: _s, ...item } = entryItem(entry, units);
+    return {
+      ...item,
+      date: entry.log_date,
+      kind: 'entry',
+      rowId: feedId,
+      column: null,
+      metricType: null,
+      measure: entry.type === 'metric',
+    };
+  }
+
+  const wearable = db.get<WearableDataRow>(
+    `SELECT * FROM wearable_data
+      WHERE id = ? AND source_device = 'manual' AND source_raw_id IS NULL`,
+    [feedId]
+  );
+  if (wearable) {
+    const { sortKey: _s, ...item } = wearableItem(wearable, units);
+    return {
+      ...item,
+      date: wearable.date,
+      kind: 'wearable',
+      rowId: feedId,
+      column: null,
+      metricType: wearable.metric_type,
+      measure: true,
+    };
+  }
+
+  const symptom = db.get<SymptomFeedRow>(
+    `SELECT id, date, name, severity, created_at FROM symptoms WHERE id = ?`,
+    [feedId]
+  );
+  if (symptom) {
+    const { sortKey: _s, ...item } = symptomItem(symptom);
+    return {
+      ...item,
+      date: symptom.date,
+      kind: 'symptom',
+      rowId: feedId,
+      column: null,
+      metricType: null,
+      measure: false,
+    };
+  }
+  return undefined;
+}
+
+const CAPTURE_TABLE = {
+  entry: 'log_entries',
+  wearable: 'wearable_data',
+  body: 'body_metrics',
+  symptom: 'symptoms',
+} as const;
+
+/** What a capture's removal took from the record — enough to put it back. */
+export type TakenCapture = {
+  capture: CaptureRecord;
+  /** The row as it stood, every column and its `rowid`. */
+  row: SnapshotRow;
+  /**
+   * True when a body row held OTHER measurements too, so only this column was
+   * cleared and the row stayed. ARC's keypad writes one column per row, so a
+   * manual row with two is not something ARC makes; it is handled rather than
+   * assumed away.
+   */
+  columnOnly: boolean;
+};
+
+/**
+ * Remove one capture from the record — having read it whole first — and return
+ * what {@link restoreCapture} needs to put it back. Null when the feed lists no
+ * such capture, and then nothing is removed.
+ *
+ * Water goes through `deleteWaterEntry`, the water screen's own repository
+ * delete. The Apple Health half is NOT here: `removeLogCapture`
+ * (src/lib/health/publish.ts) calls this and then removes the published
+ * sample, and it is the one function the Log tab and the Coach both call.
+ */
+export function takeCapture(
+  db: Database,
+  feedId: string,
+  units?: UnitPreferences
+): TakenCapture | null {
+  const capture = getCapture(db, feedId, units);
+  if (!capture) return null;
+  const table = CAPTURE_TABLE[capture.kind];
+  const row = snapshotRows(db, table, 'id = ?', [capture.rowId])[0];
+  if (!row) return null;
+
+  if (capture.kind === 'body' && capture.column !== null) {
+    const column = capture.column;
+    const others = BODY_MEASURE_COLUMNS.some((c) => c !== column && row[c] != null);
+    if (others) {
+      db.run(`UPDATE body_metrics SET ${column} = NULL WHERE id = ?`, [capture.rowId]);
+      return { capture, row, columnOnly: true };
+    }
+  }
+  if (
+    capture.kind === 'wearable' &&
+    metricByWearableType(capture.metricType ?? '')?.key === 'water'
+  ) {
+    deleteWaterEntry(db, capture.rowId);
+  } else {
+    db.run(`DELETE FROM ${table} WHERE id = ?`, [capture.rowId]);
+  }
+  return { capture, row, columnOnly: false };
+}
+
+/**
+ * Put back what {@link takeCapture} took: the row verbatim — the same id, the
+ * same value, the same `created_at`, so it returns to its place in the day's
+ * list and to its place in the publish walk — or, for a body row that kept its
+ * other measurements, that one column.
+ *
+ * Throws, writing nothing, when it cannot come back as it was: the row is there
+ * again, a cleared column was written since, or the day it hung under is gone.
+ */
+export function restoreCapture(db: Database, taken: TakenCapture): void {
+  const { capture, row } = taken;
+  if (taken.columnOnly && capture.column !== null) {
+    const column = capture.column;
+    const now = db.get<Record<string, number | null>>(
+      `SELECT ${column} AS value FROM body_metrics WHERE id = ?`,
+      [capture.rowId]
+    );
+    if (!now || now.value != null) {
+      throw new Error('restoreCapture: that reading has changed since, so it stays as it is.');
+    }
+    db.run(`UPDATE body_metrics SET ${column} = ? WHERE id = ?`, [
+      row[column] ?? null,
+      capture.rowId,
+    ]);
+    return;
+  }
+  restoreRow(db, CAPTURE_TABLE[capture.kind], row);
+}
+
+/** Every measurement column of `body_metrics` — what "the row holds more" asks. */
+const BODY_MEASURE_COLUMNS = [
+  'weight_kg',
+  'body_fat_pct',
+  'muscle_mass_kg',
+  'bone_mass_kg',
+  'visceral_fat_rating',
+  'waist_cm',
+  'hip_cm',
+] as const;
 
 /**
  * Render a canonical value for the keypad's "recent" line, honouring the user's

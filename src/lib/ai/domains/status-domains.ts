@@ -39,16 +39,26 @@
  * memory's text is still `forget` then `remember` — two gates on the store the
  * Coach reads itself.
  *
- * **None of the four is removable, and each refusal names the status that ends
- * it.** Reminders and experiments have no delete on any screen. Memories and
- * knowledge entries DO — the permanent delete on their own screens — and are
- * held below parity on purpose (docs/coach-domains.md §7): the Coach's removal
- * is the ARCHIVE, which the user can restore, and giving it the hard delete as
- * well would be two tools for "forget that", the overlap the fold exists to
- * remove.
+ * **Reminders and experiments are not removable**, and each refusal names the
+ * status that ends it: no screen deletes either.
+ *
+ * **Memories and knowledge entries are, since 2026-09-25** — the owner's *"Open
+ * memories and knowledge only."* Both screens delete permanently
+ * (app/coach-memory.tsx, app/knowledge.tsx), and the Coach now may too, through
+ * the same `deleteMemory` / `deleteKnowledgeEntry`, behind a card naming the
+ * row's date and what it says. They were held below parity until then on the
+ * ground that the archive is the Coach's "forget that" and a hard delete would
+ * be a second tool for it. The archive stays the ordinary answer — restorable,
+ * one card — and the delete is for the row the user wants GONE, which is the
+ * model's judgment and the user's Approve, like every other removal.
  */
-import { todayISODate } from '@/lib/db/date';
-import { forgetMemory, getMemory } from '@/lib/db/repositories/coach-memory';
+import { formatLocalDate, todayISODate } from '@/lib/db/date';
+import {
+  deleteMemory,
+  forgetMemory,
+  getMemory,
+  type CoachMemoryRow,
+} from '@/lib/db/repositories/coach-memory';
 import {
   abandonExperiment,
   completeExperiment,
@@ -57,6 +67,7 @@ import {
 } from '@/lib/db/repositories/experiments';
 import {
   archiveKnowledgeEntry,
+  deleteKnowledgeEntry,
   getKnowledgeEntry,
   listKnowledgeEntries,
   type KnowledgeEntryRow,
@@ -70,7 +81,7 @@ import {
 import type { ReminderRow } from '@/lib/reminders/types';
 
 import { optString, reqString } from '../tools/types';
-import { enumField, type CoachDomainEntry, type DomainRow } from './types';
+import { enumField, excerpt, type CoachDomainEntry, type DomainRow } from './types';
 
 /**
  * The recurring rule, in words, for the two places it is stated: the card-time
@@ -268,11 +279,27 @@ const memoriesDomain: CoachDomainEntry = {
   edit: (db, row) => {
     forgetMemory(db, row.id);
   },
+  // HARD since 2026-09-25, through the memory screen's own Delete
+  // (app/coach-memory.tsx → `deleteMemory`), which removes the row outright —
+  // no tombstone, nothing references it. The card names what it says (the row's
+  // name IS its content), its kind and the day it was saved, and whether it had
+  // already been forgotten. Forgetting (`status: archived`) is still the
+  // restorable answer; this is for a fact the user wants gone.
   remove: {
-    mode: 'refuse',
-    because:
-      'Forget it with edit_record { status: "archived" }, which the user can restore. ' +
-      'The permanent delete is theirs, on the memory’s own screen in Data › Knowledge base.',
+    mode: 'hard',
+    gone: (_db, row) => {
+      const memory = row.raw as CoachMemoryRow;
+      return [
+        memory.category,
+        `saved ${formatLocalDate(new Date(memory.created_at))}`,
+        memory.archived_at === null
+          ? null
+          : `forgotten ${formatLocalDate(new Date(memory.archived_at))}`,
+      ]
+        .filter((p): p is string => p !== null)
+        .join(' · ');
+    },
+    run: (db, row) => deleteMemory(db, row.id),
   },
 };
 
@@ -324,11 +351,41 @@ const knowledgeDomain: CoachDomainEntry = {
   edit: (db, row) => {
     archiveKnowledgeEntry(db, row.id);
   },
+  // HARD since 2026-09-25, through `deleteKnowledgeEntry` — the Archived list's
+  // Delete (app/knowledge.tsx): the entry, its vectors first, then its chunks by
+  // the CASCADE, so nothing retrievable is left behind.
+  //
+  // ARCHIVED ENTRIES ONLY, and that is parity rather than caution: the screen
+  // offers Delete on the Archived list and nowhere else, so removing an entry
+  // there takes two acts, Archive and then Delete. `deleteKnowledgeEntry` asks
+  // for neither, so the rule lives here, at card time: an entry still in every
+  // search refuses and names the archive, which is one restorable `edit_record`
+  // away. `gone` re-runs past the gate, so an entry restored while the card was
+  // open refuses too. The summary is the entry's own opening words — the title
+  // alone does not say what a page holds.
   remove: {
-    mode: 'refuse',
-    because:
-      'Retire it with edit_record { status: "archived" }. The permanent delete is the ' +
-      'user’s, on the Archived list in Data › Knowledge base.',
+    mode: 'hard',
+    gone: (_db, row) => {
+      const entry = row.raw as KnowledgeEntryRow;
+      if (entry.archived_at === null) {
+        throw new Error(
+          `"${entry.title}" is still in every search, and its screen deletes only an archived ` +
+            `entry. Archive it first with edit_record { domain: "knowledge", id: "${entry.id}", ` +
+            'fields: { status: "archived" } }; the permanent delete is on the Archived list. ' +
+            'Nothing deleted.'
+        );
+      }
+      return [
+        entry.section,
+        entry.topic.trim() === '' ? null : entry.topic,
+        `saved ${formatLocalDate(new Date(entry.created_at))}`,
+        `archived ${formatLocalDate(new Date(entry.archived_at))}`,
+        `"${excerpt(entry.body)}"`,
+      ]
+        .filter((p): p is string => p !== null)
+        .join(' · ');
+    },
+    run: (db, row) => deleteKnowledgeEntry(db, row.id),
   },
   retires: [],
 };

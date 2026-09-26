@@ -3360,5 +3360,56 @@ console.log('26. pairing reads a corrected duration, and survives a reorder (202
   }
 }
 
+// ---------------------------------------------------------------------------
+// 27. The body walk takes back a sample whose reading was deleted while its
+// save was in flight (2026-09-25). The Log tab's × now removes a weight and
+// its Apple Health copy by tag (removeLogCapture); a walk that read its batch
+// before the delete still saves the row, AFTER the tagged delete has looked
+// and found nothing. `settleSavedBody` re-reads each saved row and removes by
+// the same tag whatever is no longer on the record.
+console.log('27. a weight deleted while its save is in flight comes back out of Apple Health');
+{
+  const { db } = freshDb();
+  setHealthSyncEnabled(db, true);
+  addBody(db, {
+    id: 'body-history',
+    createdAt: '2026-09-25T06:00:00.000Z',
+    measuredAt: '2026-09-25T06:00:00.000Z',
+    weightKg: 80,
+  });
+  await publishBodyMetrics(db, new Date('2026-09-25T06:01:00.000Z'), recorder().deps); // arms
+  addBody(db, {
+    id: 'body-gone',
+    createdAt: '2026-09-25T07:00:00.000Z',
+    measuredAt: '2026-09-25T07:00:00.000Z',
+    weightKg: 81,
+  });
+  addBody(db, {
+    id: 'body-kept',
+    createdAt: '2026-09-25T07:05:00.000Z',
+    measuredAt: '2026-09-25T07:05:00.000Z',
+    weightKg: 81.2,
+  });
+  const deleted = [];
+  // The first save is the deleted row's: the Log tab removes it while the
+  // save is in flight, after the pass read its batch.
+  const walk = recorder((_identifier, n) => {
+    if (n === 0) db.run(`DELETE FROM body_metrics WHERE id = 'body-gone'`);
+    return true;
+  });
+  walk.deps.deleteByTag = async (identifier, id) => {
+    deleted.push(`${identifier}:${id}`);
+    return 1;
+  };
+  const result = await publishBodyMetrics(db, new Date('2026-09-25T07:10:00.000Z'), walk.deps);
+  result.samplesWritten === 2 &&
+  JSON.stringify(deleted) === JSON.stringify(['HKQuantityTypeIdentifierBodyMass:body-gone'])
+    ? ok('the saved sample of a deleted reading is removed by its tag; the kept one is not')
+    : bad('body settle', JSON.stringify({ result, deleted }));
+  getHealthPublishState(db).cursorId === 'body-kept'
+    ? ok('…and the cursor still moves past both rows')
+    : bad('body settle cursor', JSON.stringify(getHealthPublishState(db)));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -1136,6 +1136,25 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // file's prose proxy, the nudge block is ~347 tokens on an empty day (the
   // directive is 1,094 characters with nudges off, 2,344 with them on), paid
   // uncached by the pass alone, plus one line per refusal when there are any.
+  // ── 2026-09-25: THE OWNER'S PARITY ANSWERS (docs/coach-domains.md §10b).
+  // **9,039 → 9,074 schema, 3,648 → 3,644 prompt.** Neither ceiling moved.
+  //
+  // SCHEMA, +35, each measured as it landed:
+  //   · `delete_record`'s enum 12 → 15 keys — memories, knowledge, captures —
+  //     +12 (178 → 190). Their cards (`gone`) are TypeScript: 0.
+  //   · `edit_record`'s description gains ONE clause, "Meals: `combine_with`
+  //     [ids] combines those meals with this one." +23 (324 → 347). The field
+  //     itself costs nothing — `fields` is open — but a combine is not a
+  //     change to one row, and no model would guess an edit does it.
+  //   · `loadBasis` turning editable on exercise_catalog: 0. Its vocabulary
+  //     is the discovery call's, as every other field's is.
+  //
+  // PROMPT, −4: the CANNOT line lost "or deleting" — the Log tab's rows have
+  // a delete now, so the claim became false. The Haiku pass prefix follows
+  // the prompt, 7,024 → 7,020; its tool set (3,376) is untouched.
+  // ── 2026-09-25, BOTH ON ONE TREE (the notifications and parity merges):
+  // **9,093 schema (9,039 + 19 + 35), 3,644 prompt, pass prefix 7,020.** The
+  // two measurements add exactly; neither ceiling moved.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

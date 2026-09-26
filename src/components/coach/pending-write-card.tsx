@@ -119,6 +119,9 @@ import type { PendingWrite } from '@/types/coach';
  * the cost: there is no undo and the phone holds the only copy. The summary
  * line above it names WHICH row — its day and its figures — and this line says
  * what approving it does. The write copy's "once" was never true of a removal.
+ * It read "…deleted from your on-device record for good. There is no undo."
+ * until 2026-09-25: two statements of one permanence, and the owner approved
+ * the cut (docs/ai-slop-candidates-2026-09.md §11.G).
  */
 function ConsequenceLanes({ kind }: { kind: PendingWrite['kind'] }) {
   const removing = kind === 'delete';
@@ -139,7 +142,7 @@ function ConsequenceLanes({ kind }: { kind: PendingWrite['kind'] }) {
         </Text>
         <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink">
           {removing
-            ? 'This row is deleted from your on-device record for good. There is no undo.'
+            ? 'This row is deleted from your on-device record. There is no undo.'
             : 'This is written to your on-device record, once.'}
         </Text>
       </View>

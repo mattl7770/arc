@@ -48,9 +48,10 @@ export type CoachToolContext = {
     /** Field → the value the card printed as "was". */
     before: Record<string, unknown>;
     /**
-     * `delete_record` only: the whole line the card printed — the row's date
-     * and figures, which are not all fields. Re-rendered past the gate; a line
-     * that no longer matches refuses the removal.
+     * The whole line the card printed — a removal's date and figures, a
+     * combine's other meals — which are not all fields. Re-rendered past the
+     * gate; a line that no longer matches refuses the write. `delete_record`
+     * since 2026-09-23, `edit_record` since 2026-09-25.
      */
     line?: string;
   };

@@ -164,6 +164,12 @@ export type DomainRow = {
 
 /** The arguments every card-shaped callback takes. */
 export type DomainWriteArgs = {
+  /**
+   * The database, for a card that must name rows other than the one being
+   * edited — a combine prints every meal it folds in (2026-09-25). Optional
+   * because no other card reads it.
+   */
+  db?: Database;
   op: WriteKind;
   /** Absent only on a create. */
   row?: DomainRow;
@@ -195,13 +201,16 @@ export type CoachDomainEntry = {
    * the patch omits must be preserved, never cleared. `replaceWorkout` deletes
    * every set and re-inserts the argument, so a literal patch omitting `sets`
    * would wipe a session behind a card that did not say so.
+   *
+   * It may return facts the model needs about what the write made — a
+   * combine's surviving meal id — which `edit_record` adds to its result.
    */
   edit?: (
     db: Database,
     row: DomainRow,
     patch: Record<string, unknown>,
     context: CoachToolContext
-  ) => void;
+  ) => void | Record<string, unknown>;
   /** Create a row and return its id. Absent ⇒ `edit_record` without an `id` errors. */
   create?: (db: Database, patch: Record<string, unknown>, context: CoachToolContext) => string;
   /**
@@ -443,3 +452,6 @@ export function listed(names: readonly string[], max = 3): string {
   const shown = names.slice(0, max).join(', ');
   return names.length > max ? `${shown} +${names.length - max} more` : shown;
 }
+
+/** A page's opening words, for a removal card (src/lib/utils/excerpt.ts). */
+export { excerpt } from '@/lib/utils/excerpt';

@@ -2,6 +2,31 @@
 
 ## 2026-09-23 — The Coach may delete what a screen can delete
 
+> **Amended 2026-09-25 — the owner's answers to the questions this ADR left open**
+> (`docs/coach-domains.md` §10b). Three of its lists below are no longer true as written:
+>
+> - **Memories and knowledge entries are open.** *"Open memories and knowledge only."* The Coach
+>   deletes them through `deleteMemory` / `deleteKnowledgeEntry`, the functions their screens call,
+>   behind a card naming the row's date and what it says. The archive stays the restorable answer,
+>   and for knowledge it is also the first step: the screen deletes from the Archived list only, so
+>   the Coach refuses an entry still in every search and names the archive — two acts, as on the
+>   screen. **Progress photos and reports stay held below parity**, by the same answer.
+> - **A capture is no longer "no screen deletes it".** *"Add a delete with an Undo to each capture
+>   on the Log tab; the Coach then gets it too, behind the card."* Every row of Logged today has a ×
+>   and an Undo; one function (`removeLogCapture`) removes the row and its Apple Health copy for the
+>   tab and the Coach alike. The CANNOT line lost "or deleting"; nothing corrects a capture yet.
+> - **The catalog food is no longer ahead of the screens.** *"Add a delete to the food's own
+>   screen, so you and the Coach can both do it."* Add food deletes one, with an exact Undo, through
+>   the same `deleteFood`. Parity holds both ways.
+>
+> Two edits joined, by the same rule: an exercise's weight basis (`setExerciseLoadBasis`, the
+> chooser's) and a combine (`combineMeals`, the Eat tab's). `edit_record` now re-reads the printed
+> line past the gate as `delete_record` does, because a combine's card names meals that are not the
+> edited row. A combine deletes the other meals' rows and the Coach's path has no Undo (the Eat
+> tab's does), so its card ends by saying both. Ceilings: schema 9,039 → 9,074, prompt 3,648 → 3,644 — neither raised. The delete
+> card's consequence lane dropped "for good" (owner-approved slop cut). Revert criterion (10) now
+> covers these removals too: one deletion the owner did not intend reverts this amendment.
+
 **Decision:** deletion follows the rule every other Coach act follows — **parity with the screens,
 through the repositories, never past them.** What a screen can delete, the Coach may delete, by
 calling the function that screen calls, behind the approval card. This **supersedes the deletion

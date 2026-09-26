@@ -1,13 +1,23 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider } from '@/components/ui/block';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
+import type { UndoWords } from '@/lib/nutrition/undo-store';
 import type { LogFeedItem } from '@/types/log';
 
 /** The absence, stated as a fact. */
 const EMPTY_STATE = 'Nothing logged yet today.';
+
+/**
+ * What VoiceOver reads for a row's ×: which row, and when it was logged. A note
+ * is not read out whole — its text is the row itself, one swipe away.
+ */
+function removeLabel(entry: LogFeedItem): string {
+  return `Remove ${entry.note ? 'the note' : `${entry.category}, ${entry.title}`}, logged at ${entry.time}`;
+}
 
 /**
  * Today's log so far — a running record beneath the capture controls, newest
@@ -31,6 +41,18 @@ const EMPTY_STATE = 'Nothing logged yet today.';
  * "0 entries", because a tally of nothing is noise (§5: no denominators until
  * targets exist).
  *
+ * ## Every row has a × (owner, 2026-09-25)
+ *
+ * *"Add a delete with an Undo to each capture on the Log tab."* Until then a
+ * capture could not be removed anywhere in the app. Each row now ends in the
+ * meal screen's own item × — a muted glyph, no border, no accent, a 32 pt box
+ * with a 12 pt slop past the 44 pt floor — and a tap removes the row at once,
+ * with no confirmation, because what it offers back is exact: the **Undo row**
+ * the meal screen draws (src/components/nutrition/undo-row.tsx), a ruled row
+ * of this same plate under the last entry. The removal is `removeLogCapture`
+ * (src/lib/health/publish.ts), which takes a weight's or a glass's copy out of
+ * Apple Health too, and the Undo puts both back.
+ *
  * ## The empty ledger
  *
  * "Empty is authored, never blank" (00-design-spec.md §5), and the mockup's
@@ -45,12 +67,22 @@ const EMPTY_STATE = 'Nothing logged yet today.';
  * branches was the wrong answer to a rendering bug.
  *
  * The way out of empty is the command field at the top of this same screen, so
- * this block carries no control of its own: it would otherwise do nothing the
- * visible field above it doesn't already do, and the screen's single accent is
- * already spent on that field's send. Nothing in this block is tappable, which
- * is the honest shape for a record with no records in it.
+ * an empty ledger carries no control of its own. The one exception is the Undo
+ * row, when the entry just removed was the day's last.
  */
-export function RecentLogs({ entries }: { entries: LogFeedItem[] }) {
+export function RecentLogs({
+  entries,
+  onRemove,
+  undo = null,
+  onUndo,
+}: {
+  entries: LogFeedItem[];
+  /** Remove one row. Absent, the rows draw no ×. */
+  onRemove?: (entry: LogFeedItem) => void;
+  /** The open Undo for this day's record, drawn under the last row. */
+  undo?: UndoWords | null;
+  onUndo?: () => void;
+}) {
   const count = entries.length;
 
   return (
@@ -99,11 +131,25 @@ export function RecentLogs({ entries }: { entries: LogFeedItem[] }) {
                     </Text>
                   </View>
                 </View>
+                {onRemove ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={removeLabel(entry)}
+                    hitSlop={12}
+                    onPress={() => onRemove(entry)}
+                    className="h-8 w-8 items-center justify-center rounded-btn active:opacity-60">
+                    <Ionicons name="close" size={16} color={palette.inkMuted} />
+                  </Pressable>
+                ) : null}
               </View>
             </View>
           ))}
         </View>
       )}
+
+      {/* The receipt for the entry just removed — a ruled row of this plate,
+          never a second device. */}
+      {undo && onUndo ? <UndoRow offer={undo} onUndo={onUndo} /> : null}
     </Block>
   );
 }

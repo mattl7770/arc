@@ -9,6 +9,11 @@ import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import { useLogFeed } from '@/hooks/use-log-feed';
+import { useUndoOffer } from '@/hooks/use-undo-offer';
+import { getDb } from '@/lib/db/client';
+import { todayISODate } from '@/lib/db/date';
+import { removeCaptureWithUndo } from '@/lib/log/capture-undo';
+import { runUndo } from '@/lib/nutrition/undo-store';
 
 /**
  * Log — fast capture. Direction A ("Open Line"), locked 2026-07-25
@@ -19,7 +24,9 @@ import { useLogFeed } from '@/hooks/use-log-feed';
  *      Glass / Bottle / Large / Other…, all four on the sheet, one tap each.
  *      They were behind a long-press until 2026-09-21, which is the change the
  *      owner's device feedback forced (src/components/log/quick-add-grid.tsx),
- *   3. today's running record, read live from the DB.
+ *   3. today's running record, read live from the DB — each row with a × that
+ *      removes it, and an Undo that puts it back (2026-09-25,
+ *      src/lib/log/capture-undo.ts).
  *
  * The command field, the vessels and the keypad all persist to on-device SQLite;
  * the feed reloads on capture and whenever the tab regains focus (returning from
@@ -77,6 +84,26 @@ export default function LogScreen() {
   const today = formatToday(new Date());
   const { entries, reload } = useLogFeed();
   const router = useRouter();
+  // The capture just removed from today's record, while it can still be put
+  // back. Closed when the tab is left (src/hooks/use-undo-offer.ts).
+  const undo = useUndoOffer('log', todayISODate());
+
+  /** A row's ×: removed at once — record and Apple Health — with an Undo. */
+  const removeEntry = (id: string) => {
+    try {
+      removeCaptureWithUndo(getDb(), id);
+    } catch (error) {
+      // A failed delete must never crash the tap handler.
+      console.warn('[log] remove failed', error);
+    }
+    reload();
+  };
+
+  /** Put the last removal back; a refused Undo stays on its row, saying so. */
+  const undoRemoval = () => {
+    runUndo();
+    reload();
+  };
 
   return (
     <Screen scroll>
@@ -129,7 +156,12 @@ export default function LogScreen() {
       </View>
 
       <View className="mt-6">
-        <RecentLogs entries={entries} />
+        <RecentLogs
+          entries={entries}
+          onRemove={(entry) => removeEntry(entry.id)}
+          undo={undo}
+          onUndo={undoRemoval}
+        />
       </View>
     </Screen>
   );

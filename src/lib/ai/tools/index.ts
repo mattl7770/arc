@@ -304,7 +304,11 @@ export const UNCOVERED_DOMAINS: string[] = [
   // is left uncovered is what no screen edits OR deletes — the Log tab's own
   // rows — so the line now says both, rather than leaving the model to infer
   // that a row it cannot correct is one it may still remove.
-  'correcting or deleting a logged metric or a capture — its row in the Log tab',
+  // NARROWED 2026-09-25: the Log tab's rows gained a delete (with an Undo),
+  // and the `captures` domain the same removal behind the card, so "or
+  // deleting" became false. Nothing corrects one yet — a wrong reading is
+  // deleted and logged again, on the screen and through the Coach alike.
+  'correcting a logged metric or a capture — its row in the Log tab',
   // NARROWED 2026-09-19 for Q3(a): profile, units, the day boundary, the goal
   // direction and the water target are a registry domain now. What stays out
   // is the security boundary, not a preference.

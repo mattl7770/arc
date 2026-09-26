@@ -492,10 +492,10 @@ export default function SettingsHealthScreen() {
               {offerHeartRate ? (
                 <>
                   <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">
-                    ARC can read the heart rate recorded during a workout and show it on the
-                    session. It was added after you connected, so it has to be asked for on its own.
-                    If nothing appears, turn Heart Rate on under Settings → Privacy &amp; Security →
-                    Health → ARC, then tap this again.
+                    Heart rate during workouts shows on each session. It was added after you
+                    connected, so it has to be asked for on its own. If nothing appears, turn Heart
+                    Rate on under Settings → Privacy &amp; Security → Health → ARC, then tap this
+                    again.
                   </Text>
                   <Pressable
                     accessibilityRole="button"
