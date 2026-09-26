@@ -1467,5 +1467,61 @@ console.log('12. 0063 fills caffeine on five seed foods, and leaves every change
   e.close();
 }
 
+// ===========================================================================
+// 13. 0064 — coach_nudges, and the check-in bit on reminders, on a device at 63.
+//
+// The owner's phone runs 0061 and his reminders are real rows: the ALTER must
+// apply over them, read every one as a plain reminder, and the new table must
+// refuse the shapes the parser is supposed to keep out anyway.
+// ===========================================================================
+console.log('13. 0064 adds coach_nudges and reminders.checkin over existing reminders');
+{
+  const db = new DatabaseSync(':memory:');
+  stageAt(db, 63) === 63 ? ok('staged at 63') : bad('stage at 63');
+  db.prepare(
+    "INSERT INTO reminders (id, title, time, date, repeat) VALUES ('r-old', 'Take creatine', '15:00', '2026-09-25', 'once')"
+  ).run();
+  const result = migrate(executor(db), MIGRATIONS);
+  result.applied.includes('0064_coach_nudges')
+    ? ok('0064 applied over a phone with a reminder on it')
+    : bad('0064 not applied', JSON.stringify(result.applied));
+  db.prepare("SELECT checkin FROM reminders WHERE id = 'r-old'").get().checkin === 0
+    ? ok('a reminder that predates 0064 reads as a plain one (checkin = 0)')
+    : bad('old reminder checkin');
+  const refuses = (label, fn) => {
+    try {
+      fn();
+      bad(label, 'accepted');
+    } catch {
+      ok(label);
+    }
+  };
+  refuses('checkin is a bit: 2 is refused', () =>
+    db.prepare("UPDATE reminders SET checkin = 2 WHERE id = 'r-old'").run()
+  );
+
+  const insert = (id, day, time, body, status = 'pending') =>
+    db
+      .prepare('INSERT INTO coach_nudges (id, day, time, body, status) VALUES (?, ?, ?, ?, ?)')
+      .run(id, day, time, body, status);
+  insert('n1', '2026-09-26', '07:30', 'Leg day. Eat before you lift.');
+  db.prepare("SELECT status FROM coach_nudges WHERE id = 'n1'").get().status === 'pending'
+    ? ok('a nudge row defaults to pending')
+    : bad('default status');
+  refuses('an unknown status is refused', () => insert('n2', '2026-09-26', '08:00', 'x', 'sent'));
+  refuses('a time that is not a clock is refused', () => insert('n3', '2026-09-26', '7:30', 'x'));
+  refuses('an empty line is refused', () => insert('n4', '2026-09-26', '08:00', '   '));
+  refuses('a runaway line is refused', () => insert('n5', '2026-09-26', '08:00', 'x'.repeat(161)));
+  refuses('a null id is refused', () => insert(null, '2026-09-26', '08:00', 'x'));
+  db.prepare(
+    "UPDATE coach_nudges SET status = 'cancelled', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = 'n1'"
+  ).run();
+  db.prepare("SELECT updated_at FROM coach_nudges WHERE id = 'n1'").get().updated_at !==
+  '2000-01-01T00:00:00.000Z'
+    ? ok('the updated_at trigger stamps a status change')
+    : bad('updated_at trigger');
+  db.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

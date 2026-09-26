@@ -18,6 +18,7 @@ import {
   appendMessage,
   createConversation,
   getOrCreateActiveConversation,
+  keepUnsentTail,
   landedWriteCalls,
   latestConversation,
   listMessages,
@@ -432,6 +433,66 @@ console.log('12. retry appends beside the fragment; the record matches the displ
   ).length === 0
     ? ok('declined, errored and read-only calls are not reported as landed')
     : bad('landed filter too loose');
+}
+
+console.log('13. a finished reply is never "superseded" by a note that follows it (0064)');
+{
+  // The coach pass appends its note on its own, and since 0064 a tapped nudge
+  // and a nudge-plan record do too. Each is an assistant row after an assistant
+  // row, and the positional rule stamped the reply above it "Superseded" —
+  // which only a retry of an UNFINISHED turn can make true.
+  const { db } = freshDb();
+  const convo = createConversation(db);
+  appendMessage(db, convo, 'user', 'How was my week?');
+  appendMessage(db, convo, 'assistant', 'Four sessions, protein short twice.');
+  appendMessage(db, convo, 'assistant', 'Walk after lunch.'); // a tapped nudge
+  appendMessage(db, convo, 'assistant', 'Planned notifications\ntomorrow, 07:30 · Leg day.');
+  const marks = listThread(db, convo).map((m) => m.superseded);
+  JSON.stringify(marks) === JSON.stringify([false, false, false, false])
+    ? ok('complete replies stay unmarked, whatever follows them')
+    : bad('complete reply superseded', JSON.stringify(marks));
+
+  const live = markSupersededTurns([
+    { role: 'user', outcome: 'complete' },
+    { role: 'assistant', outcome: 'complete' },
+    { role: 'assistant', outcome: 'complete' },
+  ]);
+  JSON.stringify(live.map((m) => m.superseded)) === JSON.stringify([false, false, false])
+    ? ok('…and the live view-model reads its `outcome` the same way')
+    : bad('live complete superseded', JSON.stringify(live));
+  const retried = markSupersededTurns([
+    { role: 'user', outcome: 'complete' },
+    { role: 'assistant', outcome: 'failed' },
+    { role: 'assistant', outcome: 'complete' },
+  ]);
+  JSON.stringify(retried.map((m) => m.superseded)) === JSON.stringify([false, true, false])
+    ? ok('an unfinished turn followed by its retry is still superseded')
+    : bad('retry mark lost', JSON.stringify(retried));
+}
+
+console.log('14. a re-read of the thread keeps a failed turn that never reached it (0064 review)');
+{
+  // He asked something offline; the turn failed before producing anything, so
+  // it has no row — only a bubble with Retry. Then he tapped a nudge, which
+  // wrote the nudge's line to the thread and made the tab re-read it.
+  const question = { id: 'q', role: 'user', content: 'Why is my HRV down?', persisted: true };
+  const failed = { id: 'f', role: 'assistant', content: '', outcome: 'failed', persisted: false };
+  const nudge = { id: 'n', role: 'assistant', content: 'Walk after lunch.', persisted: true };
+  const reread = keepUnsentTail([question, nudge], [question, failed]);
+  reread.map((m) => m.id).join(',') === 'q,n,f'
+    ? ok('the failed bubble survives the re-read, after the new line — Retry is still last')
+    : bad('failed turn dropped', JSON.stringify(reread.map((m) => m.id)));
+  // What `retry` does with it: walk back over every trailing assistant turn to
+  // the question — past the nudge's line — and answer THAT.
+  let at = reread.length - 1;
+  while (at >= 0 && reread[at].role === 'assistant') at--;
+  reread[at]?.id === 'q' && reread[reread.length - 1].outcome === 'failed'
+    ? ok('…so retry still finds the unanswered question behind the nudge’s line')
+    : bad('retry cannot reach the question');
+  keepUnsentTail([question, nudge], [question, { ...nudge, persisted: true }]).length === 2 &&
+  keepUnsentTail([question], [question, { ...failed, persisted: undefined }]).length === 1
+    ? ok('a persisted turn, or a still-streaming one, is never carried twice')
+    : bad('carried a persisted or streaming turn');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

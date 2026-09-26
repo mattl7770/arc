@@ -13,6 +13,7 @@ import {
   appendMessage,
   getConversationSummary,
   getOrCreateActiveConversation,
+  keepUnsentTail,
   landedWriteReceipts,
   listRecentMessages,
   markSupersededTurns,
@@ -80,6 +81,15 @@ export type CoachChat = {
   send: (text: string) => void;
   /** Re-run the last user turn after an unfinished reply. */
   retry: () => void;
+  /**
+   * Re-read the thread from the database — for a turn written from OUTSIDE
+   * this hook while the tab is mounted: the coach pass's note, a nudge-plan
+   * record, a tapped nudge (0064). Deferred to the end of an in-flight turn,
+   * so a reload can never pull the streaming bubble out from under itself,
+   * and a failed turn that never reached the database keeps its place, and
+   * its Retry, at the end.
+   */
+  reload: () => void;
 };
 
 export type CoachChatOptions = {
@@ -236,6 +246,8 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
   // Synchronous "a reply is in flight" flag. `isResponding` is the UI mirror,
   // but it lags a commit; this guard is what actually prevents a double send.
   const busyRef = useRef(false);
+  // A reload asked for mid-turn, run when the turn settles (see `reload`).
+  const reloadWantedRef = useRef(false);
 
   // The suspended write-tool gate: resolving false declines, true approves.
   // Keyed by a nonce so a tap can only ever answer the request it was shown.
@@ -393,6 +405,14 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           setActivity(null);
           setPendingWrite(null);
           confirmResolverRef.current = null;
+          if (reloadWantedRef.current) {
+            // Something outside this hook wrote to the thread while the turn
+            // ran (the coach pass, a tapped nudge). The turn is persisted by
+            // now — unless it failed before producing anything, and that
+            // bubble, with its Retry, is kept (keepUnsentTail).
+            reloadWantedRef.current = false;
+            setMessages(keepUnsentTail(loadThread(conversationId), messagesRef.current));
+          }
           onTurnComplete?.();
         });
     },
@@ -454,9 +474,26 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
     run(history, [...history, ...kept]);
   }, [run]);
 
+  const reload = useCallback(() => {
+    if (busyRef.current) {
+      reloadWantedRef.current = true;
+      return;
+    }
+    setMessages(keepUnsentTail(loadThread(conversationId), messagesRef.current));
+  }, [conversationId, setMessages]);
+
   // Superseded is derived, never stored — the same adjacency rule the DB read
   // uses (markSupersededTurns), so the live thread and a reloaded one agree.
   const view = useMemo(() => markSupersededTurns(messages), [messages]);
 
-  return { messages: view, isResponding, activity, pendingWrite, resolveWrite, send, retry };
+  return {
+    messages: view,
+    isResponding,
+    activity,
+    pendingWrite,
+    resolveWrite,
+    send,
+    retry,
+    reload,
+  };
 }

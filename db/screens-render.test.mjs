@@ -193,6 +193,14 @@ import {
   noteTypedScreenTime,
 } from '../src/lib/screen-time/receipt-store.ts';
 import { weekdayDate } from '../src/lib/protocols/format.ts';
+// 0064 — Coach notifications: the Coach tab's two new pieces, rendered in
+// isolation (the tab itself stays off the walk — see the status-control note),
+// and Settings › Coach, which gained a Notifications section.
+import SettingsCoachScreen from '../app/settings-coach.tsx';
+import { NudgesCard } from '../src/components/coach/nudges-card.tsx';
+import { RemindersCard } from '../src/components/coach/reminders-card.tsx';
+import { CheckinLine, checkinNote } from '../src/components/coach/checkin-line.tsx';
+import { saveNudgeSettings } from '../src/lib/db/repositories/coach-nudges.ts';
 import { WaterPublishPointer } from '../src/components/water/publish-pointer.tsx';
 import { WATER_REFUSED_LINE, WATER_UNASKED_LINE } from '../src/lib/health/publish.ts';
 import { insertReport } from '../src/lib/db/repositories/reports.ts';
@@ -7363,6 +7371,157 @@ console.log('\n29. Screen time — the keypad, the receipt, the link, Data and S
   rows().length === 0
     ? ok('Undo of the link empties the day, and the Shortcuts record is cleared')
     : bad('cleanup', JSON.stringify(rows()));
+}
+
+// ---------------------------------------------------------------------------
+// 0064 — COACH NOTIFICATIONS on screen: the Coach tab's Scheduled list, the
+// tapped reminder with "Talk about this", the check-in line, and Settings ›
+// Coach's Notifications section.
+// ---------------------------------------------------------------------------
+{
+  console.log('\n30. Coach notifications: the Scheduled list, the tapped reminder, Settings');
+
+  const today = todayISODate(new Date());
+  const tomorrow = shiftISODate(today, 1);
+  const list = render(
+    'nudges-card',
+    NudgesCard,
+    {},
+    {
+      nudges: [
+        { id: 'n1', day: today, time: '15:00', body: 'Walk after lunch.' },
+        { id: 'n2', day: tomorrow, time: '07:30', body: 'Leg day. Eat before you lift.' },
+      ],
+      today,
+      onCancel() {},
+    }
+  );
+  expect('nudges-card', list, [
+    'Scheduled by the Coach',
+    '2 notifications',
+    'Walk after lunch.',
+    'today · 15:00',
+    'tomorrow · 07:30',
+    '>Cancel<',
+    // Each Cancel names the notification it cancels, for VoiceOver.
+    'Cancel the notification for tomorrow · 07:30: Leg day. Eat before you lift.',
+  ]);
+  refute('nudges-card', list, ['iOS Settings', 'will not reach']);
+
+  const blocked = render(
+    'nudges-card (permission refused)',
+    NudgesCard,
+    {},
+    {
+      nudges: [{ id: 'n1', day: tomorrow, time: '07:30', body: 'Leg day.' }],
+      today,
+      onCancel() {},
+      blocked: true,
+    }
+  );
+  expect('nudges-card (permission refused)', blocked, [
+    '1 notification',
+    'Notifications are off for ARC in iOS Settings, so these will not reach your lock screen.',
+  ]);
+  const empty = render('nudges-card (none)', NudgesCard, {}, { nudges: [], today, onCancel() {} });
+  empty === ''
+    ? ok('nudges-card renders nothing when the Coach has planned nothing')
+    : bad('nudges-card (none) drew something', String(empty).slice(0, 120));
+
+  const reminderRow = (overrides) => ({
+    id: 'r1',
+    title: 'The knee',
+    time: '20:00',
+    date: today,
+    repeat: 'once',
+    status: 'active',
+    created_by: 'ai',
+    notes: null,
+    checkin: 1,
+    created_at: '',
+    updated_at: '',
+    ...overrides,
+  });
+  const tapped = render(
+    'reminders-card (tapped check-in)',
+    RemindersCard,
+    {},
+    {
+      reminders: [
+        reminderRow({}),
+        reminderRow({ id: 'r2', title: 'Take creatine', time: '15:00', checkin: 0 }),
+      ],
+      onComplete() {},
+      onDismiss() {},
+      highlightId: 'r1',
+      onTalk() {},
+    }
+  );
+  expect('reminders-card (tapped check-in)', tapped, [
+    'The knee',
+    ' · check-in',
+    'Talk about this',
+    'Talk about &quot;The knee&quot; with the Coach',
+  ]);
+  (tapped?.match(/Talk about this/g) ?? []).length === 1
+    ? ok('reminders-card: only the tapped row offers "Talk about this"')
+    : bad('reminders-card: Talk about this on more than one row');
+  refute(
+    'reminders-card (untapped)',
+    render(
+      'reminders-card (untapped)',
+      RemindersCard,
+      {},
+      { reminders: [reminderRow({})], onComplete() {}, onDismiss() {} }
+    ),
+    ['Talk about this']
+  );
+
+  const waiting = render('checkin-line (answering)', CheckinLine, {}, { answering: true, outcome: null });
+  expect('checkin-line (answering)', waiting, ['· checking in…']);
+  const silent = render(
+    'checkin-line (silent)',
+    CheckinLine,
+    {},
+    { answering: false, outcome: { request: { kind: 'morning' }, result: 'silent' } }
+  );
+  expect('checkin-line (silent)', silent, [
+    'The Coach looked and had nothing to add. Ask it anything below.',
+  ]);
+  checkinNote({ request: { kind: 'morning' }, result: 'spoke' }) === null &&
+  checkinNote({ request: { kind: 'morning' }, result: 'shown' }) === null &&
+  checkinNote(null) === null
+    ? ok('checkin-line: when the Coach answered, the thread is the answer and the line is silent')
+    : bad('checkin-line spoke/shown drew a line');
+  checkinNote({ request: { kind: 'morning' }, result: 'no-key' }) ===
+  'The Coach needs an API key to check in. Add one in Settings › Coach.'
+    ? ok('checkin-line: no key says where to add one')
+    : bad('checkin-line no-key');
+
+  const settings = render('settings-coach', SettingsCoachScreen);
+  expect('settings-coach', settings, [
+    'Notifications',
+    'Coach nudges',
+    'Up to two a day, planned when ARC opens',
+    'Quiet from',
+    '21:30',
+    'Quiet until',
+    '07:00',
+    'Morning check-in',
+    'A nudge timed inside quiet hours is dropped, not moved.',
+    'set Show Previews to When Unlocked for ARC in iOS Settings',
+  ]);
+  refute('settings-coach', settings, ['Check-in at']);
+
+  saveNudgeSettings(db, { checkinTime: '07:15', quietStart: '22:00' });
+  const settingsOn = render('settings-coach (check-in on)', SettingsCoachScreen);
+  expect('settings-coach (check-in on)', settingsOn, [
+    'A daily notification; tap it and the Coach speaks first',
+    'Check-in at',
+    '07:15',
+    '22:00',
+  ]);
+  saveNudgeSettings(db, { checkinTime: null, quietStart: '21:30' });
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

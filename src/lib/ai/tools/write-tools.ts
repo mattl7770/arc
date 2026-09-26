@@ -703,17 +703,25 @@ const setReminderTool: CoachTool = {
     // they have MOVED, into the system prompt's Reminders bullet, which is
     // cached once for the whole registry rather than restated per tool. Only
     // the shape of this call stays here.
-    'Create a reminder: title, optional "HH:MM" time, optional "YYYY-MM-DD" date, repeat ' +
+    'Create a reminder: title, optional 24h "HH:MM" time, optional "YYYY-MM-DD" date, repeat ' +
     'once/daily/weekly (weekly needs a date to anchor its weekday). Use when asked, or propose ' +
     'one when a logging gap warrants a nudge. Check list_reminders first to avoid duplicates.',
+  // 0064: `checkin` PAID FOR by the two property descriptions that only
+  // restated the description's own "HH:MM" and "YYYY-MM-DD" — ~20 tokens out,
+  // ~25 in. Its explanation lives in the property, so the system prompt pays
+  // nothing (the plan's §4 "ceiling squeeze").
   inputSchema: {
     type: 'object',
     properties: {
       title: { type: 'string', description: 'Imperative, e.g. "Take magnesium".' },
-      time: { type: 'string', description: '24h "HH:MM".' },
-      date: { type: 'string', description: '"YYYY-MM-DD".' },
+      time: { type: 'string' },
+      date: { type: 'string' },
       repeat: { type: 'string', enum: [...REPEATS] },
       notes: { type: 'string' },
+      checkin: {
+        type: 'boolean',
+        description: 'For "check in with me about X": you speak first when it is tapped.',
+      },
     },
     required: ['title'],
     additionalProperties: false,
@@ -743,7 +751,10 @@ const setReminderTool: CoachTool = {
       optDate(args, 'date') ?? (repeat === 'once' && time ? resolveOneOffDay(time, now) : null);
     const cadence = repeat === 'once' ? '' : ` · ${repeat}`;
     const when = reminderDaySuffix(day, repeat, now);
-    return `Set reminder "${title}"${time ? ` at ${time}` : ''}${cadence}${when}`;
+    // A check-in says so on the card: approving one means agreeing to a paid
+    // Coach reply when it is tapped, not only to a buzz.
+    const kind = optBool(args, 'checkin') === true ? 'check-in' : 'reminder';
+    return `Set ${kind} "${title}"${time ? ` at ${time}` : ''}${cadence}${when}`;
   },
   // Async because the honest answer isn't knowable until the OS has been asked:
   // whether a notification exists depends on the running binary, the permission
@@ -768,6 +779,7 @@ const setReminderTool: CoachTool = {
         repeat,
         createdBy: 'ai',
         notes: optString(args, 'notes') ?? null,
+        checkin: optBool(args, 'checkin') === true,
       },
       context.now
     );

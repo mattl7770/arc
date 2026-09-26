@@ -133,14 +133,47 @@ export function listMessages(db: Database, conversationId: string): AiMessageRec
  * ai_messages never takes an UPDATE. Generic over anything role-shaped so the
  * stored rows and the chat view-models are marked by the ONE rule rather than
  * two copies of it. Input must be in thread order ({@link listMessages}).
+ *
+ * **A COMPLETE turn is never superseded (2026-09-25).** Retry is offered only
+ * on an unfinished turn, so only an unfinished turn can have been replaced. But
+ * not every assistant row that follows another is a retry: the coach pass
+ * appends its note on its own, and since 0064 a tapped nudge and a nudge-plan
+ * record do too. Under the old rule each of those stamped the finished reply
+ * above it "Superseded — replaced by the reply below", which was false. The
+ * outcome is read from `turn_outcome` (a stored row) or `outcome` (a live
+ * view-model); a row that carries neither keeps the positional rule.
  */
-export function markSupersededTurns<T extends { role: string }>(
-  rows: readonly T[]
-): (T & { superseded: boolean })[] {
+export function markSupersededTurns<
+  T extends { role: string; turn_outcome?: AiTurnOutcome; outcome?: AiTurnOutcome },
+>(rows: readonly T[]): (T & { superseded: boolean })[] {
   return rows.map((row, index) => ({
     ...row,
-    superseded: row.role === 'assistant' && rows[index + 1]?.role === 'assistant',
+    superseded:
+      row.role === 'assistant' &&
+      rows[index + 1]?.role === 'assistant' &&
+      (row.turn_outcome ?? row.outcome) !== 'complete',
   }));
+}
+
+/**
+ * A thread re-read from the database, with the screen's UNSENT tail kept.
+ *
+ * A turn that failed before producing anything is never persisted (it left no
+ * trace in the record), but it is on screen with Retry. When something outside
+ * the chat writes to the thread while that bubble is up — a tapped nudge, a
+ * pass's note (0064) — a plain re-read dropped it: the Retry went, and the new
+ * line sat under his question as if it were the answer (review, 2026-09-25).
+ * So the trailing run of turns that are explicitly NOT persisted is carried
+ * over after the re-read rows, where retry still finds it last and walks back
+ * over the new line to the question it answers.
+ */
+export function keepUnsentTail<T extends { persisted?: boolean }>(
+  reloaded: readonly T[],
+  current: readonly T[]
+): T[] {
+  let start = current.length;
+  while (start > 0 && current[start - 1]!.persisted === false) start--;
+  return [...reloaded, ...current.slice(start)];
 }
 
 /** The thread as it should be rendered: stored turns, superseded ones marked. */

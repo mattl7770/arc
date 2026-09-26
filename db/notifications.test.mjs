@@ -4,8 +4,34 @@
  * — reminderTrigger — plus a check that syncReminderNotifications is a safe
  * no-op when the native `expo-notifications` module is absent (which it is under
  * node). No Expo, no device. Run: npm run db:test.
+ *
+ * Since 0064 (Coach notifications) it also drives the WHOLE sync pass against
+ * real SQLite with `expo-notifications` mocked the way the timezone suite does
+ * it — a recorder injected as `ReminderSyncDeps` — and reads the schedule back:
+ * the Coach's nudges, the morning check-in, the check-in bit on a reminder,
+ * quiet hours applying to the Coach alone, and the 64-notification budget.
  */
-import { reminderTrigger, syncReminderNotifications } from '../src/lib/notifications/reminders.ts';
+import { DatabaseSync } from 'node:sqlite';
+
+import { migrate } from '../src/lib/db/migrate.ts';
+import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
+import { setDayStartsAt, shiftISODate } from '../src/lib/db/date.ts';
+import { createReminder } from '../src/lib/db/repositories/reminders.ts';
+import {
+  applyNudgeReply,
+  cancelNudge,
+  saveNudgeSettings,
+  upcomingNudges,
+} from '../src/lib/db/repositories/coach-nudges.ts';
+import { parseNudgeReply } from '../src/lib/notifications/nudge-plan.ts';
+import {
+  CHECKIN_TITLE,
+  getLastNotificationSync,
+  NOTIFICATION_BUDGET,
+  NUDGE_TITLE,
+  reminderTrigger,
+  syncReminderNotifications,
+} from '../src/lib/notifications/reminders.ts';
 
 let pass = 0;
 let fail = 0;
@@ -137,6 +163,224 @@ console.log('3. syncReminderNotifications no-ops safely without the native modul
   threw === null
     ? ok('resolves without throwing when expo-notifications is absent')
     : bad('sync threw', String(threw));
+}
+
+// --- 0064: the whole pass, against real SQLite, with the OS mocked ------------
+
+function freshDb() {
+  const raw = new DatabaseSync(':memory:');
+  raw.exec('PRAGMA foreign_keys = ON;');
+  const db = {
+    run: (sql, params = []) => {
+      raw.prepare(sql).run(...params);
+    },
+    all: (sql, params = []) => raw.prepare(sql).all(...params),
+    get: (sql, params = []) => raw.prepare(sql).get(...params),
+    transaction: (fn) => {
+      raw.exec('BEGIN');
+      try {
+        fn();
+        raw.exec('COMMIT');
+      } catch (e) {
+        raw.exec('ROLLBACK');
+        throw e;
+      }
+    },
+  };
+  migrate(
+    {
+      exec: (sql) => raw.exec(sql),
+      getUserVersion: () => raw.prepare('PRAGMA user_version').get().user_version,
+      setUserVersion: (n) => raw.exec(`PRAGMA user_version = ${n}`),
+      transaction: db.transaction,
+    },
+    MIGRATIONS
+  );
+  return { raw, db };
+}
+
+/** expo-notifications, as the four calls a sync makes — recorded, never native. */
+function recorder({ granted = true } = {}) {
+  const log = { scheduled: [], cancels: 0 };
+  log.deps = {
+    available: () => true,
+    cancelAll: async () => {
+      log.cancels += 1;
+      log.scheduled.length = 0;
+    },
+    ensurePermission: async () => granted,
+    schedule: async (request) => {
+      log.scheduled.push(request);
+    },
+  };
+  return log;
+}
+
+const TODAY = '2026-07-27';
+const TOMORROW = shiftISODate(TODAY, 1);
+const plan = (db, text) => applyNudgeReply(db, parseNudgeReply(text), NOW, '00:00');
+
+console.log('4. the Coach’s nudges join the one pass, at the ordinary interruption level');
+{
+  const { db } = freshDb();
+  plan(db, `NUDGE ${TOMORROW} 07:30 Leg day. Eat before you lift.`);
+  const [nudge] = upcomingNudges(db, NOW, '00:00');
+  const os = recorder();
+  const result = await syncReminderNotifications(db, NOW, os.deps);
+  const sent = os.scheduled.find((r) => r.content.data?.kind === 'nudge');
+  sent &&
+  sent.content.title === NUDGE_TITLE &&
+  sent.content.body === 'Leg day. Eat before you lift.' &&
+  sent.content.data.nudgeId === nudge.id &&
+  sent.trigger.type === 'date' &&
+  sent.trigger.date.getTime() === new Date(2026, 6, 28, 7, 30).getTime()
+    ? ok('a pending nudge is one dated notification carrying its row id')
+    : bad('nudge request', JSON.stringify(sent));
+  sent?.content.interruptionLevel === 'active'
+    ? ok('…at the ordinary level, never time-sensitive — the Coach does not break Focus')
+    : bad('interruption level', JSON.stringify(sent?.content));
+  result.scheduledNudges.length === 1 && result.overBudget === 0
+    ? ok('the result reports it, and nothing was left out')
+    : bad('result', JSON.stringify(result));
+  getLastNotificationSync() === result
+    ? ok('the last sync is kept for the Coach tab to read')
+    : bad('last sync not kept');
+
+  cancelNudge(db, nudge.id);
+  const after = recorder();
+  await syncReminderNotifications(db, NOW, after.deps);
+  after.scheduled.length === 0 && after.cancels === 1
+    ? ok('a cancelled nudge is gone from the phone at the next resync')
+    : bad('cancelled nudge scheduled', JSON.stringify(after.scheduled));
+}
+
+console.log('5. quiet hours bind the Coach, never his own reminders');
+{
+  const { db } = freshDb();
+  createReminder(db, { title: 'Magnesium', time: '23:00', repeat: 'daily' }, NOW);
+  plan(db, `NUDGE ${TODAY} 23:00 Lights out soon.\nNUDGE ${TOMORROW} 08:00 Walk after breakfast.`);
+  const os = recorder();
+  await syncReminderNotifications(db, NOW, os.deps);
+  const nudges = os.scheduled.filter((r) => r.content.data?.kind === 'nudge');
+  os.scheduled.some((r) => r.content.title === 'Magnesium') &&
+  nudges.length === 1 &&
+  nudges[0].content.body === 'Walk after breakfast.'
+    ? ok('his 23:00 reminder buzzes; the Coach’s 23:00 nudge was never planned')
+    : bad('quiet hours', JSON.stringify(os.scheduled.map((r) => r.content)));
+
+  saveNudgeSettings(db, { enabled: false }, NOW, '00:00');
+  const off = recorder();
+  const result = await syncReminderNotifications(db, NOW, off.deps);
+  result.scheduledNudges.length === 0 && off.scheduled.length === 1
+    ? ok('nudges off: nothing of the Coach’s is scheduled, his reminder still is')
+    : bad('off switch', JSON.stringify(off.scheduled.map((r) => r.content)));
+}
+
+console.log('6. the morning check-in and the check-in bit ride the payload');
+{
+  const { db } = freshDb();
+  saveNudgeSettings(db, { checkinTime: '07:15' }, NOW, '00:00');
+  const knee = createReminder(db, { title: 'The knee', time: '20:00', checkin: true }, NOW);
+  const creatine = createReminder(db, { title: 'Take creatine', time: '15:00' }, NOW);
+  const os = recorder();
+  const result = await syncReminderNotifications(db, NOW, os.deps);
+  const bell = os.scheduled.find((r) => r.content.data?.kind === 'checkin');
+  bell &&
+  bell.content.title === CHECKIN_TITLE &&
+  bell.content.body === undefined &&
+  bell.trigger.type === 'daily' &&
+  bell.trigger.hour === 7 &&
+  bell.trigger.minute === 15 &&
+  result.checkinScheduled
+    ? ok('the morning check-in is one daily notification with no health content')
+    : bad('doorbell', JSON.stringify(bell));
+  const kneeReq = os.scheduled.find((r) => r.content.data?.reminderId === knee);
+  const creatineReq = os.scheduled.find((r) => r.content.data?.reminderId === creatine);
+  kneeReq?.content.data.checkin === true && !('checkin' in (creatineReq?.content.data ?? {}))
+    ? ok('a check-in reminder says so in its payload; a plain one carries nothing new')
+    : bad('checkin payload', JSON.stringify([kneeReq, creatineReq]));
+
+  saveNudgeSettings(db, { checkinTime: null }, NOW, '00:00');
+  const off = recorder();
+  await syncReminderNotifications(db, NOW, off.deps);
+  !off.scheduled.some((r) => r.content.data?.kind === 'checkin')
+    ? ok('turned off, the morning check-in is gone at the next resync')
+    : bad('doorbell survived');
+}
+
+console.log(`7. the 64 cap: every sync fits ${NOTIFICATION_BUDGET}, and says what it left out`);
+{
+  const { db } = freshDb();
+  for (let i = 0; i < NOTIFICATION_BUDGET + 5; i++) {
+    const hh = String(Math.floor(i / 4)).padStart(2, '0');
+    const mm = String((i % 4) * 15).padStart(2, '0');
+    createReminder(db, { title: `Reminder ${i}`, time: `${hh}:${mm}`, repeat: 'daily' }, NOW);
+  }
+  saveNudgeSettings(db, { checkinTime: '07:15' }, NOW, '00:00');
+  plan(db, `NUDGE ${TOMORROW} 08:00 Walk after breakfast.`);
+  const os = recorder();
+  const result = await syncReminderNotifications(db, NOW, os.deps);
+  os.scheduled.length === NOTIFICATION_BUDGET &&
+  result.overBudget === 5 + 1 + 1 &&
+  !result.checkinScheduled &&
+  result.scheduledNudges.length === 0
+    ? ok(`${NOTIFICATION_BUDGET} scheduled, 7 counted as left out — nothing handed to iOS to drop`)
+    : bad('budget', `${os.scheduled.length} scheduled, overBudget ${result.overBudget}`);
+
+  const { db: small } = freshDb();
+  createReminder(small, { title: 'Magnesium', time: '21:00', repeat: 'daily' }, NOW);
+  plan(small, `NUDGE ${TOMORROW} 08:00 Walk after breakfast.\nNUDGE ${TODAY} 15:00 Stretch.`);
+  const few = recorder();
+  const fewResult = await syncReminderNotifications(small, NOW, few.deps);
+  const order = few.scheduled.filter((r) => r.trigger.type === 'date').map((r) => r.content.body);
+  fewResult.overBudget === 0 && order.join(' | ') === 'Stretch. | Walk after breakfast.'
+    ? ok('on an ordinary phone nothing is left out, and dated ones go soonest first')
+    : bad('ordinary sync', JSON.stringify({ order, over: fewResult.overBudget }));
+}
+
+console.log('8. permission refused: nothing is scheduled, and the result says so');
+{
+  const { db } = freshDb();
+  plan(db, `NUDGE ${TOMORROW} 08:00 Walk after breakfast.`);
+  const os = recorder({ granted: false });
+  const result = await syncReminderNotifications(db, NOW, os.deps);
+  os.scheduled.length === 0 &&
+  result.permissionGranted === false &&
+  getLastNotificationSync()?.permissionGranted === false
+    ? ok('the Coach tab can say its list will not reach the lock screen')
+    : bad('permission refused', JSON.stringify(result));
+}
+
+console.log('9. a late day boundary: the small-hours nudge is scheduled for the right night');
+{
+  // The sync reads the INSTALLED boundary, as it does on the phone, so it is
+  // installed here and put back afterwards.
+  const { db } = freshDb();
+  saveNudgeSettings(db, { quietStart: '00:00', quietEnd: '00:00' }, NOW, '04:00');
+  const NIGHT = new Date(2026, 6, 27, 23, 0);
+  applyNudgeReply(
+    db,
+    parseNudgeReply(`NUDGE ${TODAY} 01:30 Screens off, lights out.`),
+    NIGHT,
+    '04:00'
+  );
+  setDayStartsAt('04:00');
+  try {
+    const os = recorder();
+    const result = await syncReminderNotifications(db, NIGHT, os.deps);
+    const sent = os.scheduled.find((r) => r.content.data?.kind === 'nudge');
+    sent?.trigger.date.getTime() === new Date(2026, 6, 28, 1, 30).getTime() &&
+    result.scheduledNudges.length === 1
+      ? ok('01:30 of the logical 27th is scheduled for 01:30 on the calendar 28th')
+      : bad('late-boundary schedule', JSON.stringify(os.scheduled));
+    const after = recorder();
+    await syncReminderNotifications(db, new Date(2026, 6, 28, 0, 30), after.deps);
+    after.scheduled.some((r) => r.content.data?.kind === 'nudge')
+      ? ok('a resync after midnight, still the 27th logically, keeps it on the schedule')
+      : bad('dropped after midnight');
+  } finally {
+    setDayStartsAt('00:00');
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

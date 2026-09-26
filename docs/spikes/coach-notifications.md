@@ -1,4 +1,6 @@
-> **PLAN — not built (written and fact-checked 2026-09-23).** Round-2 note "coach sends push notifications". Checked; recommendation held. Nothing built. The owner's answers are collected on the round-two decisions page; this file is the plan of record until they arrive.
+> **BUILT 2026-09-25 (migration 0064, branch `claude/fb-notify`).** The owner accepted all six recommendations on 2026-09-25; the recommended combination was built in its build order — (c) with the total-cap guard, the tap upgrade for (a) with the `checkin` flag (Q5 yes), and the morning check-in as an opt-in, sequenced after the Health sync. The account of what was built, and the three decisions this plan left open (a silent pass does NOT cancel pending nudges; what a tap shows when a check-in gets no answer; the `about` link deferred), is `docs/ai-coach.md` §3 › Coach notifications. This file stays as the plan and its reasoning; where the two differ, the build is the record. Nothing is on a device yet.
+>
+> *(Original status line: PLAN — not built, written and fact-checked 2026-09-23.)*
 
 # Coach notifications: plan
 

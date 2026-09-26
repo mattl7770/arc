@@ -1111,6 +1111,31 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // The Haiku pass prefix moves with the prompt alone, 7,028 → 7,024 — the
   // pass carries no write. Every per-domain card line (`RemovePolicy.gone`)
   // is TypeScript and costs 0 on the wire.
+  // ── 2026-09-25: COACH NOTIFICATIONS (0064, docs/spikes/coach-notifications.md).
+  // **NEITHER CEILING MOVED. Schema 9,039 → 9,058 (+19), prompt 3,648 → 3,648,
+  // pass prefix 7,024 → 7,024.**
+  //
+  // The feature itself costs the chat Coach NOTHING, by construction: the
+  // nudge instructions live in `passDirective` — the unattended pass's USER
+  // message, outside both ceilings and outside the cached prefix — and no tool
+  // was added. The model proposes with strict `NUDGE` lines at the end of its
+  // reply; a parser and deterministic caps do the rest (nudge-plan.ts).
+  //
+  // The +19 is the owner's Q5 (a check-in's tap makes the Coach speak first):
+  // `set_reminder` gained an optional `checkin` boolean, its explanation in the
+  // property so the prompt pays 0. PART-PAID by deleting the `time` and `date`
+  // property descriptions, which only restated the tool description's own
+  // "HH:MM" and "YYYY-MM-DD" (the description gained "24h" to keep the one
+  // fact they added). The plan priced the flag at ~25 of the headroom.
+  // `list_reminders` now also returns `checkin` and the Coach's planned
+  // notifications — result fields, 0 schema tokens.
+  //
+  // Same day, after review: the pass is now told the wall clock and the lines
+  // code refused from its last pass, and how to write the lines bare. All of
+  // it in `passDirective` again — NEITHER CEILING MOVED. Measured with this
+  // file's prose proxy, the nudge block is ~347 tokens on an empty day (the
+  // directive is 1,094 characters with nudges off, 2,344 with them on), paid
+  // uncached by the pass alone, plus one line per refusal when there are any.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

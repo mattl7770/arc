@@ -86,9 +86,19 @@ export function createReminder(
     explicitDate ?? (repeat === 'once' && time != null ? resolveOneOffDay(time, now) : null);
   const id = newId(db);
   db.run(
-    `INSERT INTO reminders (id, title, time, date, repeat, created_by, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, reminder.title, time, date, repeat, reminder.createdBy ?? 'user', reminder.notes ?? null]
+    `INSERT INTO reminders (id, title, time, date, repeat, created_by, notes, checkin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      reminder.title,
+      time,
+      date,
+      repeat,
+      reminder.createdBy ?? 'user',
+      reminder.notes ?? null,
+      // 0064: a check-in makes the Coach speak first when its buzz is tapped.
+      reminder.checkin === true ? 1 : 0,
+    ]
   );
   return id;
 }

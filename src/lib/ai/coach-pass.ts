@@ -24,12 +24,30 @@
  *   prompt on purpose — the prompt is the second line of defence, because a
  *   sentinel that leaks reaches the owner as the Coach's own words.
  *
+ *   IT MAY PLAN A NOTIFICATION (0064). While Coach nudges are on, the directive
+ *   lets the reply end with `NUDGE YYYY-MM-DD HH:MM text` lines. They are
+ *   parsed out here and handed back as proposals; the caps, the rows and the
+ *   OS schedule are pass-store.ts's and nudge-plan.ts's, after the pass has
+ *   returned — so the pass itself still writes nothing.
+ *
  * The judgment itself is entirely the model's. Nothing here decides what a low
  * readiness morning, a stalled lift, or a missed week should mean — the
  * deterministic layer only decides WHEN to wake the model up.
  */
 import type { Database } from '@/lib/db/database';
-import { todayISODate } from '@/lib/db/date';
+import { getDayStartsAt, todayISODate } from '@/lib/db/date';
+import { nudgeDirectiveFor } from '@/lib/db/repositories/coach-nudges';
+import {
+  EMPTY_NUDGE_REPLY,
+  NUDGE_HORIZON_HOURS,
+  NUDGE_MAX_CHARS,
+  NUDGE_MAX_PER_DAY,
+  NUDGE_MIN_LEAD_MIN,
+  parseNudgeReply,
+  REFUSAL_WORDS,
+  type NudgeDirective,
+  type NudgeReply,
+} from '@/lib/notifications/nudge-plan';
 
 import { apiKeyStore } from './api-key-store';
 import { runCoachTurn, type FetchLike } from './model-client';
@@ -117,11 +135,31 @@ export function isPassSkip(text: string): boolean {
   return true; // nothing but whitespace — the Coach said nothing at all
 }
 
-/** Why the pass ran — shapes the directive and the dedupe key. */
+/**
+ * Why the pass ran — shapes the directive and the dedupe key.
+ *
+ *   daily            the first open of the day (pass-schedule.ts).
+ *   signal           a watch-tone insight or a landing that was not there last time.
+ *   checkin evening  the first open after 18:00 (0064 plan, owner's Q4): the last
+ *                    look before tomorrow, and so the pass that plans it.
+ *   checkin morning  he TAPPED the morning check-in (the opt-in "doorbell").
+ *   topic            he TAPPED a check-in reminder he asked for ("check in with me
+ *                    tonight about the knee" — owner's Q5). `firstLook` when no
+ *                    pass had run yet today, so this one is also the day's look.
+ *
+ * The last two are the WAITING kinds: he is looking at the Coach tab for an
+ * answer, and the directive says so.
+ */
 export type PassTrigger =
   | { kind: 'daily' }
   | { kind: 'signal'; detail: string }
-  | { kind: 'checkin'; part: 'morning' | 'evening' };
+  | { kind: 'checkin'; part: 'morning' | 'evening' }
+  | { kind: 'topic'; title: string; notes: string | null; firstLook: boolean };
+
+/** He tapped something and is waiting on the reply. */
+export function isWaitingPass(trigger: PassTrigger): boolean {
+  return trigger.kind === 'topic' || (trigger.kind === 'checkin' && trigger.part === 'morning');
+}
 
 /**
  * Why a pass produced no message. The distinction matters: `silent` is a
@@ -137,37 +175,144 @@ export type CoachPassResult = {
   message: string | null;
   status: CoachPassStatus;
   toolCalls: CoachToolCall[];
+  /**
+   * The reply's NUDGE lines, parsed — proposals only. Nothing here has been
+   * capped or written: the pass stays read-only by construction, and
+   * pass-store.ts applies the rules and writes the rows after it returns.
+   * Empty when nudges are off.
+   */
+  nudges: NudgeReply;
 };
 
-/** The instruction the pass runs under. Deliberately open — no scenario named. */
-export function passDirective(trigger: PassTrigger, today: string): string {
-  const opening =
-    trigger.kind === 'daily'
-      ? `This is your own once-a-day look at ${today}. The user did not ask for it and is not waiting on a reply.`
-      : trigger.kind === 'checkin'
-        ? trigger.part === 'morning'
-          ? `This is the user's morning check-in for ${today}. They opened ARC expecting a word from you.`
-          : `This is the user's evening check-in for ${today}. Compare what the day planned against what actually happened.`
-        : `Something changed worth a second look (${trigger.detail}). The user did not ask for this.`;
+/** The opening line: why this pass is running, in the model's terms. */
+function passOpening(trigger: PassTrigger, today: string): string {
+  switch (trigger.kind) {
+    case 'daily':
+      return `This is your own once-a-day look at ${today}. The user did not ask for it and is not waiting on a reply.`;
+    case 'signal':
+      return `Something changed worth a second look (${trigger.detail}). The user did not ask for this.`;
+    case 'checkin':
+      return trigger.part === 'morning'
+        ? `This is the user's morning check-in for ${today}: they tapped it and opened ARC expecting a word from you.`
+        : `This is your evening look at ${today}, on the first open after 18:00. Compare what the day planned against what actually happened. The user did not ask for it.`;
+    case 'topic':
+      return [
+        `The user asked you to check in with them about "${trigger.title}"` +
+          (trigger.notes ? ` (${trigger.notes})` : '') +
+          ', and has just tapped that check-in. They are waiting on you.',
+        ...(trigger.firstLook
+          ? [
+              `It is also your first look at ${today}, so anything else worth a word belongs in the same reply.`,
+            ]
+          : []),
+      ].join(' ');
+  }
+}
+
+/**
+ * The nudge instructions — present only when nudges are on (the plan: the off
+ * switch "removes the nudge instructions from the directive").
+ *
+ * They live HERE, in the pass's user message, and nowhere in the system prompt
+ * or the tool schemas: this message is outside both chat ceilings in
+ * db/coach-eval.test.mjs §6 and outside the cached prefix, so the whole
+ * feature costs the chat Coach nothing. Each pass pays for these lines
+ * uncached on each of its round trips — a fraction of a cent.
+ *
+ * The rules restated here (two a day, quiet hours, no digits, the length) are
+ * ALSO enforced by code (src/lib/notifications/nudge-plan.ts). They are told
+ * to the model so it does not waste a line on one code will drop — not
+ * because the prompt is the guarantee.
+ */
+function nudgeInstructions(trigger: PassTrigger, nudges: NudgeDirective): string[] {
+  const list = (items: { day?: string; time: string; body: string }[]) =>
+    items.length === 0
+      ? ['  none']
+      : items.map((item) => `  ${item.day ? `${item.day} ` : ''}${item.time} ${item.body}`);
+  return [
+    '',
+    `Phone notifications. It is now ${nudges.clock} on ${nudges.today}. You may also plan notifications`,
+    `for ${nudges.today} or ${nudges.tomorrow}, at most ${NUDGE_MAX_PER_DAY} a day counting any already sent.`,
+    'Plan one only when a word at that moment would help more than the thread does; most days need none.',
+    ...(trigger.kind === 'checkin' && trigger.part === 'evening'
+      ? [
+          'This is the last look before tomorrow, so it is the pass that can plan for tomorrow morning:',
+          'a line about something already known is a fair use of one.',
+        ]
+      : []),
+    'End your reply with one line per notification, exactly:',
+    'NUDGE YYYY-MM-DD HH:MM text',
+    `- The date is the day it belongs to; the time is 24-hour, at least ${NUDGE_MIN_LEAD_MIN} minutes after`,
+    `  ${nudges.clock} and within the next ${NUDGE_HORIZON_HOURS} hours.`,
+    `- Quiet hours are ${nudges.quietStart}–${nudges.quietEnd}. A notification timed inside them is dropped, not moved.`,
+    `- It shows on the lock screen: one plain sentence, at most ${NUDGE_MAX_CHARS} characters, no numbers`,
+    '  (a name with a digit in it, like B12, is fine), nothing they would mind being read over',
+    '  their shoulder.',
+    '- Write it so it still holds if they have already done the thing.',
+    '- NUDGE lines replace everything still pending, so repeat any you want to keep. Write no',
+    '  NUDGE line to leave the pending set as it is, or NUDGE NONE to cancel all of it.',
+    '- NUDGE lines are never shown in the thread and may follow SKIP. Write them bare, one per',
+    '  line, with no heading, list or code block. Do not mention them in your note: the app lists them.',
+    'Pending:',
+    ...list(nudges.pending),
+    'Already sent today:',
+    ...list(nudges.sentToday.map(({ time, body }) => ({ time, body }))),
+    // Only when there is something to say: a refusal is otherwise silent, and
+    // the model would write the same line again.
+    ...(nudges.refused.length > 0
+      ? [
+          'Not planned from your last pass:',
+          ...nudges.refused.map(({ line, reason }) => `  ${line} (${REFUSAL_WORDS[reason]})`),
+        ]
+      : []),
+  ];
+}
+
+/**
+ * The instruction the pass runs under. Deliberately open — no scenario named.
+ * `nudges` is null when nudges are off; the directive is then word for word
+ * what it was before 0064.
+ */
+export function passDirective(
+  trigger: PassTrigger,
+  today: string,
+  nudges: NudgeDirective | null = null
+): string {
+  const waiting = isWaitingPass(trigger);
+  const verdict = waiting
+    ? [
+        'Then answer them, as their coach. They asked, so say something even if it is that nothing',
+        'needs changing: two or three sentences at most. Lead with the thing itself, numbers attached.',
+        'Say plainly what you would change and why — you cannot change anything in this pass, so make',
+        'it something they can act on or reply to.',
+        '',
+        `Reply with exactly ${PASS_SKIP} only if there is truly nothing useful to say.`,
+      ]
+    : [
+        'If it does: two or three sentences at most. Lead with the thing itself, numbers attached.',
+        'Say plainly what you would change and why — you cannot change anything in this pass, so make',
+        'it something they can act on or reply to.',
+        '',
+        `If the day is unremarkable, reply with exactly ${PASS_SKIP} and nothing else — bare, on its own,`,
+        `with no sentence before or after it${nudges ? ' (NUDGE lines are the one exception)' : ''}. Silence on a quiet day is what makes the other days`,
+        'matter, so do not manufacture an observation to avoid saying it.',
+      ];
 
   return [
     `[Automatic ${trigger.kind} pass — the user did not type this.]`,
-    opening,
+    passOpening(trigger, today),
     '',
     'Read what you need — the state block above, get_insights, the snapshot, and anything they point to.',
-    'Then decide, as their coach, whether anything genuinely warrants a word right now.',
+    ...(waiting
+      ? []
+      : ['Then decide, as their coach, whether anything genuinely warrants a word right now.']),
     '',
     'Do not narrate. Call the tools you need without announcing them first — no "let me look at",',
     'no "I will check". Nothing you write before you have the results is shown to anyone, so write',
     'nothing until you have them. Your reply is one thing only: the observation, or the sentinel.',
     '',
-    'If it does: two or three sentences at most. Lead with the thing itself, numbers attached.',
-    'Say plainly what you would change and why — you cannot change anything in this pass, so make',
-    'it something they can act on or reply to.',
-    '',
-    `If the day is unremarkable, reply with exactly ${PASS_SKIP} and nothing else — bare, on its own,`,
-    'with no sentence before or after it. Silence on a quiet day is what makes the other days',
-    'matter, so do not manufacture an observation to avoid saying it.',
+    ...verdict,
+    ...(nudges ? nudgeInstructions(trigger, nudges) : []),
   ].join('\n');
 }
 
@@ -182,6 +327,14 @@ export type RunPassOptions = {
    * paying Opus rates for "SKIP" every morning is indefensible.
    */
   model?: string;
+};
+
+/** A pass that never reached the model: nothing said, nothing proposed. */
+const FAILED: CoachPassResult = {
+  message: null,
+  status: 'failed',
+  toolCalls: [],
+  nudges: EMPTY_NUDGE_REPLY,
 };
 
 /** The model the pass uses unless overridden — cheap, fast, good enough to triage. */
@@ -211,12 +364,16 @@ export async function runCoachPass(
   options: RunPassOptions
 ): Promise<CoachPassResult> {
   const apiKey = apiKeyStore.get();
-  if (!apiKey) return { message: null, status: 'failed', toolCalls: [] };
+  if (!apiKey) return FAILED;
   const fetchImpl = options.fetchImpl ?? defaultFetch();
-  if (!fetchImpl) return { message: null, status: 'failed', toolCalls: [] };
+  if (!fetchImpl) return FAILED;
 
   const now = options.now ?? new Date();
-  const today = todayISODate(now);
+  const dayStartsAt = getDayStartsAt();
+  const today = todayISODate(now, dayStartsAt);
+  // Null when nudges are off: then the directive says nothing about them and
+  // any NUDGE line the model writes anyway is stripped and ignored.
+  const nudges = nudgeDirectiveFor(db, now, dayStartsAt);
 
   try {
     const result = await runCoachTurn(
@@ -228,7 +385,7 @@ export async function runCoachPass(
       {
         system: buildCoachSystemPrompt(),
         systemContext: buildTurnContext(db, now),
-        messages: [{ role: 'user', content: passDirective(options.trigger, today) }],
+        messages: [{ role: 'user', content: passDirective(options.trigger, today, nudges) }],
         // READ tools only, MINUS the generic one: with no write in the registry
         // there is nothing to gate, so an unattended pass cannot change
         // anything, and `query_records` is held back for the reasons at
@@ -263,19 +420,34 @@ export async function runCoachPass(
       }
     );
 
-    const text = result.text.trim();
+    // The NUDGE lines come out FIRST, every one of them, parsed or not, with
+    // any fence, rule or label wrapped round them: they are instructions to
+    // code, and one that reached the thread would be the Coach's sentinel
+    // shipped as its own words — the isPassSkip lesson. What is left is the
+    // note, and the note alone decides spoke vs silent, so a pass can say SKIP
+    // and still plan a nudge.
+    const reply = parseNudgeReply(result.text);
+    const text = reply.text.trim();
     // A SKIP means silence, however the model punctuates it and whatever it
     // wrote above it — see isPassSkip for the rule and why it is that rule.
-    const skipped = isPassSkip(text);
+    //
+    // With NUDGE lines in the reply the note ENDS where they begin (the
+    // directive puts them last), so the verdict is also read there: SKIP, the
+    // nudge lines, then a remark about them is a silent pass, not a note that
+    // opens "SKIP". An empty lead (nudge lines first) decides nothing — the
+    // text after them is then the whole note.
+    const lead = reply.lead?.trim() ?? '';
+    const skipped = isPassSkip(text) || (lead.length > 0 && isPassSkip(lead));
     return {
       message: skipped ? null : text,
       status: skipped ? 'silent' : 'spoke',
       toolCalls: result.toolCalls,
+      nudges: nudges ? reply : EMPTY_NUDGE_REPLY,
     };
   } catch {
     // Offline, no network, a bad key, a refusal — the user never sees this. But
     // it is NOT a judgment that today was unremarkable, so it reports 'failed'
     // and the day stays open for a real look later.
-    return { message: null, status: 'failed', toolCalls: [] };
+    return FAILED;
   }
 }

@@ -198,7 +198,7 @@ n-of-1 experiments.
 
 - ~~progress_photos~~ — **built 2026-08-12, migration 0036**, as `progress_photos` + `progress_photo_analyses` (`docs/progress-photos-subapp.md`). The image is a FILE under Documents and the row holds a bare NAME, the 0033 convention; weight context is a read-time date join, never a stored FK.
 - ~~grocery_lists / recipes~~ — built 2026-08-12, migrations 0031 (`recipes`, `recipe_ingredients`) and 0032 (`grocery_items`, `grocery_name_prefs`); `docs/recipes-grocery.md`. They did **not** start as protocol content.
-- ~~reminders / notifications~~ — built as `reminders` (0009).
+- ~~reminders / notifications~~ — built as `reminders` (0009). The Coach's own notifications followed on 2026-09-25 as **`coach_nudges`** (0064: one row per nudge a coach pass planned — a LOGICAL `day` plus a wall-clock `time`, so a trip re-anchors it; `pending` / `delivered` (tapped) / `cancelled`; a line the caps refused never becomes a row) and **`reminders.checkin`** (0064, a bit: a check-in's tap makes the Coach speak first). The rules live in `src/lib/notifications/nudge-plan.ts`; the account is `docs/ai-coach.md` §3 › Coach notifications.
 
 ---
 

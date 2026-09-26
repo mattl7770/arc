@@ -63,6 +63,20 @@ export function seedFromRail(seed: ComposerSeed, text: string): ComposerSeed {
   return { text, count: seed.count + 1, param: seed.param };
 }
 
+/**
+ * A control on the tab itself — the reminders card's **Talk about this** (0064,
+ * owner's Q5: a plain reminder's tap "opens with 'Talk about this'"). The same
+ * rule as the ×: always a fresh seed, never a send.
+ */
+export function seedFromTap(seed: ComposerSeed, text: string): ComposerSeed {
+  return seedFromRail(seed, text);
+}
+
+/** What "Talk about this" puts in the composer for a reminder. */
+export function talkAboutReminder(title: string): string {
+  return `About my reminder "${title}": `;
+}
+
 /** The composer's React key. Unseeded mounts exactly as it always has. */
 export function composerKey(seed: ComposerSeed): string {
   return seed.count === 0 ? 'composer' : `seed-${seed.count}`;
