@@ -25,16 +25,22 @@ export type CoachToolContext = {
    */
   now: Date;
   /**
-   * The turn's clock SOURCE, read afresh — for a staleness re-read that has to
-   * see TIME move, never for deriving what is written (that is {@link now},
-   * one instant per call, and it stays so).
+   * The turn's clock SOURCE, read afresh — for deciding what has already
+   * HAPPENED by the moment of the approval, never for deriving a value that is
+   * written (a day, a time: that is {@link now}, one instant per call, and it
+   * stays so).
    *
-   * A planned notification is the case (2026-09-25, docs/coach-domains.md
-   * §10c): its row does not change when it fires, only the clock does, so a
-   * cancel card drawn at 07:25 for a 07:30 nudge and approved at 07:31 would
-   * mark cancelled a line that already reached the lock screen. The nudges
-   * domain reads this past the gate and refuses. Absent in headless calls that
-   * pass only `{ now }`, where `now` is the only clock there is.
+   * The Coach's planned notifications are the case (2026-09-25,
+   * docs/coach-domains.md §10c): a nudge's row does not change when it fires,
+   * only the clock does. A cancel card drawn at 07:25 for a 07:30 nudge and
+   * approved at 07:31 would mark cancelled a line that already reached the
+   * lock screen, and so would the off switch approved across a fire. So the
+   * nudges domain re-reads against this past the gate and refuses, the off
+   * switch's card counts what it cancels against it (a fire changes the count
+   * and the redrawn line refuses), and its write hands `saveNudgeSettings`
+   * this instant, as the screen hands it the moment of the tap. Absent in
+   * headless calls that pass only `{ now }`, where `now` is the only clock
+   * there is.
    */
   clock?: () => Date;
   /**

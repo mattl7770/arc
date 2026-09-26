@@ -34,14 +34,25 @@
  * outside the CURRENT quiet hours. A cancel resolves against exactly that list,
  * so the Coach can cancel what the tab can and nothing else. Every other state
  * refuses in words — cancelled or replaced by a newer plan, already opened,
- * already gone out, held back by quiet hours — because a bare "no such row"
- * would leave the model guessing why.
+ * already gone out, held back by quiet hours (ahead, or passed without being
+ * sent) — because a bare "no such row" would leave the model guessing why.
  *
  * **Gone out is a matter of the clock, not the row.** A pending nudge's row
- * does not change when it fires, so the re-read past the gate reads the turn's
- * clock afresh (`CoachToolContext.clock`): a card drawn at 07:25 for a 07:30
- * nudge and approved at 07:31 refuses rather than marking a delivered line
- * cancelled.
+ * does not change when it fires, so everything here that asks "is it still
+ * ahead?" reads the turn's clock afresh (`CoachToolContext.clock`, via
+ * {@link latest}):
+ *
+ *   - a cancel card drawn at 07:25 for a 07:30 nudge and approved at 07:31
+ *     refuses rather than marking a delivered line cancelled;
+ *   - the off switch's card counts what it cancels at that same fresh instant,
+ *     so a nudge that fires while the card is open changes "cancels N" and the
+ *     redrawn line refuses; and its write hands `saveNudgeSettings` the moment
+ *     of the approval, as the screen's switch hands it the moment of the tap,
+ *     so a nudge that went out is never marked cancelled (migration 0064: "a
+ *     past pending row is history … and is never cancelled").
+ *
+ * The clock never derives a value that is written — no day, no time. It only
+ * decides which nudges have already happened.
  */
 import type { Database } from '@/lib/db/database';
 import { getDayStartsAt, todayISODate } from '@/lib/db/date';
@@ -50,6 +61,7 @@ import {
   getNudge,
   getNudgeSettings,
   saveNudgeSettings,
+  sentNudgesFrom,
   upcomingNudges,
   upcomingRows,
   type UpcomingNudge,
@@ -76,7 +88,8 @@ import {
 /**
  * The later of the call's instant and the turn's clock read now. At card time
  * the two agree; past the gate the clock has moved by however long the user
- * took to decide, and a nudge that fired inside that window must refuse.
+ * took to decide, and a nudge that fired inside that window has gone out — it
+ * must neither be cancelled nor counted as still to cancel.
  */
 function latest(context: CoachToolContext): Date {
   const wall = context.clock?.();
@@ -115,11 +128,23 @@ function resolveNudge(db: Database, id: string, context: CoachToolContext): Doma
   if (listed) {
     return { id: listed.id, name: listed.body, values: { status: listed.status }, raw: listed };
   }
+  const settings = getNudgeSettings(db);
   const fires = fireInstant(row.day, row.time, getDayStartsAt());
   if (fires === null || fires.getTime() <= at.getTime()) {
+    // Its moment has passed. Whether it WENT OUT is the repository's judgment,
+    // the one the per-day cap counts by (`sentNudgesFrom`): not when that
+    // moment is inside the current quiet hours, where it was held back rather
+    // than sent. The model relays this refusal as fact, so it must not say
+    // "went out" of a line the record says never did.
+    const sent = sentNudgesFrom(db, row.day, at).some((nudge) => nudge.id === row.id);
+    if (fires !== null && !sent) {
+      throw new Error(
+        `The notification for ${when} was held back by quiet hours (${settings.quietStart}–` +
+          `${settings.quietEnd}) and did not go out; its time has passed. Nothing cancelled.`
+      );
+    }
     throw new Error(`The notification for ${when} already went out. Nothing cancelled.`);
   }
-  const settings = getNudgeSettings(db);
   if (!settings.enabled) {
     throw new Error('Coach nudges are off, so nothing is planned to go out. Nothing cancelled.');
   }
@@ -207,7 +232,7 @@ export const NUDGE_SETTING_FIELDS: Record<NudgeFieldName, DomainField> = {
   nudges_enabled: boolField(
     'Coach nudges (up to two a day, planned when ARC opens); false cancels every one planned'
   ),
-  quiet_start: clockField('"HH:MM" — quiet hours begin; a nudge timed inside them is dropped'),
+  quiet_start: clockField('"HH:MM" — quiet hours begin; a nudge timed inside them does not go out'),
   quiet_end: clockField('"HH:MM" — quiet hours end'),
   checkin_time: timeField('"HH:MM" of the daily morning check-in notification, or null for off'),
 };
@@ -239,14 +264,21 @@ function windowText(start: unknown, end: unknown): string {
  *
  *   `Coach nudges on → off, which cancels 2 planned notifications`
  *   `Quiet hours 21:30–07:00 → 22:00–06:30, which holds back 1 planned notification`
+ *   `Quiet hours 21:30–08:30 → 21:30–07:00, which lets 1 held-back notification go out`
  *   `Morning check-in off → 07:30`
+ *
+ * Every count is taken at {@link latest}: at card time that is the card's
+ * instant, and past the gate it is the approval's, so a nudge that fires while
+ * the card is open changes the count, the redrawn line no longer matches the
+ * card, and the write refuses.
  */
 export function describeNudgeSettings(
   db: Database,
   was: Record<string, unknown>,
   patch: Record<string, unknown>,
-  now: Date
+  context: CoachToolContext
 ): string[] {
+  const at = latest(context);
   const next = { ...was, ...patch };
   const clauses: string[] = [];
 
@@ -256,7 +288,7 @@ export function describeNudgeSettings(
     } else {
       // What `saveNudgeSettings` cancels: every pending nudge still ahead,
       // listed or held back by quiet hours.
-      const cancelled = upcomingRows(db, now).length;
+      const cancelled = upcomingRows(db, at).length;
       clauses.push(
         'Coach nudges on → off' +
           (cancelled > 0 ? `, which cancels ${plural(cancelled, 'planned notification')}` : '')
@@ -267,17 +299,34 @@ export function describeNudgeSettings(
   const before = windowText(was.quiet_start, was.quiet_end);
   const after = windowText(next.quiet_start, next.quiet_end);
   if (('quiet_start' in patch || 'quiet_end' in patch) && before !== after) {
-    // Nothing is cancelled by moving the hours — a planned nudge they now
-    // cover is HELD BACK, off the tab and off the phone, until they move off it.
-    const held =
-      next.nudges_enabled === true
-        ? upcomingNudges(db, now).filter((nudge) =>
-            inQuietHours(nudge.time, next.quiet_start as string, next.quiet_end as string)
-          ).length
-        : 0;
+    // Nothing is cancelled by moving the hours. A listed nudge they now cover
+    // is HELD BACK — off the tab and off the phone — and a held-back one they
+    // no longer cover is RELEASED: listed again, and on the phone at the next
+    // resync. Both are said, because the second is a notification the tab was
+    // not showing when the card was approved.
+    const effects: string[] = [];
+    if (was.nudges_enabled === true && next.nudges_enabled === true) {
+      const covers = (time: string, start: unknown, end: unknown) =>
+        inQuietHours(time, start as string, end as string);
+      const ahead = upcomingRows(db, at);
+      const held = ahead.filter(
+        (nudge) =>
+          !covers(nudge.time, was.quiet_start, was.quiet_end) &&
+          covers(nudge.time, next.quiet_start, next.quiet_end)
+      ).length;
+      const released = ahead.filter(
+        (nudge) =>
+          covers(nudge.time, was.quiet_start, was.quiet_end) &&
+          !covers(nudge.time, next.quiet_start, next.quiet_end)
+      ).length;
+      if (held > 0) effects.push(`holds back ${plural(held, 'planned notification')}`);
+      if (released > 0) {
+        effects.push(`lets ${plural(released, 'held-back notification')} go out`);
+      }
+    }
     clauses.push(
       `Quiet hours ${before} → ${after}` +
-        (held > 0 ? `, which holds back ${plural(held, 'planned notification')}` : '')
+        (effects.length > 0 ? `, which ${effects.join(' and ')}` : '')
     );
   }
 
@@ -290,15 +339,21 @@ export function describeNudgeSettings(
   return clauses;
 }
 
-/** Write the nudge fields of a patch through Settings › Coach's own save. */
+/**
+ * Write the nudge fields of a patch through Settings › Coach's own save — at
+ * the moment of the approval ({@link latest}), as the screen's switch saves at
+ * the moment of the tap. Turned off, `saveNudgeSettings` cancels every nudge
+ * still ahead of that instant, so one that went out while the card was open
+ * stays in the record as sent.
+ */
 export function saveNudgeSettingFields(
   db: Database,
   patch: Record<string, unknown>,
-  now: Date
+  context: CoachToolContext
 ): void {
   const settings: Partial<NudgeSettings> = {};
   for (const [field, key] of Object.entries(SETTING_KEYS)) {
     if (field in patch) (settings as Record<string, unknown>)[key] = patch[field];
   }
-  if (Object.keys(settings).length > 0) saveNudgeSettings(db, settings, now);
+  if (Object.keys(settings).length > 0) saveNudgeSettings(db, settings, latest(context));
 }

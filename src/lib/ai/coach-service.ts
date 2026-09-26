@@ -183,9 +183,10 @@ export async function streamCoachReply(
         // failure (a log date in the future, a mode window that ends before it
         // begins) throws before the user spends an Approve tap on it.
         //
-        // `clock` rides along for one reader only: a staleness re-read that must
-        // see time pass (a planned notification firing while its cancel card is
-        // open). It never decides what is written.
+        // `clock` rides along for one question only: what has already happened
+        // by the approval (a planned notification firing while a cancel card or
+        // the off switch's card is open). It never derives a value that is
+        // written — no day, no time.
         const context: CoachToolContext = { now: clock(), clock };
 
         // The line the user approved, held for the receipt below. Stays

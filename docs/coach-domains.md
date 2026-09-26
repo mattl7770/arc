@@ -419,7 +419,7 @@ no tool.
 
 | The screen | The Coach | The card |
 | --- | --- | --- |
-| Settings › Coach › Notifications: *Coach nudges*, *Quiet from* / *Quiet until*, *Morning check-in* (`app/settings-coach.tsx` → `saveNudgeSettings`) | `edit_record` on `settings`: `nudges_enabled`, `quiet_start`, `quiet_end`, `checkin_time` (null = off) → the same `saveNudgeSettings` | `Quiet hours 21:30–07:00 → 22:00–06:30` · `Morning check-in off → 07:30` · `Coach nudges on → off, which cancels 2 planned notifications` · hours that cover a listed nudge add `, which holds back 1 planned notification` |
+| Settings › Coach › Notifications: *Coach nudges*, *Quiet from* / *Quiet until*, *Morning check-in* (`app/settings-coach.tsx` → `saveNudgeSettings`) | `edit_record` on `settings`: `nudges_enabled`, `quiet_start`, `quiet_end`, `checkin_time` (null = off) → the same `saveNudgeSettings` | `Quiet hours 21:30–07:00 → 22:00–06:30` · `Morning check-in off → 07:30` · `Coach nudges on → off, which cancels 2 planned notifications` · hours that cover a listed nudge add `, which holds back 1 planned notification`; hours that stop covering a held-back one add `, which lets 1 held-back notification go out` |
 | The Coach tab, *Scheduled by the Coach* › *Cancel* (`nudges-card.tsx` → `useCoachNudges().cancel` → `cancelNudge`) | `edit_record` on `nudges`, `status: "cancelled"` → the same `cancelNudge` | `Cancel planned notification "Leg day. Eat before you lift." — tomorrow, 07:30` |
 
 **The settings print in their screen's words, not as field names.** The rest of the settings
@@ -428,7 +428,9 @@ them, and quiet hours print as one window whichever end moved. Equal ends print 
 `inQuietHours` already follows. The card also says what the write does to anything planned:
 switching nudges off cancels every one still ahead (`saveNudgeSettings` does, and the count comes
 from the same `upcomingRows` it cancels from), and moving the hours over a listed nudge holds it
-back rather than cancelling it. `quiet_start` and `quiet_end` refuse `null` (quiet hours always
+back rather than cancelling it. Moving them OFF a held-back nudge releases it: it is listed again and
+goes on the phone at the next resync, so the card says that too (`, which lets 1 held-back
+notification go out`), since the tab was not showing it when the card was approved. `quiet_start` and `quiet_end` refuse `null` (quiet hours always
 have both ends). A mixed patch prints the plain fields first, then the notification clauses.
 
 **A cancel is a status edit, not a removal.** `cancelNudge` marks the row cancelled and keeps it,
@@ -448,22 +450,36 @@ call.
 `upcomingNudges` (pending, still ahead, nudges on, outside the current quiet hours), the list the tab
 draws. Every other state refuses in words, because a bare "no such row" would leave the model
 guessing: cancelled or replaced by a newer plan, already opened, already gone out, nudges off, or
-held back by quiet hours.
+held back by quiet hours. A held-back nudge whose time has passed is not "gone out": whether a past
+one went out is `sentNudgesFrom`'s judgment, the one the per-day cap counts by, and it excludes a
+moment inside the current quiet hours. So that refusal says it was held back and did not go out.
 
 **Gone out is a matter of the clock, not the row.** A pending nudge's row does not change when it
 fires. The service reads the clock once per tool call and hands that one instant to both halves
 (`CoachToolContext.now`), so a cancel card drawn at 07:25 for a 07:30 nudge and approved at 07:31
-would, on that instant alone, mark a delivered line cancelled. So the context now also carries the
-clock source (`CoachToolContext.clock`, set by `coach-service.ts`), and the nudges domain reads it
-past the gate. It is used for this staleness check only, never to derive what is written; `now` is
-unchanged, and `db/coach-tools.test.mjs`'s one-instant straddle test still holds.
+would, on that instant alone, mark a delivered line cancelled. The off switch has the same hole:
+`saveNudgeSettings` cancels every nudge still ahead of the instant it is given. So the context now
+also carries the clock source (`CoachToolContext.clock`, set by `coach-service.ts`), and every
+"is it still ahead?" in `nudge-domains.ts` reads it (`latest`):
+
+- the cancel's re-read past the gate, which refuses a nudge that has fired;
+- the off switch's count, at card time and again when the line is redrawn past the gate, so a nudge
+  that fires while the card is open changes "cancels N" and the write refuses;
+- the off switch's write, which hands `saveNudgeSettings` the moment of the approval, as the
+  screen's switch hands it the moment of the tap. Where a pass planned another nudge while the card
+  was open and the count came out the same, the one that fired still stays sent.
+
+The clock only decides what has already happened. It never derives a value that is written (no
+day, no time); `now` is unchanged, and `db/coach-tools.test.mjs`'s one-instant straddle test still
+holds. (The first build read the clock on the cancel only; review found the off switch, 2026-09-25.)
 
 **Staleness, as asserted in `db/coach-domains.test.mjs` §8.** Quiet hours moved on Settings ›
 Coach while the card was open refuse by value (`quiet_start changed while the card was open (was
 21:30, now 23:00)`). The other end moving refuses by the redrawn window. A nudge that fired while
-the card was open refuses and stays pending: it went out, and history is not rewritten. A nudge a
-pass replaced while the card was open refuses, and the new plan stands. A declined card writes
-nothing on either domain.
+the card was open refuses and stays pending: it went out, and history is not rewritten. The off
+switch approved after a planned nudge fired refuses the same way, by its count; where the count
+held, its write cancels only what is still ahead. A nudge a pass replaced while the card was open
+refuses, and the new plan stands. A declined card writes nothing on either domain.
 
 **Parity with what the screen does next.** Both screens resync the OS schedule after their write
 (`syncReminderNotifications`). The Coach's path gets that from the Coach tab, which resyncs and

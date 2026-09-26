@@ -838,7 +838,7 @@ const settingsDomain: CoachDomainEntry = {
       if (isNudgeSettingField(name)) nudge[name] = value;
       else if (!Object.is(row!.values[name], value)) plain[name] = value;
     }
-    const clauses = describeNudgeSettings(db!, row!.values, nudge, context.now);
+    const clauses = describeNudgeSettings(db!, row!.values, nudge, context);
     if (Object.keys(plain).length === 0) {
       if (clauses.length === 0) {
         throw new Error('Nothing would change — every field you sent already reads that way.');
@@ -878,10 +878,12 @@ const settingsDomain: CoachDomainEntry = {
     if ('water_target_ml' in patch) {
       setWaterTarget(db, (patch.water_target_ml as number | null) ?? null);
     }
-    // Settings › Coach's own save: off cancels every nudge still ahead, and
-    // moving quiet hours holds a covered one back rather than cancelling it.
-    // The OS resync that screen runs next is the Coach tab's after every turn.
-    saveNudgeSettingFields(db, patch, context.now);
+    // Settings › Coach's own save, at the moment of the approval as the screen
+    // saves at the moment of the tap: off cancels every nudge still ahead of
+    // it, and moving quiet hours holds a covered one back rather than
+    // cancelling it. The OS resync that screen runs next is the Coach tab's
+    // after every turn.
+    saveNudgeSettingFields(db, patch, context);
   },
   // Nothing to delete: a setting is cleared by patching it to null where that
   // is meaningful, and there is no row to remove.

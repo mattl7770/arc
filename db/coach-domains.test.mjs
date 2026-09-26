@@ -83,6 +83,7 @@ import {
   getNudgeSettings,
   markNudgeDelivered,
   saveNudgeSettings,
+  sentNudgesFrom,
   upcomingNudges,
 } from '../src/lib/db/repositories/coach-nudges.ts';
 import { parseNudgeReply } from '../src/lib/notifications/nudge-plan.ts';
@@ -1986,6 +1987,40 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
           'a no-op, a cleared quiet end, a loose time, a 25th hour and a word for a flag refuse at card time'
         )
       : bad('settings refusals', [same, cleared, loose, hour, flag].join(' | '));
+
+    // RELEASED: hours that stop covering a held-back nudge let it go out — a
+    // notification the tab was not listing, so the card must say so.
+    const { db: narrowed } = freshDb();
+    plan(narrowed, `${NEXT} 08:00 Pack the gym bag tonight.`, `${NEXT} 12:30 Walk after lunch.`);
+    saveNudgeSettings(narrowed, { quietEnd: '08:30' }, T0); // 08:00 held back, off the tab
+    const release = cardAt(narrowed, 'settings', 'settings', { quiet_end: '07:00' });
+    release ===
+      'Quiet hours 21:30–08:30 → 21:30–07:00, which lets 1 held-back notification go out' &&
+    upcomingNudges(narrowed, T0)
+      .map((n) => n.time)
+      .join() === '12:30'
+      ? ok(`hours that stop covering a held-back nudge say it will go out ("${release}")`)
+      : bad('release card', release);
+    // 08:00 stays covered (nothing new to say of it); 12:30 is newly covered.
+    const both = cardAt(narrowed, 'settings', 'settings', { quiet_end: '13:00' });
+    both === 'Quiet hours 21:30–08:30 → 21:30–13:00, which holds back 1 planned notification'
+      ? ok('…and one that still covers it says only what it newly holds back')
+      : bad('both card', both);
+    const swap = cardAt(narrowed, 'settings', 'settings', {
+      quiet_start: '12:00',
+      quiet_end: '13:00',
+    });
+    swap ===
+    'Quiet hours 21:30–08:30 → 12:00–13:00, which holds back 1 planned notification and ' +
+      'lets 1 held-back notification go out'
+      ? ok('…and a window that does both says both')
+      : bad('swap card', swap);
+    approveAt(narrowed, 'settings', 'settings', { quiet_end: '07:00' });
+    upcomingNudges(narrowed, T0)
+      .map((n) => n.time)
+      .join() === '08:00,12:30'
+      ? ok('…and approving the release lists the held-back nudge again, as its card said')
+      : bad('release write', JSON.stringify(upcomingNudges(narrowed, T0)));
   }
 
   // --- 8c. …and the approved write is Settings › Coach's own save ------------
@@ -2024,7 +2059,7 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
       'utf8'
     );
     const screen = readFileSync(new URL('../app/settings-coach.tsx', import.meta.url), 'utf8');
-    domain.includes('saveNudgeSettings(db, settings, now)') &&
+    domain.includes('saveNudgeSettings(db, settings, latest(context))') &&
     screen.includes('saveNudgeSettings(getDb(), patch)')
       ? ok(
           'Settings › Coach and the settings domain save through the one function, saveNudgeSettings'
@@ -2082,6 +2117,63 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
     getNudge(db, planned.id).status === 'pending'
       ? ok('a declined off switch writes nothing, and the planned nudge stays planned')
       : bad('declined settings', JSON.stringify(no.call));
+
+    // THE OFF SWITCH ACROSS A FIRE. The card counts what it cancels; a nudge
+    // that fires while it is open changes the count, so the redrawn line no
+    // longer matches and nothing is written.
+    const TOMORROW_0801 = new Date(2026, 8, 26, 8, 1);
+    const { db: across } = freshDb();
+    const [gone] = plan(across, `${NEXT} 08:00 Pack the gym bag tonight.`);
+    const fired = await turn(
+      across,
+      'edit_record',
+      { domain: 'settings', id: 'settings', fields: { nudges_enabled: false } },
+      (_req, clock) => {
+        clock.now = TOMORROW_0801;
+        return true;
+      }
+    );
+    fired.request?.summary === 'Coach nudges on → off, which cancels 1 planned notification' &&
+    refused(fired.call, /That setting changed while the card was open/, 'written') &&
+    fired.call.result.includes('it now reads "Coach nudges on → off"') &&
+    getNudgeSettings(across).enabled === true &&
+    getNudge(across, gone.id).status === 'pending'
+      ? ok('the off switch approved after a planned nudge fired refuses: its count changed')
+      : bad('off across a fire', JSON.stringify(fired));
+
+    // …and where the count holds (a pass planned another while the card was
+    // open), the write still cancels only what is ahead of the APPROVAL, as
+    // the screen's switch does at the tap: what went out stays sent.
+    const { db: held } = freshDb();
+    const [sent] = plan(held, `${NEXT} 08:00 Pack the gym bag tonight.`);
+    let later = null;
+    const kept = await turn(
+      held,
+      'edit_record',
+      { domain: 'settings', id: 'settings', fields: { nudges_enabled: false } },
+      (_req, clock) => {
+        clock.now = TOMORROW_0801;
+        [later] = applyNudgeReply(
+          held,
+          parseNudgeReply(`NUDGE ${NEXT} 12:30 Walk after lunch.`),
+          clock.now
+        ).added;
+        return true;
+      }
+    );
+    kept.call?.receipt === 'Coach nudges on → off, which cancels 1 planned notification' &&
+    getNudgeSettings(held).enabled === false &&
+    getNudge(held, sent.id).status === 'pending' &&
+    later !== null &&
+    getNudge(held, later.id).status === 'cancelled' &&
+    sentNudgesFrom(held, NEXT, TOMORROW_0801).some((n) => n.id === sent.id)
+      ? ok(
+          '…and one approved with the count unchanged cancels only what is still ahead: the 08:00 stays sent'
+        )
+      : bad(
+          'off write instant',
+          JSON.stringify({ call: kept.call, sent: getNudge(held, sent.id), later })
+        );
   }
 
   // --- 8e. A planned nudge: read, carded, cancelled through the tab's Cancel -
@@ -2161,6 +2253,24 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
           'a nudge held back by quiet hours refuses: the tab does not list it, so no Cancel reaches it'
         )
       : bad('held back', String(heldBack));
+    // …and once its time has passed inside the hours, it did NOT go out — the
+    // repository's own judgment (sentNudgesFrom, what the day cap counts), so
+    // the refusal must not tell the model it did.
+    const passedHeld = new Date(2026, 8, 26, 8, 10);
+    const heldPast = throwText(() =>
+      editRecord.confirmSummary(
+        { domain: 'nudges', id: early.id, fields: { status: 'cancelled' } },
+        held,
+        { now: passedHeld }
+      )
+    );
+    heldPast ===
+      'The notification for today, 08:00 was held back by quiet hours (21:30–08:30) and did ' +
+        'not go out; its time has passed. Nothing cancelled.' &&
+    !sentNudgesFrom(held, NEXT, passedHeld).some((n) => n.id === early.id) &&
+    getNudge(held, early.id).status === 'pending'
+      ? ok('a held-back nudge whose time has passed refuses as held back, never as gone out')
+      : bad('held back and passed', String(heldPast));
     const { db: opened } = freshDb();
     const [tapped] = plan(opened, `${NEXT} 08:00 Pack the gym bag tonight.`);
     markNudgeDelivered(opened, tapped.id);
