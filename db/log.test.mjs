@@ -10,6 +10,8 @@ import { localDayUtcRange, todayISODate } from '../src/lib/db/date.ts';
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
+  getCapture,
+  listEntriesOn,
   listTodayEntries,
   logCapture,
   logMetric,
@@ -17,6 +19,11 @@ import {
   recentSummary,
 } from '../src/lib/db/repositories/logs.ts';
 import { listMission } from '../src/lib/db/repositories/mission.ts';
+import { logSymptom } from '../src/lib/db/repositories/symptoms.ts';
+import { setHealthSyncEnabled } from '../src/lib/db/repositories/user.ts';
+import { removeLogCapture, restoreLogCapture } from '../src/lib/health/publish.ts';
+import { removeCaptureWithUndo } from '../src/lib/log/capture-undo.ts';
+import { closeUndo, currentUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
 import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
 import {
   formatCanonical,
@@ -491,6 +498,206 @@ console.log('12. recentSummary is empty-safe');
   recentSummary(db, 'hrv', TODAY).startsWith('No readings yet')
     ? ok('hrv with no data notes the Apple Health fallback')
     : bad('empty hrv summary', recentSummary(db, 'hrv', TODAY));
+}
+
+// ---------------------------------------------------------------------------
+// 13. A capture removed from the Log tab, and put back exactly (owner,
+// 2026-09-25: "Add a delete with an Undo to each capture on the Log tab").
+// Every kind the feed lists, through the ONE function the Log tab's × and the
+// Coach's `captures` removal both call — `removeLogCapture` — with a recording
+// Apple Health seam, so the Health half (a weight's and a glass's tagged
+// sample) is proved beside the record half.
+console.log('13. every capture removes, and its Undo puts back row and Health sample exactly');
+{
+  const { db } = freshDb();
+  /** A recording Health seam: which tags it was asked to delete, what it saved. */
+  const seam = (inHealth = new Set()) => {
+    const deleted = [];
+    const saved = [];
+    return {
+      deleted,
+      saved,
+      deps: {
+        isAvailable: () => true,
+        save: async (identifier, unit, value, start, _end, metadata) => {
+          saved.push({ identifier, unit, value, at: start.toISOString(), metadata });
+          return true;
+        },
+        deleteByTag: async (identifier, id) => {
+          deleted.push(`${identifier}:${id}`);
+          return inHealth.has(id) ? 1 : 0;
+        },
+      },
+    };
+  };
+  /** Every column and the rowid of one row, for a byte-for-byte comparison. */
+  const whole = (table, id) =>
+    JSON.stringify(db.get(`SELECT rowid AS r, * FROM ${table} WHERE id = ?`, [id]) ?? null);
+  const feed = () => listEntriesOn(db, TODAY);
+  const feedRow = (id) => JSON.stringify(feed().find((e) => e.id === id) ?? null);
+
+  // The record half, one kind at a time: note, supplement (with the "Part of a
+  // protocol" flag), a generic metric, HRV typed by hand, a symptom.
+  const noteId = logNote(db, TODAY, 'Slept badly, 3am wake');
+  const creatineId = logCapture(db, TODAY, 'supplement', 'Creatine · 5 g', { protocol: true });
+  logMetric(db, TODAY, 'dose', 5);
+  logMetric(db, TODAY, 'hrv', 62);
+  const symptomId = logSymptom(db, {
+    date: TODAY,
+    time: '14:00',
+    name: 'Headache',
+    severity: 6,
+    bodyArea: null,
+    notes: null,
+  });
+  const doseId = feed().find((e) => e.category === 'Dose').id;
+  const hrvId = feed().find((e) => e.category === 'HRV').id;
+  const TABLE = {
+    [noteId]: 'log_entries',
+    [creatineId]: 'log_entries',
+    [doseId]: 'log_entries',
+    [hrvId]: 'wearable_data',
+    [symptomId]: 'symptoms',
+  };
+  setHealthSyncEnabled(db, true);
+  const quiet = seam();
+  const missionBefore = JSON.stringify(listMission(db, TODAY));
+  const exact = Object.entries(TABLE).filter(([id, table]) => {
+    const row = whole(table, id);
+    const line = feedRow(id);
+    const removed = removeLogCapture(db, id, quiet.deps);
+    const goneOk = removed !== null && whole(table, id) === 'null' && feedRow(id) === 'null';
+    void restoreLogCapture(db, removed, quiet.deps);
+    return !(goneOk && whole(table, id) === row && feedRow(id) === line);
+  });
+  exact.length === 0
+    ? ok('a note, a supplement, a dose, HRV and a symptom each go, and come back byte for byte')
+    : bad('capture round trip', exact.map(([id]) => id).join(', '));
+  quiet.deleted.length === 0
+    ? ok('…and none of them touches Apple Health: none of them is ever published')
+    : bad('an unpublished kind reached Health', quiet.deleted.join(', '));
+  JSON.stringify(listMission(db, TODAY)) === missionBefore
+    ? ok('…nor today’s mission: an ad-hoc capture ticks no item, so removing one unticks none')
+    : bad('the mission moved');
+
+  // A capture the feed does not list is not found, and nothing is removed.
+  removeLogCapture(db, 'no-such-id', quiet.deps) === null &&
+  getCapture(db, `${noteId}:weight_kg`) === undefined
+    ? ok('an unknown id, or a body column that is not there, removes nothing')
+    : bad('unknown capture');
+
+  // WEIGHT: the row, and its sample in Apple Health — by the row's own tag.
+  logMetric(db, TODAY, 'weight', 80);
+  const weightId = feed().find((e) => e.category === 'Weight').id;
+  const bodyId = weightId.split(':')[0];
+  const bodyRow = whole('body_metrics', bodyId);
+  const published = seam(new Set([bodyId]));
+  const removedWeight = removeLogCapture(db, weightId, published.deps);
+  const tookOut = await removedWeight.health;
+  whole('body_metrics', bodyId) === 'null' &&
+  tookOut === 1 &&
+  JSON.stringify(published.deleted) ===
+    JSON.stringify([`HKQuantityTypeIdentifierBodyMass:${bodyId}`])
+    ? ok('a weight goes, and its Apple Health sample goes by its row’s tag')
+    : bad('weight removal', JSON.stringify(published.deleted));
+  const resent = await restoreLogCapture(db, removedWeight, published.deps);
+  const sample = published.saved[0];
+  whole('body_metrics', bodyId) === bodyRow &&
+  resent === true &&
+  published.saved.length === 1 &&
+  sample.identifier === 'HKQuantityTypeIdentifierBodyMass' &&
+  sample.value === 80 &&
+  sample.metadata.ARCPublishedFrom === bodyId
+    ? ok('…and its Undo puts the row back and re-sends the same reading under the same tag')
+    : bad('weight restore', JSON.stringify(published.saved));
+
+  // A weight that had NOT gone out yet: nothing to send back — the walk will.
+  const unpublished = seam();
+  const removedAgain = removeLogCapture(db, weightId, unpublished.deps);
+  const resentNothing = await restoreLogCapture(db, removedAgain, unpublished.deps);
+  resentNothing === false &&
+  unpublished.saved.length === 0 &&
+  whole('body_metrics', bodyId) === bodyRow
+    ? ok('a weight that had not reached Apple Health is put back and sends nothing')
+    : bad('unpublished weight', JSON.stringify(unpublished.saved));
+
+  // WATER: the same path water's own Remove takes.
+  logMetric(db, TODAY, 'water', 500);
+  const waterId = feed().find((e) => e.category === 'Water').id;
+  const glass = seam(new Set([waterId]));
+  const removedGlass = removeLogCapture(db, waterId, glass.deps);
+  await removedGlass.health;
+  await restoreLogCapture(db, removedGlass, glass.deps);
+  JSON.stringify(glass.deleted) ===
+    JSON.stringify([`HKQuantityTypeIdentifierDietaryWater:${waterId}`]) &&
+  glass.saved.length === 1 &&
+  glass.saved[0].metadata.ARCPublishedFrom === waterId &&
+  feedRow(waterId) !== 'null'
+    ? ok('a glass goes and comes back the same way — row and sample, by its tag')
+    : bad('water round trip', JSON.stringify({ d: glass.deleted, s: glass.saved }));
+
+  // SYNC OFF: ARC touches nothing in Apple Health, in either direction.
+  setHealthSyncEnabled(db, false);
+  const off = seam(new Set([bodyId]));
+  const removedOff = removeLogCapture(db, weightId, off.deps);
+  await removedOff.health;
+  await restoreLogCapture(db, removedOff, off.deps);
+  off.deleted.length === 0 && off.saved.length === 0 && whole('body_metrics', bodyId) === bodyRow
+    ? ok('with Apple Health sync off, the record half runs and Health is left alone')
+    : bad('sync off', JSON.stringify(off));
+
+  // A body row holding TWO readings loses only the one removed.
+  db.run(
+    `INSERT INTO body_metrics (id, measured_at, weight_kg, waist_cm, source)
+     VALUES ('two-readings', ?, 81, 84, 'manual')`,
+    [new Date().toISOString()]
+  );
+  const waistOnly = removeLogCapture(db, 'two-readings:waist_cm', off.deps);
+  const kept = db.get(`SELECT weight_kg, waist_cm FROM body_metrics WHERE id = 'two-readings'`);
+  kept.weight_kg === 81 && kept.waist_cm === null
+    ? ok('a row with two readings keeps the other one when one is removed')
+    : bad('two readings', JSON.stringify(kept));
+  void restoreLogCapture(db, waistOnly, off.deps);
+  db.get(`SELECT waist_cm FROM body_metrics WHERE id = 'two-readings'`).waist_cm === 84
+    ? ok('…and its Undo puts the one reading back')
+    : bad('two readings restore');
+
+  // A put-back that cannot be exact refuses, writing nothing.
+  const twice = removeLogCapture(db, noteId, off.deps);
+  void restoreLogCapture(db, twice, off.deps);
+  let refused = false;
+  try {
+    void restoreLogCapture(db, twice, off.deps);
+  } catch {
+    refused = true;
+  }
+  refused && feed().filter((e) => e.id === noteId).length === 1
+    ? ok('an Undo that would put a row back twice refuses, and the row is there once')
+    : bad('double restore');
+
+  // THE TAP'S OWN PATH: the offer, its words, and Undo through the store.
+  setHealthSyncEnabled(db, false);
+  removeCaptureWithUndo(db, weightId);
+  const offer = currentUndo();
+  offer?.scope.on === 'log' &&
+  offer.scope.date === TODAY &&
+  offer.said === 'Removed weight' &&
+  offer.figure === '176.4 lb' &&
+  offer.icon === 'scale-outline'
+    ? ok('the × offers “Removed weight · 176.4 lb” under today’s Log tab')
+    : bad('capture offer', JSON.stringify(offer));
+  runUndo() && whole('body_metrics', bodyId) === bodyRow && currentUndo() === null
+    ? ok('…and Undo puts it back through restoreLogCapture, and closes the offer')
+    : bad('capture undo');
+  removeCaptureWithUndo(db, noteId);
+  const noteOffer = currentUndo();
+  noteOffer?.said === 'Removed the note “Slept badly, 3am wake”' && noteOffer.figure === null
+    ? ok('a note’s Undo quotes the note; a capture of words has no mono figure')
+    : bad('note offer', JSON.stringify(noteOffer));
+  closeUndo();
+  feedRow(noteId) === 'null'
+    ? ok('closing the offer leaves the removal standing')
+    : bad('closed offer restored the note');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

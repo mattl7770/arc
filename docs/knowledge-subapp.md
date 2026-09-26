@@ -335,6 +335,10 @@ A fourth was caught by the suite rather than by review, and is worth the same no
 
 ---
 
+## 11c. The Coach may delete an entry (2026-09-25)
+
+The owner's *"Open memories and knowledge only."* The Coach's `delete_record` reaches `knowledge` and `memories` through `deleteKnowledgeEntry` and `deleteMemory`, the functions the Archived list and the memory screen call. Retiring (`status: archived`) stays the ordinary, restorable answer; the delete is for an entry the owner wants gone. The card names the section, the topic, the day it was saved, whether it is still in every search, and its opening words — the title alone does not say what a page holds (`docs/coach-domains.md` §10b). The shipped pack is still unaddressable: its chunks have no entry id. The Archived list's own delete line now ends *"Archived entries can be restored. Deleted ones can’t."* (was *"Restore exists; undelete does not."* — an owner-approved cut, `docs/ai-slop-candidates-2026-09.md` §10.G).
+
 ## 12. Device checklist (nothing below has been run on hardware)
 
 1. Data → Knowledge base opens; the pack reads as eight topic plates, and "Your entries" shows the authored empty.

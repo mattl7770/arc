@@ -1111,6 +1111,22 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // The Haiku pass prefix moves with the prompt alone, 7,028 → 7,024 — the
   // pass carries no write. Every per-domain card line (`RemovePolicy.gone`)
   // is TypeScript and costs 0 on the wire.
+  // ── 2026-09-25: THE OWNER'S PARITY ANSWERS (docs/coach-domains.md §10b).
+  // **9,039 → 9,074 schema, 3,648 → 3,644 prompt.** Neither ceiling moved.
+  //
+  // SCHEMA, +35, each measured as it landed:
+  //   · `delete_record`'s enum 12 → 15 keys — memories, knowledge, captures —
+  //     +12 (178 → 190). Their cards (`gone`) are TypeScript: 0.
+  //   · `edit_record`'s description gains ONE clause, "Meals: `combine_with`
+  //     [ids] combines those meals with this one." +23 (324 → 347). The field
+  //     itself costs nothing — `fields` is open — but a combine is not a
+  //     change to one row, and no model would guess an edit does it.
+  //   · `loadBasis` turning editable on exercise_catalog: 0. Its vocabulary
+  //     is the discovery call's, as every other field's is.
+  //
+  // PROMPT, −4: the CANNOT line lost "or deleting" — the Log tab's rows have
+  // a delete now, so the claim became false. The Haiku pass prefix follows
+  // the prompt, 7,024 → 7,020; its tool set (3,376) is untouched.
   allToolTokens < 9250
     ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
     : bad(

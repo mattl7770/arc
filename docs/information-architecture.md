@@ -101,6 +101,18 @@ Chosen from a two-round design study (`ARC Log tab` artifacts; the six round-2 f
 
 **Where captures land (and why they don't pollute Home):** Log-tab captures are *ad-hoc* — a note, a spontaneous metric — and are marked `value.adhoc = true` (or live in `body_metrics` / `wearable_data`). Home's mission reads only the *planned* entries, so the two never mix; the Log feed shows only ad-hoc captures, newest first. Details in `src/lib/db/repositories/logs.ts`.
 
+**Every row of "Logged today" has a × (owner, 2026-09-25).** *"Add a delete with an Undo to each capture on the Log tab; the Coach then gets it too, behind the card."* Until then a capture could not be removed anywhere in the app. The × is the meal screen's item ×: muted, no border, no accent, and a tap removes the row at once — no confirmation, because what it offers back is exact. The **Undo row** (`src/components/nutrition/undo-row.tsx`) appears as a ruled row of the same plate under the last entry, closes when the tab is left, and is replaced by the next removal anywhere in the app (it shares the one Undo slot, `src/lib/nutrition/undo-store.ts`, under `on: 'log'` keyed by the day). One function removes a capture for both the tab and the Coach — `removeLogCapture` (`src/lib/health/publish.ts`) — and it undoes every side effect a capture has, traced kind by kind in `logs.ts`:
+
+| Capture | What goes | What the Undo puts back |
+| --- | --- | --- |
+| Note, dose, supplement, medication, therapy (`log_entries`, ad-hoc) | the row. It ticks no mission item (ad-hoc rows are outside every mission read), counts toward no adherence, and nothing references it; the "Part of a protocol" switch is a flag on the row that nothing reads | the row, verbatim — id, `created_at`, `rowid` |
+| Symptom (`symptoms`) | the row. Insights, the trend and the reports compute from the table on read; no status, readiness figure or score is stored from one | the row, verbatim |
+| HRV, resting HR typed by hand (`wearable_data`, manual) | the row. Never published; readiness reads it when computed | the row, verbatim |
+| Water (`wearable_data`, manual) | the row (through `deleteWaterEntry`), and its Apple Health sample by its tag | the row, and the sample re-sent under the same tag at the same instant — only if one was taken out |
+| Weight, body fat, waist (`body_metrics`, manual) | the row — or, on a row holding another reading, that one column — and its Apple Health sample by its tag | the row or the column, and the sample as above |
+
+With Apple Health sync off, ARC touches nothing in Health in either direction, exactly as every other Health write. **What stays, stated:** the day's `daily_logs` row (it carries the day's own summary and notes); and a capture deleted, then restored after a publish walk passed its slot while it was gone, sends its sample on no later walk — the Undo re-sends only what the deletion took out, and the walk only looks ahead of its cursor. The Coach's removal (the `captures` domain, `docs/coach-domains.md` §10b) runs the same function without the Undo; its card says there is none.
+
 **Not tiles, on purpose:** notes/voice live in the hero field; other body numbers live in the keypad chips; **Medication/peptides** fold into the Supplement sheet as a type toggle (they're usually part of a protocol stack); **habits** are completed on Home's mission, not re-logged here.
 
 ### Nutrition & Exercise (sub-app screens → tabs 2026-08-09) — real as of 2026-07-25

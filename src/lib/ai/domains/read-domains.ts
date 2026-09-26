@@ -39,15 +39,18 @@
  * the model gets is what it could be asked about: a photo's date, pose and the
  * text of any stored reading; a report's kind, period and when it was made.
  */
+import type { Database } from '@/lib/db/database';
 import { clockFromISO, shiftISODate, todayISODate } from '@/lib/db/date';
 import {
   archiveExercise,
   getExercise,
   listExercises,
   resolveExerciseByName,
+  setExerciseLoadBasis,
 } from '@/lib/db/repositories/exercise-catalog';
 import {
   deleteFood,
+  foodUsage,
   getFood,
   searchFoods,
   listFavoriteFoods,
@@ -56,7 +59,7 @@ import {
   updateFood,
 } from '@/lib/db/repositories/foods';
 import { listLabReports } from '@/lib/db/repositories/labs';
-import { listEntriesOn } from '@/lib/db/repositories/logs';
+import { getCapture, listEntriesOn, type CaptureRecord } from '@/lib/db/repositories/logs';
 import {
   deleteTemplate,
   getTemplate,
@@ -65,6 +68,7 @@ import {
   renameTemplate,
 } from '@/lib/db/repositories/meal-templates';
 import {
+  combineMeals,
   dayFiberRecorded,
   dayMicroTotals,
   getMeal,
@@ -74,6 +78,7 @@ import {
   updateMealMeta,
   updateMealTime,
 } from '@/lib/db/repositories/nutrition';
+import { pendingEstimateMealIds } from '@/lib/db/repositories/pending-estimates';
 import { protocolAdherence } from '@/lib/db/repositories/protocol-adherence';
 import { getProtocolBySlug, listProtocols, listVersions } from '@/lib/db/repositories/protocols';
 import { listPhotoAnalyses, listProgressPhotos } from '@/lib/db/repositories/progress-photos';
@@ -90,13 +95,22 @@ import {
   personalRecordsFrom,
   workingSets,
 } from '@/lib/db/repositories/training-stats';
-import { loadRecordsApply } from '@/lib/exercise/load-basis';
+import {
+  LOAD_BASES,
+  LOAD_BASIS_CONSEQUENCE,
+  LOAD_BASIS_INLINE,
+  loadRecordsApply,
+  type LoadBasis,
+} from '@/lib/exercise/load-basis';
 import { repMaxesFrom } from '@/lib/exercise/records';
-import { getPreferences } from '@/lib/db/repositories/user';
+import { metricByWearableType } from '@/lib/log/metrics';
+import { getPreferences, isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { listWaterEntries, type WaterEntry } from '@/lib/db/repositories/water';
-import { editWaterCapture, removeWaterCapture } from '@/lib/health/publish';
-import type { RoutineDetail } from '@/lib/exercise/types';
+import { editWaterCapture, removeLogCapture, removeWaterCapture } from '@/lib/health/publish';
+import type { CatalogExercise, RoutineDetail } from '@/lib/exercise/types';
 import { deleteMealWithPhotos } from '@/lib/media/meal-photo-store';
+import { combinedName, planCombine } from '@/lib/nutrition/combine';
+import { foodKeptPhrase } from '@/lib/nutrition/food-delete';
 import { fmtAmount, fmtInt, macroLine } from '@/lib/nutrition/format';
 import type { FoodRow, MealRow } from '@/lib/nutrition/types';
 
@@ -113,6 +127,7 @@ import {
   type CoachDomainEntry,
   type DomainField,
   type DomainReadArgs,
+  type DomainRow,
 } from './types';
 
 /**
@@ -156,6 +171,66 @@ function daysIn(args: DomainReadArgs, fallbackDays: number): string[] {
 
 // --- meals -------------------------------------------------------------------
 
+/**
+ * The meals a `combine_with` patch names — this one, then the others — or a
+ * refusal a model can correct from. A combine takes a name for the result and
+ * nothing else: a rename, a new time or a note beside it would be a second
+ * edit hidden inside the first card.
+ */
+function combineIds(row: DomainRow, patch: Record<string, unknown>): string[] {
+  const others = (patch.combine_with as string[]).filter((id) => id !== row.id);
+  if (others.length === 0) {
+    throw new Error('"combine_with" must name at least one OTHER meal to fold into this one.');
+  }
+  const extra = Object.keys(patch).filter((k) => k !== 'combine_with' && k !== 'name');
+  if (extra.length > 0) {
+    throw new Error(
+      `A combine takes "name" and nothing else — send ${extra.join(', ')} as its own edit.`
+    );
+  }
+  return [row.id, ...others];
+}
+
+/**
+ * The combine card: every meal it folds in, in the day list's order, with its
+ * time and energy; the name the result takes; and what the result is — one
+ * meal at the earliest time, carrying the same energy, so the day's total does
+ * not move. Drawn from `planCombine`, the plan the Eat tab draws its sentence
+ * from and `combineMeals` re-runs before it writes, so a combine the tab would
+ * refuse is refused here, before an Approve tap, in the tab's own words.
+ *
+ * It is the whole of the staleness guard for the OTHER meals: `edit_record`
+ * redraws this line past the gate, and a meal renamed, re-timed, re-portioned
+ * or deleted meanwhile no longer prints the same.
+ */
+function combineCard(db: Database, row: DomainRow, patch: Record<string, unknown>): string {
+  const meals = combineIds(row, patch).map((id) => {
+    const meal = getMeal(db, id);
+    if (!meal) {
+      throw new Error(`No meal with id ${id}. Find it with query_records { domain: "meals" }.`);
+    }
+    return meal;
+  });
+  const plan = planCombine(meals, pendingEstimateMealIds(db, String(row.values.date)));
+  if (plan.kind === 'too-few') throw new Error('It takes two meals to combine.');
+  if (plan.kind === 'refused') throw new Error(plan.reason);
+  const name = combinedName((patch.name as string | null) ?? null, plan.keep);
+  const energy = (kcal: number | null): string =>
+    kcal === null ? 'no energy recorded' : `${fmtInt(kcal)} kcal`;
+  const list = [plan.keep, ...plan.absorb]
+    .map((m) => `${m.time ?? 'untimed'} ${m.name}, ${energy(m.kcal)}`)
+    .join('; ');
+  const when = plan.time !== null ? `at ${plan.time}` : 'with no time';
+  const result =
+    plan.kcal === null
+      ? 'no energy recorded'
+      : `${fmtInt(plan.kcal)} kcal, so the day’s total does not change`;
+  return (
+    `Combine ${plan.count} meals on ${plan.keep.date} into "${name}" — ${list}. ` +
+    `One meal ${when}, ${result}; their items and photos move into it.`
+  );
+}
+
 const mealsDomain: CoachDomainEntry = {
   key: 'meals',
   label: 'meal',
@@ -175,6 +250,30 @@ const mealsDomain: CoachDomainEntry = {
     protein_g: ro('protein, grams'),
     carbs_g: ro('carbohydrate, grams'),
     fat_g: ro('fat, grams'),
+    // THE EAT TAB'S COMBINE (owner, 2026-09-25: "May the Coach combine meals?
+    // Yes."). Not a column: a list of other meal ids, and `combineMeals` is
+    // what runs — the same function the Eat tab's Combine calls, with the same
+    // plan and the same refusals. It costs no schema: `fields` is open, and the
+    // one clause in `edit_record`'s description is what makes it findable.
+    combine_with: {
+      editable: true,
+      note:
+        'ids of other meals on the same day to fold into this one — the earliest survives, ' +
+        'their items and photos move into it; send "name" too to name the result',
+      parse: (fields, key) => {
+        const value = fields[key];
+        if (
+          !Array.isArray(value) ||
+          value.length === 0 ||
+          value.some((id) => typeof id !== 'string' || id.trim() === '')
+        ) {
+          throw new Error(
+            `"${key}" must be a list of meal ids — the others to fold into this one.`
+          );
+        }
+        return [...new Set(value.map((id: string) => id.trim()))];
+      },
+    },
   },
   resolve: (db, id) => {
     const meal = getMeal(db, id);
@@ -193,12 +292,27 @@ const mealsDomain: CoachDomainEntry = {
       raw: meal,
     };
   },
-  summarize: ({ row, patch }) => describeEdit('meal', row!, patch),
+  summarize: ({ db, row, patch }) =>
+    'combine_with' in patch ? combineCard(db!, row!, patch) : describeEdit('meal', row!, patch),
   // READ-MODIFY-WRITE. `updateMealMeta` rewrites name, time AND notes in one
   // statement, so a literal patch of `name` alone would clear the notes and
   // blank the clock behind a card that said "name X → Y". The row supplies
   // everything the patch does not.
   edit: (db, row, patch) => {
+    if ('combine_with' in patch) {
+      // The card drew the plan; this is the Eat tab's write, which re-plans
+      // and refuses (CombineRefused) exactly as the tab does.
+      const ids = combineIds(row, patch);
+      const combined = combineMeals(db, ids, { name: (patch.name as string | null) ?? null });
+      return {
+        combined: {
+          keptId: combined.keptId,
+          name: combined.name,
+          count: combined.count,
+          absorbedIds: combined.absorbed.map((a) => String(a.meal.id)),
+        },
+      };
+    }
     const next = { ...row.values, ...patch } as {
       name: string;
       date: string;
@@ -362,23 +476,28 @@ const foodCatalogDomain: CoachDomainEntry = {
   // HARD, and safely so: `meal_items.food_id` is ON DELETE SET NULL (0014) and
   // every logged item carries its own macro snapshot, so eating history
   // survives catalog churn untouched. The same holds for recipe ingredients
-  // (0031) and template items (0018).
+  // (0031), template items (0018) and grocery lines (0032).
   //
-  // THE ONE REMOVAL AHEAD OF THE SCREENS. No screen deletes a catalog food —
-  // `deleteFood` has no caller in app/ — and this policy was set on 2026-09-19,
-  // before deletion followed the screens. It is kept because it strands
-  // nothing; whether a screen gains the delete or the Coach loses it is the
-  // owner's call, recorded in the 2026-09-23 ADR rather than decided here.
+  // PARITY BOTH WAYS since 2026-09-25. This removal was set on 2026-09-19,
+  // before deletion followed the screens, and for a week it was the one
+  // removal AHEAD of them — no screen called `deleteFood`. The owner's answer
+  // was *"Add a delete to the food's own screen, so you and the Coach can both
+  // do it"*: Add food now deletes one (app/food-search.tsx, through
+  // `takeFood`, which reads the row and its links and then calls this same
+  // `deleteFood`, so its Undo can put them back). The card says what the
+  // screen's consequence line says — src/lib/nutrition/food-delete.ts — after
+  // the food's figures, when anything used it.
   remove: {
     mode: 'hard',
-    gone: (_db, row) => {
+    gone: (db, row) => {
       const food = row.raw as FoodRow;
+      const kept = foodKeptPhrase(foodUsage(db, row.id));
       return `per 100 ${food.basis}: ${macrosOf({
         kcal: food.kcal_100g,
         protein_g: food.protein_g_100g,
         carbs_g: food.carbs_g_100g,
         fat_g: food.fat_g_100g,
-      })}`;
+      })}${kept === null ? '' : `; ${kept}`}`;
     },
     run: (db, row) => deleteFood(db, row.id),
   },
@@ -634,14 +753,58 @@ const capturesDomain: CoachDomainEntry = {
     },
   },
   createVia: 'log_capture',
-  // PARITY, and it refuses: the Log tab draws a capture and offers no delete
-  // (repositories/logs.ts has none to call), so neither does the Coach.
-  remove: {
-    mode: 'refuse',
-    because:
-      'A logged capture has no delete on any screen, so it has none here either. ' +
-      'It stays on its day in the Log tab.',
+  // Any id the read hands out, on any day — the lookup is by id, drawn exactly
+  // as the Log tab draws the row, in the user's units.
+  resolve: (db, id) => {
+    const capture = getCapture(db, id, getPreferences(db).units);
+    if (!capture) {
+      throw new Error(
+        `No logged entry with id ${id}. Find it with ` +
+          'query_records { domain: "captures", from: "YYYY-MM-DD" }.'
+      );
+    }
+    return {
+      id: capture.id,
+      name: capture.title,
+      values: { title: capture.title, category: capture.category },
+      raw: capture,
+    };
   },
+  // HARD since 2026-09-25, and it REFUSED until then by parity: the Log tab
+  // drew a capture and offered no delete, and repositories/logs.ts had none to
+  // call. The owner's answer was *"Add a delete with an Undo to each capture on
+  // the Log tab; the Coach then gets it too, behind the card."* The Log tab's ×
+  // now removes one through `removeLogCapture` (src/lib/health/publish.ts) —
+  // the record, and the copy a weight, body-fat or waist reading or a glass put
+  // into Apple Health — and so does this, without the Undo: the card is the
+  // gate, and it says there is none.
+  //
+  // The card names the day, the time the Log tab shows, and what it was. A
+  // published kind says its Apple Health copy goes with it whenever sync is
+  // on; with sync off ARC does not touch Health, and the card does not claim it.
+  remove: {
+    mode: 'hard',
+    gone: (db, row) => {
+      const capture = row.raw as CaptureRecord;
+      const published =
+        capture.kind === 'body' ||
+        (capture.kind === 'wearable' &&
+          metricByWearableType(capture.metricType ?? '')?.key === 'water');
+      return [
+        `${capture.date} ${capture.time}`,
+        capture.note ? 'Note' : capture.category,
+        published && isHealthSyncEnabled(db) ? 'and any copy in Apple Health' : null,
+      ]
+        .filter((p): p is string => p !== null)
+        .join(' · ');
+    },
+    run: (db, row) => {
+      if (!removeLogCapture(db, row.id)) {
+        throw new Error('That entry could not be deleted — it is no longer on the Log tab.');
+      }
+    },
+  },
+  retires: ['correcting or deleting a logged metric or a capture — its row in the Log tab'],
 };
 
 // --- protocol adherence ------------------------------------------------------
@@ -737,7 +900,14 @@ const exerciseCatalogDomain: CoachDomainEntry = {
     equipment: ro('barbell, dumbbell, machine, cable, bodyweight, …'),
     primaryMuscles: ro('what it trains'),
     isCustom: ro('written by the user or the Coach rather than seeded'),
-    loadBasis: ro(LOAD_BASIS_NOTE),
+    // EDITABLE since 2026-09-25 — the owner's "Yes, let the Coach correct it
+    // too". The chooser on the exercise's own screen calls
+    // `setExerciseLoadBasis`, and so does this; it relabels and never rescales.
+    // A movement that records no load has no basis, and the card refuses it.
+    loadBasis: enumField(
+      [...LOAD_BASES],
+      `${LOAD_BASIS_NOTE}. Correct it when the reading is wrong for this movement`
+    ),
     status: enumField(['archived'], 'archived = retire it from the catalog; its history stays'),
   },
   resolve: (db, id) => {
@@ -750,12 +920,42 @@ const exerciseCatalogDomain: CoachDomainEntry = {
     return {
       id: exercise.id,
       name: exercise.name,
-      values: { status: 'active' },
+      values: { status: 'active', loadBasis: exercise.loadBasis },
       raw: exercise,
     };
   },
-  summarize: ({ row }) => `Retire exercise "${row!.name}" from the catalog`,
-  edit: (db, row) => {
+  // Two acts, two cards: retiring a movement and relabelling its weight are
+  // never one Approve. The relabel prints the basis before and after in the
+  // chooser's own words (`LOAD_BASIS_INLINE`), then the chooser's own
+  // consequence line — nothing about a logged number changes.
+  summarize: ({ row, patch }) => {
+    if ('status' in patch && 'loadBasis' in patch) {
+      throw new Error(
+        'Retiring an exercise and changing what its weight counts are two cards — send one.'
+      );
+    }
+    if (!('loadBasis' in patch)) return `Retire exercise "${row!.name}" from the catalog`;
+    const before = (row!.raw as CatalogExercise).loadBasis;
+    const after = patch.loadBasis as LoadBasis;
+    if (before == null) {
+      throw new Error(`"${row!.name}" records no weight, so it has no basis to set.`);
+    }
+    if (before === after) {
+      throw new Error('Nothing would change — every field you sent already reads that way.');
+    }
+    return (
+      `Change what the weight on "${row!.name}" counts: ` +
+      `${LOAD_BASIS_INLINE[before]} → ${LOAD_BASIS_INLINE[after]}. ${LOAD_BASIS_CONSEQUENCE}`
+    );
+  },
+  edit: (db, row, patch) => {
+    if ('loadBasis' in patch) {
+      if ((row.raw as CatalogExercise).loadBasis == null) {
+        throw new Error(`"${row.name}" records no weight, so it has no basis to set.`);
+      }
+      setExerciseLoadBasis(db, row.id, patch.loadBasis as LoadBasis);
+      return;
+    }
     archiveExercise(db, row.id);
   },
   // ARCHIVE ONLY, and the reason is a CASCADE. `routine_exercises.exercise_id`

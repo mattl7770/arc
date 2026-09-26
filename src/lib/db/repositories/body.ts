@@ -191,6 +191,42 @@ export function newestBodyCursor(db: Database): BodyCursor | null {
   return row ? { createdAt: row.created_at, id: row.id } : null;
 }
 
+/**
+ * One row as the publisher sees it, by id — or null when it is gone, or no
+ * longer something ARC would publish (an Apple Health row, or one holding none
+ * of the three published columns). The water twin is `getPublishableWater`.
+ *
+ * Read in two places, both about a sample already in Apple Health: the walk's
+ * check after a save lands (a capture deleted while its save was in flight),
+ * and the Log tab's Undo, which re-sends exactly what the deletion took out.
+ */
+export function getPublishableBody(db: Database, id: string): PublishableBody | null {
+  const row = db.get<{
+    id: string;
+    created_at: string;
+    measured_at: string;
+    weight_kg: number | null;
+    body_fat_pct: number | null;
+    waist_cm: number | null;
+  }>(
+    `SELECT id, created_at, measured_at, weight_kg, body_fat_pct, waist_cm
+       FROM body_metrics
+      WHERE id = ? AND source <> '${HEALTH_INGEST_SOURCE}'
+        AND (weight_kg IS NOT NULL OR body_fat_pct IS NOT NULL OR waist_cm IS NOT NULL)`,
+    [id]
+  );
+  return row
+    ? {
+        id: row.id,
+        createdAt: row.created_at,
+        measuredAt: row.measured_at,
+        weightKg: row.weight_kg,
+        bodyFatPct: row.body_fat_pct,
+        waistCm: row.waist_cm,
+      }
+    : null;
+}
+
 // --- Inbound ingest (Apple Health → body_metrics) ----------------------------
 //
 // The `body_metrics.source` enum has admitted 'apple_health' since 0001, so this

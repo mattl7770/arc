@@ -632,7 +632,7 @@ export default function KnowledgeScreen() {
                         onPress={() =>
                           Alert.alert(
                             'Delete this entry?',
-                            `“${entry.title}” and its chunks are removed for good — the Coach can never cite it again. Restore exists; undelete does not.`,
+                            `“${entry.title}” and its chunks are removed for good — the Coach can never cite it again. Archived entries can be restored. Deleted ones can’t.`,
                             [
                               { text: 'Cancel', style: 'cancel' },
                               {

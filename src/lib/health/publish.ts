@@ -43,12 +43,23 @@
  * docs/wearables-subapp.md §20 for the echo, which has a different shape from
  * weight's and is closed on the READ side.
  *
+ * **The body channel had that handle all along (found 2026-09-25).** Every body
+ * sample has been saved with the same tag — `ARC_WRITE_METADATA_KEY` set to its
+ * `body_metrics` row id, by {@link bodySamplesFor} — so rule 1's "cannot later
+ * delete" was true of history, which ARC never sends, and never of a single
+ * capture. When the Log tab or the Coach deletes a weight, body fat or waist
+ * reading ({@link removeLogCapture}), its sample comes out of Apple Health by
+ * that tag, exactly as a glass does; the walk checks after each save for a row
+ * deleted while the save was in flight. Rule 1 stands for what it is about: a
+ * burst of history, which no tag makes wise to post.
+ *
  * **And water goes out when it is logged (2026-09-23), not on the next sync.**
  * {@link logWaterCapture} and {@link logMetricCapture} write the capture and
  * start a water-only walk behind it, through the same single in-flight pass the
  * full sync's walk uses, so the two never save one glass twice (§20.10).
  */
 import {
+  getPublishableBody,
   newestBodyCursor,
   publishableBodyAfter,
   type BodyCursor,
@@ -56,8 +67,14 @@ import {
 } from '@/lib/db/repositories/body';
 import type { Database } from '@/lib/db/database';
 import { todayISODate } from '@/lib/db/date';
-import { dayInstant, logMetric } from '@/lib/db/repositories/logs';
-import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
+import {
+  dayInstant,
+  logMetric,
+  restoreCapture,
+  takeCapture,
+  type TakenCapture,
+} from '@/lib/db/repositories/logs';
+import { getPreferences, isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import {
   deleteWaterEntry,
   getPublishableWater,
@@ -182,9 +199,19 @@ export type PublishDeps = {
     end: Date,
     metadata: Record<string, unknown>
   ) => Promise<boolean>;
+  /**
+   * Remove every sample carrying this row's tag. Optional here — the body walk
+   * uses it only to take back a sample whose capture was deleted while its
+   * save was in flight — and required on {@link WaterPublishDeps}.
+   */
+  deleteByTag?: (identifier: string, sourceRowId: string) => Promise<number>;
 };
 
-const NATIVE_DEPS: PublishDeps = { isAvailable: isHealthKitAvailable, save: saveHealthQuantity };
+const NATIVE_DEPS: PublishDeps = {
+  isAvailable: isHealthKitAvailable,
+  save: saveHealthQuantity,
+  deleteByTag: deleteHealthQuantityByTag,
+};
 
 /**
  * The single in-flight publish pass, shared across every caller.
@@ -285,6 +312,7 @@ async function runPublishPass(
       stalled = true;
       break;
     }
+    await settleSavedBody(db, row, deps);
     cursor = { createdAt: row.createdAt, id: row.id };
   }
 
@@ -304,6 +332,34 @@ async function runPublishPass(
     samplesAttempted,
     byType: [...tally.values()],
   };
+}
+
+/**
+ * After a body row's samples land, take back any whose reading is no longer
+ * on the record (2026-09-25) — the body twin of {@link settleSavedWater}'s
+ * first case.
+ *
+ * The walk reads its batch when the pass begins, and a weight deleted on the
+ * Log tab after that read is still in the batch: its save lands after the
+ * deletion's own tagged delete has looked and found nothing. So each saved
+ * row is read again, and a sample whose column is gone — the row deleted, or
+ * that one reading cleared — is removed by the row's tag. Best-effort and
+ * never throws: a rejection here would end the pass before its cursor is
+ * saved, and the next pass would re-post every row saved before it.
+ */
+async function settleSavedBody(
+  db: Database,
+  sent: PublishableBody,
+  deps: PublishDeps
+): Promise<void> {
+  const deleteByTag = deps.deleteByTag;
+  if (!deleteByTag) return;
+  const now = getPublishableBody(db, sent.id);
+  const still = new Set(now ? bodySamplesFor(now).map((s) => s.hkIdentifier) : []);
+  for (const sample of bodySamplesFor(sent)) {
+    if (still.has(sample.hkIdentifier)) continue;
+    await deleteByTag(sample.hkIdentifier, sent.id).catch(() => 0);
+  }
 }
 
 // --- Water (2026-09-21) -----------------------------------------------------------
@@ -602,6 +658,114 @@ async function republishWater(db: Database, id: string, deps: WaterPublishDeps):
   } catch {
     // Best-effort: see the note on editWaterCapture.
   }
+}
+
+// --- A capture deleted from the Log tab, and put back (2026-09-25) ----------------
+
+/**
+ * The Apple Health type a capture published under, or null for one ARC never
+ * publishes (a note, a supplement, a symptom, HRV or resting HR typed by hand).
+ */
+function publishedIdentifier(taken: TakenCapture): string | null {
+  const { capture } = taken;
+  if (capture.kind === 'wearable') {
+    return capture.metricType === WATER_PUBLISH_METRIC.metricType
+      ? WATER_PUBLISH_METRIC.hkIdentifier
+      : null;
+  }
+  if (capture.kind === 'body' && capture.column !== null) {
+    return BODY_PUBLISH_METRICS.find((m) => m.column === capture.column)?.hkIdentifier ?? null;
+  }
+  return null;
+}
+
+/** The one sample a capture row publishes under `identifier`, read as it is now. */
+function publishedSample(db: Database, identifier: string, id: string): BodySample | null {
+  if (identifier === WATER_PUBLISH_METRIC.hkIdentifier) {
+    const row = getPublishableWater(db, id);
+    return row ? waterSampleFor(row) : null;
+  }
+  const row = getPublishableBody(db, id);
+  return row ? (bodySamplesFor(row).find((s) => s.hkIdentifier === identifier) ?? null) : null;
+}
+
+/** What {@link removeLogCapture} did — the record half and the Health half. */
+export type RemovedCapture = {
+  taken: TakenCapture;
+  /**
+   * How many samples the tagged delete took out of Apple Health: 0 when none
+   * had gone out yet, when sync is off, or when the capture is not a published
+   * kind. The Undo reads it to know whether there is anything to send back.
+   */
+  health: Promise<number>;
+};
+
+/**
+ * Delete one capture from the Log tab's record AND undo every side effect it
+ * had — the ONE function the Log tab's × and the Coach's `captures` removal
+ * both call (owner, 2026-09-25). The record half is `takeCapture`
+ * (src/lib/db/repositories/logs.ts), which traces each kind; what it cannot
+ * reach is the sample a weight, a body-fat or waist reading, or a glass of
+ * water put into Apple Health. Each carries its row's id as its tag, so it is
+ * removed by that tag — the path {@link removeWaterCapture} has taken since
+ * two-way water, now for the body channel too.
+ *
+ * ARC's row goes first and synchronously; the Health half is best-effort and
+ * gated on the same one switch as every Health write. A sample whose save is in
+ * flight at this moment is taken back by the walk once it lands
+ * (settleSavedWater, settleSavedBody). Null when the feed lists no such
+ * capture, and then nothing is touched.
+ */
+export function removeLogCapture(
+  db: Database,
+  feedId: string,
+  deps: WaterPublishDeps = NATIVE_WATER_DEPS
+): RemovedCapture | null {
+  const taken = takeCapture(db, feedId, getPreferences(db).units);
+  if (!taken) return null;
+  const identifier = publishedIdentifier(taken);
+  let health: Promise<number> = Promise.resolve(0);
+  try {
+    if (identifier !== null && mayTouchHealth(db, deps)) {
+      health = deps.deleteByTag(identifier, taken.capture.rowId).catch(() => 0);
+    }
+  } catch {
+    // The record half is done; a Health seam that throws must not undo it.
+  }
+  return { taken, health };
+}
+
+/**
+ * Put back what {@link removeLogCapture} took, exactly: the row (throwing,
+ * synchronously and writing nothing, when it cannot come back — the Undo row
+ * then says so) and, when the deletion took a sample out of Apple Health, that
+ * sample again — the same value, the same instant, the same tag, so it is the
+ * reading that was there rather than a new one.
+ *
+ * A capture that had not gone out yet needs nothing sent: it is back on the
+ * record with its own `created_at`, ahead of the publish cursor, and the next
+ * walk sends it. Resolves to whether a sample was re-sent; the screen ignores
+ * it and the headless suite awaits it.
+ */
+export function restoreLogCapture(
+  db: Database,
+  removed: RemovedCapture,
+  deps: WaterPublishDeps = NATIVE_WATER_DEPS
+): Promise<boolean> {
+  restoreCapture(db, removed.taken);
+  const identifier = publishedIdentifier(removed.taken);
+  if (identifier === null) return Promise.resolve(false);
+  const id = removed.taken.capture.rowId;
+  return removed.health
+    .then(async (taken) => {
+      if (taken === 0 || !mayTouchHealth(db, deps)) return false;
+      const sample = publishedSample(db, identifier, id);
+      if (!sample) return false;
+      return deps.save(sample.hkIdentifier, sample.hkUnit, sample.value, sample.at, sample.at, {
+        [ARC_WRITE_METADATA_KEY]: sample.sourceRowId,
+      });
+    })
+    .catch(() => false);
 }
 
 // --- A glass goes out when it is logged (2026-09-23) --------------------------------

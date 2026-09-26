@@ -28,7 +28,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { clockFromISO, shiftISODate, todayISODate } from '../src/lib/db/date.ts';
+import { clockFromISO, formatLocalDate, shiftISODate, todayISODate } from '../src/lib/db/date.ts';
 import {
   completeExperiment,
   createExperiment,
@@ -39,11 +39,16 @@ import {
   deleteMeal,
   getMeal,
   insertMealPhoto,
+  listMealItems,
   logMeal,
   logMealWithItems,
   updateMealMeta,
 } from '../src/lib/db/repositories/nutrition.ts';
-import { createCustomExercise } from '../src/lib/db/repositories/exercise-catalog.ts';
+import {
+  createCustomExercise,
+  getExercise,
+  setExerciseLoadBasis,
+} from '../src/lib/db/repositories/exercise-catalog.ts';
 import { getWorkoutDetail, logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import {
   addVersion,
@@ -51,7 +56,7 @@ import {
   getProtocolBySlug,
 } from '../src/lib/db/repositories/protocols.ts';
 import { listWaterEntries, logWater } from '../src/lib/db/repositories/water.ts';
-import { setUnitPreference } from '../src/lib/db/repositories/user.ts';
+import { setHealthSyncEnabled, setUnitPreference } from '../src/lib/db/repositories/user.ts';
 import { createFood } from '../src/lib/db/repositories/foods.ts';
 import { createTemplate } from '../src/lib/db/repositories/meal-templates.ts';
 import { createRoutine } from '../src/lib/db/repositories/routines.ts';
@@ -59,8 +64,14 @@ import { createRecipe } from '../src/lib/db/repositories/recipes.ts';
 import { addGroceryItems } from '../src/lib/db/repositories/grocery.ts';
 import { addAppointment, addScreening } from '../src/lib/db/repositories/screenings.ts';
 import { setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
-import { rememberFact } from '../src/lib/db/repositories/coach-memory.ts';
-import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
+import { forgetMemory, getMemory, rememberFact } from '../src/lib/db/repositories/coach-memory.ts';
+import {
+  archiveKnowledgeEntry,
+  getKnowledgeEntry,
+  saveKnowledgeEntry,
+} from '../src/lib/db/repositories/knowledge.ts';
+import { listEntriesOn, logCapture, logMetric, logNote } from '../src/lib/db/repositories/logs.ts';
+import { removeLogCapture } from '../src/lib/health/publish.ts';
 import { insertKnowledgeChunk } from '../src/lib/db/repositories/rag.ts';
 import {
   appendMessage,
@@ -186,14 +197,18 @@ console.log('0. registry shape, and the three enums derived from it');
   // `resolve` and `summarize` travel with the ABILITY TO WRITE, not with being
   // a domain — a read-only domain has no id to resolve anything FOR and no
   // card to draw. That is the invariant `edit_record` relies on. A `refuse`
-  // removal is not a write: it answers before any id is looked up.
+  // removal is not a write: it answers before any id is looked up. A domain
+  // that can ONLY be removed from (the Log tab's captures, 2026-09-25) resolves
+  // but draws no edit card: a removal's card is `describeDelete` over `gone`.
   COACH_DOMAIN_REGISTRY.filter((d) => d.edit || d.create || d.remove?.mode === 'hard').every(
-    (d) => typeof d.resolve === 'function' && typeof d.summarize === 'function'
+    (d) =>
+      typeof d.resolve === 'function' &&
+      (typeof d.summarize === 'function' || (!d.edit && !d.create))
   )
-    ? ok('every WRITABLE domain resolves an id to a named row and draws a card')
+    ? ok('every WRITABLE domain resolves an id to a named row, and every editable one draws a card')
     : bad('a writable domain cannot resolve or summarize');
-  COACH_DOMAIN_REGISTRY.filter((d) => !d.edit && !d.create && d.remove?.mode !== 'hard').every(
-    (d) => d.resolve === undefined && d.summarize === undefined
+  COACH_DOMAIN_REGISTRY.filter((d) => !d.edit && !d.create).every(
+    (d) => d.summarize === undefined && (d.remove?.mode === 'hard' || d.resolve === undefined)
   )
     ? ok('…and the read-only domains carry neither, so there is nothing to be wrong')
     : bad('a read-only domain carries write machinery');
@@ -706,9 +721,16 @@ console.log('4d. removal: parity with the screens, behind a card that names what
     'appointments',
     'muscle_anchors',
     'protocols',
+    // 2026-09-25, the owner's answers: memories and knowledge opened, and the
+    // Log tab's captures gained a delete — so the Coach has it too.
+    'memories',
+    'knowledge',
+    'captures',
   ];
   JSON.stringify([...byMode('hard')].sort()) === JSON.stringify([...HARD].sort())
-    ? ok(`${HARD.length} domains are removable — a meal, a session and a protocol among them`)
+    ? ok(
+        `${HARD.length} domains are removable — a meal, a session, a protocol, a memory and a capture among them`
+      )
     : bad('hard set', byMode('hard').join(','));
   COACH_DOMAIN_REGISTRY.every((d) => !d.remove || ['hard', 'refuse'].includes(d.remove.mode))
     ? ok('there is no third mode: the undo-only `own` rule is gone, not dormant')
@@ -732,14 +754,11 @@ console.log('4d. removal: parity with the screens, behind a card that names what
   // An invented id is used on purpose: the refusal must come BEFORE any lookup,
   // so the answer is about the domain and never "no such row".
   const REFUSED = {
-    captures: /Log tab/,
     protocol_versions: /Protocols › the protocol › Versions/,
     lab_reports: /Data › Labs/,
     reminders: /status: "dismissed"/,
     experiments: /edit_record \{ status \}/,
     exercise_catalog: /status: "archived"/,
-    memories: /status: "archived"[\s\S]*Data › Knowledge base/,
-    knowledge: /status: "archived"[\s\S]*Data › Knowledge base/,
     progress_photos: /Data › Progress photos/,
     reports: /Data › Reports/,
   };
@@ -778,6 +797,10 @@ console.log('4d. removal: parity with the screens, behind a card that names what
     appointments: 'appointments',
     muscle_anchors: 'muscle_freshness_anchors',
     protocols: 'protocols',
+    memories: 'coach_memories',
+    knowledge: 'knowledge_entries',
+    // One domain over the Log tab's four capture tables.
+    captures: ['log_entries', 'wearable_data', 'body_metrics', 'symptoms'],
   };
   const OWN_PARTS = {
     // the items and photos (both counted on the card) and its pending estimate
@@ -790,6 +813,10 @@ console.log('4d. removal: parity with the screens, behind a card that names what
     protocols: ['protocol_versions'],
     // a link only ever hangs off a WATCH workout's wearable row, never water
     water: ['workout_ingest_links'],
+    // its retrievable text; the vectors go first, by id, in deleteKnowledgeEntry
+    knowledge: ['knowledge_chunks'],
+    // …and never off a manual capture's row either
+    captures: ['workout_ingest_links'],
   };
   const tables = db
     .all(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -803,7 +830,7 @@ console.log('4d. removal: parity with the screens, behind a card that names what
     for (const child of tables) {
       for (const fk of db.all(`PRAGMA foreign_key_list(${child})`)) {
         if (
-          fk.table === TABLE[key] &&
+          [TABLE[key]].flat().includes(fk.table) &&
           fk.on_delete === 'CASCADE' &&
           !(OWN_PARTS[key] ?? []).includes(child)
         ) {
@@ -1108,14 +1135,14 @@ console.log('5. retired names still answer as writes, so no receipt is lost');
     : bad('the test is not proving anything');
 }
 
-console.log('6. staleness: the row moved while the card was open');
-{
-  // The card is built BEFORE `await confirmWrite` and the row can move inside
-  // that window — a Health sync, the pending-estimate drain, a carry-over
-  // re-derive, or the user editing the same row on its own screen. This drives
-  // the REAL service seam, with the mutation happening inside the gate.
-  const { register } = await import('node:module');
-  const LOADER_HOOK = `
+// THE REAL SERVICE SEAM, shared by §6 and §7: the Coach service with a stubbed
+// fetch and database, so a turn runs the real card → gate → execute sequence.
+// The card is built BEFORE `await confirmWrite` and the row can move inside
+// that window — a Health sync, the pending-estimate drain, a carry-over
+// re-derive, or the user editing the same row on its own screen. This drives
+// the REAL service seam, with the mutation happening inside the gate.
+const { register } = await import('node:module');
+const LOADER_HOOK = `
 const stub = (source) => ({
   url: 'data:text/javascript,' + encodeURIComponent(source),
   shortCircuit: true,
@@ -1135,53 +1162,54 @@ export async function resolve(specifier, context, next) {
   }
 }
 `;
-  register('data:text/javascript,' + encodeURIComponent(LOADER_HOOK), import.meta.url);
-  const { streamCoachReply } = await import('../src/lib/ai/coach-service.ts');
+register('data:text/javascript,' + encodeURIComponent(LOADER_HOOK), import.meta.url);
+const { streamCoachReply } = await import('../src/lib/ai/coach-service.ts');
 
-  const sse = (events) =>
-    events.map((data) => `event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`).join('');
-  const toolUseReply = (name, input) =>
-    sse([
-      { type: 'message_start', message: {} },
-      {
-        type: 'content_block_start',
-        index: 0,
-        content_block: { type: 'tool_use', id: 'toolu_stale', name, input: {} },
-      },
-      {
-        type: 'content_block_delta',
-        index: 0,
-        delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
-      },
-      { type: 'content_block_stop', index: 0 },
-      { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
-      { type: 'message_stop' },
-    ]);
-  const textReply = (text) =>
-    sse([
-      { type: 'message_start', message: {} },
-      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
-      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
-      { type: 'content_block_stop', index: 0 },
-      { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
-      { type: 'message_stop' },
-    ]);
-  const responseOf = (body) => {
-    const bytes = new TextEncoder().encode(body);
-    let sent = false;
-    return {
-      ok: true,
-      status: 200,
-      text: async () => body,
-      body: {
-        getReader: () => ({
-          read: async () =>
-            sent ? { done: true } : ((sent = true), { done: false, value: bytes }),
-        }),
-      },
-    };
+const sse = (events) =>
+  events.map((data) => `event: ${data.type}\ndata: ${JSON.stringify(data)}\n\n`).join('');
+const toolUseReply = (name, input) =>
+  sse([
+    { type: 'message_start', message: {} },
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'tool_use', id: 'toolu_stale', name, input: {} },
+    },
+    {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+    },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+    { type: 'message_stop' },
+  ]);
+const textReply = (text) =>
+  sse([
+    { type: 'message_start', message: {} },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    { type: 'message_stop' },
+  ]);
+const responseOf = (body) => {
+  const bytes = new TextEncoder().encode(body);
+  let sent = false;
+  return {
+    ok: true,
+    status: 200,
+    text: async () => body,
+    body: {
+      getReader: () => ({
+        read: async () => (sent ? { done: true } : ((sent = true), { done: false, value: bytes })),
+      }),
+    },
   };
+};
 
+console.log('6. staleness: the row moved while the card was open');
+{
   const { db } = freshDb();
   globalThis.__ARC_TEST_DB__ = db;
   const expId = createExperiment(db, {
@@ -1313,6 +1341,424 @@ console.log("water parity: the Coach edits and deletes through the screen's Heal
   !/\b(deleteWaterEntry|updateWaterEntry)\(/.test(src)
     ? ok('…and never calls the bare repository write that skips Apple Health')
     : bad('the water domain still calls a bare repository write');
+}
+
+// ---------------------------------------------------------------------------
+// 7. The owner's parity answers (2026-09-25). Each new act is proved three
+// ways: the card as drawn from real rows, the approved write through the
+// function the screen calls, and the REAL service seam — a row that moves
+// while the card is open refuses, and a declined card writes nothing.
+console.log('7. 2026-09-25 — memories, knowledge, captures, a load basis and a combine');
+{
+  const deleteRecord = toolByName('delete_record');
+  /** Card, then execute, on ONE context: the service's own sequence. */
+  const approveDelete = (db, domain, id) => {
+    const context = { now: NOW };
+    const line = deleteRecord.confirmSummary({ domain, id }, db, context);
+    return { line, result: JSON.parse(deleteRecord.execute(db, { domain, id }, context)) };
+  };
+  const approveEdit = (db, domain, id, fields) => {
+    const context = { now: NOW };
+    const line = editRecord.confirmSummary({ domain, id, fields }, db, context);
+    return { line, result: JSON.parse(editRecord.execute(db, { domain, id, fields }, context)) };
+  };
+  /**
+   * One Coach turn through `streamCoachReply`: the model proposes `input` to
+   * `name`, and `gate` answers the card — mutating the database first when the
+   * test is about a row that moved.
+   */
+  const serviceTurn = async (db, name, input, gate) => {
+    globalThis.__ARC_TEST_DB__ = db;
+    const replies = [toolUseReply(name, input), textReply('Understood.')];
+    globalThis.__ARC_TEST_FETCH__ = async () => responseOf(replies.shift());
+    await apiKeyStore.setKey('test-key');
+    let request = null;
+    const result = await streamCoachReply(
+      [{ id: 'u7', role: 'user', content: 'go ahead', createdAt: 0 }],
+      {
+        onToken: () => {},
+        now: () => NOW,
+        confirmWrite: async (req) => {
+          request = req;
+          return gate(req);
+        },
+      }
+    );
+    await apiKeyStore.clearKey();
+    return { request, call: result.toolCalls[0] };
+  };
+  const refusedStale = (call, verb) =>
+    call?.isError === true &&
+    /changed while the card was open/.test(call.result) &&
+    new RegExp(`Nothing ${verb}`).test(call.result) &&
+    call.receipt === undefined;
+  const declined = (call) => call?.declined === true && call.receipt === undefined;
+
+  // --- 7a. A MEMORY, deleted through the memory screen's own function --------
+  {
+    const { db } = freshDb();
+    const id = rememberFact(db, {
+      content: 'Magnesium citrate upsets his stomach',
+      category: 'constraint',
+    });
+    const saved = formatLocalDate(new Date(getMemory(db, id).created_at));
+    const line = deleteRecord.confirmSummary({ domain: 'memories', id }, db, { now: NOW });
+    line === `Delete memory "Magnesium citrate upsets his stomach" — constraint · saved ${saved}`
+      ? ok(`a memory's card names what it says, its kind and the day it was saved ("${line}")`)
+      : bad('memory card', line);
+    forgetMemory(db, id);
+    /· forgotten \d{4}-\d{2}-\d{2}$/.test(
+      deleteRecord.confirmSummary({ domain: 'memories', id }, db, { now: NOW })
+    )
+      ? ok('…and a forgotten one says it was already forgotten, and when')
+      : bad('forgotten memory card');
+    approveDelete(db, 'memories', id);
+    getMemory(db, id) === undefined
+      ? ok('…and approving it removes the row, through deleteMemory')
+      : bad('memory not removed');
+
+    const moving = rememberFact(db, { content: 'Trains fasted before 9am', category: 'context' });
+    const stale = await serviceTurn(db, 'delete_record', { domain: 'memories', id: moving }, () => {
+      forgetMemory(db, moving); // forgotten on its own screen while the card was up
+      return true;
+    });
+    stale.request?.kind === 'delete' &&
+    refusedStale(stale.call, 'deleted') &&
+    getMemory(db, moving) !== undefined
+      ? ok('a memory forgotten while the card was open refuses the delete — the row stays')
+      : bad('memory staleness', JSON.stringify(stale.call));
+    const kept = rememberFact(db, { content: 'Prefers morning training', category: 'preference' });
+    const no = await serviceTurn(
+      db,
+      'delete_record',
+      { domain: 'memories', id: kept },
+      () => false
+    );
+    declined(no.call) && getMemory(db, kept) !== undefined
+      ? ok('…and a declined card deletes nothing')
+      : bad('declined memory delete', JSON.stringify(no.call));
+  }
+
+  // --- 7b. A KNOWLEDGE ENTRY, and its chunks ---------------------------------
+  {
+    const { db } = freshDb();
+    const id = saveKnowledgeEntry(db, {
+      title: 'Zone 2 three times a week',
+      topic: 'training',
+      section: 'scientific',
+      body: 'Three ninety-minute sessions a week, at a pace you can still hold a conversation at, for mitochondrial density.',
+    });
+    const packId = insertKnowledgeChunk(db, {
+      source: 'arc-longevity-v1',
+      title: 'ApoB',
+      body: 'ApoB counts atherogenic particles.',
+      section: null,
+      entryId: null,
+    });
+    const saved = formatLocalDate(new Date(getKnowledgeEntry(db, id).created_at));
+    const line = deleteRecord.confirmSummary({ domain: 'knowledge', id }, db, { now: NOW });
+    line ===
+    `Delete knowledge entry "Zone 2 three times a week" — scientific · training · saved ${saved} · ` +
+      'in every search · "Three ninety-minute sessions a week, at a pace you can still…"'
+      ? ok(`a knowledge entry's card names its section, topic, day, state and opening words`)
+      : bad('knowledge card', line);
+    approveDelete(db, 'knowledge', id);
+    const chunks = db.get('SELECT count(*) n FROM knowledge_chunks WHERE entry_id = ?', [id]).n;
+    getKnowledgeEntry(db, id) === undefined &&
+    chunks === 0 &&
+    db.get('SELECT count(*) n FROM knowledge_chunks WHERE id = ?', [packId]).n === 1
+      ? ok('…and approving it removes the entry and its chunks, and never the shipped pack')
+      : bad('knowledge not removed', String(chunks));
+
+    const moving = saveKnowledgeEntry(db, { title: 'Sauna', topic: 'heat', body: 'Four rounds.' });
+    const stale = await serviceTurn(
+      db,
+      'delete_record',
+      { domain: 'knowledge', id: moving },
+      () => {
+        archiveKnowledgeEntry(db, moving);
+        return true;
+      }
+    );
+    refusedStale(stale.call, 'deleted') && getKnowledgeEntry(db, moving) !== undefined
+      ? ok('an entry archived while the card was open refuses the delete')
+      : bad('knowledge staleness', JSON.stringify(stale.call));
+    const no = await serviceTurn(
+      db,
+      'delete_record',
+      { domain: 'knowledge', id: moving },
+      () => false
+    );
+    declined(no.call) && getKnowledgeEntry(db, moving) !== undefined
+      ? ok('…and a declined card deletes nothing')
+      : bad('declined knowledge delete', JSON.stringify(no.call));
+  }
+
+  // --- 7c. A CAPTURE from the Log tab, through the Log tab's own removal -----
+  {
+    const { db } = freshDb();
+    const query = (args) => JSON.parse(queryRecords.execute(db, args, { now: NOW }));
+    logCapture(db, TODAY, 'supplement', 'Creatine · 5 g');
+    logNote(db, TODAY, 'Slept badly, 3am wake');
+    logMetric(db, TODAY, 'weight', 80);
+    const rows = query({ domain: 'captures', limit: 25 }).rows;
+    const creatine = rows.find((r) => r.title === 'Creatine · 5 g');
+    const weight = rows.find((r) => r.category === 'Weight');
+    const line = deleteRecord.confirmSummary({ domain: 'captures', id: creatine.id }, db, {
+      now: NOW,
+    });
+    line === `Delete logged entry "Creatine · 5 g" — ${TODAY} ${creatine.time} · Supplements`
+      ? ok(`a capture's card names the day, the time and what it was ("${line}")`)
+      : bad('capture card', line);
+    const meta = deleteRecord.confirmMeta({ domain: 'captures', id: creatine.id }, db, {
+      now: NOW,
+    });
+    meta.kind === 'delete' && meta.selfEvident === false
+      ? ok('…on the long delete card')
+      : bad('capture meta', JSON.stringify(meta));
+    approveDelete(db, 'captures', creatine.id);
+    !listEntriesOn(db, TODAY).some((e) => e.id === creatine.id)
+      ? ok('…and approving it takes the row off the Log tab')
+      : bad('capture not removed');
+
+    // A published kind says its Apple Health copy goes too — only while sync
+    // is on, because with it off ARC touches nothing in Health.
+    const weightLine = deleteRecord.confirmSummary({ domain: 'captures', id: weight.id }, db, {
+      now: NOW,
+    });
+    setHealthSyncEnabled(db, true);
+    const syncedLine = deleteRecord.confirmSummary({ domain: 'captures', id: weight.id }, db, {
+      now: NOW,
+    });
+    setHealthSyncEnabled(db, false);
+    !/Apple Health/.test(weightLine) &&
+    syncedLine === `${weightLine} · and any copy in Apple Health`
+      ? ok('a weight names its Apple Health copy on the card, only while sync is on')
+      : bad('weight health line', `${weightLine} | ${syncedLine}`);
+
+    // MOVED: the unit changes while the card is open, so the line the card
+    // printed ("176.4 lb") is not the line the row reads now.
+    const stale = await serviceTurn(
+      db,
+      'delete_record',
+      { domain: 'captures', id: weight.id },
+      () => {
+        setUnitPreference(db, 'weight', 'kg');
+        return true;
+      }
+    );
+    refusedStale(stale.call, 'deleted') && listEntriesOn(db, TODAY).some((e) => e.id === weight.id)
+      ? ok('a capture whose line moved while the card was open refuses the delete')
+      : bad('capture staleness', JSON.stringify(stale.call));
+    // GONE: removed on the Log tab while the card was open.
+    const note = rows.find((r) => r.category === 'Note');
+    const gone = await serviceTurn(db, 'delete_record', { domain: 'captures', id: note.id }, () => {
+      removeLogCapture(db, note.id);
+      return true;
+    });
+    gone.call?.isError === true && /No logged entry with id/.test(gone.call.result)
+      ? ok('…and one already removed by hand refuses rather than claiming the removal')
+      : bad('capture gone staleness', JSON.stringify(gone.call));
+    const no = await serviceTurn(
+      db,
+      'delete_record',
+      { domain: 'captures', id: weight.id },
+      () => false
+    );
+    declined(no.call) && listEntriesOn(db, TODAY).some((e) => e.id === weight.id)
+      ? ok('…and a declined card deletes nothing')
+      : bad('declined capture delete', JSON.stringify(no.call));
+
+    // The Coach calls what the Log tab calls — the Health-aware removal, never
+    // a bare DELETE (a weight's sample would stay in Apple Health).
+    const src = readFileSync(
+      new URL('../src/lib/ai/domains/read-domains.ts', import.meta.url),
+      'utf8'
+    );
+    const tab = readFileSync(new URL('../src/lib/log/capture-undo.ts', import.meta.url), 'utf8');
+    src.includes('removeLogCapture(db, row.id)') && tab.includes('removeLogCapture(db, feedId)')
+      ? ok('the captures domain and the Log tab remove through the one function, removeLogCapture')
+      : bad('captures parity');
+  }
+
+  // --- 7d. A LOAD BASIS, corrected through the chooser's own function --------
+  {
+    const { db } = freshDb();
+    const line = card(db, 'exercise_catalog', 'leg-press', { loadBasis: 'per_side' });
+    line ===
+    'Change what the weight on "Leg Press" counts: on the stack → per side. ' +
+      'Changing it relabels every set already logged. No number changes.'
+      ? ok(`the load-basis card says old → new in words, and the chooser's consequence ("${line}")`)
+      : bad('load basis card', line);
+    meta(db, 'exercise_catalog', 'leg-press', { loadBasis: 'per_side' }).kind === 'edit'
+      ? ok('…on an edit card, not a status change')
+      : bad('load basis meta');
+    const noLoad = throwText(() => card(db, 'exercise_catalog', 'plank', { loadBasis: 'total' }));
+    const same = throwText(() => card(db, 'exercise_catalog', 'leg-press', { loadBasis: 'stack' }));
+    const both = throwText(() =>
+      card(db, 'exercise_catalog', 'leg-press', { loadBasis: 'total', status: 'archived' })
+    );
+    const bogus = throwText(() => card(db, 'exercise_catalog', 'leg-press', { loadBasis: 'kg' }));
+    /records no weight/.test(noLoad ?? '') &&
+    /Nothing would change/.test(same ?? '') &&
+    /two cards/.test(both ?? '') &&
+    /must be one of: total, per_hand, per_side, stack, bodyweight_plus, assisted/.test(bogus ?? '')
+      ? ok('a plank, a no-op, a retire-and-relabel and an unknown basis are refused at card time')
+      : bad('load basis refusals', [noLoad, same, both, bogus].join(' | '));
+    approveEdit(db, 'exercise_catalog', 'leg-press', { loadBasis: 'per_side' });
+    const pressed = getExercise(db, 'leg-press');
+    pressed.loadBasis === 'per_side' && pressed.loadBasisSetByOwner === true
+      ? ok(
+          '…and approving it sets the basis through setExerciseLoadBasis, as the owner’s correction'
+        )
+      : bad('load basis not set', JSON.stringify(pressed));
+
+    const moved = await serviceTurn(
+      db,
+      'edit_record',
+      { domain: 'exercise_catalog', id: 'dumbbell-bench-press', fields: { loadBasis: 'total' } },
+      () => {
+        setExerciseLoadBasis(db, 'dumbbell-bench-press', 'per_side'); // changed on its screen
+        return true;
+      }
+    );
+    refusedStale(moved.call, 'written') &&
+    moved.call.result.startsWith(
+      'loadBasis changed while the card was open (was per_hand, now per_side)'
+    ) &&
+    getExercise(db, 'dumbbell-bench-press').loadBasis === 'per_side'
+      ? ok('a basis changed on its screen while the card was open refuses the Coach’s')
+      : bad('load basis staleness', JSON.stringify(moved.call));
+    const no = await serviceTurn(
+      db,
+      'edit_record',
+      { domain: 'exercise_catalog', id: 'barbell-bench-press', fields: { loadBasis: 'per_side' } },
+      () => false
+    );
+    declined(no.call) && getExercise(db, 'barbell-bench-press').loadBasis === 'total'
+      ? ok('…and a declined card writes nothing')
+      : bad('declined load basis', JSON.stringify(no.call));
+  }
+
+  // --- 7e. A COMBINE, through the Eat tab's own function ---------------------
+  {
+    const { db } = freshDb();
+    const { mealId: porridge } = logMealWithItems(db, {
+      date: TODAY,
+      time: '07:40',
+      name: 'Porridge',
+      items: [{ name: 'Oats', amount: 60, kcal: 228, protein_g: 8 }],
+    });
+    const coffee = logMeal(db, { date: TODAY, time: '07:55', name: 'Coffee', kcal: 40 });
+    // The model names the LATER meal and folds the earlier into it: the plan
+    // still keeps the earliest, as the Eat tab's does.
+    const fields = { combine_with: [porridge], name: 'Breakfast' };
+    const line = card(db, 'meals', coffee, fields);
+    line ===
+    `Combine 2 meals on ${TODAY} into "Breakfast" — 07:40 Porridge, 228 kcal; 07:55 Coffee, 40 kcal. ` +
+      'One meal at 07:40, 268 kcal, so the day’s total does not change; their items and photos move into it.'
+      ? ok(`a combine card lists the meals, their times and the combined name ("${line}")`)
+      : bad('combine card', line);
+    const lone = throwText(() => card(db, 'meals', coffee, { combine_with: [coffee] }));
+    const extra = throwText(() =>
+      card(db, 'meals', coffee, { combine_with: [porridge], time: '08:00' })
+    );
+    const yesterday = logMeal(db, {
+      date: shiftISODate(TODAY, -1),
+      time: '20:00',
+      name: 'Tapas',
+      kcal: 480,
+    });
+    const crossDay = throwText(() => card(db, 'meals', coffee, { combine_with: [yesterday] }));
+    /OTHER meal/.test(lone ?? '') &&
+    /takes "name" and nothing else/.test(extra ?? '') &&
+    crossDay === 'These were logged on different days, and a meal belongs to one day.'
+      ? ok(
+          'a combine of one meal, one with a rename riding along, and one across days are refused at card time'
+        )
+      : bad('combine refusals', [lone, extra, crossDay].join(' | '));
+
+    const { result } = approveEdit(db, 'meals', coffee, fields);
+    const kept = getMeal(db, porridge);
+    result.combined?.keptId === porridge &&
+    getMeal(db, coffee) === undefined &&
+    kept.name === 'Breakfast' &&
+    kept.kcal === 268 &&
+    listMealItems(db, porridge).some((i) => i.name === 'Coffee (as logged)')
+      ? ok(
+          '…and approving it combines them with combineMeals — the earliest survives, the result names it'
+        )
+      : bad('combine', JSON.stringify({ result, kept }));
+
+    // MOVED: the OTHER meal is re-portioned while the card is open. Nothing
+    // about the row being edited changed, so only the redrawn line can see it.
+    const lunch = logMeal(db, { date: TODAY, time: '12:30', name: 'Salad', kcal: 400 });
+    const soup = logMeal(db, { date: TODAY, time: '12:45', name: 'Soup', kcal: 150 });
+    const stale = await serviceTurn(
+      db,
+      'edit_record',
+      { domain: 'meals', id: lunch, fields: { combine_with: [soup] } },
+      () => {
+        db.run('UPDATE meals SET kcal = 210 WHERE id = ?', [soup]);
+        return true;
+      }
+    );
+    stale.request?.kind === 'edit' &&
+    refusedStale(stale.call, 'written') &&
+    stale.call.result.includes('12:45 Soup, 150 kcal') &&
+    stale.call.result.includes('12:45 Soup, 210 kcal') &&
+    getMeal(db, lunch) !== undefined &&
+    getMeal(db, soup) !== undefined
+      ? ok('a meal that moved while the combine card was open refuses it, quoting both lines')
+      : bad('combine staleness', JSON.stringify(stale.call));
+    const no = await serviceTurn(
+      db,
+      'edit_record',
+      { domain: 'meals', id: lunch, fields: { combine_with: [soup] } },
+      () => false
+    );
+    declined(no.call) && getMeal(db, lunch) !== undefined && getMeal(db, soup) !== undefined
+      ? ok('…and a declined card combines nothing')
+      : bad('declined combine', JSON.stringify(no.call));
+    /combine_with/.test(
+      JSON.stringify(JSON.parse(queryRecords.execute(db, { domain: 'meals' }, { now: NOW })).fields)
+    )
+      ? ok('combine_with is on the meals discovery call, where field vocabulary lives')
+      : bad('combine vocabulary');
+  }
+
+  // --- 7f. A CATALOG FOOD: the card says what the screen says ----------------
+  {
+    const { db } = freshDb();
+    const oats = createFood(db, { name: 'Oats', kcal_100g: 379, protein_g_100g: 13 });
+    logMealWithItems(db, {
+      date: TODAY,
+      time: '07:40',
+      name: 'Porridge',
+      items: [{ name: 'Oats', food_id: oats, amount: 60, kcal: 228, protein_g: 8 }],
+    });
+    const line = deleteRecord.confirmSummary({ domain: 'food_catalog', id: oats }, db, {
+      now: NOW,
+    });
+    line ===
+    'Delete catalog food "Oats" — per 100 g: 379 kcal · P 13g; used by 1 meal, which keeps its own numbers'
+      ? ok(`a used food's card says what keeps its numbers, as Add food's line does ("${line}")`)
+      : bad('food usage card', line);
+    const tab = readFileSync(new URL('../app/food-search.tsx', import.meta.url), 'utf8');
+    const offers = readFileSync(
+      new URL('../src/lib/nutrition/undo-offers.ts', import.meta.url),
+      'utf8'
+    );
+    const foods = readFileSync(
+      new URL('../src/lib/db/repositories/foods.ts', import.meta.url),
+      'utf8'
+    );
+    tab.includes('deleteFoodWithUndo(getDb(), food.id)') &&
+    offers.includes('takeFood(db, foodId)') &&
+    /export function takeFood[\s\S]*?deleteFood\(db, id\)/.test(foods)
+      ? ok('parity both ways: Add food deletes through takeFood → deleteFood, the Coach’s function')
+      : bad('food parity');
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

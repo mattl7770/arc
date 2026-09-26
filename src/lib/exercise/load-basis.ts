@@ -113,6 +113,14 @@ export const LOAD_BASIS_INLINE: Record<LoadBasis, string> = {
   assisted: 'assisted',
 };
 
+/**
+ * The consequence of changing the basis, said before it is changed: under the
+ * detail screen's chooser, and on the Coach's card for the same act
+ * (2026-09-25) — one constant, so the two cannot drift.
+ */
+export const LOAD_BASIS_CONSEQUENCE =
+  'Changing it relabels every set already logged. No number changes.';
+
 /** One plain sentence per basis — what the detail screen says under the choice. */
 export const LOAD_BASIS_MEANING: Record<LoadBasis, string> = {
   total: 'The whole load. A barbell counts the bar.',

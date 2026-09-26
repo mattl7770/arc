@@ -22,6 +22,7 @@ import { dayLabel, formatWeight, measuredSetLine, weightSpec } from '@/lib/exerc
 import { resolveExerciseImage } from '@/lib/exercise/images.generated';
 import {
   LOAD_BASES,
+  LOAD_BASIS_CONSEQUENCE,
   LOAD_BASIS_INLINE,
   LOAD_BASIS_LABEL,
   LOAD_BASIS_MEANING,
@@ -320,7 +321,7 @@ export default function ExerciseDetailScreen() {
                 })}
               </View>
               <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
-                Changing it relabels every set already logged. No number changes.
+                {LOAD_BASIS_CONSEQUENCE}
                 {exercise.loadBasisDerived != null
                   ? ` ARC’s reading of this movement is ${LOAD_BASIS_INLINE[exercise.loadBasisDerived]}.`
                   : ''}

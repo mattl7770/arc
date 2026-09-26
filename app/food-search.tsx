@@ -3,6 +3,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { type ReactNode, useCallback, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
@@ -10,19 +11,24 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import {
+  foodUsage,
   listFavoriteFoods,
   listRecentFoods,
   searchFoods,
   setFoodFavorite,
 } from '@/lib/db/repositories/foods';
 import { addMealItem, logMealWithItems } from '@/lib/db/repositories/nutrition';
+import { foodDeleteConsequence } from '@/lib/nutrition/food-delete';
 import { fmtAmount, fmtInt, fmtQty } from '@/lib/nutrition/format';
 import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
+import { deleteFoodWithUndo } from '@/lib/nutrition/undo-offers';
+import { runUndo } from '@/lib/nutrition/undo-store';
 import type { VolumeUnit } from '@/lib/user/types';
 
 /**
@@ -53,6 +59,22 @@ import type { VolumeUnit } from '@/lib/user/types';
  *
  * **Accent budget: one.** The expanded row's Add, and only one row is ever
  * expanded. "Done · N" is neutral: it leaves, it does not commit.
+ *
+ * ## A catalog food is deleted here (owner, 2026-09-25)
+ *
+ * *"Add a delete to the food's own screen, so you and the Coach can both do
+ * it."* The expanded row is the only place a catalog food has actions of its
+ * own (the star is the other), so its Delete sits beside the star. It ARMS
+ * first — the meal-templates idiom — and the armed row states the consequence
+ * before anything is written: the food leaves the catalog, and the meals,
+ * templates and recipes that used it keep their own numbers (every reference
+ * is `ON DELETE SET NULL` and every one carries its snapshot;
+ * src/lib/nutrition/food-delete.ts). Delete is ink, never the accent.
+ *
+ * What it offers back is exact: the Undo row, the first row of the closing
+ * catalog plate, puts the food back with its id, its star and every link
+ * (`restoreFood`). It closes when this screen is left. The Coach's
+ * `food_catalog` removal runs the same `deleteFood`, behind its card.
  */
 
 /** What a from-scratch add names the meal: the day-part, CalAI-slot style. */
@@ -131,6 +153,12 @@ export default function FoodSearchScreen() {
   // The meal every add lands in: the pushed-for meal, or the one the first
   // from-scratch add creates. State because it's born mid-session.
   const [targetMealId, setTargetMealId] = useState<string | null>(mealId ?? null);
+  // Which open row's Delete is armed, as `section:id` — cleared whenever a row
+  // opens or closes, so an arm never survives into another visit to the row.
+  const [armed, setArmed] = useState<string | null>(null);
+  // A catalog food deleted here, while it can still be put back. Closed when
+  // this screen is left (src/hooks/use-undo-offer.ts).
+  const undo = useUndoOffer('catalog', 'catalog');
 
   // Re-read recents/favorites — and the live query's results — when the screen
   // regains focus (returning from Create-food, most importantly, so the new
@@ -142,10 +170,33 @@ export default function FoodSearchScreen() {
   }, [query]);
   useFocusEffect(reload);
 
+  /** Open a row's editor, or close it — disarming any Delete either way. */
+  const expand = (next: Expanded | null) => {
+    setArmed(null);
+    setExpanded(next);
+  };
+
   const runSearch = (text: string) => {
     setQuery(text);
-    setExpanded(null);
+    expand(null);
     setResults(text.trim() === '' ? [] : searchFoods(getDb(), text));
+  };
+
+  /** The armed Delete, confirmed: the food goes, with its Undo. */
+  const deleteFood = (food: FoodRow) => {
+    try {
+      deleteFoodWithUndo(getDb(), food.id);
+    } catch (error) {
+      console.warn('[food-search] delete failed', error);
+    }
+    expand(null);
+    reload();
+  };
+
+  /** Put the deleted food back; a refused Undo stays on its row, saying so. */
+  const undoDelete = () => {
+    runUndo();
+    reload();
   };
 
   const saveItem = (item: NewMealItem) => {
@@ -181,7 +232,7 @@ export default function FoodSearchScreen() {
     } else if (lastAmount !== null) {
       saveItem(itemForPortion(food, { amount: lastAmount }));
     } else {
-      setExpanded({ food, portion: initialPortion(food), section: 'recents' });
+      expand({ food, portion: initialPortion(food), section: 'recents' });
     }
   };
 
@@ -243,8 +294,9 @@ export default function FoodSearchScreen() {
       : null;
 
   /** The one catalog action that is always offered. `ruled` is true only when a
-   * scan row precedes it inside the plate; as the plate's first row it draws no
-   * hairline, because a rule between rows needs a row above it. */
+   * row precedes it inside the plate (the Undo row, the scan row); as the
+   * plate's first row it draws no hairline, because a rule between rows needs a
+   * row above it. */
   const createFoodRow = (ruled: boolean) => (
     <CatalogRow
       icon="add-circle-outline"
@@ -260,8 +312,11 @@ export default function FoodSearchScreen() {
     />
   );
 
-  const editorFor = (section: ListSection, food: FoodRow) =>
-    expanded?.section === section && expanded.food.id === food.id ? (
+  const editorFor = (section: ListSection, food: FoodRow) => {
+    if (expanded?.section !== section || expanded.food.id !== food.id) return null;
+    const key = `${section}:${food.id}`;
+    const isArmed = armed === key;
+    return (
       <PortionEditor
         expanded={expanded}
         amountPreview={amountPreview}
@@ -270,8 +325,15 @@ export default function FoodSearchScreen() {
         onEditAmount={editAmount}
         onToggleFavorite={toggleFavorite}
         onAdd={addExpanded}
+        // Counted only once armed: the consequence names what uses the food.
+        deleteConsequence={
+          isArmed ? foodDeleteConsequence(food.name, foodUsage(getDb(), food.id)) : null
+        }
+        onArmDelete={() => setArmed(isArmed ? null : key)}
+        onDelete={() => deleteFood(food)}
       />
-    ) : null;
+    );
+  };
 
   return (
     <Screen scroll>
@@ -329,7 +391,7 @@ export default function FoodSearchScreen() {
                         food={recent.food}
                         subtitle={lastPortionLabel(recent, units.volume)}
                         onPress={() =>
-                          setExpanded({
+                          expand({
                             food: recent.food,
                             portion: initialPortion(recent.food),
                             section: 'recents',
@@ -366,7 +428,7 @@ export default function FoodSearchScreen() {
                         food={food}
                         subtitle={null}
                         onPress={() =>
-                          setExpanded({ food, portion: initialPortion(food), section: 'favorites' })
+                          expand({ food, portion: initialPortion(food), section: 'favorites' })
                         }
                       />
                       {editorFor('favorites', food)}
@@ -403,8 +465,8 @@ export default function FoodSearchScreen() {
                       food={food}
                       subtitle={null}
                       onPress={() =>
-                        setExpanded((prev) =>
-                          prev?.section === 'results' && prev.food.id === food.id
+                        expand(
+                          expanded?.section === 'results' && expanded.food.id === food.id
                             ? null
                             : { food, portion: initialPortion(food), section: 'results' }
                         )
@@ -426,21 +488,24 @@ export default function FoodSearchScreen() {
           two once a meal exists. It is drawn either way: the sweep of
           2026-08-10 made it conditional and the owner rejected that. `ruled`
           still keys off whether a row precedes it, which is a fact about the
-          rows, not about the enclosure. */}
+          rows, not about the enclosure. A food deleted here is offered back as
+          this plate's FIRST row: a deletion is a catalog act, and this is the
+          catalog's plate. */}
       <View className="mt-6">
         <Block device="plate">
+          {undo ? <UndoRow offer={undo} onUndo={undoDelete} first /> : null}
           {targetMealId !== null ? (
             <CatalogRow
               icon="barcode-outline"
               label="Scan a barcode"
-              ruled={false}
+              ruled={undo !== null}
               accessibilityLabel="Scan a barcode into this meal"
               onPress={() =>
                 router.push({ pathname: '/barcode-scan', params: { mealId: targetMealId } })
               }
             />
           ) : null}
-          {createFoodRow(targetMealId !== null)}
+          {createFoodRow(targetMealId !== null || undo !== null)}
         </Block>
       </View>
     </Screen>
@@ -558,8 +623,14 @@ function FoodListRow({
  * takes the recessed treatment, because an input is a well at control scale.
  *
  * The Add button is this screen's one accent (only one editor is ever open).
+ *
+ * The bin beside the star ARMS the food's Delete; armed, the editor closes on
+ * the consequence line and the confirming Delete (ink, bordered — the
+ * meal-templates Confirm, never the accent). `deleteConsequence` is non-null
+ * exactly when armed. Exported so the render suite can draw the armed state,
+ * which only a tap reaches in the app.
  */
-function PortionEditor({
+export function PortionEditor({
   expanded,
   amountPreview,
   kcalPreview,
@@ -567,6 +638,9 @@ function PortionEditor({
   onEditAmount,
   onToggleFavorite,
   onAdd,
+  deleteConsequence,
+  onArmDelete,
+  onDelete,
 }: {
   expanded: Expanded;
   amountPreview: number | null;
@@ -575,9 +649,13 @@ function PortionEditor({
   onEditAmount: (text: string) => void;
   onToggleFavorite: (food: FoodRow) => void;
   onAdd: () => void;
+  deleteConsequence: string | null;
+  onArmDelete: () => void;
+  onDelete: () => void;
 }) {
   const { food, portion } = expanded;
   const canAdd = amountPreview !== null && amountPreview > 0;
+  const armed = deleteConsequence !== null;
   return (
     <View className="pb-3">
       <View className="flex-row items-center gap-2">
@@ -628,6 +706,20 @@ function PortionEditor({
         <View className="flex-row items-center gap-2">
           <Pressable
             accessibilityRole="button"
+            accessibilityLabel={
+              armed ? `Keep ${food.name} in the catalog` : `Delete ${food.name} from the catalog`
+            }
+            hitSlop={10}
+            onPress={onArmDelete}
+            className="h-9 w-9 items-center justify-center rounded-btn active:opacity-60">
+            <Ionicons
+              name={armed ? 'trash' : 'trash-outline'}
+              size={17}
+              color={palette.inkSecondary}
+            />
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
             accessibilityLabel={food.is_favorite === 1 ? 'Remove favorite' : 'Mark favorite'}
             hitSlop={10}
             onPress={() => onToggleFavorite(food)}
@@ -660,6 +752,25 @@ function PortionEditor({
           </Pressable>
         </View>
       </View>
+
+      {/* Armed: what the delete does, before it does it — then the one control
+          that does it. The consequence is serif (it speaks). */}
+      {armed ? (
+        <View className="mt-3 flex-row items-center gap-3">
+          <Text className="flex-1 font-serif text-[13px] leading-5 text-ink-secondary">
+            {deleteConsequence}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Delete ${food.name}`}
+            onPress={onDelete}
+            className="min-h-[44px] items-center justify-center rounded-btn border border-ink px-4 active:opacity-60">
+            <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
+              Delete
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }

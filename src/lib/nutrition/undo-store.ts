@@ -32,6 +32,16 @@
  * Only one offer exists at a time, which is what makes "Undo" unambiguous: it
  * always means the last thing removed.
  *
+ * ## Beyond food logging (2026-09-25)
+ *
+ * Two more removals share the slot rather than growing a second one: a catalog
+ * food deleted on Add food (`on: 'catalog'`, offered by undo-offers.ts) and a
+ * capture deleted from the Log tab's record (`on: 'log'`, offered by
+ * src/lib/log/capture-undo.ts). Both follow the same window — replaced by the
+ * next removal, closed when their screen is left — and one slot keeps "Undo"
+ * meaning the last thing removed anywhere. Neither holds files, so neither has
+ * anything to settle.
+ *
  * ## An Undo that cannot be done says so
  *
  * The repository refuses a put-back when the record moved in the meantime (a
@@ -51,13 +61,28 @@ export type UndoScope =
    *  to and no other. */
   | { on: 'list'; date: string }
   /** One meal's own screen — an item removed from it. */
-  | { on: 'meal'; mealId: string };
+  | { on: 'meal'; mealId: string }
+  /** Add food, the catalog's screen — a catalog food deleted there
+   *  (2026-09-25). One catalog, so no key. */
+  | { on: 'catalog' }
+  /** The Log tab's record of one day — a capture deleted from it (2026-09-25).
+   *  Keyed by the logical day, like a meal list. */
+  | { on: 'log'; date: string };
 
 export type UndoOffer = {
   scope: UndoScope;
   /** Ionicons glyph for the row — the thing acted on, as the water row draws
-   *  a drop. */
-  icon: 'restaurant-outline' | 'git-merge-outline';
+   *  a drop. The last six are the Log tab's: each capture's own glyph, the
+   *  one its door tile or its row already draws. */
+  icon:
+    | 'restaurant-outline'
+    | 'git-merge-outline'
+    | 'water-outline'
+    | 'scale-outline'
+    | 'medkit-outline'
+    | 'thermometer-outline'
+    | 'pulse-outline'
+    | 'reader-outline';
   /** What was done, as the row says it: "Removed Greek yogurt". */
   said: string;
   /** The measured half, set in mono after it — "150 kcal" — or null. */
@@ -180,7 +205,9 @@ export function runUndo(): boolean {
  * meal screen the offers for ITS meal. `key` is the day (`YYYY-MM-DD`) for a
  * list, the meal's id for a meal screen. History keeps one screen across its
  * days, so without the day a meal deleted from Tuesday would be offered under
- * Wednesday, and its Undo would appear to do nothing.
+ * Wednesday, and its Undo would appear to do nothing. The Log tab is keyed by
+ * its day the same way; Add food draws every catalog offer, and its key is
+ * ignored.
  */
 export function offerDrawnOn(
   offer: UndoOffer | null,
@@ -189,8 +216,16 @@ export function offerDrawnOn(
 ): UndoOffer | null {
   if (!offer) return null;
   const { scope } = offer;
-  if (scope.on === 'list') return on === 'list' && scope.date === key ? offer : null;
-  return on === 'meal' && scope.mealId === key ? offer : null;
+  if (scope.on !== on) return null;
+  switch (scope.on) {
+    case 'list':
+    case 'log':
+      return scope.date === key ? offer : null;
+    case 'meal':
+      return scope.mealId === key ? offer : null;
+    case 'catalog':
+      return offer;
+  }
 }
 
 /** Scope matchers, so a screen asks one question the same way everywhere. */

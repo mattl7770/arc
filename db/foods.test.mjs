@@ -14,7 +14,10 @@ import {
   createFood,
   deleteFood,
   findFoodByBarcode,
+  foodUsage,
   getFood,
+  restoreFood,
+  takeFood,
   listFavoriteFoods,
   listRecentBarcodeFoods,
   listRecentFoods,
@@ -42,6 +45,9 @@ import {
   updateMealItemPortion,
 } from '../src/lib/db/repositories/nutrition.ts';
 import { itemForPortion, macrosForAmount } from '../src/lib/nutrition/servings.ts';
+import { foodDeleteConsequence } from '../src/lib/nutrition/food-delete.ts';
+import { deleteFoodWithUndo } from '../src/lib/nutrition/undo-offers.ts';
+import { closeUndo, currentUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
 import {
   countLabel,
   fmtAmount,
@@ -964,6 +970,113 @@ console.log('16. the count of pieces, and the two vocabularies that name one (00
   }) === '270 g'
     ? ok('and an uncounted composite prints the bare amount, as it always did')
     : bad('portionLabel uncounted');
+}
+
+// ---------------------------------------------------------------------------
+// 17. A catalog food deleted on Add food, and put back exactly (owner,
+// 2026-09-25: "Add a delete to the food's own screen, so you and the Coach can
+// both do it."). The delete is `deleteFood` — the Coach's — after reading the
+// row and every link the ON DELETE SET NULL is about to clear.
+console.log('17. a catalog food deleted with its Undo — what stays, and what comes back');
+{
+  const { db, raw } = freshDb();
+  const oats = createFood(db, {
+    name: 'Oats',
+    brand: 'Quaker',
+    barcode: '5000000000017',
+    kcal_100g: 379,
+    protein_g_100g: 13,
+  });
+  setFoodFavorite(db, oats, true);
+  const { mealId } = logMealWithItems(db, {
+    date: todayISODate(),
+    time: '07:40',
+    name: 'Porridge',
+    items: [{ name: 'Oats', food_id: oats, amount: 60, kcal: 227.4, protein_g: 7.8 }],
+  });
+  raw
+    .prepare(
+      `INSERT INTO meal_templates (id, name, name_norm) VALUES ('tpl-1', 'Protein oats', 'protein oats')`
+    )
+    .run();
+  raw
+    .prepare(
+      `INSERT INTO meal_template_items (id, template_id, food_id, name, kcal)
+       VALUES ('tpl-item', 'tpl-1', ?, 'Oats', 190)`
+    )
+    .run(oats);
+  raw
+    .prepare(
+      `INSERT INTO grocery_items (id, name, name_norm, food_id) VALUES ('g-1', 'Oats', 'oats', ?)`
+    )
+    .run(oats);
+  const usage = foodUsage(db, oats);
+  usage.meals === 1 && usage.templates === 1 && usage.recipes === 0
+    ? ok('its usage counts the meals and templates that name it')
+    : bad('usage', JSON.stringify(usage));
+  foodDeleteConsequence('Oats', usage) ===
+  'Deletes “Oats” from the catalog. It is used by 1 meal and 1 template, which keep their own numbers.'
+    ? ok('the armed line says what goes and what keeps its numbers')
+    : bad('consequence', foodDeleteConsequence('Oats', usage));
+  foodDeleteConsequence('Rye', { meals: 0, templates: 0, recipes: 0 }) ===
+  'Deletes “Rye” from the catalog. No meal, template or recipe uses it.'
+    ? ok('…and a food nothing used says so')
+    : bad('unused consequence');
+
+  const foodRow = JSON.stringify(
+    raw.prepare('SELECT rowid AS r, * FROM foods WHERE id = ?').get(oats)
+  );
+  const mealBefore = JSON.stringify(getMeal(db, mealId));
+  const item = () => listMealItems(db, mealId)[0];
+  const itemFigures = JSON.stringify({ ...item(), food_id: undefined, updated_at: undefined });
+
+  deleteFoodWithUndo(db, oats);
+  getFood(db, oats) === undefined &&
+  item().food_id === null &&
+  JSON.stringify({ ...item(), food_id: undefined, updated_at: undefined }) === itemFigures &&
+  JSON.stringify(getMeal(db, mealId)) === mealBefore
+    ? ok('deleting it leaves the meal and its item’s figures exactly as they were, unlinked')
+    : bad('delete left history changed');
+  const offer = currentUndo();
+  offer?.scope.on === 'catalog' && offer.said === 'Deleted Oats from the catalog'
+    ? ok('…and offers “Deleted Oats from the catalog” on Add food')
+    : bad('food offer', JSON.stringify(offer));
+
+  runUndo() ? ok('Undo runs') : bad('undo refused');
+  JSON.stringify(raw.prepare('SELECT rowid AS r, * FROM foods WHERE id = ?').get(oats)) ===
+    foodRow &&
+  item().food_id === oats &&
+  raw.prepare(`SELECT food_id FROM meal_template_items WHERE id = 'tpl-item'`).get().food_id ===
+    oats &&
+  raw.prepare(`SELECT food_id FROM grocery_items WHERE id = 'g-1'`).get().food_id === oats &&
+  listFavoriteFoods(db).some((f) => f.id === oats)
+    ? ok('…and puts the food back byte for byte — its star, its rowid — with every link it had')
+    : bad('food restore');
+
+  // A barcode cached again while the offer was open: the UNIQUE index refuses
+  // the put-back, and the row says so instead of pretending.
+  deleteFoodWithUndo(db, oats);
+  createFood(db, { name: 'Oats (rescanned)', barcode: '5000000000017', kcal_100g: 380 });
+  !runUndo() && currentUndo()?.refused === true && getFood(db, oats) === undefined
+    ? ok('a put-back the barcode index refuses is refused whole, and the offer says it could not')
+    : bad('barcode refusal');
+  closeUndo();
+
+  // A link re-pointed at another food meanwhile keeps its new food.
+  const rye = createFood(db, { name: 'Rye flakes', kcal_100g: 340 });
+  const flakes = createFood(db, { name: 'Flakes', kcal_100g: 350 });
+  const { mealId: bowl } = logMealWithItems(db, {
+    date: todayISODate(),
+    time: '08:00',
+    name: 'Bowl',
+    items: [{ name: 'Rye', food_id: rye, amount: 50, kcal: 170 }],
+  });
+  const taken = takeFood(db, rye);
+  db.run('UPDATE meal_items SET food_id = ? WHERE meal_id = ?', [flakes, bowl]);
+  restoreFood(db, taken);
+  getFood(db, rye) !== undefined && listMealItems(db, bowl)[0].food_id === flakes
+    ? ok('…and a line re-pointed at another food since keeps its new food')
+    : bad('re-pointed link');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

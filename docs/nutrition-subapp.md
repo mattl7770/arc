@@ -1815,3 +1815,32 @@ No model was called.
 - **Whether 127 mg matches his latte.** Two shots is an assumption about his café. If his is a single, the seed row cannot be corrected, because nothing edits a food's micros. His own food (Add food) or a Describe is the way, and a Log again of that copies his figure, never the seed's.
 - **Whether 20 mg is the right line.** A cola (28 mg) beside a salty dinner now shows its caffeine rather than the sodium. Only his own meals show whether that is the figure he wants on the row.
 - **The keyboard and the receipt.** Tapping × with a grams field focused keeps the keyboard up (`keyboardShouldPersistTaps="handled"`), and the offer survives the keyboard going down, since a blur that moves no figure keeps it. The hand decides whether that reads right.
+
+## 16. Round 10 — a catalog food is deleted on its own screen (2026-09-25, no migration)
+
+The owner, on the round-two decision page, answering *"the Coach can delete a catalog food and no screen can — keep it, or take it away?"*:
+
+> *"Add a delete to the food's own screen, so you and the Coach can both do it."*
+
+**Where.** A catalog food has no screen of its own; its only actions live on Add food's open row (the portion editor), where the star is. So the Delete sits beside the star, as a bin. It **arms** first, the meal-templates idiom: the armed row closes on the consequence line and one ink-bordered **Delete** (never the accent, which stays on Add). A second tap on the bin disarms; opening or closing any row disarms too.
+
+**The consequence line** says what goes and what stays, from one module the Coach's card also uses (`src/lib/nutrition/food-delete.ts`):
+
+> Deletes "Oats" from the catalog. It is used by 3 meals and 1 template, which keep their own numbers.
+
+It is a foreign-key fact, checked against every migration: all four references to `foods (id)` — meal items (0014), template items (0018), recipe lines (0031), grocery lines (0032) — are `ON DELETE SET NULL`, and every one carries its own snapshot. No logged figure changes; the rows stop linking to the catalog entry. `foodUsage` counts the meals, templates and recipes (grocery lines keep their name and are not named on the line).
+
+**The Undo is exact.** `takeFood` (`repositories/foods.ts`) reads the row whole — every column and its `rowid` — and the ids of every row that linked to it, then calls `deleteFood`, the Coach's own. `restoreFood` puts the row back verbatim (its star, its `created_at`) and re-links each of those rows **only where its `food_id` is still empty**, so a line re-pointed at another food in the meantime keeps its new food. A food whose barcode was cached again while the offer was open cannot come back — the barcode index is UNIQUE — and the Undo row says *Could not put Oats back in the catalog.* One stated cost: a re-linked row's `updated_at` records the re-link, the write stamp `uncombineMeals` already documents. The offer is the Eat tab's one Undo slot, scoped `on: 'catalog'`, drawn as the first row of the closing catalog plate; it closes when Add food is left.
+
+**The Coach** keeps `deleteFood` (`docs/coach-domains.md` §10b). Its card now appends the same phrase — `Delete catalog food "Oats" — per 100 g: 379 kcal · P 13g; used by 1 meal, which keeps its own numbers` — whenever anything used the food.
+
+### Verification
+
+- `db/foods.test.mjs` **§17**: usage counts a meal and a template; the consequence line in both shapes; a delete leaves the meal and its item's figures byte-identical, unlinked; the offer's words; Undo restores the row byte for byte (rowid included), its star, and the meal, template and grocery links; a rescanned barcode refuses the Undo and marks the offer refused; a link re-pointed meanwhile keeps its new food.
+- `db/coach-domains.test.mjs` **§7f**: the Coach's card carries the usage phrase; Add food deletes through `deleteFoodWithUndo` → `takeFood` → `deleteFood` (source).
+- `db/screens-render.test.mjs` **§28**: Add food draws the catalog Undo row above Create a food, and nothing without an offer; the open row's editor at rest (the bin, no consequence) and armed (the consequence line, Delete, Add still there).
+
+### What only the phone can settle
+
+- **Whether the bin is found, and not hit by accident.** It sits beside the star at the same size. Arming is the guard against a stray tap; whether it is enough is a thumb question.
+- **Whether the Undo row is seen.** It is the first row of the closing plate, below the lists; after a delete from a long Results list, it may be below the fold.
