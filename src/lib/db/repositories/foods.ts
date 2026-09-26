@@ -107,8 +107,16 @@ export function deleteFood(db: Database, id: string): void {
  * their `food_id` goes NULL (every reference is `ON DELETE SET NULL`) and they
  * stop linking to it. Counted for the consequence line the food's delete shows
  * on Add food, and on the Coach's card for the same act.
+ *
+ * `counted` is the one thing that DOES change on screen. A meal item logged as
+ * a count of the food's serving ("2 × 1 egg (100 g)") draws its noun from a
+ * LIVE join to `foods.serving_name` (`listMealItems`; `portionLabel`), because
+ * the serving name was never snapshotted onto the item (0059's header names
+ * that gap). Once the food is gone the join is NULL and the row reads as its
+ * amount alone ("100 g"); the numbers are untouched. Counted per item, since it
+ * is items whose label changes.
  */
-export type FoodUsage = { meals: number; templates: number; recipes: number };
+export type FoodUsage = { meals: number; templates: number; recipes: number; counted: number };
 
 export function foodUsage(db: Database, id: string): FoodUsage {
   const count = (sql: string): number => db.get<{ n: number }>(sql, [id])?.n ?? 0;
@@ -119,6 +127,13 @@ export function foodUsage(db: Database, id: string): FoodUsage {
     ),
     recipes: count(
       'SELECT count(DISTINCT recipe_id) AS n FROM recipe_ingredients WHERE food_id = ?'
+    ),
+    // Exactly the rows `portionLabel` draws a serving count on through the
+    // join: a count, no piece noun of its own, and a food that names a serving.
+    counted: count(
+      `SELECT count(*) AS n FROM meal_items mi JOIN foods f ON f.id = mi.food_id
+       WHERE mi.food_id = ? AND mi.serving_qty IS NOT NULL AND mi.piece_name IS NULL
+         AND f.serving_name IS NOT NULL`
     ),
   };
 }

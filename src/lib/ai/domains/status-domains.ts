@@ -353,20 +353,33 @@ const knowledgeDomain: CoachDomainEntry = {
   },
   // HARD since 2026-09-25, through `deleteKnowledgeEntry` — the Archived list's
   // Delete (app/knowledge.tsx): the entry, its vectors first, then its chunks by
-  // the CASCADE, so nothing retrievable is left behind. The screen offers it on
-  // an archived entry only; the repository asks for nothing of the kind, and
-  // the card says which this one is, so the user is not deleting an entry he
-  // thought was already out of every search. The summary is the entry's own
-  // opening words — the title alone does not say what a page holds.
+  // the CASCADE, so nothing retrievable is left behind.
+  //
+  // ARCHIVED ENTRIES ONLY, and that is parity rather than caution: the screen
+  // offers Delete on the Archived list and nowhere else, so removing an entry
+  // there takes two acts, Archive and then Delete. `deleteKnowledgeEntry` asks
+  // for neither, so the rule lives here, at card time: an entry still in every
+  // search refuses and names the archive, which is one restorable `edit_record`
+  // away. `gone` re-runs past the gate, so an entry restored while the card was
+  // open refuses too. The summary is the entry's own opening words — the title
+  // alone does not say what a page holds.
   remove: {
     mode: 'hard',
     gone: (_db, row) => {
       const entry = row.raw as KnowledgeEntryRow;
+      if (entry.archived_at === null) {
+        throw new Error(
+          `"${entry.title}" is still in every search, and its screen deletes only an archived ` +
+            `entry. Archive it first with edit_record { domain: "knowledge", id: "${entry.id}", ` +
+            'fields: { status: "archived" } }; the permanent delete is on the Archived list. ' +
+            'Nothing deleted.'
+        );
+      }
       return [
         entry.section,
         entry.topic.trim() === '' ? null : entry.topic,
         `saved ${formatLocalDate(new Date(entry.created_at))}`,
-        entry.archived_at === null ? 'in every search' : 'archived',
+        `archived ${formatLocalDate(new Date(entry.archived_at))}`,
         `"${excerpt(entry.body)}"`,
       ]
         .filter((p): p is string => p !== null)

@@ -312,7 +312,7 @@ guardrail, so it is held to four things, each asserted in `db/coach-domains.test
 | `muscle_anchors` | Train › muscle freshness (`muscle-freshness.tsx`) | `clearMuscleAnchor` | allowed | a clear of nothing refuses at card time |
 | `food_catalog` | Eat › Add food › an open row, *Delete* (`food-search.tsx`, 2026-09-25) — through `takeFood` → `deleteFood`, with an Undo | `deleteFood` | allowed — **parity both ways** since 2026-09-25 (was **ahead of the screens**) | strands nothing; the card and the screen's armed line say the same thing about what keeps its numbers |
 | `memories` | Data › Knowledge base › a memory, *Delete* (`coach-memory.tsx`) | `deleteMemory` | **allowed** (was held below parity, 2026-09-25) | the card names what it says, its kind, the day it was saved, and whether it was already forgotten |
-| `knowledge` | Data › Knowledge base › Archived, *Delete* (`knowledge.tsx`) | `deleteKnowledgeEntry` | **allowed** (was held below parity, 2026-09-25) | the card names section, topic, day, whether it is still in every search, and its opening words; its chunks go by the CASCADE, its vectors first |
+| `knowledge` | Data › Knowledge base › Archived, *Delete* (`knowledge.tsx`) | `deleteKnowledgeEntry` | **allowed once archived** (was held below parity, 2026-09-25) | the screen deletes from the Archived list only, so an entry still in every search refuses at card time and names `status: archived` — two acts, as on the screen; the card names section, topic, the day it was saved and archived, and its opening words; its vectors go first, then the entry |
 | `progress_photos` | Data › Progress photos › a photo (`progress-photo-detail.tsx`) | `deleteProgressPhotoWithFiles` | **refused — held below parity** | Q4(a) opened these read-only, "no pixels, no writes"; the owner kept them there (2026-09-25) |
 | `reports` | Data › Reports › a report (`report-view.tsx`) | `deleteReport` | **refused — held below parity** | Q4(a), kept (2026-09-25) |
 | `captures` | Log › Logged today, a row's × (`recent-logs.tsx`, 2026-09-25), with an Undo | `removeLogCapture` — the row, and a weight's, body-fat's, waist's or glass's sample in Apple Health by its tag | **allowed** (was refused, 2026-09-25) | the card names the day, the time and what it was, and the Apple Health copy when sync is on |
@@ -340,11 +340,11 @@ the card is open refusing, and a declined card writing nothing.
 
 | Answer | The screen | The Coach | The card |
 | --- | --- | --- | --- |
-| *"Add a delete to the food's own screen, so you and the Coach can both do it."* | Add food: the open row's bin arms a Delete; the armed row states the consequence; an exact Undo (`takeFood` / `restoreFood`: the row, its star, its rowid, every link) | unchanged — `deleteFood`, which the screen now calls too | `… per 100 g: 379 kcal · P 13g; used by 1 meal, which keeps its own numbers` — the screen's line, one module (`src/lib/nutrition/food-delete.ts`) |
-| *"Open memories and knowledge only."* | unchanged | `delete_record` on `memories` (`deleteMemory`) and `knowledge` (`deleteKnowledgeEntry`) | `Delete memory "…" — constraint · saved 2026-09-25` · `Delete knowledge entry "…" — scientific · training · saved … · in every search · "opening words…"` |
+| *"Add a delete to the food's own screen, so you and the Coach can both do it."* | Add food: the open row's bin arms a Delete; the armed row states the consequence; an exact Undo (`takeFood` / `restoreFood`: the row, its star, its rowid, every link) | unchanged — `deleteFood`, which the screen now calls too | `… per 100 g: 379 kcal · P 13g; used by 1 meal, which keeps its own numbers` (+ `; 1 item counted in its serving will show its amount without the count` when a logged item counted the food's serving, whose noun is a live join) — the screen's line, one module (`src/lib/nutrition/food-delete.ts`) |
+| *"Open memories and knowledge only."* | unchanged | `delete_record` on `memories` (`deleteMemory`) and `knowledge` (`deleteKnowledgeEntry`, an **archived** entry only — the screen's Delete lives on the Archived list, so an active one refuses and names the archive) | `Delete memory "…" — constraint · saved 2026-09-25` · `Delete knowledge entry "…" — scientific · training · saved … · archived … · "opening words…"` |
 | *"Add a delete with an Undo to each capture on the Log tab; the Coach then gets it too, behind the card."* | a × on every row of Logged today, an Undo row in the same plate (`docs/information-architecture.md`, the Log tab) | `delete_record` on `captures` — `removeLogCapture`, the Log tab's own function, without the Undo | `Delete logged entry "Creatine · 5 g" — 2026-09-25 08:12 · Supplements` (+ `· and any copy in Apple Health` for a published kind while sync is on) |
 | *"Yes, let the Coach correct it too"* (a weight basis) | unchanged — the chooser on exercise detail | `edit_record` on `exercise_catalog`, `loadBasis` → `setExerciseLoadBasis` | `Change what the weight on "Leg Press" counts: on the stack → per side. Changing it relabels every set already logged. No number changes.` |
-| *"May the Coach combine meals? Yes."* | unchanged — the Eat tab's Combine | `edit_record` on `meals`, `combine_with: [ids]` (+ `name`) → `combineMeals` | `Combine 2 meals on … into "Breakfast" — 07:40 Porridge, 228 kcal; 07:55 Coffee, 40 kcal. One meal at 07:40, 268 kcal, so the day's total does not change; their items and photos move into it.` |
+| *"May the Coach combine meals? Yes."* | unchanged — the Eat tab's Combine | `edit_record` on `meals`, `combine_with: [ids]` (+ `name`) → `combineMeals` | `Combine 2 meals on … into "Breakfast" — 07:40 Porridge, 228 kcal; 07:55 Coffee, 40 kcal. One meal at 07:40, 268 kcal, so the day's total does not change; their items and photos move into it and the other meals are deleted. There is no undo.` |
 
 **One function per act, and it undoes every side effect.** A capture's removal was the one with
 side effects to trace, and `src/lib/db/repositories/logs.ts` walks each kind: a note, a dose, a
@@ -368,6 +368,19 @@ the meals domain, which costs nothing (`fields` is open); what it did cost is on
 estimate, two recipes) is made at card time in the tab's words. It takes a `name` for the result
 and nothing else. The other meals are not values of the row being edited, so the staleness guard
 for them is the printed line, which `edit_record` now re-reads (§4).
+
+A combine is the one removal that rides an edit: `combineMeals` deletes the other meals' rows,
+names and times, and the Coach's path has no Undo — the Eat tab's has one, from the snapshot it
+holds while its offer is open. An edit card's fixed lane says only that the change is written once,
+so the combine line itself ends *"…and the other meals are deleted. There is no undo."* (review fix,
+2026-09-25).
+
+**Knowledge is deletable in two acts, as on its screen.** The Archived list is the only place the
+screen offers Delete, so a knowledge entry still in every search refuses at card time with the
+archive named (`edit_record { status: "archived" }`) — `deleteKnowledgeEntry` itself asks for
+neither step, so the rule lives in the domain's `gone`, which re-runs past the gate: an entry
+restored while the card was open refuses too (review fix, 2026-09-25). Memories need no such step:
+`coach-memory.tsx` deletes an active and a forgotten memory alike.
 
 **The ceilings did not move.** Schema **9,039 → 9,074** (`delete_record`'s enum +12, the combine
 clause +23; `loadBasis` and `combine_with` as fields 0). Prompt **3,648 → 3,644**: the CANNOT line

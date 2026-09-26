@@ -9,6 +9,12 @@
  * grocery lines 0032), and every one of those rows carries its own snapshot of
  * the figures. So nothing that logged the food changes a number. It only stops
  * linking to the catalog entry.
+ *
+ * One thing on screen does change, and the line says so rather than letting
+ * "keep their own numbers" imply nothing moves: a meal item counted in the
+ * food's serving ("2 × 1 egg (100 g)") reads its serving name through a live
+ * join, so after the delete it shows the amount alone ("100 g"). See
+ * `FoodUsage.counted`.
  */
 import type { FoodUsage } from '@/lib/db/repositories/foods';
 
@@ -22,8 +28,10 @@ function spoken(parts: readonly string[]): string {
 
 /**
  * "used by 3 meals and 1 template, which keep their own numbers" — or, for
- * one, "…, which keeps its own numbers" — or null when nothing used it. The
- * Coach's card appends this after the food's figures.
+ * one, "…, which keeps its own numbers" — or null when nothing used it. When a
+ * logged item counted the food's serving, it adds what that item will show:
+ * "…; 2 items counted in its serving will show their amount without the
+ * count". The Coach's card appends this after the food's figures.
  */
 export function foodKeptPhrase(usage: FoodUsage): string | null {
   const counts = [
@@ -34,9 +42,14 @@ export function foodKeptPhrase(usage: FoodUsage): string | null {
   const used = counts.filter(([n]) => n > 0);
   if (used.length === 0) return null;
   const one = used.length === 1 && used[0]![0] === 1;
-  return `used by ${spoken(used.map(([n, noun]) => plural(n, noun)))}, ${
+  const kept = `used by ${spoken(used.map(([n, noun]) => plural(n, noun)))}, ${
     one ? 'which keeps its own numbers' : 'which keep their own numbers'
   }`;
+  const counted = usage.counted;
+  if (!(counted > 0)) return kept;
+  return `${kept}; ${plural(counted, 'item')} counted in its serving will show ${
+    counted === 1 ? 'its' : 'their'
+  } amount without the count`;
 }
 
 /**

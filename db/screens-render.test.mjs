@@ -6828,7 +6828,12 @@ console.log('\n28. 2026-09-25 — the Log tab’s ×, Add food’s Delete, and t
     {},
     {
       ...props,
-      deleteConsequence: foodDeleteConsequence('Oats', { meals: 3, templates: 0, recipes: 0 }),
+      deleteConsequence: foodDeleteConsequence('Oats', {
+        meals: 3,
+        templates: 0,
+        recipes: 0,
+        counted: 0,
+      }),
     }
   );
   expect('food-search editor (Delete armed)', armed, [

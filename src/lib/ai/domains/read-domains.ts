@@ -202,6 +202,13 @@ function combineIds(row: DomainRow, patch: Record<string, unknown>): string[] {
  * It is the whole of the staleness guard for the OTHER meals: `edit_record`
  * redraws this line past the gate, and a meal renamed, re-timed, re-portioned
  * or deleted meanwhile no longer prints the same.
+ *
+ * It ends by saying the combine is permanent, because this path's is. The Eat
+ * tab's Combine offers an Undo (`combineWithUndo` → `uncombineMeals`, from the
+ * snapshot it holds while the offer is open); the Coach's has none, and the
+ * card's fixed lane for an edit says only that it is written once. The other
+ * meals' rows, names and times are deleted by `combineMeals`, so the line says
+ * that too.
  */
 function combineCard(db: Database, row: DomainRow, patch: Record<string, unknown>): string {
   const meals = combineIds(row, patch).map((id) => {
@@ -227,7 +234,8 @@ function combineCard(db: Database, row: DomainRow, patch: Record<string, unknown
       : `${fmtInt(plan.kcal)} kcal, so the day’s total does not change`;
   return (
     `Combine ${plan.count} meals on ${plan.keep.date} into "${name}" — ${list}. ` +
-    `One meal ${when}, ${result}; their items and photos move into it.`
+    `One meal ${when}, ${result}; their items and photos move into it and the other meals ` +
+    'are deleted. There is no undo.'
   );
 }
 

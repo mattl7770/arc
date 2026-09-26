@@ -1011,14 +1011,14 @@ console.log('17. a catalog food deleted with its Undo — what stays, and what c
     )
     .run(oats);
   const usage = foodUsage(db, oats);
-  usage.meals === 1 && usage.templates === 1 && usage.recipes === 0
+  usage.meals === 1 && usage.templates === 1 && usage.recipes === 0 && usage.counted === 0
     ? ok('its usage counts the meals and templates that name it')
     : bad('usage', JSON.stringify(usage));
   foodDeleteConsequence('Oats', usage) ===
   'Deletes “Oats” from the catalog. It is used by 1 meal and 1 template, which keep their own numbers.'
     ? ok('the armed line says what goes and what keeps its numbers')
     : bad('consequence', foodDeleteConsequence('Oats', usage));
-  foodDeleteConsequence('Rye', { meals: 0, templates: 0, recipes: 0 }) ===
+  foodDeleteConsequence('Rye', { meals: 0, templates: 0, recipes: 0, counted: 0 }) ===
   'Deletes “Rye” from the catalog. No meal, template or recipe uses it.'
     ? ok('…and a food nothing used says so')
     : bad('unused consequence');
@@ -1077,6 +1077,42 @@ console.log('17. a catalog food deleted with its Undo — what stays, and what c
   getFood(db, rye) !== undefined && listMealItems(db, bowl)[0].food_id === flakes
     ? ok('…and a line re-pointed at another food since keeps its new food')
     : bad('re-pointed link');
+
+  // THE ONE THING THAT CHANGES ON SCREEN. An item counted in the food's
+  // serving reads its noun through the live join in `listMealItems`, so once
+  // the food is gone it reads as its amount alone. The line says so, and this
+  // proves the line: before, the label has the count; after, it has not.
+  const eggs = createFood(db, {
+    name: 'Eggs',
+    serving_name: '1 egg',
+    serving_amount: 50,
+    kcal_100g: 143,
+  });
+  const { mealId: fry } = logMealWithItems(db, {
+    date: todayISODate(),
+    time: '09:00',
+    name: 'Fry-up',
+    items: [
+      { name: 'Eggs', food_id: eggs, amount: 100, unit: 'g', serving_qty: 2, kcal: 143 },
+      { name: 'Eggs', food_id: eggs, amount: 50, unit: 'g', kcal: 72 },
+    ],
+  });
+  const eggUsage = foodUsage(db, eggs);
+  const counted = () => listMealItems(db, fry).find((i) => i.serving_qty === 2);
+  const before = portionLabel(counted());
+  eggUsage.meals === 1 && eggUsage.counted === 1
+    ? ok('usage counts the one item logged as a count of the serving, and not the plain one')
+    : bad('counted usage', JSON.stringify(eggUsage));
+  foodDeleteConsequence('Eggs', eggUsage) ===
+  'Deletes “Eggs” from the catalog. It is used by 1 meal, which keeps its own numbers; ' +
+    '1 item counted in its serving will show its amount without the count.'
+    ? ok('…and the armed line says that item will show its amount without the count')
+    : bad('counted consequence', foodDeleteConsequence('Eggs', eggUsage));
+  deleteFood(db, eggs);
+  const after = portionLabel(counted());
+  /^2 × 1 egg/.test(before ?? '') && after === fmtAmount(100, 'g') && counted().kcal === 143
+    ? ok(`…which is what happens: "${before}" reads "${after}", and its numbers stay`)
+    : bad('counted label after delete', `${before} → ${after}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

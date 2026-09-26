@@ -68,7 +68,9 @@ import { forgetMemory, getMemory, rememberFact } from '../src/lib/db/repositorie
 import {
   archiveKnowledgeEntry,
   getKnowledgeEntry,
+  restoreKnowledgeEntry,
   saveKnowledgeEntry,
+  updateKnowledgeEntry,
 } from '../src/lib/db/repositories/knowledge.ts';
 import { listEntriesOn, logCapture, logMetric, logNote } from '../src/lib/db/repositories/logs.ts';
 import { removeLogCapture } from '../src/lib/health/publish.ts';
@@ -1456,33 +1458,80 @@ console.log('7. 2026-09-25 — memories, knowledge, captures, a load basis and a
       entryId: null,
     });
     const saved = formatLocalDate(new Date(getKnowledgeEntry(db, id).created_at));
+    // PARITY, both acts: the screen deletes from the Archived list only, so an
+    // entry still in every search refuses at CARD time and names the archive.
+    const active = throwText(() =>
+      deleteRecord.confirmSummary({ domain: 'knowledge', id }, db, { now: NOW })
+    );
+    active !== null &&
+    /still in every search/.test(active) &&
+    /status: "archived"/.test(active) &&
+    active.includes(id) &&
+    /Nothing deleted/.test(active) &&
+    getKnowledgeEntry(db, id) !== undefined
+      ? ok(
+          'an ACTIVE knowledge entry refuses at card time and names the archive — as its screen does'
+        )
+      : bad('active knowledge entry', String(active));
+    const activeTurn = await serviceTurn(db, 'delete_record', { domain: 'knowledge', id }, () => {
+      throw new Error('no card should be drawn for an active entry');
+    });
+    activeTurn.request === null &&
+    activeTurn.call?.isError === true &&
+    getKnowledgeEntry(db, id) !== undefined
+      ? ok('…through the service too: no card is drawn, and the entry stays')
+      : bad('active knowledge service', JSON.stringify(activeTurn));
+
+    archiveKnowledgeEntry(db, id);
+    const archivedOn = formatLocalDate(new Date(getKnowledgeEntry(db, id).archived_at));
     const line = deleteRecord.confirmSummary({ domain: 'knowledge', id }, db, { now: NOW });
     line ===
     `Delete knowledge entry "Zone 2 three times a week" — scientific · training · saved ${saved} · ` +
-      'in every search · "Three ninety-minute sessions a week, at a pace you can still…"'
-      ? ok(`a knowledge entry's card names its section, topic, day, state and opening words`)
+      `archived ${archivedOn} · "Three ninety-minute sessions a week, at a pace you can still…"`
+      ? ok(`an archived entry's card names its section, topic, both days and its opening words`)
       : bad('knowledge card', line);
     approveDelete(db, 'knowledge', id);
     const chunks = db.get('SELECT count(*) n FROM knowledge_chunks WHERE entry_id = ?', [id]).n;
     getKnowledgeEntry(db, id) === undefined &&
     chunks === 0 &&
     db.get('SELECT count(*) n FROM knowledge_chunks WHERE id = ?', [packId]).n === 1
-      ? ok('…and approving it removes the entry and its chunks, and never the shipped pack')
+      ? ok('…and approving it removes the entry, and never the shipped pack')
       : bad('knowledge not removed', String(chunks));
 
     const moving = saveKnowledgeEntry(db, { title: 'Sauna', topic: 'heat', body: 'Four rounds.' });
+    archiveKnowledgeEntry(db, moving);
     const stale = await serviceTurn(
       db,
       'delete_record',
       { domain: 'knowledge', id: moving },
       () => {
-        archiveKnowledgeEntry(db, moving);
+        updateKnowledgeEntry(db, moving, { body: 'Five rounds, then a cold plunge.' });
         return true;
       }
     );
-    refusedStale(stale.call, 'deleted') && getKnowledgeEntry(db, moving) !== undefined
-      ? ok('an entry archived while the card was open refuses the delete')
+    stale.request?.kind === 'delete' &&
+    refusedStale(stale.call, 'deleted') &&
+    getKnowledgeEntry(db, moving) !== undefined
+      ? ok('an archived entry rewritten while the card was open refuses the delete')
       : bad('knowledge staleness', JSON.stringify(stale.call));
+    const restored = await serviceTurn(
+      db,
+      'delete_record',
+      { domain: 'knowledge', id: moving },
+      () => {
+        restoreKnowledgeEntry(db, moving); // back in every search on its own screen
+        return true;
+      }
+    );
+    restored.request?.kind === 'delete' &&
+    restored.call?.isError === true &&
+    /still in every search/.test(restored.call.result) &&
+    /Nothing deleted/.test(restored.call.result) &&
+    restored.call.receipt === undefined &&
+    getKnowledgeEntry(db, moving) !== undefined
+      ? ok('…and one restored while the card was open refuses, because it is active again')
+      : bad('knowledge restored mid-card', JSON.stringify(restored.call));
+    archiveKnowledgeEntry(db, moving);
     const no = await serviceTurn(
       db,
       'delete_record',
@@ -1656,8 +1705,12 @@ console.log('7. 2026-09-25 — memories, knowledge, captures, a load basis and a
     const line = card(db, 'meals', coffee, fields);
     line ===
     `Combine 2 meals on ${TODAY} into "Breakfast" — 07:40 Porridge, 228 kcal; 07:55 Coffee, 40 kcal. ` +
-      'One meal at 07:40, 268 kcal, so the day’s total does not change; their items and photos move into it.'
-      ? ok(`a combine card lists the meals, their times and the combined name ("${line}")`)
+      'One meal at 07:40, 268 kcal, so the day’s total does not change; their items and photos ' +
+      'move into it and the other meals are deleted. There is no undo.'
+      ? ok(
+          `a combine card lists the meals, their times and the combined name, and says the ` +
+            `Coach's combine has no undo, unlike the Eat tab's ("${line}")`
+        )
       : bad('combine card', line);
     const lone = throwText(() => card(db, 'meals', coffee, { combine_with: [coffee] }));
     const extra = throwText(() =>
@@ -1744,6 +1797,31 @@ console.log('7. 2026-09-25 — memories, knowledge, captures, a load basis and a
     'Delete catalog food "Oats" — per 100 g: 379 kcal · P 13g; used by 1 meal, which keeps its own numbers'
       ? ok(`a used food's card says what keeps its numbers, as Add food's line does ("${line}")`)
       : bad('food usage card', line);
+    // An item counted in the food's serving reads its noun through a live join,
+    // so the card says that item will show its amount without the count.
+    const eggs = createFood(db, {
+      name: 'Eggs',
+      serving_name: '1 egg',
+      serving_amount: 50,
+      kcal_100g: 143,
+    });
+    logMealWithItems(db, {
+      date: TODAY,
+      time: '09:00',
+      name: 'Fry-up',
+      items: [{ name: 'Eggs', food_id: eggs, amount: 100, serving_qty: 2, kcal: 143 }],
+    });
+    const eggLine = deleteRecord.confirmSummary({ domain: 'food_catalog', id: eggs }, db, {
+      now: NOW,
+    });
+    eggLine.endsWith(
+      '; used by 1 meal, which keeps its own numbers; 1 item counted in its serving will show ' +
+        'its amount without the count'
+    )
+      ? ok(
+          `…and a food counted by its serving says the count leaves that item's label ("${eggLine}")`
+        )
+      : bad('counted food card', eggLine);
     const tab = readFileSync(new URL('../app/food-search.tsx', import.meta.url), 'utf8');
     const offers = readFileSync(
       new URL('../src/lib/nutrition/undo-offers.ts', import.meta.url),

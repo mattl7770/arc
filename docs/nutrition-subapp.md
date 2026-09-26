@@ -1830,14 +1830,20 @@ The owner, on the round-two decision page, answering *"the Coach can delete a ca
 
 It is a foreign-key fact, checked against every migration: all four references to `foods (id)` — meal items (0014), template items (0018), recipe lines (0031), grocery lines (0032) — are `ON DELETE SET NULL`, and every one carries its own snapshot. No logged figure changes; the rows stop linking to the catalog entry. `foodUsage` counts the meals, templates and recipes (grocery lines keep their name and are not named on the line).
 
+**One label does change, and the line says so.** A meal item logged as a count of the food's serving (`2 × 1 egg (100 g)`) takes its noun from a live join to `foods.serving_name` (`listMealItems` → `portionLabel`); the serving name was never snapshotted onto the item (the gap 0059's header names). Once the food is gone, that item reads as its amount alone (`100 g`) — the numbers are untouched, the count is not shown. `foodUsage.counted` counts exactly those items, and when it is non-zero the line gains a clause:
+
+> Deletes "Eggs" from the catalog. It is used by 1 meal, which keeps its own numbers; 1 item counted in its serving will show its amount without the count.
+
+Add food's Undo re-links the items, so the count comes back with it; the Coach's delete has no Undo, and re-creating the food does not re-link anything. Snapshotting the serving name onto `meal_items` would close this for good and is still a backlog item.
+
 **The Undo is exact.** `takeFood` (`repositories/foods.ts`) reads the row whole — every column and its `rowid` — and the ids of every row that linked to it, then calls `deleteFood`, the Coach's own. `restoreFood` puts the row back verbatim (its star, its `created_at`) and re-links each of those rows **only where its `food_id` is still empty**, so a line re-pointed at another food in the meantime keeps its new food. A food whose barcode was cached again while the offer was open cannot come back — the barcode index is UNIQUE — and the Undo row says *Could not put Oats back in the catalog.* One stated cost: a re-linked row's `updated_at` records the re-link, the write stamp `uncombineMeals` already documents. The offer is the Eat tab's one Undo slot, scoped `on: 'catalog'`, drawn as the first row of the closing catalog plate; it closes when Add food is left.
 
 **The Coach** keeps `deleteFood` (`docs/coach-domains.md` §10b). Its card now appends the same phrase — `Delete catalog food "Oats" — per 100 g: 379 kcal · P 13g; used by 1 meal, which keeps its own numbers` — whenever anything used the food.
 
 ### Verification
 
-- `db/foods.test.mjs` **§17**: usage counts a meal and a template; the consequence line in both shapes; a delete leaves the meal and its item's figures byte-identical, unlinked; the offer's words; Undo restores the row byte for byte (rowid included), its star, and the meal, template and grocery links; a rescanned barcode refuses the Undo and marks the offer refused; a link re-pointed meanwhile keeps its new food.
-- `db/coach-domains.test.mjs` **§7f**: the Coach's card carries the usage phrase; Add food deletes through `deleteFoodWithUndo` → `takeFood` → `deleteFood` (source).
+- `db/foods.test.mjs` **§17**: usage counts a meal and a template; the consequence line in both shapes; an item counted in the food's serving is counted, the line names it, and after the delete its label really does read `100 g` where it read `2 × 1 egg (100 g)`; a delete leaves the meal and its item's figures byte-identical, unlinked; the offer's words; Undo restores the row byte for byte (rowid included), its star, and the meal, template and grocery links; a rescanned barcode refuses the Undo and marks the offer refused; a link re-pointed meanwhile keeps its new food.
+- `db/coach-domains.test.mjs` **§7f**: the Coach's card carries the usage phrase, the counted-serving clause included; Add food deletes through `deleteFoodWithUndo` → `takeFood` → `deleteFood` (source).
 - `db/screens-render.test.mjs` **§28**: Add food draws the catalog Undo row above Create a food, and nothing without an offer; the open row's editor at rest (the bin, no consequence) and armed (the consequence line, Delete, Add still there).
 
 ### What only the phone can settle
