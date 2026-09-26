@@ -21,7 +21,6 @@ import {
   listVersions,
   protocolFieldsOf,
   restoreVersion,
-  reviseProtocol,
   saveProtocolEdit,
   setActive,
   setStartedOn,
@@ -765,56 +764,68 @@ console.log('11. createProtocolWithVersion is one atomic create');
     : bad('orphan protocol left behind');
 }
 
-console.log('12. reviseProtocol applies meta + active + version in one transaction');
+console.log(
+  '12. saveProtocolEdit is one transaction, and the Coach’s shape of it mints no version'
+);
 {
   const { db, raw } = freshDb();
   const pid = createProtocolWithVersion(
     db,
-    { name: 'Morning Stack', type: 'supplement_stack' },
+    { name: 'Morning Stack', type: 'supplement_stack', description: 'with food' },
     STACK
   );
-  const v2 = reviseProtocol(db, pid, {
-    name: 'AM Stack',
-    type: 'daily_routine',
-    description: 'renamed',
-    active: false,
-    content: { items: [STACK.items[0]] },
-    changeNotes: 'Trimmed to creatine only',
+  const row = () => raw.prepare('SELECT * FROM protocols WHERE id = ?').get(pid);
+  const versions = () =>
+    raw.prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?').get(pid).c;
+  const live = () => parseProtocolContent(getCurrentVersion(db, pid).content);
+
+  // THE COACH'S SHAPE (the protocols domain's `edit_record`, write-domains.ts):
+  // the live document as both base and content, the row fields as opened, and
+  // only the patched ones changed. The screen's function, so the screen's
+  // rules: the changed columns, no version, and never `is_active`.
+  const opened = protocolFieldsOf(getProtocol(db, pid));
+  const coach = saveProtocolEdit(db, pid, {
+    base: live(),
+    content: live(),
+    changeNotes: null,
+    opened,
+    fields: { ...opened, name: 'AM Stack', checkoffMode: 'adjusting' },
   });
-  const p = raw.prepare('SELECT * FROM protocols WHERE id = ?').get(pid);
-  const v = getCurrentVersion(db, pid);
-  p && p.name === 'AM Stack' && p.type === 'daily_routine' && p.is_active === 0
-    ? ok('identity + paused state updated')
-    : bad('revise meta', JSON.stringify(p));
-  v && v.id === v2 && v.version_number === 2 && v.change_notes === 'Trimmed to creatine only'
-    ? ok('new version written and live')
-    : bad('revise version', JSON.stringify(v));
-  const noVersion = reviseProtocol(db, pid, {
-    name: 'AM Stack',
-    type: 'daily_routine',
-    description: null,
-    active: true,
-    content: null,
-  });
-  noVersion === null &&
-  raw.prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?').get(pid).c === 2
-    ? ok('content: null updates the row without minting a version')
-    : bad('meta-only revise', JSON.stringify(noVersion));
+  const after = row();
+  coach.ok &&
+  coach.versionId === null &&
+  versions() === 1 &&
+  JSON.stringify([...coach.wrote].sort()) === JSON.stringify(['checkoffMode', 'name']) &&
+  after.name === 'AM Stack' &&
+  after.checkoff_mode === 'adjusting' &&
+  after.description === 'with food' &&
+  after.type === 'supplement_stack' &&
+  after.is_active === 1
+    ? ok('a rename + policy change with the live document as base writes two columns, no version')
+    : bad('coach-shaped save', JSON.stringify({ coach, after }));
+
+  // ONE TRANSACTION: a version write that fails takes the rename with it. The
+  // failure is forced with a trigger, since the repository never builds a
+  // version row SQLite would refuse on its own.
+  raw.exec(
+    "CREATE TRIGGER boom BEFORE INSERT ON protocol_versions BEGIN SELECT RAISE(ABORT, 'boom'); END;"
+  );
+  const reopened = protocolFieldsOf(getProtocol(db, pid));
   throws(() =>
-    reviseProtocol(db, pid, {
-      name: 'Half-saved',
-      type: 'daily_routine',
-      description: null,
-      active: true,
-      content: STACK,
-      createdBy: 'robot',
+    saveProtocolEdit(db, pid, {
+      base: live(),
+      content: { ...live(), phases: [{ ...live().phases[0], items: [live().phases[0].items[0]] }] },
+      changeNotes: 'Trimmed to creatine only',
+      opened: reopened,
+      fields: { ...reopened, name: 'Half-saved' },
     })
   )
-    ? ok('a failing version write makes the whole revision throw')
-    : bad('bad revise accepted');
-  raw.prepare('SELECT name FROM protocols WHERE id = ?').get(pid).name === 'AM Stack'
+    ? ok('a failing version write makes the whole save throw')
+    : bad('a failed version write was swallowed');
+  row().name === 'AM Stack' && versions() === 1
     ? ok('…and the rename rolled back with it — no partial save')
-    : bad('partial revise persisted');
+    : bad('partial save persisted', JSON.stringify(row()));
+  raw.exec('DROP TRIGGER boom');
 }
 
 console.log('12b. the one editor: an untouched form IS the live version, and a save writes only what changed');

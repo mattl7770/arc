@@ -14,6 +14,7 @@
 > | 6 | — | *Move to …* on the sheet reads **Move today …** | Q3 was moot, but the scope belongs in the name now that the item's own time lives one door away |
 > | 7 | — | completing a carried row settles **every** miss it stands for, each `late_on` + `late_via`; the undo re-opens them all | the owner's answer above; the mirror of the Phase 0 skip rule. `db/mission-generate.test.mjs` §34 |
 > | 8 | — | `src/lib/protocols/item-edit.ts` deleted; `parseDays` moved to `src/lib/protocols/edit-form.ts` | the per-item placement rules had one caller, which is gone; the form's own state is pure and tested instead (`seedPhases` → `buildContent` is byte-identical) |
+> | 9 | — | the Coach's `edit_record` on the protocols domain saves every field but `is_active` through the form's own `saveProtocolEdit` (live document as base and content, so no version); `reviseProtocol` is deleted | the parity rule (CLAUDE.md §6): once the Settings sheet went, `reviseProtocol` had no screen caller, and it anchored a never-set clock to the wall clock's day where the form's path anchors the turn's. Found in review. `db/coach-levers.test.mjs` R7b |
 >
 > The rest of this file is the plan as written, kept for its inventory and reasoning.
 

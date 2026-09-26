@@ -40,17 +40,25 @@ boundary (`src/lib/db/date.ts`), unit conversion, tombstones, provenance columns
 *inherited* rather than re-implemented. Whatever the repository refuses, the tool refuses.
 
 Parity covers what the screen does **after** the repository call, too. The protocol Settings sheet
-saves through `reviseProtocol` and then re-derives today; the `protocols` domain's `edit` did only
+saved through `reviseProtocol` and then re-derived today; the `protocols` domain's `edit` did only
 the first half until 2026-09-23, so a pause or a carry-over change made through the Coach reached
 today's mission the next morning. It now calls `rederiveMissionFromToday` after the write, exactly
 as the sheet does: a pause takes the protocol's untouched rows off today, and anything already done
 or skipped stays. That added no schema or description, so no tokens (`db/coach-levers.test.mjs` R7).
 
-Since 2026-09-25 the sheet is gone (`docs/spikes/protocol-menus-compact.md`, option A) and pausing
-is a row on the protocol page. A change to `is_active` through the domain now calls that row's own
-function, `setProtocolRunning` (`src/lib/protocols/pause.ts`: `setActive`, re-derive today,
-re-sync reminders), and every other field still goes through `reviseProtocol` with the flag passed
-through unchanged, so a rename can never flip it (`db/coach-levers.test.mjs` R7b). Still no tokens.
+Since 2026-09-25 the sheet is gone (`docs/spikes/protocol-menus-compact.md`, option A): every
+protocol fact is edited in one form, and pausing is a row on the protocol page. The domain follows
+both:
+
+- A change to `is_active` calls that row's own function, `setProtocolRunning`
+  (`src/lib/protocols/pause.ts`: `setActive`, re-derive today, re-sync reminders).
+- Every other field goes through the form's own save, `saveProtocolEdit`, with the live document as
+  both base and content, so no version is minted. It writes only the columns the patch changed, and
+  never `is_active`, so a rename can never flip the flag. A never-anchored phase clock is anchored
+  by the re-derive that follows, to the turn's day, as the form's save does.
+
+`reviseProtocol`, the second writer the domain used to call, had no screen caller left and is
+deleted (`db/coach-levers.test.mjs` R7b, `db/protocols.test.mjs` §12). Still no tokens.
 
 ## 3. The shape of a domain
 

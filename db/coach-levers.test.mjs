@@ -784,7 +784,9 @@ console.log(
     : bad('check-off mode change never reached today');
 }
 
-console.log('R7b. the Coach pauses through the page’s own function, and nothing else pauses');
+console.log(
+  'R7b. the Coach pauses through the page’s own function, and saves through the editor’s'
+);
 {
   // One definition of pausing (src/lib/protocols/pause.ts), shared by the
   // protocol page's Pause row and edit_record. Two of its rules are visible
@@ -815,6 +817,41 @@ console.log('R7b. the Coach pauses through the page’s own function, and nothin
   !listMission(db, TODAY).some((m) => m.title === 'Walk' && m.status === 'pending')
     ? ok('…and puts nothing back on today')
     : bad('a rename put a paused protocol back on today');
+
+  // PARITY: every other field goes through the editor's own save
+  // (`saveProtocolEdit`), not a second writer. Two of its rules show from here.
+  // A rename writes the one column it names — no version, no policy, no flag.
+  // And a RUNNING protocol whose clock was never anchored is anchored by the
+  // re-derive that follows, to the TURN's day, as the form's save does; the
+  // old second writer stamped the wall clock's.
+  const turn = freshDb();
+  const stretch = createProtocolWithVersion(
+    turn.db,
+    { name: 'Stretch', type: 'daily_routine', carryOver: true },
+    doc([{ id: 'stretch', title: 'Stretch', time: '08:00' }])
+  );
+  turn.raw.exec("UPDATE protocols SET started_on = NULL WHERE slug = 'stretch'");
+  const turnNow = new Date(NOW.getTime() - 3 * 86_400_000);
+  const turnDay = todayISODate(turnNow);
+  toolByName('edit_record').execute(
+    turn.db,
+    { domain: 'protocols', id: 'stretch', fields: { name: 'Stretch, long' } },
+    { now: turnNow }
+  );
+  const after = turn.raw.prepare('SELECT * FROM protocols WHERE id = ?').get(stretch);
+  const versions = turn.raw
+    .prepare('SELECT count(*) c FROM protocol_versions WHERE protocol_id = ?')
+    .get(stretch).c;
+  after.name === 'Stretch, long' &&
+  after.carry_over === 1 &&
+  after.checkoff_mode === 'strict' &&
+  after.is_active === 1 &&
+  versions === 1
+    ? ok('a Coach rename writes the name alone: no version, the policies and the flag untouched')
+    : bad('coach rename wrote more than the name', JSON.stringify({ after, versions }));
+  after.started_on === turnDay
+    ? ok('…and a never-anchored clock is anchored to the turn’s day, not the wall clock’s')
+    : bad('coach rename anchor', `${after.started_on} (turn ${turnDay}, wall ${TODAY})`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

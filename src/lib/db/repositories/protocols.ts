@@ -21,15 +21,7 @@
 import type { Database } from '../database';
 import { todayISODate } from '../date';
 import { newId } from '../id';
-import type {
-  Authorship,
-  CheckoffMode,
-  ProtocolRow,
-  ProtocolType,
-  ProtocolVersionRow,
-  SqliteBool,
-  Timestamp,
-} from '../types';
+import type { Authorship, ProtocolRow, ProtocolVersionRow, SqliteBool, Timestamp } from '../types';
 import { allItems, parseProtocolContent } from '@/lib/protocols/content';
 import { fieldPatch, rebaseContent, type ProtocolFields } from '@/lib/protocols/rebase';
 import type { NewProtocol, ProtocolContent, ProtocolListItem } from '@/lib/protocols/types';
@@ -163,86 +155,6 @@ export function addVersion(
   return id;
 }
 
-/** Everything one editor Save can change, applied atomically by {@link reviseProtocol}. */
-export type ProtocolRevision = {
-  name: string;
-  type: ProtocolType;
-  description: string | null;
-  active: boolean;
-  /** New version content, or null to leave the live version untouched. */
-  content: ProtocolContent | null;
-  /**
-   * Where the phase clock is anchored (0043). Only the editor sets it, and only
-   * for a protocol with more than one phase — that is the sole case where being
-   * wrong about the start date changes what lands on a day. Omit to leave the
-   * existing anchor alone.
-   */
-  startedOn?: string | null;
-  /**
-   * Execution policy (0050). Omit either to leave it alone — the Coach's
-   * `update_protocol` revises the PLAN and has no business flipping how the
-   * plan is run, so "unset" has to mean "unchanged" and not "back to default".
-   */
-  carryOver?: boolean;
-  checkoffMode?: CheckoffMode;
-  changeNotes?: string | null;
-  createdBy?: Authorship;
-};
-
-/**
- * The editor's edit-path Save: identity fields, active flag, and (when
- * `content` is non-null) a new version, in ONE transaction — a failure rolls
- * everything back rather than leaving a renamed protocol with stale items.
- * Returns the new version id, or null when no version was written.
- */
-export function reviseProtocol(
-  db: Database,
-  id: string,
-  revision: ProtocolRevision
-): string | null {
-  let versionId: string | null = null;
-  db.transaction(() => {
-    db.run('UPDATE protocols SET name = ?, description = ?, type = ?, is_active = ? WHERE id = ?', [
-      revision.name.trim(),
-      revision.description ?? null,
-      revision.type,
-      revision.active ? 1 : 0,
-      id,
-    ]);
-    // Anchoring is separate from the identity UPDATE so that omitting it means
-    // "leave it alone" rather than "clear it" — clearing would restart a
-    // titration on the next generation, which is the one thing a rename must
-    // never do.
-    if (revision.startedOn != null) {
-      db.run('UPDATE protocols SET started_on = ? WHERE id = ?', [revision.startedOn, id]);
-    } else if (revision.active) {
-      db.run('UPDATE protocols SET started_on = ? WHERE id = ? AND started_on IS NULL', [
-        todayISODate(),
-        id,
-      ]);
-    }
-    // Policy, same "omitted means unchanged" rule as the anchor above — and
-    // deliberately OUTSIDE the version write: turning carry-over on is not a
-    // revision of the plan, and must not write one.
-    if (revision.carryOver !== undefined) {
-      db.run('UPDATE protocols SET carry_over = ? WHERE id = ?', [revision.carryOver ? 1 : 0, id]);
-    }
-    if (revision.checkoffMode !== undefined) {
-      db.run('UPDATE protocols SET checkoff_mode = ? WHERE id = ?', [revision.checkoffMode, id]);
-    }
-    if (revision.content !== null) {
-      versionId = insertVersionRow(
-        db,
-        id,
-        revision.content,
-        revision.changeNotes ?? null,
-        revision.createdBy ?? 'user'
-      );
-    }
-  });
-  return versionId;
-}
-
 /** What the one protocol editor (app/protocol-edit.tsx) hands its Save. */
 export type ProtocolEdit = {
   /** The document the form opened on, canonical. */
@@ -312,6 +224,13 @@ export function protocolFieldsOf(row: ProtocolRow): ProtocolFields {
  * `is_active` is never written here: pausing is its own act
  * (src/lib/protocols/pause.ts). It never re-derives today either — that is the
  * caller's, after the commit, exactly as every other protocol write.
+ *
+ * Every edit of an existing protocol's name, type, description, start date or
+ * policies goes through here. The Coach's `edit_record` on the protocols domain
+ * (src/lib/ai/domains/write-domains.ts) calls it too, with the live document
+ * as both base and content, so the model edits those facts through the
+ * screen's own function and nothing else (CLAUDE.md §6, docs/coach-domains.md
+ * §2).
  */
 export function saveProtocolEdit(
   db: Database,
