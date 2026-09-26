@@ -40,11 +40,25 @@ boundary (`src/lib/db/date.ts`), unit conversion, tombstones, provenance columns
 *inherited* rather than re-implemented. Whatever the repository refuses, the tool refuses.
 
 Parity covers what the screen does **after** the repository call, too. The protocol Settings sheet
-saves through `reviseProtocol` and then re-derives today; the `protocols` domain's `edit` did only
+saved through `reviseProtocol` and then re-derived today; the `protocols` domain's `edit` did only
 the first half until 2026-09-23, so a pause or a carry-over change made through the Coach reached
 today's mission the next morning. It now calls `rederiveMissionFromToday` after the write, exactly
 as the sheet does: a pause takes the protocol's untouched rows off today, and anything already done
 or skipped stays. That added no schema or description, so no tokens (`db/coach-levers.test.mjs` R7).
+
+Since 2026-09-25 the sheet is gone (`docs/spikes/protocol-menus-compact.md`, option A): every
+protocol fact is edited in one form, and pausing is a row on the protocol page. The domain follows
+both:
+
+- A change to `is_active` calls that row's own function, `setProtocolRunning`
+  (`src/lib/protocols/pause.ts`: `setActive`, re-derive today, re-sync reminders).
+- Every other field goes through the form's own save, `saveProtocolEdit`, with the live document as
+  both base and content, so no version is minted. It writes only the columns the patch changed, and
+  never `is_active`, so a rename can never flip the flag. A never-anchored phase clock is anchored
+  by the re-derive that follows, to the turn's day, as the form's save does.
+
+`reviseProtocol`, the second writer the domain used to call, had no screen caller left and is
+deleted (`db/coach-levers.test.mjs` R7b, `db/protocols.test.mjs` §12). Still no tokens.
 
 ## 3. The shape of a domain
 
@@ -289,7 +303,7 @@ guardrail, so it is held to four things, each asserted in `db/coach-domains.test
 | `meals` | Eat › meal, *Delete this meal* (`meal-detail.tsx`) | `deleteMealWithPhotos` | **allowed** (was own) | the screen's function, not bare `deleteMeal`: the CASCADE takes photo rows and leaves the files |
 | `workouts` | Train › session, *Delete session* (`workout-live.tsx`) | `deleteWorkout` | **allowed** (was own) | sets are its own parts; the watch's paired session stays |
 | `water` | Water, *Remove* (`water.tsx`); the Log tab's quick-add undo | `removeWaterCapture` (edits: `editWaterCapture`) — the row, then its published sample in Apple Health | allowed | manual rows only — a device row refuses at resolve |
-| `protocols` | Protocols › settings, *Delete protocol* (`protocol-settings.tsx`) | `deleteProtocol`, then `rederiveMissionFromToday` | **allowed** (was refuse) | its refusal asked for a screen "that shows what it would take with it"; the card now shows it — versions go, logged days keep their entries, unlinked |
+| `protocols` | the protocol editor, *Delete protocol* (`protocol-edit.tsx`; `protocol-settings.tsx` until 2026-09-25) | `deleteProtocol`, then `rederiveMissionFromToday` | **allowed** (was refuse) | its refusal asked for a screen "that shows what it would take with it"; the card now shows it — versions go, logged days keep their entries, unlinked |
 | `meal_templates` | Eat › templates (`meal-templates.tsx`) | `deleteTemplate` | allowed | a stamp, never a day |
 | `saved_workouts` | Train › saved workout (`routine-edit.tsx`) | `deleteRoutine` | allowed | sessions keep their sets (SET NULL) |
 | `recipes` | Eat › recipe (`recipe-detail.tsx`) | `deleteRecipe` | allowed | cooked meals keep their macros (SET NULL) |

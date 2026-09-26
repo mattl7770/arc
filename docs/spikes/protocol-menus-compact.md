@@ -1,8 +1,26 @@
-> **PLAN — not built (written and fact-checked 2026-09-23).** The owner's two protocol-menu notes; options A/B/C, recommendation C. Phase 0 (three mission-layer defects) is BUILT and merged 2026-09-23; the rest waits on the owner's answers. The owner's answers are collected on the round-two decisions page; this file is the plan of record until they arrive.
+> **BUILT — 2026-09-25, branch `claude/fb-protoeditor`, option A (one editor), the owner's choice.** Phase 0 was built and merged 2026-09-23. No migration (head stays `0061` on this branch; the rule in §8 held). Routes: `/protocol-item` and `/protocol-settings` removed; no route added — `/protocol-edit` gained two parameters, `item` and `add`.
+>
+> **The owner's answers (decision page, 2026-09-25).** Q1 **(b) — one editor**, against the plan's recommendation of C. Q2 **(a)** — *Pause* / *Resume* is a row on the protocol page with a confirmation that says what leaves today; no form, no Save. This replaces A's *Running / Paused* line inside the form. Q5 **(a)** — items inside the form are one line each (time · name · dose · cadence) that open in place to their fields, one at a time. Q3 and Q4 were moot under A; *Move today …* stays on the mission row's sheet as a today-only action. And one more, from the same page: *"An item missed on two days shows up once, carried. When you do it: it settles both missed days (both marked late)."*
+>
+> **What was built, and where it departs from §3 A:**
+>
+> | # | The plan (§3 A) | What shipped | Why |
+> |---|---|---|---|
+> | 1 | a whole-document save **refuses if the live version moved** since the form opened | the save **re-reads and merges**: the form's changes are applied onto the live version fact by fact (the phase frame, each item's fields, each item's phase, the order inside each phase, each row column), and it refuses — writing nothing, reloading the form — only when the same fact was changed two ways (`src/lib/protocols/rebase.ts`, one transaction in `saveProtocolEdit`) | the plan named the price of a blanket refusal: every dose change now happens in this form, so a Coach edit approved in another tab would have cost a redo on the most frequent edit in the app, where `/protocol-item` used to merge. The merge keeps that behaviour and is exact: nothing it writes is a guess. Pinned in `db/protocols.test.mjs` §12b–§12c |
+> | 2 | *Running / Paused* inside the form | a row on the page, `setProtocolRunning` (`src/lib/protocols/pause.ts`) — `setActive`, re-derive today, re-sync reminders — which the Coach's `edit_record` also calls | the owner's Q2 answer. The form never writes `is_active`, so a save cannot undo a pause made meanwhile |
+> | 3 | the two policies in the form | also on the **create** path | it is one form; a protocol can be created with carry-over on without a second trip |
+> | 4 | *Add an item* always drawn | drawn at the end of *Now* whenever a phase is live, paused or not; it opens the form with a blank item in the live phase, open | R7. A paused protocol can still be given an item |
+> | 5 | an expanded row shows the item's fields | name, dose, **why-line**, time and reminder, cadence, and (phased) phase chips; the time and cadence controls stay collapsed to their lines inside an open item | the wheel is tall; the item's other fields should stay on screen (a §9 device question) |
+> | 6 | — | *Move to …* on the sheet reads **Move today …** | Q3 was moot, but the scope belongs in the name now that the item's own time lives one door away |
+> | 7 | — | completing a carried row settles **every** miss it stands for, each `late_on` + `late_via`; the undo re-opens them all | the owner's answer above; the mirror of the Phase 0 skip rule. `db/mission-generate.test.mjs` §34 |
+> | 8 | — | `src/lib/protocols/item-edit.ts` deleted; `parseDays` moved to `src/lib/protocols/edit-form.ts` | the per-item placement rules had one caller, which is gone; the form's own state is pure and tested instead (`seedPhases` → `buildContent` is byte-identical) |
+> | 9 | — | the Coach's `edit_record` on the protocols domain saves every field but `is_active` through the form's own `saveProtocolEdit` (live document as base and content, so no version); `reviseProtocol` is deleted | the parity rule (CLAUDE.md §6): once the Settings sheet went, `reviseProtocol` had no screen caller, and it anchored a never-set clock to the wall clock's day where the form's path anchors the turn's. Found in review. `db/coach-levers.test.mjs` R7b |
+>
+> The rest of this file is the plan as written, kept for its inventory and reasoning.
 
 # Compacting the protocol editing surfaces
 
-**Status: PROPOSAL.** Written 2026-09-23.
+**Status: BUILT (option A), 2026-09-25.** Written 2026-09-23.
 
 Read on `main` at `f6ca05b`. `main` moved to `70557b0` during the read, when the iOS time wheel merged. That merge changed only import lines in `app/protocol-edit.tsx` and `app/protocol-item.tsx`, so every citation there below line 24 still holds. It also kept `TimeControl`'s props: `time`, `remind`, `onChange`, `itemLabel`, `defaultOpen`. Nothing in this plan depends on the old time chips. Test line numbers were re-checked on `70557b0`.
 

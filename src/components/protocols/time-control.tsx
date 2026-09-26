@@ -2,8 +2,9 @@
  * When one protocol item happens, and whether it nudges (C9 + C10).
  *
  * Extracted verbatim from app/protocol-edit.tsx on 2026-09-19 so the per-item
- * editor and the mission item sheet's *Move to …* can use the same control.
- * Nothing about it changed in the move.
+ * editor could use the same control. That editor folded back into
+ * app/protocol-edit.tsx on 2026-09-25, where this now draws inside the one
+ * item that is open.
  *
  * **2026-09-21 — the chips became a wheel.** Six anchor presets and a typed
  * `HH:MM` field were what C9 shipped, and the backlog line called the choice
@@ -30,9 +31,10 @@ import { TimeWheel } from './time-wheel';
  * items would otherwise carry eight open wheels, and the common case (no time
  * at all) would cost as much room as the rare one.
  *
- * `defaultOpen` is for the per-item editor, which draws ONE item and has the
- * room: there the two controls open on arrival, because collapsing a form with
- * three fields in it hides half the screen to save nothing.
+ * `defaultOpen` is for a caller that draws ONE item and has the room. The
+ * protocol editor opens it collapsed even inside an open item, because the
+ * wheel is tall and the item's other fields should stay on screen; the render
+ * suite opens it to see the fallback field.
  *
  * **Clearing is a first-class action**, and now more than ever: a wheel has no
  * empty state — a `UIDatePicker` always shows *some* time — so "no time" can

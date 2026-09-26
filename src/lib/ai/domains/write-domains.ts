@@ -57,8 +57,8 @@ import {
   getProtocolBySlug,
   listProtocols,
   listVersions,
-  reviseProtocol,
-  setActive,
+  protocolFieldsOf,
+  saveProtocolEdit,
 } from '@/lib/db/repositories/protocols';
 import {
   deleteRecipe,
@@ -91,9 +91,10 @@ import {
   setWaterTarget,
   updateProfile,
 } from '@/lib/db/repositories/user';
-import type { ProtocolRow } from '@/lib/db/types';
+import type { CheckoffMode, ProtocolRow, ProtocolType } from '@/lib/db/types';
 import type { GroceryItemRow } from '@/lib/grocery/types';
 import { allItems, parseProtocolContent } from '@/lib/protocols/content';
+import { setProtocolRunning } from '@/lib/protocols/pause';
 import type { AppointmentRow, ScreeningRow } from '@/lib/screenings/types';
 import { GOAL_DIRECTIONS } from '@/lib/user/types';
 
@@ -669,36 +670,56 @@ const protocolsDomain: CoachDomainEntry = {
     if (typeof next.name !== 'string' || next.name.trim() === '') {
       throw new Error('A protocol keeps its name — "" is not one.');
     }
-    // `reviseProtocol` with `content: null` is the EDITOR'S OWN SAVE minus the
-    // document: identity, the active flag and the execution policy in one
-    // transaction, no new version minted. A policy is not a new plan, and the
-    // whole object is re-sent from the row so a rename cannot flip a flag.
-    reviseProtocol(db, row.id, {
-      name: next.name,
-      type: next.type as (typeof PROTOCOL_TYPES)[number],
-      description: (next.description as string | null) ?? null,
-      active: next.is_active === true,
-      content: null,
-      carryOver: next.carry_over as boolean,
-      checkoffMode: next.checkoff_mode as 'strict' | 'adjusting',
-      ...('started_on' in patch ? { startedOn: patch.started_on as string } : {}),
+    const today = todayISODate(context.now);
+    // THE EDITOR'S OWN SAVE (app/protocol-edit.tsx → `saveProtocolEdit`), with
+    // the document left exactly as it is — the parity rule, CLAUDE.md §6. Base
+    // and form content are the same live document, so the merge hands the live
+    // version back and no version is minted: a policy is not a new plan. Only
+    // the columns this patch changed are written, onto the row as it is at the
+    // write; a field the patch omits is never touched, and `is_active` is not
+    // one of the form's fields at all — pausing is its own act, below, exactly
+    // as it is on the protocol page. A never-anchored phase clock is anchored by
+    // the re-derive that follows, to the TURN's day, as the form's save does.
+    const opened = protocolFieldsOf(row.raw as ProtocolRow);
+    const live = parseProtocolContent(getCurrentVersion(db, row.id)?.content ?? null);
+    const saved = saveProtocolEdit(db, row.id, {
+      base: live,
+      content: live,
+      changeNotes: null,
+      opened,
+      fields: {
+        name: 'name' in patch ? next.name.trim() : opened.name,
+        description:
+          'description' in patch
+            ? ((patch.description as string | null) ?? null)
+            : opened.description,
+        type: 'type' in patch ? (patch.type as ProtocolType) : opened.type,
+        startedOn: 'started_on' in patch ? (patch.started_on as string) : opened.startedOn,
+        carryOver: 'carry_over' in patch ? patch.carry_over === true : opened.carryOver,
+        checkoffMode:
+          'checkoff_mode' in patch ? (patch.checkoff_mode as CheckoffMode) : opened.checkoffMode,
+      },
     });
-    // Resuming a paused protocol ANCHORS an unanchored phase clock to today,
-    // which `reviseProtocol` does not do — that is `setActive`'s, and it is the
-    // difference between resuming a titration and restarting it.
-    if (patch.is_active === true && row.values.is_active !== true) {
-      setActive(db, row.id, true, todayISODate(context.now));
+    // `row` was re-read at execute, in this same synchronous call, so the row
+    // cannot have moved under the patch; the refusal is carried through anyway
+    // rather than dropped, because a save that wrote nothing must not report
+    // an edit.
+    if (!saved.ok) throw new Error(`${saved.refusal} Nothing written.`);
+    if ('is_active' in patch && (patch.is_active === true) !== (row.values.is_active === true)) {
+      // THE page's Pause / Resume (src/lib/protocols/pause.ts): the flag, a
+      // resume's anchor for a clock never started, today re-derived and the
+      // reminders re-synced. One definition, so a pause approved here takes
+      // this protocol's untouched rows off today exactly as the page's does.
+      setProtocolRunning(db, row.id, patch.is_active === true, today);
+    } else {
+      // Any other write still reaches TODAY: a carry-over or check-off-mode
+      // change re-plans the day, and anything already done or skipped is
+      // preserved by the same diff. The reminder re-sync follows every Coach
+      // write already (app/(tabs)/coach.tsx).
+      rederiveMissionFromToday(db, today);
     }
-    // The write reaches TODAY, exactly as the Settings sheet's save does
-    // (app/protocol-settings.tsx): a pause takes this protocol's untouched rows
-    // off today, a resume puts them back, a carry-over or check-off-mode change
-    // re-plans the day, and anything already done or skipped is preserved by
-    // the same diff. Without it a Coach pause took effect tomorrow, silently —
-    // the exact defect the rethink fixed for the sheet. The reminder re-sync
-    // follows every Coach write already (app/(tabs)/coach.tsx).
-    rederiveMissionFromToday(db, todayISODate(context.now));
   },
-  // HARD, through Protocols › settings' own Delete (app/protocol-settings.tsx),
+  // HARD, through the protocol editor's own Delete (app/protocol-edit.tsx),
   // and the same two steps it runs. This REFUSED until 2026-09-23 on the
   // ground that a deletion was "a decision made on the screen that shows what
   // it would take with it" — so the card now shows it, in the screen's own

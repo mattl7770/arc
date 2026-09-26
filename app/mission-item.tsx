@@ -37,6 +37,16 @@ import { cadenceLabel, phaseSummary, weekdayDate } from '@/lib/protocols/format'
  * from a named VoiceOver action on the row (src/components/home/mission-item.tsx),
  * so nothing about the one-tap check-off changes.
  *
+ * ## Today's actions, and one door to the item (2026-09-25)
+ *
+ * Under the one-editor shape the owner chose (docs/spikes/protocol-menus-
+ * compact.md, option A) this sheet keeps exactly what is about TODAY's row —
+ * skip, *Move today …*, remove, unsnooze, put back, mark not done — and
+ * *Edit this item*, which opens the protocol editor (app/protocol-edit.tsx)
+ * with this item expanded and scrolled into view. The per-item editor it used
+ * to open is gone. *Move today …* stays here and says its scope in its name:
+ * it moves this row on this day, while the item's own time is the editor's.
+ *
  * ## Accent budget: ZERO
  *
  * The same reason the protocol detail has none: this is a screen you read and
@@ -189,9 +199,13 @@ function MissionItemSheet({ view }: { view: MissionItemView }) {
                   }}
                 />
                 <Divider />
+                {/* TODAY only, and named so: the item's own time — every day it
+                    lands — is set in the editor (Edit this item, below), on the
+                    wheel. Two scopes, two labels (the owner kept this verb on
+                    the sheet on 2026-09-25). */}
                 <Row
                   icon="time-outline"
-                  label="Move to …"
+                  label="Move today …"
                   expanded={moving}
                   onPress={() => setMoving((open) => !open)}
                 />
@@ -269,7 +283,7 @@ function MissionItemSheet({ view }: { view: MissionItemView }) {
 
         {moving && item.status === 'pending' ? (
           <View className="mt-5">
-            <SectionLabel label="Move to" />
+            <SectionLabel label="Move today to" />
             <MoveControl
               initial={item.scheduledTime ?? ''}
               onMove={(time) => {
@@ -303,7 +317,7 @@ function MissionItemSheet({ view }: { view: MissionItemView }) {
                 chevron
                 onPress={() =>
                   router.push({
-                    pathname: '/protocol-item',
+                    pathname: '/protocol-edit',
                     params: { id: protocol.id, item: definition.id },
                   })
                 }

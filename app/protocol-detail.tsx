@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Pressable, Text, View } from 'react-native';
+import { Alert, Pressable, Text, View } from 'react-native';
 
 import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
@@ -8,6 +8,9 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { useProtocolRecord } from '@/hooks/use-protocols';
+import { getDb } from '@/lib/db/client';
+import { todayISODate } from '@/lib/db/date';
+import { untouchedRowsOf } from '@/lib/db/repositories/mission';
 import {
   cadenceLabel,
   durationLabel,
@@ -18,6 +21,7 @@ import {
   spanLabel,
   weekdayDate,
 } from '@/lib/protocols/format';
+import { setProtocolRunning } from '@/lib/protocols/pause';
 
 /**
  * One protocol: what it asks of you now, and whether you are doing it.
@@ -32,9 +36,11 @@ import {
  * 1. **Now** — a `field` verdict: the live phase, how far into it, and what the
  *    phase actually asks for. A protocol is a plan, and the first thing to know
  *    about a plan is which part of it is running. **Each item is a row that
- *    opens the per-item editor** (2026-09-19): the verb this screen needed most
- *    was *change this item*, and until then the only way to reach one was the
- *    whole form. Those rows are CONTENT inside the field, not a nested device —
+ *    opens the editor at that item** — expanded and scrolled into view — and
+ *    *Add an item* is drawn at the end of it whenever the protocol is running
+ *    (R7 of docs/spikes/protocol-menus-compact.md: until 2026-09-25 it was drawn
+ *    only on an empty phase, so adding to a protocol that had items meant the
+ *    whole form). Those rows are CONTENT inside the field, not a nested device —
  *    a row that pushes a screen is still content (src/components/ui/block.tsx).
  * 2. **Coming up** — a `plate` of the next six days, from the projection
  *    (`planForDay` under `committing: false`). It carries ONE honesty sentence
@@ -48,13 +54,23 @@ import {
  *    since changed is a fact about a different protocol. It moved BELOW *Coming
  *    up* in the re-cut: it led the screen, which put how well a protocol had
  *    been run above what it asks of you next.
- * 4. **The document** — a `plate` of rows into the editor and the version
- *    history, so the screen ends in an action rather than a number.
+ * 4. **The protocol** — a `plate` holding *Pause this protocol* (or *Resume
+ *    this protocol*) and *Version history*, so the screen ends in an action
+ *    rather than a number.
  *
- * *Settings* sits in the header's action slot — name, description, type,
- * Active/Paused, the phase anchor and the two 0050 policies. It left the
- * editor because none of it is a daily decision and all of it sat above the
- * items on a screen you open to change a dose.
+ * ## One door to the form (2026-09-25)
+ *
+ * *Edit* sits in the header's action slot and is the page's only way into the
+ * protocol-wide form (app/protocol-edit.tsx) — the owner's round-2 note was
+ * *"Having two settings menus for protocols is confusing"*, and until then the
+ * header opened *Settings* while an *Edit* row at the foot opened a second form.
+ * Both folded into the one editor (option A); the foot's *Edit* row went.
+ *
+ * **Pausing is not in that form.** It is a row in the closing plate with a
+ * confirmation that names what leaves today — no form and no Save (the owner's
+ * answer). It runs `setProtocolRunning` (src/lib/protocols/pause.ts), the same
+ * function the Coach's `edit_record` runs, so a pause made here and one
+ * approved on the Coach tab do exactly the same thing to today.
  *
  * ## The two empty states are different facts and are drawn differently
  *
@@ -76,9 +92,10 @@ import {
  * did not change.
  *
  * Accent budget: **zero.** This is a reference surface — you read it, you do not
- * act inside it — and the rows into the editor and the history are navigation,
- * not primary actions. Adherence is BEHAVIOUR, not biology, so nothing here
- * takes a `signal-*` colour either; the figures are measurements and take mono.
+ * act inside it — the rows into the editor and the history are navigation, and
+ * Pause is a rare act behind a confirmation, not the next thing to do.
+ * Adherence is BEHAVIOUR, not biology, so nothing here takes a `signal-*`
+ * colour either; the figures are measurements and take mono.
  */
 
 /** The screen the back control returns to — the only screen that pushes this. */
@@ -114,6 +131,53 @@ export default function ProtocolDetailScreen() {
   // day. Named rather than implied, so the ledger reconciles to the denominator.
   const untouched = adherence.planned - adherence.completed - adherence.skipped - adherence.partial;
 
+  /**
+   * Pause or resume, after a confirmation that says what happens to TODAY —
+   * read from the rows themselves before the tap, so the sentence names what
+   * the diff is about to take off rather than describing it in general.
+   */
+  const confirmRunning = () => {
+    const name = protocol.name;
+    if (paused) {
+      Alert.alert(
+        `Resume ${name}?`,
+        'What it plans for today goes back on today’s mission, and its reminders start again.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Resume',
+            onPress: () => {
+              setProtocolRunning(getDb(), protocol.id, true);
+              record.reload();
+            },
+          },
+        ]
+      );
+      return;
+    }
+    const leaving = untouchedRowsOf(getDb(), todayISODate(), protocol.id).map((row) => row.title);
+    const what =
+      leaving.length === 0
+        ? 'Nothing from it is waiting on today’s mission.'
+        : leaving.length <= 3
+          ? `${leaving.join(', ')} ${leaving.length === 1 ? 'leaves' : 'leave'} today’s mission.`
+          : `${leaving.length} items leave today’s mission.`;
+    Alert.alert(
+      `Pause ${name}?`,
+      `${what} Anything already done or skipped stays. It plans nothing and sends no reminders until you resume it; its phase clock keeps running.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Pause',
+          onPress: () => {
+            setProtocolRunning(getDb(), protocol.id, false);
+            record.reload();
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <Screen scroll>
       <View className="pt-2">
@@ -123,14 +187,14 @@ export default function ProtocolDetailScreen() {
           action={
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Protocol settings"
+              accessibilityLabel="Edit this protocol"
               onPress={() =>
-                router.push({ pathname: '/protocol-settings', params: { id: protocol.id } })
+                router.push({ pathname: '/protocol-edit', params: { id: protocol.id } })
               }
               hitSlop={8}
               className="min-h-[44px] justify-center pl-3 active:opacity-60">
               <Text className="font-label text-[11px] font-semibold tracking-[0.3px] text-ink-secondary">
-                Settings
+                Edit
               </Text>
             </Pressable>
           }
@@ -217,7 +281,7 @@ export default function ProtocolDetailScreen() {
                           }`}
                           onPress={() =>
                             router.push({
-                              pathname: '/protocol-item',
+                              pathname: '/protocol-edit',
                               params: { id: protocol.id, item: item.id },
                             })
                           }
@@ -255,21 +319,24 @@ export default function ProtocolDetailScreen() {
                     })}
                   </View>
                 )}
-                {/* A version-less protocol renders no items, so this row is the
-                    only way to give it one — and that save writes v1, exactly
-                    as the Coach's tool does on the same protocol. */}
-                {items.length === 0 ? (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Add an item"
-                    onPress={() =>
-                      router.push({ pathname: '/protocol-item', params: { id: protocol.id } })
-                    }
-                    className="mt-3 min-h-[44px] flex-row items-center gap-2 active:opacity-60">
-                    <Ionicons name="add" size={16} color={palette.inkSecondary} />
-                    <Text className="font-label text-[13px] text-ink-secondary">Add an item</Text>
-                  </Pressable>
-                ) : null}
+                {/* ALWAYS drawn while a phase is live (R7, 2026-09-25): adding
+                    to a protocol that already has items used to need the whole
+                    form. It opens the editor with a blank item in THIS phase,
+                    expanded. On a version-less protocol that save writes v1,
+                    exactly as the Coach's tool does on the same protocol. */}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Add an item"
+                  onPress={() =>
+                    router.push({
+                      pathname: '/protocol-edit',
+                      params: { id: protocol.id, add: '1' },
+                    })
+                  }
+                  className="mt-2 min-h-[44px] flex-row items-center gap-2 active:opacity-60">
+                  <Ionicons name="add" size={16} color={palette.inkSecondary} />
+                  <Text className="font-label text-[13px] text-ink-secondary">Add an item</Text>
+                </Pressable>
               </>
             )}
           </Block>
@@ -394,22 +461,29 @@ export default function ProtocolDetailScreen() {
         </View>
       </View>
 
-      {/* 4. The document. */}
+      {/* 4. The protocol — whether it runs, and its history. The Edit row
+             that sat here went on 2026-09-25: the header's Edit is the one
+             door to the form. */}
       <View className="mt-7">
-        <SectionLabel label="The document" />
+        <SectionLabel label="The protocol" />
         <View className="mt-3">
           <Block device="plate">
             <Divider first />
+            {/* A verb, not a door: no chevron. Neutral ink — this page spends
+                no accent, and pausing is not the next thing to do. */}
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Edit this protocol"
-              onPress={() =>
-                router.push({ pathname: '/protocol-edit', params: { id: protocol.id } })
-              }
+              accessibilityLabel={paused ? 'Resume this protocol' : 'Pause this protocol'}
+              onPress={confirmRunning}
               className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
-              <Ionicons name="create-outline" size={17} color={palette.inkSecondary} />
-              <Text className="flex-1 font-serif text-[15px] text-ink">Edit</Text>
-              <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />
+              <Ionicons
+                name={paused ? 'play-outline' : 'pause-outline'}
+                size={17}
+                color={palette.inkSecondary}
+              />
+              <Text className="flex-1 font-serif text-[15px] text-ink">
+                {paused ? 'Resume this protocol' : 'Pause this protocol'}
+              </Text>
             </Pressable>
 
             <Divider />

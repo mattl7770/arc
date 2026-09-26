@@ -33,6 +33,7 @@ import {
   remindableEntries,
   setMissionStatus,
   toggleMission,
+  untouchedRowsOf,
 } from '../src/lib/db/repositories/mission.ts';
 import { protocolAdherence } from '../src/lib/db/repositories/protocol-adherence.ts';
 import { completeExperiment, createExperiment } from '../src/lib/db/repositories/experiments.ts';
@@ -57,6 +58,7 @@ import {
   uncommitDayAhead,
 } from '../src/lib/db/repositories/mission-generate.ts';
 import { startStatus } from '../src/lib/db/repositories/statuses.ts';
+import { setProtocolRunning } from '../src/lib/protocols/pause.ts';
 
 let pass = 0;
 let fail = 0;
@@ -2322,6 +2324,165 @@ console.log('33. a skipped carried row settles EVERY miss it stood for, and noth
   reopened.every((r) => r.status === 'pending' && valueOf(r).skipped_via === undefined)
     ? ok('un-skipping the copy re-opens every miss it had settled')
     : bad('the undo left a miss settled', JSON.stringify(reopened.map((r) => [r.status, r.value])));
+  raw.close();
+}
+
+console.log('34. a completed carried row settles EVERY miss it stood for, each done late');
+{
+  // The owner, 2026-09-25: "An item missed on two days shows up once, carried.
+  // When you do it: it settles both missed days (both marked late)." Until
+  // then a completion settled only the anchor, and the next morning the older
+  // miss was carried in its place — the item just done came back owed.
+  const { db, raw } = freshDb();
+  const stack = createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: '2026-08-03', carryOver: true },
+    content([
+      {
+        items: [
+          { id: 'lower', title: 'Lower body', cadence: { kind: 'weekdays', days: [1, 3] } },
+          { id: 'upper', title: 'Upper body', cadence: { kind: 'weekdays', days: [1] } },
+        ],
+      },
+    ])
+  );
+  const lowerOn = (date) =>
+    entriesOn(db, raw, date).find((r) => r.title === 'Lower body' && !valueOf(r).carried);
+  const mon = lowerOn('2026-08-03');
+  const wed = lowerOn('2026-08-05');
+  const upperMon = rows(raw, '2026-08-03').find((r) => r.title === 'Upper body');
+
+  const thu = carriedOn(db, raw, '2026-08-06', 'Lower body');
+  thu.length === 1 && valueOf(thu[0]).carried_from?.entry === wed.id
+    ? ok('two missed days show up once on Thursday, anchored on the latest miss')
+    : bad('thursday carry', JSON.stringify(thu.map((r) => r.value)));
+  const copy = thu[0];
+
+  setMissionStatus(db, copy.id, 'completed', '2026-08-06');
+  const settled = [mon, wed].map((r) => rowById(raw, r.id));
+  settled.every(
+    (r) =>
+      r.status === 'skipped' &&
+      valueOf(r).late_on === '2026-08-06' &&
+      valueOf(r).late_via === copy.id
+  )
+    ? ok('doing it settles BOTH missed days, each marked done late on the day it was done')
+    : bad('a miss was left owed', JSON.stringify(settled.map((r) => [r.status, r.value])));
+  rowById(raw, upperMon.id).status === 'pending'
+    ? ok('…and not another item of the same protocol')
+    : bad('the completion reached another item', rowById(raw, upperMon.id).value);
+  carriedOn(db, raw, '2026-08-07', 'Lower body').length === 0
+    ? ok('Friday carries nothing: the older miss does not come back in its place')
+    : bad('an older miss came back after it was done');
+  protocolAdherence(db, stack, '2026-08-03', '2026-08-05').doneLate === 2
+    ? ok('the ledger reads both days as done late')
+    : bad('ledger', JSON.stringify(protocolAdherence(db, stack, '2026-08-03', '2026-08-05')));
+
+  // The undo re-opens every row the completion settled, not only the anchor.
+  toggleMission(db, copy.id, '2026-08-06');
+  const reopened = [mon, wed].map((r) => rowById(raw, r.id));
+  reopened.every(
+    (r) =>
+      r.status === 'pending' &&
+      valueOf(r).late_on === undefined &&
+      valueOf(r).late_via === undefined
+  )
+    ? ok('un-ticking the copy re-opens both missed days and clears both marks')
+    : bad('the undo left a miss settled', JSON.stringify(reopened.map((r) => [r.status, r.value])));
+
+  // Done, then declined instead: the completion's marks give way to the skip's.
+  setMissionStatus(db, copy.id, 'completed', '2026-08-06');
+  setMissionStatus(db, copy.id, 'skipped', '2026-08-06');
+  const refiled = [mon, wed].map((r) => rowById(raw, r.id));
+  refiled.every(
+    (r) =>
+      r.status === 'skipped' &&
+      valueOf(r).skipped_via === copy.id &&
+      valueOf(r).late_on === undefined &&
+      valueOf(r).late_via === undefined
+  )
+    ? ok('a done copy changed to skipped re-files both days as skipped, not done late')
+    : bad('refile', JSON.stringify(refiled.map((r) => r.value)));
+  toggleMission(db, copy.id, '2026-08-06');
+
+  // A row an OLDER build settled carries `late_on` on the anchor and no
+  // `late_via` — its undo still re-opens it.
+  raw
+    .prepare(
+      "UPDATE log_entries SET status = 'skipped', value = json_set(value, '$.late_on', '2026-08-06') WHERE id = ?"
+    )
+    .run(wed.id);
+  raw.prepare("UPDATE log_entries SET status = 'completed' WHERE id = ?").run(copy.id);
+  toggleMission(db, copy.id, '2026-08-06');
+  rowById(raw, wed.id).status === 'pending' && valueOf(rowById(raw, wed.id)).late_on === undefined
+    ? ok('an anchor settled before late_via existed is still re-opened by the undo')
+    : bad('legacy undo', rowById(raw, wed.id).value);
+  raw.close();
+}
+
+console.log('35. pause and resume — one function for the page and the Coach');
+{
+  const { db, raw } = freshDb();
+  const id = createProtocolWithVersion(
+    db,
+    { name: 'Evening Stack', type: 'supplement_stack', startedOn: DATE },
+    content([
+      {
+        items: [
+          { id: 'mag', title: 'Magnesium', time: '21:00' },
+          { id: 'zinc', title: 'Zinc', time: '21:00' },
+          { id: 'tea', title: 'Tea', time: '20:00' },
+        ],
+      },
+    ])
+  );
+  generateMissionForDay(db, DATE);
+  const onDay = () => listMission(db, DATE);
+  const zinc = onDay().find((m) => m.title === 'Zinc');
+  const tea = onDay().find((m) => m.title === 'Tea');
+  setMissionStatus(db, zinc.id, 'completed', DATE);
+  setMissionStatus(db, tea.id, 'skipped', DATE);
+
+  // What the page's confirmation names BEFORE the tap…
+  const leaving = untouchedRowsOf(db, DATE, id).map((r) => r.title);
+  JSON.stringify(leaving) === JSON.stringify(['Magnesium'])
+    ? ok('the rows a pause would take off today are read before the tap: only the untouched one')
+    : bad('untouchedRowsOf', JSON.stringify(leaving));
+
+  // …is exactly what leaves.
+  setProtocolRunning(db, id, false, DATE);
+  const paused = onDay();
+  raw.prepare('SELECT is_active FROM protocols WHERE id = ?').get(id).is_active === 0 &&
+  !paused.some((m) => m.title === 'Magnesium')
+    ? ok('pausing takes the untouched row off today')
+    : bad('pause left the row', JSON.stringify(paused.map((m) => m.title)));
+  paused.find((m) => m.id === zinc.id)?.status === 'completed' &&
+  paused.find((m) => m.id === tea.id)?.status === 'skipped'
+    ? ok('…and keeps the rows already done or skipped')
+    : bad('pause took an acted-on row', JSON.stringify(paused));
+
+  setProtocolRunning(db, id, true, DATE);
+  onDay().filter((m) => m.title === 'Magnesium').length === 1
+    ? ok('resuming puts it back, once')
+    : bad('resume', JSON.stringify(onDay().map((m) => m.title)));
+  raw.prepare('SELECT started_on FROM protocols WHERE id = ?').get(id).started_on === DATE
+    ? ok('…and leaves an existing phase clock where it was')
+    : bad('resume moved the clock');
+
+  // A protocol whose clock was never set: resuming starts it on the day of
+  // the resume, and only then.
+  const fresh = createProtocolWithVersion(
+    db,
+    { name: 'Sauna', type: 'therapy_protocol' },
+    content([{ items: [{ id: 's', title: 'Sauna' }] }])
+  );
+  setActive(db, fresh, false);
+  raw.prepare('UPDATE protocols SET started_on = NULL WHERE id = ?').run(fresh);
+  setProtocolRunning(db, fresh, true, '2026-08-02');
+  const anchored = raw.prepare('SELECT started_on FROM protocols WHERE id = ?').get(fresh);
+  anchored.started_on === '2026-08-02'
+    ? ok('resuming anchors a phase clock only when it was never set')
+    : bad('resume anchor', JSON.stringify(anchored));
   raw.close();
 }
 

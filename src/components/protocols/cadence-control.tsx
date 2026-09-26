@@ -2,7 +2,8 @@
  * How often one protocol item comes round.
  *
  * Extracted verbatim from app/protocol-edit.tsx on 2026-09-19 so the per-item
- * editor can use the same control. Nothing about it changed in the move.
+ * editor could use the same control; that editor folded back into
+ * app/protocol-edit.tsx on 2026-09-25. Nothing about the control changed.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
@@ -10,11 +11,12 @@ import { Pressable, Text, View } from 'react-native';
 
 import { palette } from '@/constants/theme';
 import { WEEKDAY_LABELS } from '@/lib/protocols/cadence';
+import { parseDays } from '@/lib/protocols/edit-form';
 import { cadenceLabel } from '@/lib/protocols/format';
 import type { Cadence, CadenceKind } from '@/lib/protocols/types';
 
 import { Chip } from '@/components/ui/chip';
-import { FormField, parseDays } from './form-controls';
+import { FormField } from './form-controls';
 
 /** The cadence kinds, in the order the control presents them. */
 const CADENCE_KINDS: { kind: CadenceKind; label: string }[] = [
@@ -44,8 +46,8 @@ export function cadenceOfKind(kind: CadenceKind, previous: Cadence): Cadence {
  * chips per item. A supplement stack of eight items would otherwise open on
  * thirty-two chips the user never touches.
  *
- * `defaultOpen` is for the per-item editor, which draws one item and has room
- * for the question to be asked outright.
+ * `defaultOpen` is for a caller that draws one item and has room for the
+ * question to be asked outright. The protocol editor opens it collapsed.
  */
 export function CadenceControl({
   cadence,

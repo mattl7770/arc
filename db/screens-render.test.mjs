@@ -154,8 +154,7 @@ import ProtocolEditScreen from '../app/protocol-edit.tsx';
 import ProtocolVersionsScreen from '../app/protocol-versions.tsx';
 import MissionItemScreen from '../app/mission-item.tsx';
 import MissionDayScreen from '../app/mission-day.tsx';
-import ProtocolSettingsScreen from '../app/protocol-settings.tsx';
-import ProtocolItemScreen from '../app/protocol-item.tsx';
+import { TimeControl } from '../src/components/protocols/time-control.tsx';
 import { ArcTimePicker, isTimeWheelAvailable } from '../src/lib/ui/date-time-picker.ts';
 import { MissionItemRow } from '../src/components/home/mission-item.tsx';
 import DataScreen from '../app/(tabs)/data.tsx';
@@ -3668,10 +3667,27 @@ const db = getDb();
     // noun for what is filed under it; the assistant-voiced version the owner
     // named as the archetype of the app's AI slop is refuted below.
     'Adherence',
-    'The document',
+    // The closing plate since 2026-09-25 (option A): whether it runs, and its
+    // history. Pause is a row with a confirmation, not a field in a form.
+    'The protocol',
+    'Pause this protocol',
     'Version history',
+    // ONE door to the protocol-wide form, in the header where Settings was.
+    'aria-label="Edit this protocol"',
+    // R7: Add an item is drawn on a protocol that already has items.
+    'Add an item',
   ]);
-  refute('protocol-detail', detail, ['How it is going', 'Nothing settled to judge yet']);
+  refute('protocol-detail', detail, [
+    'How it is going',
+    'Nothing settled to judge yet',
+    // The two settings menus the owner found confusing, and the second door.
+    'Protocol settings',
+    '>Settings<',
+    'The document',
+  ]);
+  (detail?.match(/aria-label="Edit this protocol"/g) ?? []).length === 1
+    ? ok('protocol-detail has exactly one door into the protocol form')
+    : bad('protocol-detail doors', String((detail?.match(/aria-label="Edit this protocol"/g) ?? []).length));
   // The loading dose belongs to a phase that is over. Printing it beside the
   // live one would hand the reader two doses of the same compound with nothing
   // saying which is current.
@@ -3682,61 +3698,110 @@ const db = getDb();
   expect('protocol-detail (no record yet)', detail, ['landed today', 'Counting starts tomorrow.']);
   refute('protocol-detail (no record yet)', detail, ['0%']);
 
-  // The EDIT path on a phased protocol: phase chrome appears, the start date
-  // appears with it, and the save is labelled with the version it will write.
+  // THE ONE EDITOR, on a phased protocol (docs/spikes/protocol-menus-compact.md,
+  // option A — the owner's choice of 2026-09-25): every protocol fact in one
+  // form. Identity, the phases and items, the phase clock ONCE, both policies,
+  // the change note and Delete.
   const editPhased = render('protocol-edit (phased)', ProtocolEditScreen, { id: phasedId });
   expect('protocol-edit (phased)', editPhased, [
     'Edit Protocol',
+    'aria-label="Protocol name"',
+    'value="Creatine loading"',
+    'Supplement stack', // the type chips are back — Settings folded in
+    'Changing it applies from tomorrow.',
     'Phase 1',
     'Phase 2',
-    'Phase 1 starts',
     'Loading',
     'Maintenance',
-    'Mon · Wed · Fri',
-    'Save as',
-  ]);
-  // The edit path is STRUCTURE only since 2026-09-19: identity, status, the two
-  // 0050 policies and Delete all moved to the settings sheet, which is the
-  // single surface that writes them.
-  refute('protocol-edit (phased)', editPhased, [
-    'Delete protocol',
-    'Supplement stack', // the type chips
-    'If you miss it',
-    'When you check it off',
-  ]);
-  // …and it gained the one thing the per-item editor cannot express.
-  expect('protocol-edit (phased)', editPhased, ['Move phase 2 up', 'Move Creatine down']);
-  // Every item's time control arrives collapsed to the line that states it —
-  // a stack of items must not arrive as a stack of open wheels.
-  refute('protocol-edit (phased)', editPhased, ['aria-label="Item time"', '>At<']);
-
-  // The CREATE path keeps identity, because a new protocol has to be named and
-  // typed before it can exist.
-  expect(
-    'protocol-edit (create, still whole)',
-    render('protocol-edit (create)', ProtocolEditScreen),
-    ['New Protocol', 'Supplement stack', 'Create protocol']
-  );
-
-  // The settings sheet: everything the editor stopped carrying, in one place,
-  // with the consequence of re-typing said where the control is.
-  const settings = render('protocol-settings', ProtocolSettingsScreen, { id: phasedId });
-  expect('protocol-settings', settings, [
-    'Settings',
-    'Creatine loading', // the back control names where it goes
-    'Supplement stack',
-    'Status',
+    'Mon · Wed · Fri', // an item line states its cadence
     'Phase 1 starts',
     'If you miss it',
     'When you check it off',
+    'What changed (optional)',
     'Delete protocol',
-    'Changing it applies from tomorrow.',
+    // Order is the form's to set: an item within its phase, a phase among phases.
+    'Move phase 2 up',
+    'Move Creatine down',
   ]);
+  (editPhased?.match(/Phase 1 starts/g) ?? []).length === 1
+    ? ok('protocol-edit asks for the phase clock exactly once')
+    : bad('Phase 1 starts appears', String((editPhased?.match(/Phase 1 starts/g) ?? []).length));
+  // PAUSE IS NOT IN THE FORM (the owner's second answer): it is a row on the
+  // page, so a Save can never flip it.
+  refute('protocol-edit (phased)', editPhased, ['>Status<', '>Paused<', '>Active<', 'Running']);
+  // At rest: every item is one line, nothing is open, and Save is inert and
+  // says so — it names no version, because nothing would write one.
+  refute('protocol-edit (phased)', editPhased, [
+    'aria-label="Item name"',
+    'aria-label="Item time"',
+    '>At<',
+    'Save as',
+  ]);
+  /** The Save button's own tag, so its disabled state can be read. */
+  const saveTag = (html) =>
+    (html?.match(/<[^>]*aria-label="(Save protocol|Create protocol)"[^>]*>/) ?? [''])[0];
+  saveTag(editPhased).includes('aria-disabled="true"')
+    ? ok('protocol-edit at rest: Save is inert')
+    : bad('protocol-edit at rest: Save is live', saveTag(editPhased));
+
+  // Opened AT an item — a Now row, or a mission row's *Edit this item*: that
+  // item alone is open, with its fields, the why-line among them.
+  const editAt = render('protocol-edit (at an item)', ProtocolEditScreen, {
+    id: phasedId,
+    item: 'c-maint',
+  });
+  expect('protocol-edit (at an item)', editAt, [
+    'aria-label="Item name"',
+    'aria-label="Dose or how-to"',
+    'value="5 g"',
+    'Why this is here', // the why-line is editable now, not carried unseen
+    'In Maintenance', // …and its phase, as chips, keeping its id when moved
+    'Moving an item puts it at the end of that phase.',
+  ]);
+  (editAt?.match(/aria-label="Item name"/g) ?? []).length === 1
+    ? ok('protocol-edit opens exactly one item: the one it was opened at')
+    : bad('open items', String((editAt?.match(/aria-label="Item name"/g) ?? []).length));
+  // Even open, the item's time control stays one line: the wheel is tall.
+  refute('protocol-edit (at an item)', editAt, ['aria-label="Item time"']);
+  saveTag(editAt).includes('aria-disabled="true"')
+    ? ok('protocol-edit opened at an item: Save is still inert until something changes')
+    : bad('opened at an item: Save live at rest', saveTag(editAt));
+
   expect(
-    'protocol-settings (gone)',
-    render('protocol-settings (gone)', ProtocolSettingsScreen, { id: 'nope' }),
+    'protocol-edit (at a gone item)',
+    render('protocol-edit (at a gone item)', ProtocolEditScreen, { id: phasedId, item: 'no-such' }),
+    ['The item you opened is not in the live version any more.']
+  );
+
+  // *Add an item* from the page: a blank item in the LIVE phase (Maintenance,
+  // phase 2 on day 10 of a 7-day loading phase), open.
+  const editAdd = render('protocol-edit (add)', ProtocolEditScreen, { id: phasedId, add: '1' });
+  expect('protocol-edit (add)', editAdd, ['New item', 'aria-label="Item name"']);
+  editAdd !== null && editAdd.indexOf('New item') > editAdd.indexOf('Phase 2')
+    ? ok('protocol-edit (add): the new item sits in the phase running today')
+    : bad('protocol-edit (add): the new item is not in the live phase');
+
+  expect(
+    'protocol-edit (gone)',
+    render('protocol-edit (gone)', ProtocolEditScreen, { id: 'nope' }),
     ['This protocol no longer exists.']
   );
+
+  // The CREATE path is the same form: identity, one open item, the policies.
+  const create = render('protocol-edit (create)', ProtocolEditScreen);
+  expect('protocol-edit (create, the same form)', create, [
+    'New Protocol',
+    'Supplement stack',
+    'aria-label="Item name"',
+    'If you miss it',
+    'When you check it off',
+    'Create protocol',
+  ]);
+  refute('protocol-edit (create, the same form)', create, [
+    'Delete protocol',
+    'What changed',
+    'Changing it applies from tomorrow.',
+  ]);
 
   // A second version, so the history has an adjacent pair to diff.
   addVersion(
@@ -3880,7 +3945,7 @@ const db = getDb();
     'Cadence',
     'Every day',
     'Skip today',
-    'Move to',
+    'Move today', // today only, and named so: the item's own time is the editor's
     'Remove from today',
     'Edit this item',
     'Open Evening ritual',
@@ -4041,64 +4106,63 @@ const db = getDb();
     'This item is no longer on today.',
   ]);
 
-  // The per-item editor. It is a FORM, so it carries no plate; its one accent
-  // is Save, and it is labelled with the version it will write.
-  const itemEdit = render('protocol-item (edit)', ProtocolItemScreen, {
+  // *Edit this item* on the sheet opens THE editor at that item (the per-item
+  // editor folded into it on 2026-09-25). It is a FORM, so it carries no
+  // plate; its one accent is Save.
+  const itemEdit = render('protocol-edit (from the sheet)', ProtocolEditScreen, {
     id: sheetProtocol,
     item: 'mag',
   });
-  expect('protocol-item (edit)', itemEdit, [
+  expect('protocol-edit (from the sheet)', itemEdit, [
     'Magnesium glycinate',
-    'Evening ritual', // the back control names where it goes
-    'Item',
-    'When',
-    'How often',
-    'Save as',
-    'Remove this item',
+    'Evening ritual', // the back control names the protocol
+    'value="400 mg"',
     'Sleep latency, not sedation.', // the why-line is EDITABLE here
     'Why this is here', // …and the field says whose line it is
+    '21:00', // the item's time, stated on its collapsed control
+    'Every day',
+    'aria-label="Remove Magnesium glycinate"',
   ]);
-  // Its two controls open on arrival: this form draws ONE item and has the
-  // room, unlike the full editor where eight would cost eight wheels. The
-  // time field only exists while the time control is OPEN, so it is the
-  // proof (the 07:00 preset chip was, until the chips became a wheel).
-  expect('protocol-item (edit)', itemEdit, ['Every day', 'Reminder', 'aria-label="Item time"']);
 
   // The time control is the iOS wheel since 2026-09-21 — the owner, on the
   // device checklist: "needs a real wheel like a calendar app". A native view
   // cannot render under node, and the seam decides that on the PLATFORM
-  // (src/lib/ui/date-time-picker.ts) — so what this screen draws here is the
+  // (src/lib/ui/date-time-picker.ts) — so what the control draws here is the
   // fallback: C9's typed field inside the field device, holding the STORED
   // time rather than the wheel's park, with the sentence that says why there
   // is no wheel. Never a blank. The HH:MM the wheel itself writes is pinned
-  // in db/protocols.test.mjs §14, where no component is needed.
+  // in db/protocols.test.mjs §14, where no component is needed. The editor
+  // opens the control collapsed, so it is rendered open here on its own.
   isTimeWheelAvailable() === false && ArcTimePicker === null
     ? ok('the time-wheel seam reports absent off iOS, so the fallback is what renders')
     : bad('time-wheel seam', 'reported available under node');
-  expect('protocol-item (edit, no wheel)', itemEdit, [
+  const timeOpen = render(
+    'time-control (open, no wheel)',
+    TimeControl,
+    {},
+    {
+      time: '21:00',
+      remind: false,
+      itemLabel: 'Magnesium glycinate',
+      defaultOpen: true,
+      onChange: () => {},
+    }
+  );
+  expect('time-control (open, no wheel)', timeOpen, [
     '>At<', // the field's caption, label voice
     'aria-label="Item time"',
     'value="21:00"', // the stored time, not the 07:00 park
     'The wheel arrives with the next app build.',
     'aria-label="Clear the time"', // the clear outlived the chips
+    'Remind me',
   ]);
   // The six anchor chips are gone from this control. (They live on in
-  // MoveControl, a mission row's Move to…, which is not on this screen.)
-  refute('protocol-item (edit, no wheel)', itemEdit, ['>09:00<', '>15:00<', '>18:00<']);
+  // MoveControl, a mission row's Move today …, which is not this control.)
+  refute('time-control (open, no wheel)', timeOpen, ['>09:00<', '>15:00<', '>18:00<']);
   // Slop pass 4 (§11.A): the build fact stays; "Type it here meanwhile" pointed
   // at the field directly above it. The time wheel merged after the third
   // walk's branch was cut and before it landed, so no walk had read it.
-  refute('protocol-item (edit, no wheel)', itemEdit, ['Type it here meanwhile']);
-
-  const itemAdd = render('protocol-item (add)', ProtocolItemScreen, { id: sheetProtocol });
-  expect('protocol-item (add)', itemAdd, ['New item', 'Save as']);
-  refute('protocol-item (add)', itemAdd, ['Remove this item']);
-
-  expect(
-    'protocol-item (gone)',
-    render('protocol-item (gone)', ProtocolItemScreen, { id: sheetProtocol, item: 'no-such' }),
-    ['This item is not in the live version any more.']
-  );
+  refute('time-control (open, no wheel)', timeOpen, ['Type it here meanwhile']);
 
   // ── The row itself ───────────────────────────────────────────────────────
   // `accessibilityActions` has no web equivalent, so react-native-web emits
@@ -4240,11 +4304,11 @@ const db = getDb();
   // reads its ALLOWANCE on its Now row instead of appearing in the projection.
   const ritual = render('protocol-detail (re-cut)', ProtocolDetailScreen, { id: sheetProtocol });
   expect('protocol-detail (re-cut)', ritual, [
-    'Settings', // the header action
+    'aria-label="Edit this protocol"', // the header action, where Settings was
     'Coming up',
     'next 6 days',
     'Projected from the plan. These days are not committed yet.',
-    'Magnesium glycinate', // a Now row, tappable into the item editor
+    'Magnesium glycinate', // a Now row, tappable into the editor at that item
     'of 3', // the quota item's allowance, on its own row
   ]);
   // A quota never appears in Coming up: an allowance is not a day.
@@ -4261,8 +4325,10 @@ const db = getDb();
     // fortnight must not put you back on week 1 — so the line stays true and
     // is prefixed rather than hidden.
     'clock reads',
+    // The one-step way back, with its confirmation (the owner's answer).
+    'Resume this protocol',
   ]);
-  refute('protocol-detail (paused)', pausedDetail, ['Coming up']);
+  refute('protocol-detail (paused)', pausedDetail, ['Coming up', 'Pause this protocol']);
 
   // The longest real category string plus a carry mark plus Snoozed, on one
   // line. This proves the LINE, not its legibility at 375pt — that stays a

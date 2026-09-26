@@ -369,6 +369,10 @@ export default function RootLayout() {
           <Stack.Screen name="protocols" />
           {/* Pushed from the hub: one protocol's live phase and its adherence. */}
           <Stack.Screen name="protocol-detail" />
+          {/* THE protocol editor — every protocol fact in one form, create and
+              edit alike, opening at an item with ?item= or with a new one with
+              ?add=1. It replaced /protocol-item and /protocol-settings on
+              2026-09-25 (docs/spikes/protocol-menus-compact.md, option A). */}
           <Stack.Screen name="protocol-edit" />
           {/* Pushed from the protocol detail screen: the version timeline. */}
           <Stack.Screen name="protocol-versions" />
@@ -384,15 +388,6 @@ export default function RootLayout() {
               CLAUDE.md §5 says it is — every section about now — and this is
               where the other days live. */}
           <Stack.Screen name="mission-day" />
-          {/* One item of one protocol, from the item sheet or from a row of
-              the detail's Now field. Writes through addVersion, so it touches
-              the protocols row not at all. */}
-          <Stack.Screen name="protocol-item" />
-          {/* What a protocol IS and how it is run — name, description, type,
-              Active/Paused, the phase anchor, the two 0050 policies, Delete.
-              From the detail's header. Writes through reviseProtocol with
-              content: null, so it mints no version. */}
-          <Stack.Screen name="protocol-settings" />
           <Stack.Screen name="screenings" />
           <Stack.Screen name="screening-form" />
           <Stack.Screen name="appointment-form" />

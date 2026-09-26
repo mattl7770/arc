@@ -11,9 +11,10 @@ import { Platform } from 'react-native';
  * route manifest, so a native import that throws at module scope, in a screen
  * nobody has opened, is a hard error at app **LAUNCH** — the failure that
  * shipped twice (`expo-image-picker`, `expo-keep-awake`; docs/project-status.md
- * › Device / builds). `app/protocol-edit.tsx` and `app/protocol-item.tsx` are
- * both on that manifest, and both draw this control through
- * `src/components/protocols/time-wheel.tsx`, which they import statically.
+ * › Device / builds). `app/protocol-edit.tsx` is on that manifest and draws
+ * this control through `src/components/protocols/time-wheel.tsx`, which it
+ * imports statically. (`app/protocol-item.tsx` did too, until it folded into
+ * the editor on 2026-09-25.)
  *
  * For THIS package the launch half is the rule rather than a proven failure
  * — its iOS view binds lazily and does not throw at import (see *What it
