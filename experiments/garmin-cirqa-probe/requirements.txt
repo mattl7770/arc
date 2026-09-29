@@ -1,0 +1,6 @@
+# Step 1 (scan.py) needs only bleak.
+bleak>=0.21
+
+# Step 2 (live telemetry) uses garmin-ble, installed separately per the README
+# (clone the repo so you get its examples/ folder):
+#   git clone https://github.com/gwerneckp/garmin-ble && cd garmin-ble && pip install -e .
