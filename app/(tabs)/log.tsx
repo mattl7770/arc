@@ -11,9 +11,10 @@ import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import { useLogFeed } from '@/hooks/use-log-feed';
+import { useLogicalToday } from '@/hooks/use-logical-today';
 import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { getDb } from '@/lib/db/client';
-import { todayISODate } from '@/lib/db/date';
+import { todayISODate, type DayParts } from '@/lib/db/date';
 import {
   openCaptureEdit,
   saveCaptureEdit,
@@ -84,14 +85,17 @@ const MONTHS = [
   'December',
 ] as const;
 
-function formatToday(now: Date): string {
-  const weekday = WEEKDAYS[now.getDay()] ?? '';
-  const month = MONTHS[now.getMonth()] ?? '';
-  return `${weekday} ${now.getDate()} ${month}`;
+/**
+ * The LOGICAL day — the one "Logged today" is read under — never the calendar
+ * one: at 00:30 under a 04:00 boundary the record below is still yesterday's,
+ * so a header naming tomorrow would contradict it (round 3, item 76).
+ */
+function formatToday({ weekday, day, month }: DayParts): string {
+  return `${WEEKDAYS[weekday] ?? ''} ${day} ${MONTHS[month] ?? ''}`;
 }
 
 export default function LogScreen() {
-  const today = formatToday(new Date());
+  const today = formatToday(useLogicalToday());
   const { entries, reload } = useLogFeed();
   const router = useRouter();
   // The capture just removed from today's record, while it can still be put

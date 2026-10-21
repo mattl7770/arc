@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 
 import { getDb } from '@/lib/db/client';
-import { shiftISODate, todayISODate } from '@/lib/db/date';
+import { dayParts, logicalDate, shiftISODate, todayISODate } from '@/lib/db/date';
 import { latestScreenTime, screenTimeSeries } from '@/lib/db/repositories/screen-time';
 import { formatHm } from '@/lib/screen-time/entry';
 import { dayLabel } from '@/lib/utils/day-cursor';
@@ -98,10 +98,15 @@ export type DataOverview = DataOverviewState & {
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-/** ISO instant -> "Jul 24" in local time (no Intl — Hermes-safe). */
+/**
+ * ISO instant -> "Jul 24" (no Intl — Hermes-safe), naming the LOGICAL day the
+ * reading counts as — the day the Log files it under (repositories/logs.ts) —
+ * not its calendar date: a 01:00 weigh-in under a 04:00 boundary is the
+ * previous day's, and must not be labelled as today's (round 3, item 76).
+ */
 function shortDate(iso: string): string {
-  const d = new Date(iso);
-  return `${MONTHS[d.getMonth()] ?? ''} ${d.getDate()}`;
+  const { month, day } = dayParts(logicalDate(new Date(iso)));
+  return `${MONTHS[month] ?? ''} ${day}`;
 }
 
 /** 1840 -> "1,840", hand-rolled so the thousands comma doesn't lean on Intl. */

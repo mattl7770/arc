@@ -29,7 +29,7 @@ import type { Database } from '@/lib/db/database';
 import { metricByKey, resolveDisplay } from '@/lib/log/metrics';
 import { listActiveReminders, isDueOn } from '@/lib/db/repositories/reminders';
 import { getPreferences } from '@/lib/db/repositories/user';
-import { todayISODate } from '@/lib/db/date';
+import { logicalDayUtcRange, shiftISODate, todayISODate } from '@/lib/db/date';
 import { isAccumulatingMetric } from '@/lib/health/accumulating';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { openStatuses } from '@/lib/db/repositories/statuses';
@@ -344,7 +344,12 @@ export function computeInsights(db: Database, now: Date = new Date()): Insight[]
   // today — the day is still being written, and a partial total would read as
   // a drop every single morning. Their windows anchor on yesterday instead.
   // Level metrics (HRV, RHR, weight) keep today: a reading is a whole fact.
-  const accNow = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  //
+  // The instant that OPENS yesterday's logical day, so todayISODate(accNow) is
+  // yesterday under any boundary. It used to be calendar-yesterday's local
+  // midnight, which a 04:00 boundary files under the day BEFORE yesterday —
+  // every accumulating window sat one day further back than this comment says.
+  const accNow = new Date(logicalDayUtcRange(shiftISODate(today, -1)).startUtc);
 
   // --- Metric trends ---------------------------------------------------------
   // Closed windows [since, today]: a future-dated row (clock skew, a

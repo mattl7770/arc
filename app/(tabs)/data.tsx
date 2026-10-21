@@ -9,6 +9,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
 import { palette } from '@/constants/theme';
 import { useDataOverview, type TrendKey } from '@/hooks/use-data-overview';
+import { useLogicalToday } from '@/hooks/use-logical-today';
 import { useReportsHistory } from '@/hooks/use-reports';
 
 /**
@@ -224,8 +225,10 @@ export default function DataScreen() {
 
   // Hand-rolled: Hermes ships without Intl, so toLocaleDateString silently
   // ignores its options object on device (src/components/home/date-eyebrow.tsx).
-  const now = new Date();
-  const eyebrow = `${WEEKDAYS[now.getDay()] ?? ''} · ${MONTHS[now.getMonth()] ?? ''} ${now.getDate()}`;
+  // The LOGICAL day, not the calendar one — at 00:30 under a 04:00 boundary
+  // every series below still counts today as yesterday (round 3, item 76).
+  const today = useLogicalToday();
+  const eyebrow = `${WEEKDAYS[today.weekday] ?? ''} · ${MONTHS[today.month] ?? ''} ${today.day}`;
 
   const openTrend = (key: TrendKey) => {
     switch (key) {

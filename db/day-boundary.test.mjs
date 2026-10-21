@@ -22,6 +22,10 @@
  * §8b the picker looking FORWARD (2026-09-19) — `latest` is now whatever the
  *     caller allows and `today` is a bound of its own, so the words and the way
  *     home stay on the logical today while the arrows reach a horizon
+ * §9  the headers (round 3, item 76) — Home, Log and Data name the LOGICAL day
+ *     at 23:59 / 00:30 / 03:59 / 04:00, roll at the boundary not at midnight,
+ *     and follow a timezone change; plus the two non-label sites that handed a
+ *     constructed local midnight to a boundary-aware function
  *
  * **§3 pins the timezone.** The boundary rule is DST-sensitive by nature, so the
  * only way to test it is to run in a zone that has a transition. TZ is set to
@@ -37,12 +41,15 @@ import { DatabaseSync } from 'node:sqlite';
 
 import {
   DEFAULT_DAY_STARTS_AT,
+  dayParts,
   formatLocalDate,
   forwardCursor,
   getDayStartsAt,
   localDayUtcRange,
   localWeekRange,
   logicalDate,
+  logicalDayUtcRange,
+  nextDayRollover,
   normalizeDayStartsAt,
   setDayStartsAt,
   shiftISODate,
@@ -67,6 +74,7 @@ import {
   listMission,
 } from '../src/lib/db/repositories/mission.ts';
 import { todayTotals } from '../src/lib/db/repositories/nutrition.ts';
+import { weeklyTrainingSeries } from '../src/lib/db/repositories/exercise.ts';
 import {
   getDayStartsAtPreference,
   getPreferences,
@@ -758,6 +766,166 @@ console.log('\n8b. the picker looking FORWARD — `latest` stops being a synonym
   // ambiguous read forwards, and its one caller never passes a future day.
   eq('dayPhrase is untouched on today', dayPhrase(today, today), 'today');
   eq('…and on a past weekday', dayPhrase('2026-09-09', today), 'on Wednesday');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n9. the headers name the LOGICAL day (round 3, item 76) — and roll at the boundary');
+{
+  /**
+   * Owner: "date is on the next day when just past midnight". Home, Log and Data
+   * printed `new Date()`'s calendar date and Home's timer rolled at midnight, so
+   * at 00:30 under 04:00 the header read tomorrow over today's mission. A header
+   * is now `dayParts(todayISODate(now))`, rolled at `nextDayRollover(now)`
+   * (src/hooks/use-logical-today.ts). Each case is asserted against the wrong
+   * calendar answer as well as the right one.
+   */
+  const B = '04:00';
+  const header = (at, b = B) => dayParts(todayISODate(at, b));
+  const wed21 = { date: '2026-10-21', year: 2026, month: 9, day: 21, weekday: 3 };
+  const thu22 = { date: '2026-10-22', year: 2026, month: 9, day: 22, weekday: 4 };
+  const same = (name, got, want) =>
+    JSON.stringify(got) === JSON.stringify(want)
+      ? ok(name)
+      : bad(name, `got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+
+  same('23:59 Wed → WED 21 OCT', header(new Date(2026, 9, 21, 23, 59)), wed21);
+  same('00:30 Thu → still WED 21 OCT', header(new Date(2026, 9, 22, 0, 30)), wed21);
+  new Date(2026, 9, 22, 0, 30).getDate() === 22
+    ? ok('…where the calendar (the old header) said THU 22 — the bug, pinned')
+    : bad('the calendar control case moved');
+  same('03:59 Thu → still WED 21 OCT', header(new Date(2026, 9, 22, 3, 59)), wed21);
+  same('04:00 Thu → THU 22 OCT', header(new Date(2026, 9, 22, 4, 0)), thu22);
+  same(
+    'the default boundary is unchanged: 00:30 Thu → THU 22 OCT',
+    header(new Date(2026, 9, 22, 0, 30), DEFAULT_DAY_STARTS_AT),
+    thu22
+  );
+  same(
+    'across the year: 00:30 on 1 Jan is still THU 31 DEC 2026',
+    header(new Date(2027, 0, 1, 0, 30)),
+    { date: '2026-12-31', year: 2026, month: 11, day: 31, weekday: 4 }
+  );
+
+  // The rollover — when the label must change.
+  const iso = (d) => d.toISOString();
+  const at4Thu = iso(new Date(2026, 9, 22, 4, 0));
+  eq(
+    'from 23:59 Wed it rolls at 04:00 Thu, not at midnight',
+    iso(nextDayRollover(new Date(2026, 9, 21, 23, 59), B)),
+    at4Thu
+  );
+  eq(
+    'from 00:30 Thu it still waits for 04:00 Thu',
+    iso(nextDayRollover(new Date(2026, 9, 22, 0, 30), B)),
+    at4Thu
+  );
+  eq(
+    'from 03:59 Thu it still waits for 04:00 Thu',
+    iso(nextDayRollover(new Date(2026, 9, 22, 3, 59), B)),
+    at4Thu
+  );
+  eq(
+    'at 04:00 Thu it waits a whole day, for 04:00 Fri',
+    iso(nextDayRollover(new Date(2026, 9, 22, 4, 0), B)),
+    iso(new Date(2026, 9, 23, 4, 0))
+  );
+  eq(
+    'under the default it is the next midnight, as Home always rolled',
+    iso(nextDayRollover(new Date(2026, 9, 21, 23, 59), DEFAULT_DAY_STARTS_AT)),
+    iso(new Date(2026, 9, 22, 0, 0))
+  );
+  // Fall back in New York (1 Nov 2026, 02:00 → 01:00): the night is 25 hours,
+  // so the wait from 23:00 to 04:00 is SIX hours, and it still lands on 04:00.
+  const fb = nextDayRollover(new Date(2026, 9, 31, 23, 0), B);
+  fb.getHours() === 4 &&
+  fb.getDate() === 1 &&
+  fb.getTime() - new Date(2026, 9, 31, 23, 0).getTime() === 6 * 3_600_000
+    ? ok('DST fall-back: 23:00 → 04:00 is a six-hour wait and still lands on local 04:00')
+    : bad('the fall-back rollover', fb.toString());
+
+  // Across a timezone change. One instant, two zones: the boundary is LOCAL, so
+  // the header follows the zone the phone is in (the B3 × D4 rule).
+  const tzBefore = process.env.TZ;
+  const instant = new Date('2026-10-22T04:30:00Z');
+  try {
+    process.env.TZ = 'America/New_York'; // 00:30 EDT — before the boundary
+    eq('New York 00:30 → WED 21', header(instant).date, '2026-10-21');
+    const armedInNY = nextDayRollover(instant, B).toISOString();
+    eq('…armed for 04:00 EDT', armedInNY, '2026-10-22T08:00:00.000Z');
+
+    process.env.TZ = 'Europe/London'; // same instant, 05:30 BST — past it
+    eq('land in London, same instant (05:30 BST) → THU 22', header(instant).date, '2026-10-22');
+    const armedInLondon = nextDayRollover(instant, B).toISOString();
+    eq('…and re-armed in the NEW zone: 04:00 BST Fri', armedInLondon, '2026-10-23T03:00:00.000Z');
+    armedInNY !== armedInLondon
+      ? ok('a timer armed before the flight is stale after it — why the hook re-arms on foreground')
+      : bad('the zone change did not move the rollover');
+
+    // Sydney → Los Angeles over the date line rolls the clock BACK. The header
+    // holds its day forward exactly as the mission's cursor does.
+    process.env.TZ = 'Australia/Sydney';
+    const departed = new Date('2026-10-21T22:00:00Z'); // 09:00 AEDT Thu 22
+    const shown = todayISODate(departed, B);
+    eq('Sydney 09:00 → THU 22', shown, '2026-10-22');
+    process.env.TZ = 'America/Los_Angeles';
+    const landed = new Date('2026-10-22T10:00:00Z'); // 12h later: 03:00 PDT Thu 22
+    eq(
+      'Los Angeles 03:00, twelve hours later → WED 21 by the clock',
+      todayISODate(landed, B),
+      '2026-10-21'
+    );
+    eq(
+      '…and the header, like the mission, does not run backwards',
+      forwardCursor(shown, todayISODate(landed, B)),
+      '2026-10-22'
+    );
+  } finally {
+    process.env.TZ = tzBefore;
+  }
+  new Date(2026, 9, 22, 0, 30).getTimezoneOffset() === 240
+    ? ok('the zone was restored for anything after this section')
+    : bad('TZ leaked out of §9');
+
+  // The two non-label sites with the same defect: a constructed local-midnight
+  // Date handed to a boundary-aware function, which files it a day early.
+  setDayStartsAt(B);
+  try {
+    // insights.ts accNow — "the instant that opens yesterday" reads as yesterday.
+    const now = new Date(2026, 9, 22, 9, 0);
+    const today = todayISODate(now);
+    const accNow = new Date(logicalDayUtcRange(shiftISODate(today, -1)).startUtc);
+    eq('insights: accNow is YESTERDAY under 04:00', todayISODate(accNow), '2026-10-21');
+    eq(
+      '…where the old local-midnight construction said the day before',
+      todayISODate(new Date(2026, 9, 21)),
+      '2026-10-20'
+    );
+
+    // exercise.ts weeklyTrainingSeries — on a Monday morning the current week
+    // is THIS week, not last.
+    const db = freshDb();
+    const series = weeklyTrainingSeries(db, 3, new Date(2026, 9, 19, 9, 0)); // Mon 19 Oct
+    eq(
+      'weeklyTrainingSeries on a Monday: the current week starts that Monday',
+      series.map((p) => p.weekStart).join(','),
+      '2026-10-05,2026-10-12,2026-10-19'
+    );
+  } finally {
+    setDayStartsAt(DEFAULT_DAY_STARTS_AT);
+  }
+
+  // The three headers read the hook, not the clock.
+  const ROOT = join(import.meta.dirname, '..');
+  for (const rel of [
+    'src/components/home/date-eyebrow.tsx',
+    'app/(tabs)/log.tsx',
+    'app/(tabs)/data.tsx',
+  ]) {
+    const src = readFileSync(join(ROOT, rel), 'utf8');
+    src.includes('useLogicalToday()') && !/\.getDay\(\)|\.getDate\(\)/.test(src)
+      ? ok(`${rel} prints the logical day`)
+      : bad(`${rel} still reads a calendar date`);
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

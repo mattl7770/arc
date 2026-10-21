@@ -11,7 +11,7 @@
  * exact same code runs on device and in the headless tests (db/exercise.test.mjs).
  */
 import type { Database } from '../database';
-import { localWeekRange } from '../date';
+import { localWeekRange, shiftISODate } from '../date';
 import { newId } from '../id';
 import type { DateString } from '../types';
 import { resolveExerciseByName } from './exercise-catalog';
@@ -378,9 +378,14 @@ export function weeklyTrainingSeries(
   now: Date = new Date()
 ): WeekPoint[] {
   const points: WeekPoint[] = [];
+  // The current week once, from the LOGICAL today; prior weeks are calendar
+  // arithmetic on its Monday. Stepping a local-midnight `Date` back and handing
+  // it to localWeekRange (as this did) re-attributed it under the boundary —
+  // 00:00 is before a 04:00 start, so on a Monday every week slid back one.
+  const current = localWeekRange(now);
   for (let i = weeks - 1; i >= 0; i--) {
-    const weekNow = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i * 7);
-    const { start, end } = localWeekRange(weekNow);
+    const start = shiftISODate(current.start, -i * 7);
+    const end = shiftISODate(current.end, -i * 7);
     const row = db.get<{ zone2: number | null; strength: number | null; total: number | null }>(
       `SELECT
          sum(CASE WHEN kind = 'cardio' THEN coalesce(duration_min, 0) ELSE 0 END) AS zone2,
