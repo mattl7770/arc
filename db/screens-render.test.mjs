@@ -8027,6 +8027,19 @@ console.log('\n33. 2026-09-26 — a Log-tab capture opens to its words, its figu
     ? ok('the open editor sits beneath its own row, before the next, and the row reads Close')
     : bad('editor placement', JSON.stringify({ rowAt, editorAt, nextRowAt }));
 
+  // THE UNITS ARE PINNED TO THE OPEN EDITOR (review, 2026-09-26). A server
+  // render cannot switch a unit under an open editor, so the tab's source is
+  // read: the editor is drawn in the units the row was opened in, Save hands
+  // over the opened row whole (db/log.test.mjs §23 proves the read-back), and
+  // the editor closes when the tab is left, as the Undo does.
+  const logTabSource = readFileSync(new URL('../app/(tabs)/log.tsx', import.meta.url), 'utf8');
+  logTabSource.includes('units={editing.units}') &&
+  logTabSource.includes('saveCaptureEdit(getDb(), editing, draft)') &&
+  logTabSource.includes('useFocusEffect(useCallback(() => () => setEditing(null), []))') &&
+  !/getPreferences\(/.test(logTabSource)
+    ? ok('the Log tab draws and saves an open editor in the units it opened in, and closes it on leaving')
+    : bad('log tab units pin');
+
   db.run('DELETE FROM log_entries WHERE id IN (?, ?)', [creatine, note]);
   db.run('DELETE FROM symptoms WHERE id = ?', [symptom]);
   db.run('DELETE FROM body_metrics WHERE id = ?', [weight.id.split(':')[0]]);

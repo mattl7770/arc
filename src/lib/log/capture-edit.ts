@@ -18,17 +18,48 @@
  * 80 kg on record, and writing it would move the reading and re-send it to
  * Apple Health for a correction nobody made. So the draft is compared as
  * printed, and only a figure that differs from the printed one is converted.
+ *
+ * ## The figure is read in the units the editor opened in
+ *
+ * The draft is a figure in the unit printed beside it, so Save reads it in
+ * THAT unit, not in whatever the preference says by the time Save is tapped.
+ * The weight, volume or length unit can change while an editor is open — in
+ * Settings › Units, or by the Coach — and "176.4" typed as pounds but read as
+ * kilograms is a reading of 176.4 kg, stored and sent to Apple Health. So a
+ * row is opened together with its units ({@link openCaptureEdit}) and saved
+ * with those same units ({@link saveCaptureEdit}); nothing re-reads them
+ * between the two.
  */
 import type { Database } from '@/lib/db/database';
 import {
+  getCapture,
   planCaptureCorrection,
   type CaptureEdit,
   type CapturePatch,
   type CaptureRecord,
 } from '@/lib/db/repositories/logs';
+import { getPreferences } from '@/lib/db/repositories/user';
 import { editLogCapture, type EditedCapture, type WaterPublishDeps } from '@/lib/health/publish';
 import { metricByKey, resolveDisplay, roundForDisplay, type DisplaySpec } from '@/lib/log/metrics';
 import type { UnitPreferences } from '@/lib/user/types';
+
+/**
+ * A row opened for correction: the capture as it was read, and the units its
+ * editor prints it in. Held together from the tap that opens the editor to
+ * the Save that closes it, so a figure is converted in the unit it was typed
+ * in (see the header).
+ */
+export type OpenCapture = { capture: CaptureRecord; units: UnitPreferences };
+
+/**
+ * The tap on a row: the capture read whole, with the units in force now — or
+ * null for a row with nothing to correct (screen time, or a row since removed).
+ */
+export function openCaptureEdit(db: Database, id: string): OpenCapture | null {
+  const units = getPreferences(db).units;
+  const capture = getCapture(db, id, units);
+  return capture?.edit ? { capture, units } : null;
+}
 
 /** What the editor's fields hold — always strings, as typed. */
 export type CaptureDraft = {
@@ -172,15 +203,18 @@ export type CaptureSaveResult =
  * draft that changes nothing writes nothing and closes the editor all the same
  * (`saved: true`, `edited: null`). A capture removed meanwhile, or a draft that
  * does not fit, is not saved, and the line says why.
+ *
+ * The draft is read in the units the row was opened in (`open.units`), never
+ * in the preference as it stands at Save — see the header.
  */
 export function saveCaptureEdit(
   db: Database,
-  capture: CaptureRecord,
+  open: OpenCapture,
   draft: CaptureDraft,
-  units: UnitPreferences,
   /** The Apple Health seam; the native one unless a test hands in a recorder. */
   deps?: WaterPublishDeps
 ): CaptureSaveResult {
+  const { capture, units } = open;
   const planned = captureDraftPatch(capture, draft, units);
   if ('error' in planned) return { saved: false, error: planned.error };
   if (planned.patch === null) return { saved: true, edited: null };

@@ -3533,13 +3533,18 @@ console.log('28. a weight corrected before, after and during its save ends as on
   });
   await publishBodyMetrics(db, new Date('2026-09-26T06:01:00.000Z'), recorder().deps); // arms
 
-  /** Apple Health as a list of samples, with the tagged delete the seam offers. */
+  /**
+   * Apple Health as a list of samples, with the tagged delete the seam offers.
+   * `before` runs while a save is in flight and its sample has not landed;
+   * `after` runs once it has landed but before the save answers.
+   */
   const health = [];
-  const seam = (onSave = () => {}) => ({
+  const seam = ({ before = () => {}, after = () => {} } = {}) => ({
     isAvailable: () => true,
     save: async (identifier, _unit, value, start, _end, metadata) => {
-      await onSave(value);
+      await before(value);
       health.push({ identifier, value, at: start.toISOString(), tag: metadata[ARC_WRITE_METADATA_KEY] });
+      await after(value);
       return true;
     },
     deleteByTag: async (identifier, tag) => {
@@ -3581,8 +3586,10 @@ console.log('28. a weight corrected before, after and during its save ends as on
     ? ok('a published weight corrected to 82 kg is replaced: one sample, same instant, same tag')
     : bad('after correction', JSON.stringify(replaced));
 
-  // DURING: corrected while the walk's save of that row is in flight. The
-  // correction stands aside; the walk replaces what it sent once it lands.
+  // DURING, before the walk's sample lands: corrected while the walk's save of
+  // that row is in flight. The correction stands aside; the walk replaces what
+  // it sent once it lands. (In this order the correction's tagged delete would
+  // find nothing anyway — the next case is the order the stand-aside is for.)
   addBody(db, {
     id: 'body-racing',
     createdAt: '2026-09-26T08:00:00.000Z',
@@ -3590,11 +3597,13 @@ console.log('28. a weight corrected before, after and during its save ends as on
     weightKg: 83,
   });
   let during = null;
-  const racingSeam = seam(async (value) => {
-    if (value === 83 && during === null) {
-      during = editLogCapture(db, 'body-racing:weight_kg', { canonical: 84 }, seam());
-      await flush();
-    }
+  const racingSeam = seam({
+    before: async (value) => {
+      if (value === 83 && during === null) {
+        during = editLogCapture(db, 'body-racing:weight_kg', { canonical: 84 }, seam());
+        await flush();
+      }
+    },
   });
   await publishBodyMetrics(db, new Date('2026-09-26T08:05:00.000Z'), racingSeam);
   const duringResent = await during.health;
@@ -3613,6 +3622,47 @@ console.log('28. a weight corrected before, after and during its save ends as on
   tagged('body-racing')[0].value === 85
     ? ok('…and a correction after the walk let go replaces it by the ordinary path')
     : bad('post-walk correction', JSON.stringify(tagged('body-racing')));
+
+  // DURING, after the walk's sample has landed — the order `bodySaving` exists
+  // for (review, 2026-09-26). The walk's 86 kg is in Health but its save has
+  // not answered, and the correction's own re-save is slower than the walk's
+  // settle. Were the correction not to stand aside, its tagged delete would
+  // find the walk's sample, the settle's delete would then find nothing, and
+  // both would re-save: two samples at 87. It stands aside, and the walk alone
+  // replaces what it sent.
+  addBody(db, {
+    id: 'body-landed',
+    createdAt: '2026-09-26T09:00:00.000Z',
+    measuredAt: '2026-09-26T09:00:00.000Z',
+    weightKg: 86,
+  });
+  let landed = null;
+  const landedSeam = seam({
+    after: async (value) => {
+      if (value === 86 && landed === null) {
+        landed = editLogCapture(
+          db,
+          'body-landed:weight_kg',
+          { canonical: 87 },
+          seam({ before: flush })
+        );
+        await flush();
+      }
+    },
+  });
+  await publishBodyMetrics(db, new Date('2026-09-26T09:05:00.000Z'), landedSeam);
+  const landedResent = await landed.health;
+  await flush();
+  const settled = tagged('body-landed');
+  landedResent === false &&
+  settled.length === 1 &&
+  settled[0].value === 87 &&
+  settled[0].at === '2026-09-26T09:00:00.000Z'
+    ? ok('corrected after the walk’s sample landed: the correction stands aside, and Health holds ONE sample, at 87 kg')
+    : bad('landed-first correction', JSON.stringify({ landedResent, settled }));
+  getHealthPublishState(db).cursorId === 'body-landed'
+    ? ok('…and the cursor moves past it as it would have')
+    : bad('cursor after landed-first correction', JSON.stringify(getHealthPublishState(db)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

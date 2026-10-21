@@ -2366,8 +2366,8 @@ The owner's answer — *"Yes, an edit on the Log tab, and the Coach too"* — ga
 
 ### Verification
 
-- `db/log.test.mjs` **§23**: every kind corrects through the tap's own path; the unpublished kinds never reach the seam; a published weight is deleted by its tag and re-saved at the new kg, same instant, same tag; an unsent one sends nothing; a glass the same way; sync off touches nothing; a two-reading row keeps the other; an unchanged figure writes and sends nothing.
-- `db/wearables.test.mjs` **§28**: corrected before the walk (it sends the new value), after (one sample, replaced), and during its own save (the correction stands aside; the walk leaves ONE sample at the corrected value; the cursor moves on); after the walk lets go, the ordinary path.
+- `db/log.test.mjs` **§23**: every kind corrects through the tap's own path; the unpublished kinds never reach the seam; a published weight is deleted by its tag and re-saved at the new kg, same instant, same tag; an unsent one sends nothing; a glass the same way; sync off touches nothing; a two-reading row keeps the other; an unchanged figure writes and sends nothing; and a unit switched while the editor is open (lb → kg, oz → ml) changes nothing about how the draft is read — the untouched figure writes and sends nothing, and a typed one is converted from the unit printed beside it.
+- `db/wearables.test.mjs` **§28**: corrected before the walk (it sends the new value), after (one sample, replaced), and during its own save in both orders — before the walk's sample lands, and after it lands but before the save answers, with the correction's re-save slower than the walk's settle. The second is the order `bodySaving` exists for: with the stand-aside removed, the correction's delete finds the walk's sample, the settle's finds nothing, and both re-save, leaving two samples (checked by mutation, 2026-09-26 review). With it, ONE sample at the corrected value, and the cursor moves on. After the walk lets go, the ordinary path.
 
 ### What only the phone can settle
 

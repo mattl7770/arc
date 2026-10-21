@@ -38,6 +38,10 @@ export function CaptureEditor({
   onCancel,
 }: {
   capture: CaptureRecord;
+  /**
+   * The units the row was OPENED in (`OpenCapture.units`), which Save reads the
+   * draft in too — never the preference as it stands now.
+   */
   units: UnitPreferences;
   /** Save the draft; returns the line to show when it could not, else null. */
   onSave: (draft: CaptureDraft) => string | null;

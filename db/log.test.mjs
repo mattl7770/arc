@@ -68,7 +68,12 @@ import {
   removeLogCapture,
   restoreLogCapture,
 } from '../src/lib/health/publish.ts';
-import { captureDraft, captureDraftPatch, saveCaptureEdit } from '../src/lib/log/capture-edit.ts';
+import {
+  captureDraft,
+  captureDraftPatch,
+  openCaptureEdit,
+  saveCaptureEdit,
+} from '../src/lib/log/capture-edit.ts';
 import { removeCaptureWithUndo } from '../src/lib/log/capture-undo.ts';
 import { closeUndo, currentUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
 import { ensureTodaySeeded } from '../src/lib/db/seed.ts';
@@ -1311,9 +1316,9 @@ console.log('23. every capture corrects through the Log tab’s own path, and it
   const row = (id) => listEntriesOn(db, TODAY, units()).find((e) => e.id === id);
   /** The Save tap: the row opened to what it shows, the draft changed, Save. */
   const tap = (id, change, deps) => {
-    const capture = getCapture(db, id, units());
-    const draft = { ...captureDraft(capture, units()), ...change };
-    return saveCaptureEdit(db, capture, draft, units(), deps);
+    const open = openCaptureEdit(db, id);
+    const draft = { ...captureDraft(open.capture, open.units), ...change };
+    return saveCaptureEdit(db, open, draft, deps);
   };
   setHealthSyncEnabled(db, true);
   const missionBefore = JSON.stringify(listMission(db, TODAY));
@@ -1482,6 +1487,51 @@ console.log('23. every capture corrects through the Log tab’s own path, and it
     ? ok('a kg user’s editor opens to 79.8 kg, and 79 is stored as exactly 79 kg')
     : bad('kg edit', JSON.stringify(kgDraft));
   setUnitPreference(db, 'weight', 'lb');
+
+  // THE UNIT CHANGED WHILE THE EDITOR WAS OPEN (review, 2026-09-26). The Log
+  // tab stays mounted while Settings › Units — or the Coach — switches lb to
+  // kg, so Save must read the draft in the unit printed beside it when the
+  // row was opened. Read in the unit in force at Save, an untouched "174.2"
+  // would be stored as 174.2 kg and sent to Apple Health.
+  setHealthSyncEnabled(db, true);
+  const moved = seam(new Set([bodyId, waterId]));
+  const openLb = openCaptureEdit(db, weightId);
+  const lbDraft = captureDraft(openLb.capture, openLb.units);
+  const openOz = openCaptureEdit(db, waterId);
+  const ozDraft = captureDraft(openOz.capture, openOz.units);
+  const bodyBeforeFlip = whole('body_metrics', bodyId);
+  const waterBeforeFlip = whole('wearable_data', waterId);
+  setUnitPreference(db, 'weight', 'kg');
+  setUnitPreference(db, 'volume', 'ml');
+  const flippedWeight = saveCaptureEdit(db, openLb, lbDraft, moved.deps);
+  const flippedWater = saveCaptureEdit(db, openOz, ozDraft, moved.deps);
+  lbDraft.value === '174.2' &&
+  ozDraft.value === '20' &&
+  flippedWeight.saved &&
+  flippedWeight.edited === null &&
+  flippedWater.saved &&
+  flippedWater.edited === null &&
+  whole('body_metrics', bodyId) === bodyBeforeFlip &&
+  whole('wearable_data', waterId) === waterBeforeFlip &&
+  moved.deleted.length === 0 &&
+  moved.saved.length === 0
+    ? ok('lb → kg and oz → ml while the editors were open: saving the untouched figures writes and sends nothing')
+    : bad(
+        'unit flipped under the editor',
+        JSON.stringify({ lbDraft, ozDraft, flippedWeight, flippedWater, moved, body: whole('body_metrics', bodyId) })
+      );
+  const typedLb = saveCaptureEdit(db, openLb, { ...lbDraft, value: '175' }, moved.deps);
+  await typedLb.edited?.health;
+  const typedKg = db.get('SELECT weight_kg FROM body_metrics WHERE id = ?', [bodyId]).weight_kg;
+  typedLb.saved &&
+  near(typedKg, 175 / 2.2046226218) &&
+  moved.saved.length === 1 &&
+  near(moved.saved[0].value, typedKg)
+    ? ok('…and 175 typed beside "lb" is stored and sent as 175 lb, though the preference now says kg')
+    : bad('typed under a flipped unit', JSON.stringify({ typedLb, typedKg, moved }));
+  setUnitPreference(db, 'weight', 'lb');
+  setUnitPreference(db, 'volume', 'oz');
+  setHealthSyncEnabled(db, false);
 
   // REFUSED, WRITING NOTHING — at the repository and on the tap.
   const noteBefore = whole('log_entries', noteId);

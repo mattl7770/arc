@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { CaptureEditor } from '@/components/log/capture-editor';
@@ -14,9 +14,12 @@ import { useLogFeed } from '@/hooks/use-log-feed';
 import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
-import { getCapture, type CaptureRecord } from '@/lib/db/repositories/logs';
-import { getPreferences } from '@/lib/db/repositories/user';
-import { saveCaptureEdit, type CaptureDraft } from '@/lib/log/capture-edit';
+import {
+  openCaptureEdit,
+  saveCaptureEdit,
+  type CaptureDraft,
+  type OpenCapture,
+} from '@/lib/log/capture-edit';
 import { removeCaptureWithUndo } from '@/lib/log/capture-undo';
 import { runUndo } from '@/lib/nutrition/undo-store';
 
@@ -94,13 +97,17 @@ export default function LogScreen() {
   // The capture just removed from today's record, while it can still be put
   // back. Closed when the tab is left (src/hooks/use-undo-offer.ts).
   const undo = useUndoOffer('log', todayISODate());
-  // The row open for correction, read whole when it was opened.
-  const [editing, setEditing] = useState<CaptureRecord | null>(null);
-  const units = getPreferences(getDb()).units;
+  // The row open for correction, read whole when it was opened, with the units
+  // its editor prints it in. Save reads the draft in THOSE units, not the
+  // preference as it stands at Save (src/lib/log/capture-edit.ts).
+  const [editing, setEditing] = useState<OpenCapture | null>(null);
+  // Closed when the tab is left, as the Undo is: the unit, or the row itself,
+  // can change elsewhere while it is out of sight.
+  useFocusEffect(useCallback(() => () => setEditing(null), []));
 
   /** A row's ×: removed at once — record and Apple Health — with an Undo. */
   const removeEntry = (id: string) => {
-    if (editing?.id === id) setEditing(null);
+    if (editing?.capture.id === id) setEditing(null);
     try {
       removeCaptureWithUndo(getDb(), id);
     } catch (error) {
@@ -112,18 +119,17 @@ export default function LogScreen() {
 
   /** A tap on a row opens its editor, and a second tap closes it. */
   const openEntry = (id: string) => {
-    if (editing?.id === id) {
+    if (editing?.capture.id === id) {
       setEditing(null);
       return;
     }
-    const capture = getCapture(getDb(), id, units);
-    setEditing(capture?.edit ? capture : null);
+    setEditing(openCaptureEdit(getDb(), id));
   };
 
   /** Save: record and Apple Health, or the line saying why not. */
   const saveEntry = (draft: CaptureDraft): string | null => {
     if (!editing) return null;
-    const result = saveCaptureEdit(getDb(), editing, draft, units);
+    const result = saveCaptureEdit(getDb(), editing, draft);
     if (!result.saved) return result.error;
     setEditing(null);
     reload();
@@ -191,13 +197,13 @@ export default function LogScreen() {
           entries={entries}
           onRemove={(entry) => removeEntry(entry.id)}
           onEdit={(entry) => openEntry(entry.id)}
-          editingId={editing?.id ?? null}
+          editingId={editing?.capture.id ?? null}
           editor={
             editing ? (
               <CaptureEditor
-                key={editing.id}
-                capture={editing}
-                units={units}
+                key={editing.capture.id}
+                capture={editing.capture}
+                units={editing.units}
                 onSave={saveEntry}
                 onCancel={() => setEditing(null)}
               />
