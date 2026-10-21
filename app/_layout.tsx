@@ -1,9 +1,16 @@
 // Must be first: this is the stylesheet NativeWind compiles Tailwind into.
 import '../global.css';
 
-import { DefaultTheme, Stack, useRouter, type Theme, ThemeProvider } from 'expo-router';
+import {
+  DefaultTheme,
+  Stack,
+  useNavigationContainerRef,
+  useRouter,
+  type Theme,
+  ThemeProvider,
+} from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { AppState, Modal } from 'react-native';
 
 import { AppLockScreen } from '@/components/ui/app-lock-screen';
@@ -19,12 +26,20 @@ import { runMealPhotoSweep } from '@/lib/media/meal-photo-store';
 import { runPendingEstimateSweep } from '@/lib/media/pending-estimate-store';
 import { runProgressPhotoSweep } from '@/lib/media/progress-photo-store';
 import { runRecipePhotoSweep } from '@/lib/media/recipe-photo-store';
+import { readWorkoutDraft } from '@/lib/db/repositories/workout-drafts';
+import { parseLiveDraft } from '@/lib/exercise/draft';
 import {
   coachTapParams,
   configureNotificationPresentation,
-  registerNotificationRouting,
   syncReminderNotifications,
 } from '@/lib/notifications/reminders';
+import {
+  appNavigatorMounted,
+  registerNotificationRouting,
+  restTapTarget,
+  type NavStateLike,
+  type TapRouting,
+} from '@/lib/notifications/taps';
 import { runEstimateQueueDrain } from '@/lib/nutrition/estimate-queue';
 import { onForeground } from '@/lib/timezone/foreground';
 import { useCoachPassRunner } from '@/hooks/use-coach-pass';
@@ -90,6 +105,15 @@ const arcNavTheme: Theme = {
  * throws while the route tree is built, which is the failure mode you want.
  */
 export const unstable_settings = { anchor: '(tabs)' };
+
+/** Is a live workout stored — what the hub's Resume offers? Never throws. */
+function liveSessionStored(): boolean {
+  try {
+    return parseLiveDraft(readWorkoutDraft(getDb(), 'live')?.value ?? null) !== null;
+  } catch {
+    return false;
+  }
+}
 
 export default function RootLayout() {
   // Face ID / passcode gate (CLAUDE.md §2: the app lock is the security
@@ -208,46 +232,97 @@ export default function RootLayout() {
       // day. Re-entrancy is guarded inside runEstimateQueueDrain.
       void runEstimateQueueDrain(getDb());
     });
-    const stopRouting = registerNotificationRouting((route) => {
-      // Active reminders live on the Coach tab (its RemindersCard), so both
-      // kinds land there — but a reminder tap carries its id so the specific
-      // reminder can be surfaced rather than dropped, which is the whole point
-      // of routing the tap at all (reminders.ts §registerNotificationRouting).
-      //
-      // 0064 (Coach notifications, owner's Q5): a CHECK-IN reminder and the
-      // morning check-in make the Coach speak first. The tap only QUEUES that —
-      // the runner below is the one place that knows whether the lock is open
-      // and the key is loaded, so a tap on a locked phone is answered the
-      // moment Face ID is. A Coach nudge's own line goes into the thread as the
-      // Coach's latest message before the tab opens, so it is there to reply to.
-      //
-      // What the tab does on arrival rides the params (`coachTapParams`): a
-      // plain reminder's row is at the top; anything the Coach answers or has
-      // just said lands at the END of the thread, so the tab goes there.
-      if (route.kind === 'mission') {
-        // A protocol item's own nudge (C10). It lands on HOME, not on
-        // protocol-detail: the phone buzzed to say "do this", and Home is where
-        // the row is ticked. The detail screen is a reference surface.
-        router.push('/');
-        return;
-      }
-      if (route.kind === 'reminder' && route.checkin) {
-        coachPassStore.requestCheckin({ kind: 'reminder', reminderId: route.id });
-      } else if (route.kind === 'nudge') {
-        coachPassStore.deliverNudge(getDb(), route.id);
-      } else if (route.kind === 'checkin') {
-        coachPassStore.requestCheckin({ kind: 'morning' });
-      }
-      router.push({ pathname: '/(tabs)/coach', params: coachTapParams(route) });
-    });
     return () => {
       clearTimeout(backupTimer);
       timezoneSub.remove();
       stopHealthSync();
       backupSub.remove();
-      stopRouting();
     };
-  }, [router]);
+  }, []);
+
+  // Notification taps (round 3, items 59/75 — src/lib/notifications/taps.ts).
+  //
+  // A tap is QUEUED and delivered only when this layout can show it: the
+  // lock's cover is down AND this layout's Stack is in the navigation state.
+  // Routing it on arrival is what broke a locked cold start — the layout was
+  // rendering only the lock screen, so the push reached expo-router's own
+  // `__root` stack and mounted a SECOND copy of this layout over the first.
+  // The gate is re-checked when the cover lifts (the effect below) and on
+  // every navigation state change (the Stack's first commit after Face ID).
+  //
+  // `covered`, not `locked`: covered goes up the moment ARC is backgrounded
+  // with the lock on, so a tap that brings it back after the relock window is
+  // held even if its response reaches JS before the AppState handler has
+  // decided to lock. A tap's side effects wait with it.
+  const navRef = useNavigationContainerRef();
+  const coveredRef = useRef(lock.covered);
+  const tapsRef = useRef<TapRouting | null>(null);
+  useEffect(() => {
+    const taps = registerNotificationRouting({
+      isReady: () =>
+        !coveredRef.current &&
+        navRef.isReady() &&
+        appNavigatorMounted(navRef.getRootState() as NavStateLike | undefined),
+      deliver: (route) => {
+        // Active reminders live on the Coach tab (its RemindersCard), so both
+        // kinds land there — but a reminder tap carries its id so the specific
+        // reminder can be surfaced rather than dropped.
+        //
+        // 0064 (Coach notifications, owner's Q5): a CHECK-IN reminder and the
+        // morning check-in make the Coach speak first. The tap only QUEUES that
+        // — the runner below is the one place that knows whether the key is
+        // loaded. A Coach nudge's own line goes into the thread as the Coach's
+        // latest message before the tab opens, so it is there to reply to.
+        //
+        // What the tab does on arrival rides the params (`coachTapParams`): a
+        // plain reminder's row is at the top; anything the Coach answers or
+        // has just said lands at the END of the thread, so the tab goes there.
+        if (route.kind === 'mission') {
+          // A protocol item's own nudge (C10). It lands on HOME, not on
+          // protocol-detail: the phone buzzed to say "do this", and Home is
+          // where the row is ticked. The detail screen is a reference surface.
+          router.push('/');
+          return;
+        }
+        if (route.kind === 'rest') {
+          // "Rest complete": back to the session it belongs to. Never a second
+          // logger over the first — the draft slot has one owner.
+          const target = restTapTarget(
+            navRef.getRootState() as NavStateLike | undefined,
+            liveSessionStored()
+          );
+          if (target.kind === 'resume') {
+            router.push({ pathname: '/workout-live', params: { resume: '1' } });
+          } else if (target.kind === 'return') {
+            router.dismissTo({
+              pathname: '/workout-live',
+              params: target.params as Record<string, string>,
+            });
+          }
+          return;
+        }
+        if (route.kind === 'reminder' && route.checkin) {
+          coachPassStore.requestCheckin({ kind: 'reminder', reminderId: route.id });
+        } else if (route.kind === 'nudge') {
+          coachPassStore.deliverNudge(getDb(), route.id);
+        } else if (route.kind === 'checkin') {
+          coachPassStore.requestCheckin({ kind: 'morning' });
+        }
+        router.push({ pathname: '/(tabs)/coach', params: coachTapParams(route) });
+      },
+    });
+    tapsRef.current = taps;
+    const stopState = navRef.addListener('state', () => taps.flush());
+    return () => {
+      stopState();
+      taps.stop();
+      if (tapsRef.current === taps) tapsRef.current = null;
+    };
+  }, [router, navRef]);
+  useEffect(() => {
+    coveredRef.current = lock.covered;
+    tapsRef.current?.flush();
+  }, [lock.covered]);
 
   // The Coach's own daily pass — driven HERE and only here, so it runs on app
   // open whichever tab the user lands on and runs exactly once. Home reads what
