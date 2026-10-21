@@ -1,11 +1,22 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import {
+  AccessibilityInfo,
+  Alert,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import ReanimatedSwipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import Animated, { FadeIn, FadeOut, LinearTransition, ZoomIn } from 'react-native-reanimated';
 
 import { DurationField } from '@/components/exercise/duration-field';
 import { ExercisePicker } from '@/components/exercise/exercise-picker';
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
@@ -23,6 +34,7 @@ import {
   replaceWorkout,
 } from '@/lib/db/repositories/exercise';
 import { getRoutine, touchRoutineStarted } from '@/lib/db/repositories/routines';
+import { progressionFor } from '@/lib/db/repositories/training-recommend';
 import {
   clearOwnLiveDraft,
   readWorkoutDraft,
@@ -50,7 +62,7 @@ import {
   supersetGroups,
 } from '@/lib/exercise/block-order';
 import { secondsToClock } from '@/lib/exercise/clock-entry';
-import { restSecFor } from '@/lib/exercise/constants';
+import { REP_RANGE, restSecFor } from '@/lib/exercise/constants';
 import {
   DRAFT_VERSION,
   draftBlocksHaveData,
@@ -68,6 +80,7 @@ import {
   type LiveDraft,
   type LiveSessionState,
   type LiveStart,
+  type SetTarget,
 } from '@/lib/exercise/draft';
 import {
   dayLabel,
@@ -88,7 +101,23 @@ import {
   prSummaryParts,
   stampFor,
   type RecordKind,
+  type TypedBlock,
 } from '@/lib/exercise/records';
+import {
+  hintFields,
+  prevPatch,
+  prevSpoken,
+  removeSetWithUndo,
+  restampMovement,
+  setHint,
+  setRemovalWords,
+  setTargetOf,
+  setUndoStands,
+  tickPatch,
+  undoSetRemoval,
+  type SetHint,
+  type SetRemoval,
+} from '@/lib/exercise/set-hints';
 import {
   MAX_SESSION_MIN,
   START_STEP_MIN,
@@ -97,6 +126,7 @@ import {
   shiftSessionStart,
 } from '@/lib/exercise/session-time';
 import type { PairedIngest, SetType, WorkoutDetail } from '@/lib/exercise/types';
+import type { UndoWords } from '@/lib/nutrition/undo-store';
 import {
   cancelRestAlert,
   clearDeliveredRestAlerts,
@@ -108,7 +138,9 @@ import type { UnitPreferences } from '@/lib/user/types';
 /**
  * The structured live workout logger (docs/exercise-subapp.md §2), pushed from
  * the Exercise hub — the FitBod/Hevy-style set grid. Exercise blocks; each set
- * row shows the previous session's numbers as placeholders, a mono
+ * row shows its grey hint — the progression engine's target on a working row,
+ * else last session's numbers (round 3, src/lib/exercise/set-hints.ts and
+ * docs/exercise-subapp.md §17), which a ✓ on an untouched row logs — a mono
  * weight/reps/RPE entry, and a completion stamp that starts the rest timer and
  * marks a PR when the set beats a record (src/lib/exercise/records.ts). Weight
  * is entered in the user's unit and stored canonical kg. The free-form quick logger
@@ -208,6 +240,17 @@ import type { UnitPreferences } from '@/lib/user/types';
  */
 
 const SET_TYPES: SetType[] = ['normal', 'warmup', 'failure', 'drop'];
+
+/**
+ * A set row's swipe-left-to-delete (round 3, 2026-10-21; the owner chose the
+ * swipe). react-native-gesture-handler has been a dependency since the app
+ * shell (2026-07-22), so it is in the binary and this needs no new build; its
+ * gestures need a `GestureHandlerRootView` above them, which this screen draws
+ * itself (see the return of `WorkoutLive`) rather than changing the root
+ * layout every other screen shares. Named here so the render suite's stub has
+ * one seam to replace (db/render-stubs/gesture-handler.mjs).
+ */
+const SetSwipe = ReanimatedSwipeable;
 
 /** The fields a PR stamp is a claim about — editing one on a done set asks again. */
 const RESTAMP_FIELDS: readonly (keyof LiveSet)[] = [
@@ -353,7 +396,7 @@ function adoptKeys(blocks: LiveBlock[]): void {
   }
 }
 
-function blankSet(from?: LiveSet): LiveSet {
+function blankSet(from?: LiveSet, setType: SetType = 'normal'): LiveSet {
   return {
     key: nextKey(),
     weight: from?.weight ?? '',
@@ -365,13 +408,29 @@ function blankSet(from?: LiveSet): LiveSet {
     // notice and clear rather than one they were saved typing.
     time: '',
     distance: '',
-    setType: 'normal',
+    setType,
     done: false,
     pr: false,
   };
 }
 
-/** Build a block for one exercise, reading its prev-session sets + PRs once. */
+/**
+ * Build a block for one exercise, reading its prev-session sets, PRs and the
+ * progression engine's next step once.
+ *
+ * **Warm-ups first** (round 3, 2026-10-21). The rows line up with last time's
+ * by position, so a session that opened with two warm-ups gets two rows marked
+ * W ahead of its working sets — the count asked for is WORKING sets. Before
+ * the per-set targets this did not matter: every row showed last time's
+ * numbers whatever it was. Now a working row shows the engine's target and a
+ * warm-up row shows last time's ramp, and a ✓ on an untouched row logs what
+ * it shows — so a warm-up has to be a warm-up on the row, visibly, or a tick
+ * would log a ramp weight as a working set (src/lib/exercise/set-hints.ts).
+ *
+ * **The target** is `progressionFor` — the Train-today card's own call — read
+ * here and carried on the draft. A failed read costs the targets, never the
+ * block: the rows fall back to last time's numbers.
+ */
 function buildBlock(
   exerciseId: string,
   targetSets: number,
@@ -382,7 +441,15 @@ function buildBlock(
   if (!ex) return null;
   const prev = lastSessionSets(db, exerciseId);
   const bestE1rm = personalRecords(db, exerciseId).bestE1rmKg;
-  const count = Math.max(1, targetSets);
+  let warmups = 0;
+  while (prev[warmups]?.setType === 'warmup') warmups++;
+  const count = warmups + Math.max(1, targetSets);
+  let target: SetTarget | undefined;
+  try {
+    target = setTargetOf(progressionFor(db, ex), REP_RANGE[ex.mechanic ?? 'compound'].high);
+  } catch (error) {
+    console.warn('[exercise] progression read failed', error);
+  }
   return {
     key: nextKey(),
     exerciseId,
@@ -394,7 +461,10 @@ function buildBlock(
     prev,
     bestE1rm,
     linkedToNext: false,
-    sets: Array.from({ length: count }, () => blankSet()),
+    sets: Array.from({ length: count }, (_, i) =>
+      blankSet(undefined, i < warmups ? 'warmup' : 'normal')
+    ),
+    ...(target ? { target } : {}),
   };
 }
 
@@ -628,14 +698,18 @@ export default function WorkoutLiveScreen() {
   const exerciseIds = idsParam ? idsParam.split(',').filter(Boolean) : [];
   const resumeParam = Array.isArray(params.resume) ? params.resume[0] : params.resume;
   const ingestId = Array.isArray(params.ingestId) ? params.ingestId[0] : params.ingestId;
+  // The swipeable set rows need a gesture-handler root (see `SetSwipe`). It
+  // wraps the whole screen here so the screen body keeps its shape.
   return (
-    <WorkoutLive
-      routineId={routineId}
-      workoutId={workoutId}
-      exerciseIds={exerciseIds}
-      resume={resumeParam === '1'}
-      ingestId={ingestId}
-    />
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <WorkoutLive
+        routineId={routineId}
+        workoutId={workoutId}
+        exerciseIds={exerciseIds}
+        resume={resumeParam === '1'}
+        ingestId={ingestId}
+      />
+    </GestureHandlerRootView>
   );
 }
 
@@ -870,6 +944,14 @@ function WorkoutLive({
   // Reorder mode (2026-09-23): the set tables fold away to one ruled list of
   // the session's exercises, each with an up and a down control.
   const [reordering, setReordering] = useState(false);
+  /**
+   * The last set deleted, for its Undo — screen state, never the draft: the
+   * estimate review's rule (src/lib/exercise/set-hints.ts). It is drawn only
+   * while putting the set back would be exact (`setUndoStands`).
+   */
+  const [removedSet, setRemovedSet] = useState<SetRemoval | null>(null);
+  /** A ✓ just refused on a row with nothing in it and nothing to offer. */
+  const [emptyTick, setEmptyTick] = useState<{ blockKey: number; setKey: number } | null>(null);
   // A logged session's minutes, as typed (editing only). An untouched field
   // writes back the stored figure exactly, whatever it is — `editedDuration`.
   const [durationText, setDurationText] = useState(() =>
@@ -1215,7 +1297,7 @@ function WorkoutLive({
    * session bar drawn from EVERY block of the movement. This only reads the
    * logged history, which cannot contain this session (a draft until Finish).
    */
-  const stampOf = (all: readonly LiveBlock[], block: LiveBlock, set: LiveSet): RecordKind[] => {
+  const stampOf = (all: readonly TypedBlock[], block: LiveBlock, set: LiveSet): RecordKind[] => {
     if (editing || block.exerciseId == null) return [];
     try {
       return stampFor({
@@ -1238,6 +1320,8 @@ function WorkoutLive({
 
   const patchSet = (blockKey: number, setKey: number, patch: Partial<Omit<LiveSet, 'key'>>) => {
     setDirty(true);
+    // Anything typed into a refused row answers the refusal.
+    setEmptyTick((t) => (t && t.setKey === setKey ? null : t));
     // A DONE set whose numbers change is asked again (`stampOf`): a stamp is a
     // claim about the figures on the row, and a corrected typo — 1100 back to
     // 110, 5 reps to 6, a set cycled to warmup — must not keep a record it no
@@ -1275,14 +1359,55 @@ function WorkoutLive({
     );
   };
 
+  /** `stampOf` in the shape `restampMovement` asks with. */
+  const askStamp = (session: readonly TypedBlock[], block: LiveBlock, set: LiveSet) =>
+    stampOf(session, block, set);
+
+  /**
+   * Delete one set, with an Undo (round 3, 2026-10-21). The removal is
+   * `removeSetWithUndo`; a DONE set leaving re-asks the movement's stamps,
+   * because the set that held the session's best may have been the reason the
+   * one after it carried none. Binds are on blocks, so a superset is untouched.
+   */
   const removeSet = (blockKey: number, setKey: number) => {
+    const result = removeSetWithUndo(blocks, blockKey, setKey, units);
+    if (!result.removed) return;
+    const block = blocks.find((b) => b.key === blockKey);
     setDirty(true);
-    setBlocks((prev) =>
-      prev.map((b) =>
-        b.key !== blockKey ? b : { ...b, sets: b.sets.filter((s) => s.key !== setKey) }
-      )
+    setEmptyTick(null);
+    setBlocks(
+      result.removed.set.done
+        ? restampMovement(result.blocks, block?.exerciseId ?? null, askStamp)
+        : result.blocks
     );
+    setRemovedSet(result.removed);
   };
+
+  /** Put the last deleted set back where it stood — only while that is exact. */
+  const undoRemoveSet = () => {
+    const removed = removedSet;
+    setRemovedSet(null);
+    if (!removed || !setUndoStands(blocks, removed)) return;
+    const back = undoSetRemoval(blocks, removed);
+    const block = back.find((b) => b.key === removed.blockKey);
+    setDirty(true);
+    setBlocks(removed.set.done ? restampMovement(back, block?.exerciseId ?? null, askStamp) : back);
+  };
+
+  /** Tap Prev (67): last time's numbers for this row, copied in. */
+  const fillFromPrev = (blockKey: number, setKey: number) => {
+    const block = blocks.find((b) => b.key === blockKey);
+    const index = block ? block.sets.findIndex((s) => s.key === setKey) : -1;
+    if (!block || index < 0) return;
+    const patch = prevPatch(block.prev[index], block.measures, units);
+    if (patch) patchSet(blockKey, setKey, patch);
+  };
+
+  /** Each row's grey numbers — `setHint`, asked with this screen's state. */
+  const hintsOf = (block: LiveBlock): (SetHint | null)[] =>
+    block.sets.map((set, index) =>
+      setHint({ block, index, set, basis: basisOf(block), away, editing, units })
+    );
 
   const cycleSetType = (blockKey: number, setKey: number, current: SetType) => {
     const next = SET_TYPES[(SET_TYPES.indexOf(current) + 1) % SET_TYPES.length]!;
@@ -1366,11 +1491,37 @@ function WorkoutLive({
     );
   };
 
-  /** Toggle a set done; on completion start rest + stamp a PR if it beats a record. */
+  /**
+   * Toggle a set done; on completion start rest + stamp a PR if it beats a
+   * record.
+   *
+   * **A tick logs what the row shows** (round 3, 2026-10-21). Every empty field
+   * takes the row's grey figure (`tickPatch`) — the target, or last time — and
+   * the stamp is asked of the set as it will be saved. A row with nothing typed
+   * and nothing to offer is NOT ticked: until now it was, and Finish saved a set
+   * with no numbers while the owner thought the grey ones had counted. The row
+   * says why instead, and VoiceOver hears it.
+   */
   const toggleDone = (block: LiveBlock, set: LiveSet) => {
     const done = !set.done;
-    const prKinds = done ? stampOf(blocks, block, set) : [];
+    let fill: Partial<LiveSet> = {};
+    if (done) {
+      const index = block.sets.findIndex((s) => s.key === set.key);
+      const hint = setHint({ block, index, set, basis: basisOf(block), away, editing, units });
+      const patch = tickPatch(set, hint, block.measures, units);
+      if (!patch) {
+        setEmptyTick({ blockKey: block.key, setKey: set.key });
+        AccessibilityInfo.announceForAccessibility(
+          `Set ${index + 1} is empty. Enter what you did first.`
+        );
+        return;
+      }
+      fill = patch;
+    }
+    setEmptyTick(null);
+    const prKinds = done ? stampOf(blocks, block, { ...set, ...fill }) : [];
     patchSet(block.key, set.key, {
+      ...fill,
       done,
       pr: prKinds.length > 0,
       prKinds: prKinds.length > 0 ? prKinds : undefined,
@@ -1412,11 +1563,16 @@ function WorkoutLive({
       }
     }
     const groups = supersetGroups(blocks);
+    // A LIVE set is saved only when it carries a figure. A tick no longer
+    // marks an empty row done (`toggleDone`), but a done row can still be
+    // emptied after the tick, or arrive so from a draft an older build wrote —
+    // and a set of nothing is not a set. An EDIT keeps its done rows as they
+    // are: they are stored history, and Save must not drop one unasked.
     const sets = blocks.flatMap((b, bi) =>
       b.sets
         .filter(
           (s) =>
-            s.done ||
+            (editing && s.done) ||
             s.reps.trim() !== '' ||
             s.weight.trim() !== '' ||
             s.time.trim() !== '' ||
@@ -1459,6 +1615,10 @@ function WorkoutLive({
           };
         })
     );
+    if (!editing && sets.length === 0) {
+      Alert.alert('Nothing to save yet', 'No set in this workout has a number in it.');
+      return;
+    }
     // Elapsed, clamped at zero (SQLite's clock and Date.now() can disagree by a
     // hair) and DISCARDED past six hours. A resumed draft carries the instant
     // the session really started, so a workout begun on Monday and finished
@@ -1869,6 +2029,7 @@ function WorkoutLive({
           <View className={canReorder ? 'mt-2' : 'mt-6'}>
             {blocks.map((block, bi) => {
               const linkedAbove = bi > 0 && groups[bi] != null && groups[bi] === groups[bi - 1];
+              const hints = hintsOf(block);
               return (
                 <Animated.View
                   key={block.key}
@@ -1882,6 +2043,22 @@ function WorkoutLive({
                     loadBasis={basisOf(block)}
                     units={units}
                     spec={spec}
+                    hints={hints}
+                    // The engine's why, only while a row is actually showing
+                    // its target — never over rows of last time's numbers.
+                    targetNote={
+                      hints.some((h) => h?.source === 'target')
+                        ? (block.target?.note ?? null)
+                        : null
+                    }
+                    emptySetKey={emptyTick?.blockKey === block.key ? emptyTick.setKey : null}
+                    undo={
+                      removedSet?.blockKey === block.key && setUndoStands(blocks, removedSet)
+                        ? setRemovalWords(removedSet)
+                        : null
+                    }
+                    onUndo={undoRemoveSet}
+                    onUsePrev={fillFromPrev}
                     onPatch={patchSet}
                     onAddSet={addSet}
                     onRemoveSet={removeSet}
@@ -2051,12 +2228,33 @@ function WorkoutLive({
  *
  * The block carries no device of its own beyond that plate, and nothing is drawn
  * around it: the superset left rule was cut on 2026-08-10 (see the call site).
+ *
+ * ## Round 3 (2026-10-21)
+ *
+ *   - **The grey numbers are the row's hint** (`hints`, from src/lib/exercise/
+ *     set-hints.ts): the engine's target on a working row, last time's numbers
+ *     anywhere it has no step to offer. A ✓ on an untouched row logs them. The
+ *     engine's one-line why sits under the title while any row shows a target.
+ *   - **Prev is a button**: a tap copies last time's numbers into the row.
+ *   - **Swipe a row left to delete it** (the owner's pick, round 3): the row
+ *     slides to show a Delete; long-press on the stamp stays as the shortcut,
+ *     and VoiceOver gets the same act as a row action. The deleted set's Undo
+ *     is a ruled row under the table.
+ *
+ * Hook-free on purpose, so db/screens-render.test.mjs can call it and press
+ * its controls through the element tree (the `RoutineLinesSection` precedent).
  */
-function ExerciseBlock({
+export function ExerciseBlock({
   block,
   loadBasis,
   units,
   spec,
+  hints,
+  targetNote,
+  emptySetKey,
+  undo,
+  onUndo,
+  onUsePrev,
   onPatch,
   onAddSet,
   onRemoveSet,
@@ -2070,6 +2268,16 @@ function ExerciseBlock({
   loadBasis: LoadBasis | null;
   units: UnitPreferences;
   spec: ReturnType<typeof weightSpec>;
+  /** Each row's grey numbers, by position (`setHint`). */
+  hints: (SetHint | null)[];
+  /** The engine's why for the targets, or null when no row shows one. */
+  targetNote: string | null;
+  /** The row whose ✓ was just refused for being empty, or null. */
+  emptySetKey: number | null;
+  /** The Undo row for a set deleted from THIS block, or null. */
+  undo: UndoWords | null;
+  onUndo: () => void;
+  onUsePrev: (bk: number, sk: number) => void;
   onPatch: (bk: number, sk: number, patch: Partial<Omit<LiveSet, 'key'>>) => void;
   onAddSet: (bk: number) => void;
   onRemoveSet: (bk: number, sk: number) => void;
@@ -2126,6 +2334,15 @@ function ExerciseBlock({
           </Pressable>
         </View>
 
+        {/* Why the grey numbers are what they are — the engine's own line
+            (src/lib/exercise/progression.ts), prose about the session, so the
+            serif, muted, no device. Drawn only while a row shows a target. */}
+        {targetNote ? (
+          <Text className="mt-0.5 font-serif text-[12px] leading-4 text-ink-muted">
+            {targetNote}
+          </Text>
+        ) : null}
+
         {/* Column header — the label voice, closed by the rule beneath it. The
             value columns are whatever the movement measures (0046), in the
             canonical order reps · load · time · distance, so a plank offers one
@@ -2178,135 +2395,189 @@ function ExerciseBlock({
         {block.sets.map((set, i) => {
           const prev = block.prev[i];
           const tag = setTypeTag(set.setType);
+          // The grey numbers: the same strings a ✓ on this row would log.
+          const shown = hintFields(hints[i], block.measures, units);
+          const prevText = prevColumnText(prev, cols, units);
+          const prevWords = prevSpoken(prev, block.measures, units);
           return (
             <View key={set.key}>
               <Divider first={i === 0} />
-              <View className="flex-row items-center gap-1.5 py-1.5">
-                {/* Set number / type tag */}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={`Set ${i + 1} type: ${set.setType}. Tap to change.`}
-                  onPress={() => onCycleType(block.key, set.key, set.setType)}
-                  hitSlop={10}
-                  className="h-8 w-7 items-center justify-center active:opacity-60">
-                  <Text className="font-mono text-[12px] text-ink-secondary">{tag || i + 1}</Text>
-                </Pressable>
+              {/* Swipe left to delete (69; the owner's pick, round 3). The row
+                  slides over a Delete drawn past its right edge; a tap on it
+                  takes the set out and the Undo row appears under the table.
+                  The row carries the plate's own fill so it covers the action
+                  while closed. `SetSwipe` is the gesture-handler swipeable. */}
+              <SetSwipe
+                renderRightActions={() => (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Delete set ${i + 1} of ${block.name}`}
+                    onPress={() => onRemoveSet(block.key, set.key)}
+                    className="w-[88px] flex-row items-center justify-center gap-1 bg-paper-dim active:opacity-70">
+                    <Ionicons name="trash-outline" size={15} color={palette.ink} />
+                    <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink">
+                      Delete
+                    </Text>
+                  </Pressable>
+                )}
+                friction={2}
+                rightThreshold={44}
+                overshootRight={false}>
+                <View className="flex-row items-center gap-1.5 bg-paper-hi py-1.5">
+                  {/* Set number / type tag */}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Set ${i + 1} type: ${set.setType}. Tap to change.`}
+                    onPress={() => onCycleType(block.key, set.key, set.setType)}
+                    hitSlop={10}
+                    className="h-8 w-7 items-center justify-center active:opacity-60">
+                    <Text className="font-mono text-[12px] text-ink-secondary">{tag || i + 1}</Text>
+                  </Pressable>
 
-                {cols.prev ? (
-                  <Text className="w-16 font-mono text-[11px] text-ink-muted" numberOfLines={1}>
-                    {prevColumnText(prev, cols, units)}
-                  </Text>
-                ) : null}
+                  {/* Prev (67): a tap fills the row with last time's numbers.
+                    Same muted mono as before — it is still the record of last
+                    time; the 44pt column is what makes it a control. A row
+                    with no last time is plain text: nothing to copy. */}
+                  {cols.prev ? (
+                    prevWords ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Last time, set ${i + 1}: ${prevWords}. Fill this set with it.`}
+                        onPress={() => onUsePrev(block.key, set.key)}
+                        className="min-h-[44px] w-16 justify-center active:opacity-60">
+                        <Text className="font-mono text-[11px] text-ink-muted" numberOfLines={1}>
+                          {prevText}
+                        </Text>
+                      </Pressable>
+                    ) : (
+                      <Text className="w-16 font-mono text-[11px] text-ink-muted" numberOfLines={1}>
+                        {prevText}
+                      </Text>
+                    )
+                  ) : null}
 
-                {cols.load ? (
-                  <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
-                    <TextInput
-                      value={set.weight}
-                      onChangeText={(weight) => onPatch(block.key, set.key, { weight })}
-                      placeholder={
-                        prev?.weightKg != null ? String(displayWeight(prev.weightKg, units)) : '—'
-                      }
-                      placeholderTextColor={palette.inkMuted}
-                      keyboardType="decimal-pad"
-                      returnKeyType={KEYPAD_DONE}
-                      className="py-1.5 text-center font-mono text-[15px] text-ink"
-                      accessibilityLabel={`Weight for set ${i + 1}`}
-                    />
-                  </View>
-                ) : null}
+                  {cols.load ? (
+                    <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                      <TextInput
+                        value={set.weight}
+                        onChangeText={(weight) => onPatch(block.key, set.key, { weight })}
+                        placeholder={shown.weight ?? '—'}
+                        placeholderTextColor={palette.inkMuted}
+                        keyboardType="decimal-pad"
+                        returnKeyType={KEYPAD_DONE}
+                        className="py-1.5 text-center font-mono text-[15px] text-ink"
+                        accessibilityLabel={`Weight for set ${i + 1}`}
+                      />
+                    </View>
+                  ) : null}
 
-                {cols.reps ? (
-                  <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
-                    <TextInput
-                      value={set.reps}
-                      onChangeText={(reps) => onPatch(block.key, set.key, { reps })}
-                      placeholder={prev?.reps != null ? String(prev.reps) : '—'}
-                      placeholderTextColor={palette.inkMuted}
-                      keyboardType="number-pad"
-                      returnKeyType={KEYPAD_DONE}
-                      className="py-1.5 text-center font-mono text-[15px] text-ink"
-                      accessibilityLabel={`Reps for set ${i + 1}`}
-                    />
-                  </View>
-                ) : null}
+                  {cols.reps ? (
+                    <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                      <TextInput
+                        value={set.reps}
+                        onChangeText={(reps) => onPatch(block.key, set.key, { reps })}
+                        placeholder={shown.reps ?? '—'}
+                        placeholderTextColor={palette.inkMuted}
+                        keyboardType="number-pad"
+                        returnKeyType={KEYPAD_DONE}
+                        className="py-1.5 text-center font-mono text-[15px] text-ink"
+                        accessibilityLabel={`Reps for set ${i + 1}`}
+                      />
+                    </View>
+                  ) : null}
 
-                {/* The clock (owner, 2026-09-23: *"plank time should not require
+                  {/* The clock (owner, 2026-09-23: *"plank time should not require
                     me to put in a colon"*). A plain number pad whose digits fill
                     from the right — 1 3 0 draws 1:30 — so the colon is drawn,
                     never typed. The well is the same 36pt well as its
                     neighbours; the field inside it overhangs to a 44pt target
                     (src/components/exercise/duration-field.tsx). `set.time`
                     stays the m:ss text `finish()` reads with `parseClock`. */}
-                {cols.time ? (
-                  <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
-                    <DurationField
-                      value={set.time}
-                      onChangeText={(time) => onPatch(block.key, set.key, { time })}
-                      placeholder={
-                        prev?.durationSec != null ? secondsToClock(prev.durationSec) : '0:00'
-                      }
-                      centered
-                      accessibilityLabel={`Time for set ${i + 1}, minutes and seconds`}
-                    />
-                  </View>
-                ) : null}
+                  {cols.time ? (
+                    <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                      <DurationField
+                        value={set.time}
+                        onChangeText={(time) => onPatch(block.key, set.key, { time })}
+                        placeholder={shown.time ?? '0:00'}
+                        centered
+                        accessibilityLabel={`Time for set ${i + 1}, minutes and seconds`}
+                      />
+                    </View>
+                  ) : null}
 
-                {cols.distance ? (
-                  <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                  {cols.distance ? (
+                    <View className={`min-h-[36px] flex-1 ${INPUT_WELL}`}>
+                      <TextInput
+                        value={set.distance}
+                        onChangeText={(distance) => onPatch(block.key, set.key, { distance })}
+                        placeholder={shown.distance ?? '—'}
+                        placeholderTextColor={palette.inkMuted}
+                        keyboardType="decimal-pad"
+                        returnKeyType={KEYPAD_DONE}
+                        className="py-1.5 text-center font-mono text-[15px] text-ink"
+                        accessibilityLabel={`Distance for set ${i + 1}, in ${units.distance}`}
+                      />
+                    </View>
+                  ) : null}
+
+                  <View className={`min-h-[36px] w-12 ${INPUT_WELL}`}>
                     <TextInput
-                      value={set.distance}
-                      onChangeText={(distance) => onPatch(block.key, set.key, { distance })}
-                      placeholder={
-                        prev?.distanceM != null
-                          ? String(displayDistance(prev.distanceM, units))
-                          : '—'
-                      }
+                      value={set.rpe}
+                      onChangeText={(rpe) => onPatch(block.key, set.key, { rpe })}
+                      placeholder="—"
                       placeholderTextColor={palette.inkMuted}
                       keyboardType="decimal-pad"
                       returnKeyType={KEYPAD_DONE}
-                      className="py-1.5 text-center font-mono text-[15px] text-ink"
-                      accessibilityLabel={`Distance for set ${i + 1}, in ${units.distance}`}
+                      className="py-1.5 text-center font-mono text-[13px] text-ink"
+                      accessibilityLabel={`RPE for set ${i + 1}`}
                     />
                   </View>
-                ) : null}
 
-                <View className={`min-h-[36px] w-12 ${INPUT_WELL}`}>
-                  <TextInput
-                    value={set.rpe}
-                    onChangeText={(rpe) => onPatch(block.key, set.key, { rpe })}
-                    placeholder="—"
-                    placeholderTextColor={palette.inkMuted}
-                    keyboardType="decimal-pad"
-                    returnKeyType={KEYPAD_DONE}
-                    className="py-1.5 text-center font-mono text-[13px] text-ink"
-                    accessibilityLabel={`RPE for set ${i + 1}`}
-                  />
+                  {/*
+                  The completion stamp. Chrome, not biology — so it is the
+                  accent and never a signal green (the firewall,
+                  00-design-spec.md §2). A ✓ on an untouched row logs the grey
+                  numbers; long-press deletes the set (the shortcut it always
+                  was, now with the Undo), and VoiceOver, which cannot swipe a
+                  row, gets Delete as an action on the stamp.
+                */}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ checked: set.done }}
+                    accessibilityLabel={`Mark set ${i + 1} ${set.done ? 'incomplete' : 'complete'}`}
+                    accessibilityActions={[{ name: 'delete', label: `Delete set ${i + 1}` }]}
+                    onAccessibilityAction={(e) => {
+                      if (e.nativeEvent.actionName === 'delete') onRemoveSet(block.key, set.key);
+                    }}
+                    onPress={() => onToggleDone(block, set)}
+                    onLongPress={() => onRemoveSet(block.key, set.key)}
+                    hitSlop={8}
+                    className={`h-8 w-8 items-center justify-center border ${
+                      set.done ? 'border-pine bg-pine' : 'border-hairline'
+                    } active:opacity-70`}>
+                    <Ionicons
+                      name="checkmark"
+                      size={16}
+                      color={set.done ? palette.pineOn : palette.hairline}
+                    />
+                  </Pressable>
                 </View>
-
-                {/*
-                The completion stamp. Chrome, not biology — so it is the accent
-                and never a signal green (the firewall, 00-design-spec.md §2).
-              */}
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ checked: set.done }}
-                  accessibilityLabel={`Mark set ${i + 1} ${set.done ? 'incomplete' : 'complete'}`}
-                  onPress={() => onToggleDone(block, set)}
-                  onLongPress={() => onRemoveSet(block.key, set.key)}
-                  hitSlop={8}
-                  className={`h-8 w-8 items-center justify-center border ${
-                    set.done ? 'border-pine bg-pine' : 'border-hairline'
-                  } active:opacity-70`}>
-                  <Ionicons
-                    name="checkmark"
-                    size={16}
-                    color={set.done ? palette.pineOn : palette.hairline}
-                  />
-                </Pressable>
-              </View>
+              </SetSwipe>
+              {/* A ✓ refused on an empty row says why, under that row. */}
+              {emptySetKey === set.key ? (
+                <Text className="pb-1.5 font-serif text-[12px] leading-4 text-ink-secondary">
+                  {prevWords
+                    ? 'Nothing in this set yet. Type what you did, or tap Prev.'
+                    : 'Nothing in this set yet. Type what you did first.'}
+                </Text>
+              ) : null}
             </View>
           );
         })}
+
+        {/* The deleted set's Undo — the food logger's receipt row, drawn again
+            (src/components/nutrition/undo-row.tsx): ruled, no timer, no accent. */}
+        {undo ? <UndoRow offer={undo} onUndo={onUndo} first={block.sets.length === 0} /> : null}
 
         {/* PR marker + add set. The mark is ink, never the accent or a signal
             colour: it is neither a completion nor a verdict about the body. The
@@ -2340,8 +2611,7 @@ function ExerciseBlock({
             accessibilityRole="button"
             accessibilityLabel={`Add a set to ${block.name}`}
             onPress={() => onAddSet(block.key)}
-            hitSlop={8}
-            className="min-h-[32px] flex-row items-center gap-1 active:opacity-60">
+            className="min-h-[44px] flex-row items-center gap-1 px-1 active:opacity-60">
             <Ionicons name="add" size={15} color={palette.inkSecondary} />
             <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
               Add set

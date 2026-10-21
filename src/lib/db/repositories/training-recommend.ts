@@ -46,8 +46,13 @@ const WEIGHT_BASED = new Set([
   'assisted_bodyweight',
 ]);
 
-/** The progression suggestion for one catalog exercise from its history. */
-function progressionFor(db: Database, ex: CatalogExercise): ProgressionSuggestion {
+/**
+ * The progression suggestion for one catalog exercise from its history.
+ * Exported (round 3, 2026-10-21) because the live logger's per-set targets are
+ * this same answer (src/lib/exercise/set-hints.ts) — one engine, read by the
+ * Train-today card, the Coach and the set rows alike.
+ */
+export function progressionFor(db: Database, ex: CatalogExercise): ProgressionSuggestion {
   const mechanic = ex.mechanic ?? 'compound';
   const repRange = REP_RANGE[mechanic];
   if (!WEIGHT_BASED.has(ex.loggingType)) {

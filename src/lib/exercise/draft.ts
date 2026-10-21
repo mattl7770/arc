@@ -160,6 +160,31 @@ export type DraftBlock = {
   /** Grouped into a superset with the block below it (shared superset_group). */
   linkedToNext: boolean;
   sets: DraftSet[];
+  /**
+   * The progression engine's answer for this movement, taken when the block
+   * was built (round 3, 2026-10-21) — what each row's grey numbers are drawn
+   * from (src/lib/exercise/set-hints.ts). Carried on the draft so a resumed
+   * session shows the same targets it was started with, rather than targets
+   * re-read against a history that may have moved. Optional and parsed
+   * leniently, so a draft from before it existed resumes with last time's
+   * numbers alone: no version bump, the `prKinds` precedent. Absent when the
+   * engine has no load step to offer.
+   */
+  target?: SetTarget;
+};
+
+/**
+ * `suggestProgression`'s answer, as the rows need it (src/lib/exercise/
+ * set-hints.ts `setTargetOf`). `repHigh` is the top of the rep range the
+ * engine used, the cap a held row's "+1 rep" respects; `note` is the engine's
+ * own one-line rationale, printed under the block title.
+ */
+export type SetTarget = {
+  kind: 'progress' | 'hold' | 'deload';
+  weightKg: number;
+  reps: number;
+  repHigh: number;
+  note: string;
 };
 
 /**
@@ -304,7 +329,39 @@ function parsePrevSets(raw: unknown): PrevSet[] {
     rpe: asFiniteNumber(p.rpe),
     durationSec: asFiniteNumber(p.durationSec),
     distanceM: asFiniteNumber(p.distanceM),
+    // Only when present and known, so a draft written before it rode along
+    // parses back to exactly what was written (§10's byte-for-byte round trip).
+    ...(typeof p.setType === 'string' && (SET_TYPES as string[]).includes(p.setType)
+      ? { setType: p.setType as SetType }
+      : {}),
   }));
+}
+
+const TARGET_KINDS: SetTarget['kind'][] = ['progress', 'hold', 'deload'];
+
+/** A block's stored target, or undefined for anything not whole and finite. */
+function parseTarget(raw: unknown): SetTarget | undefined {
+  if (!isRecord(raw)) return undefined;
+  const weightKg = asFiniteNumber(raw.weightKg);
+  const reps = asFiniteNumber(raw.reps);
+  const repHigh = asFiniteNumber(raw.repHigh);
+  if (
+    typeof raw.kind !== 'string' ||
+    !(TARGET_KINDS as string[]).includes(raw.kind) ||
+    weightKg === null ||
+    weightKg <= 0 ||
+    reps === null ||
+    repHigh === null
+  ) {
+    return undefined;
+  }
+  return {
+    kind: raw.kind as SetTarget['kind'],
+    weightKg,
+    reps,
+    repHigh,
+    note: asString(raw.note),
+  };
 }
 
 function parseSet(raw: unknown, index: number): DraftSet | null {
@@ -338,6 +395,7 @@ function parseBlock(raw: unknown, index: number): DraftBlock | null {
   const sets = Array.isArray(raw.sets)
     ? raw.sets.map(parseSet).filter((s): s is DraftSet => s !== null)
     : [];
+  const target = parseTarget(raw.target);
   return {
     key: asFiniteNumber(raw.key) ?? index + 1,
     exerciseId: typeof raw.exerciseId === 'string' ? raw.exerciseId : null,
@@ -354,6 +412,8 @@ function parseBlock(raw: unknown, index: number): DraftBlock | null {
     bestE1rm: asFiniteNumber(raw.bestE1rm),
     linkedToNext: asBool(raw.linkedToNext),
     sets,
+    // Only when present — the byte-for-byte rule `sessionId` follows.
+    ...(target ? { target } : {}),
   };
 }
 

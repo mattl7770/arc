@@ -82,7 +82,11 @@ export type UndoOffer = {
     | 'medkit-outline'
     | 'thermometer-outline'
     | 'pulse-outline'
-    | 'reader-outline';
+    | 'reader-outline'
+    /** The live logger's deleted set (round 3, 2026-10-21) — words only: it
+     *  holds its Undo in the screen's own state, as the estimate review does
+     *  (src/lib/exercise/set-hints.ts), and never enters this slot. */
+    | 'barbell-outline';
   /** What was done, as the row says it: "Removed Greek yogurt". */
   said: string;
   /** The measured half, set in mono after it — "150 kcal" — or null. */

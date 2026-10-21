@@ -27,7 +27,12 @@ import {
   type ParsedAiExercise,
 } from '@/lib/exercise/ai-add';
 import { MUSCLE_LABEL, MUSCLE_ORDER } from '@/lib/exercise/constants';
-import { offersAiEntry, rankExerciseMatches } from '@/lib/exercise/match';
+import {
+  aiDoorCopy,
+  offersAiEntry,
+  rankExerciseMatches,
+  type AiDoorCopy,
+} from '@/lib/exercise/match';
 import { DEFAULT_MEASURES, measuresLabel, type Measures } from '@/lib/exercise/measures';
 import type { CatalogExercise, Equipment, Muscle, NewExercise } from '@/lib/exercise/types';
 
@@ -47,9 +52,10 @@ import type { CatalogExercise, Equipment, Muscle, NewExercise } from '@/lib/exer
  * whole catalog index and asked it to pick — a retrieval problem the ranked
  * matcher already solves offline and deterministically.
  *
- * It is gone. Typing searches the catalog, and **only when nothing above the
- * matcher's weakest tier matches** (`offersAiEntry`) does *Add with AI*
- * appear, in the empty-results state where the reader is already looking. It
+ * It is gone. Typing searches the catalog first, and *Add with AI* is the last
+ * line of the results — since round 3 (2026-10-21) ALWAYS, whatever was typed
+ * (`aiDoorCopy`); until then only when nothing above the matcher's weakest
+ * tier matched, which hid it on the empty picker and behind any near miss. It
  * asks the model for a catalog ENTRY — name, aliases, equipment, muscles,
  * measures, logging type — which is rendered for review and written only on
  * Save, marked `source: 'ai'`. Nothing is created silently: those muscles feed
@@ -171,14 +177,18 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
    * narrowing, and "Back" selected while searching "landmine press" must not be
    * read as ARC lacking the movement.
    */
-  const aiOffered = useMemo(
+  const aiDoor = useMemo(
     () =>
-      isAiExerciseAvailable() &&
-      offersAiEntry(
-        all.map((ex) => ({ id: ex.id, name: ex.name, aliases: ex.aliases })),
-        search
-      ),
-    [all, search]
+      aiDoorCopy({
+        query: search,
+        offered: offersAiEntry(
+          all.map((ex) => ({ id: ex.id, name: ex.name, aliases: ex.aliases })),
+          search
+        ),
+        shown: filtered.length,
+        available: isAiExerciseAvailable(),
+      }),
+    [all, search, filtered.length]
   );
 
   const close = () => {
@@ -252,7 +262,7 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
               }}
             />
           ) : mode === 'ai' ? (
-            <AiAddView
+            <AiAddDoor
               query={search}
               onCancel={() => setMode('browse')}
               onCreated={(id) => {
@@ -271,7 +281,8 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
               onSelect={select}
               onOpenDetail={openDetail}
               onNew={() => setMode('create')}
-              onAi={aiOffered ? () => setMode('ai') : null}
+              aiDoor={aiDoor}
+              onAi={() => setMode('ai')}
             />
           )}
         </View>
@@ -280,7 +291,7 @@ export function ExercisePicker({ visible, onClose, onSelect }: Props) {
   );
 }
 
-function BrowseCatalog({
+export function BrowseCatalog({
   search,
   setSearch,
   muscle,
@@ -289,6 +300,7 @@ function BrowseCatalog({
   onSelect,
   onOpenDetail,
   onNew,
+  aiDoor,
   onAi,
 }: {
   search: string;
@@ -300,10 +312,12 @@ function BrowseCatalog({
   onOpenDetail: (ex: CatalogExercise) => void;
   onNew: () => void;
   /**
-   * null unless the catalog has nothing confident for what was typed AND a
-   * model key is configured — the door is not a standing entrance (C12).
+   * The standing AI row's words (`aiDoorCopy`, src/lib/exercise/match.ts).
+   * Always drawn since round 3 (2026-10-21): what the search found decides
+   * what the row SAYS, not whether it is there.
    */
-  onAi: (() => void) | null;
+  aiDoor: AiDoorCopy;
+  onAi: () => void;
 }) {
   return (
     <>
@@ -338,9 +352,8 @@ function BrowseCatalog({
         ))}
       </ScrollView>
 
-      {/* The manual door, always. The AI door used to sit beside it as a
-          standing third entrance; it now lives in the results plate below,
-          where it is only drawn once the catalog has come up empty-handed. */}
+      {/* The manual door, always. The AI door is the last line of the
+          results plate below — after whatever the catalog found. */}
       <View className="mt-3">
         <Pressable
           accessibilityRole="button"
@@ -434,41 +447,46 @@ function BrowseCatalog({
           )}
 
           {/*
-            The AI door — drawn only when the ranked matcher found nothing above
-            its weakest tier for what was typed (C12). That is the whole of
-            "catalog first": ARC answers from its own catalog whenever it
-            honestly can, and the model is asked only to DEFINE what the catalog
-            lacks.
+            The AI door — the last line of the results plate, ALWAYS (owner,
+            round 3, 2026-10-21: *"add with ai doesn't show up in regular add
+            exercise button"*). C12 drew it only when the ranked matcher found
+            nothing above its weakest tier, which made it invisible on the two
+            screens he actually opens: the empty picker, and a search with a
+            near miss in it. Catalog first still holds — in ORDER rather than in
+            visibility: the matches come first, and the row beneath them reads
+            as a second thought ("Not what you're after?"). `aiDoorCopy` says
+            which sentence; the model is still asked only to DEFINE a movement,
+            and nothing is written before Save.
 
-            It sits inside the results plate, below whatever the search did
-            manage to turn up, because that is where the reader already is when
-            a search disappoints — and because the weak guesses above it are
-            still worth reading first. Outlined, never the accent: browsing this
-            picker has no accent at all, and adding a door is not a reason to
-            spend one. The rule above it is `Divider`, so it reads as the last
-            line of the record rather than a box bolted onto it.
+            Outlined, never the accent: browsing this picker has no accent at
+            all. The rule above it is `Divider`, so it reads as the last line
+            of the record rather than a box bolted onto it.
           */}
-          {onAi ? (
-            <View className="mt-1">
-              <Divider first={filtered.length === 0} />
-              <Text className="mt-2.5 font-serif text-[13px] leading-5 text-ink-secondary">
-                {filtered.length === 0
-                  ? 'ARC doesn’t have this one.'
-                  : 'ARC doesn’t have a close match.'}{' '}
-                AI can write the catalog entry — you review it before it’s saved.
+          <View className="mt-1">
+            <Divider first={filtered.length === 0} />
+            <Text className="mt-2.5 font-serif text-[13px] leading-5 text-ink-secondary">
+              {aiDoor.lead}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={aiDoor.spoken}
+              accessibilityState={{ disabled: !aiDoor.enabled }}
+              disabled={!aiDoor.enabled}
+              onPress={onAi}
+              className="mt-2.5 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
+              <Ionicons
+                name="sparkles-outline"
+                size={15}
+                color={aiDoor.enabled ? palette.inkSecondary : palette.inkMuted}
+              />
+              <Text
+                className={`font-label text-[12px] font-semibold uppercase tracking-[1px] ${
+                  aiDoor.enabled ? 'text-ink' : 'text-ink-muted'
+                }`}>
+                Add with AI
               </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Add ${search.trim()} with AI`}
-                onPress={onAi}
-                className="mt-2.5 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-hairline active:bg-paper-dim">
-                <Ionicons name="sparkles-outline" size={15} color={palette.inkSecondary} />
-                <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
-                  Add with AI
-                </Text>
-              </Pressable>
-            </View>
-          ) : null}
+            </Pressable>
+          </View>
         </Block>
       </ScrollView>
     </>
@@ -504,13 +522,88 @@ function FilterChip({ label, on, onPress }: { label: string; on: boolean; onPres
 }
 
 /**
+ * The way into {@link AiAddView} from the standing row (round 3, 2026-10-21).
+ * With words in the search field it is the view itself, already running on
+ * them, exactly as before. With the field empty — the picker as it opens —
+ * there is nothing to ask about yet, so it asks for the words first: one
+ * field and one button, and the button is this view's single accent.
+ */
+export function AiAddDoor({
+  query,
+  onCancel,
+  onCreated,
+}: {
+  query: string;
+  onCancel: () => void;
+  onCreated: (id: string) => void;
+}) {
+  const [asked, setAsked] = useState(query.trim());
+  const [words, setWords] = useState('');
+  if (asked !== '') return <AiAddView query={asked} onCancel={onCancel} onCreated={onCreated} />;
+  const canAsk = words.trim() !== '';
+  return (
+    <ScrollView
+      className="-mx-5 mt-2 flex-1 px-5"
+      keyboardShouldPersistTaps="handled"
+      contentContainerClassName="pb-8">
+      <Text className="font-serif text-[13px] leading-5 text-ink-secondary">
+        Name or describe the movement. AI writes the catalog entry; nothing is saved until you say
+        so.
+      </Text>
+      <View className="mt-3 min-h-[44px] justify-center border border-paper-deep bg-paper-dim px-3.5">
+        <TextInput
+          value={words}
+          onChangeText={setWords}
+          placeholder="e.g. landmine press"
+          placeholderTextColor={palette.inkMuted}
+          className="py-2.5 font-serif text-[15px] text-ink"
+          accessibilityLabel="Exercise to add with AI"
+          returnKeyType="go"
+          onSubmitEditing={() => {
+            if (canAsk) setAsked(words.trim());
+          }}
+          autoCorrect={false}
+          autoFocus
+        />
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Write the catalog entry with AI"
+        accessibilityState={{ disabled: !canAsk }}
+        disabled={!canAsk}
+        onPress={() => setAsked(words.trim())}
+        className={`mt-5 h-12 flex-row items-center justify-center gap-2 rounded-btn ${
+          canAsk ? 'bg-pine active:opacity-70' : 'border border-hairline'
+        }`}>
+        <Text
+          className={`font-label text-[15px] font-semibold ${
+            canAsk ? 'text-pine-on' : 'text-ink-muted'
+          }`}>
+          Write the entry
+        </Text>
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Back to the catalog"
+        onPress={onCancel}
+        className="mt-4 min-h-[44px] items-center justify-center active:opacity-60">
+        <Text className="font-label text-[11px] font-semibold uppercase tracking-[1px] text-ink-secondary">
+          Back to browse
+        </Text>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
+/**
  * **Add with AI** — the model writes a catalog ENTRY, and the owner approves it.
  *
- * Reached only from the catalog-first gate in {@link BrowseCatalog}: the search
- * has already run, ARC has nothing above the matcher's weakest tier, and the
- * words the owner typed are handed straight to `src/lib/exercise/ai-add.ts`. So
- * this view opens ALREADY RUNNING — there is no second field to retype the same
- * words into, which is what the retired AI-search door made you do.
+ * Reached from the standing row at the foot of {@link BrowseCatalog}'s results
+ * (through {@link AiAddDoor}): the search has already run, and the words the
+ * owner typed are handed straight to `src/lib/exercise/ai-add.ts`. So this view
+ * opens ALREADY RUNNING — there is no second field to retype the same words
+ * into, which is what the retired AI-search door made you do. Only an empty
+ * search asks for words first, because there are none to send.
  *
  * Four beats, the house contract: ask (already made) → work → **review** →
  * save. The review card prints every fact that will land on the row, including

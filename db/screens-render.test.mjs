@@ -97,7 +97,7 @@ import MissionHistoryScreen from '../app/mission-history.tsx';
 import WaterScreen from '../app/water.tsx';
 import MuscleFreshnessScreen from '../app/muscle-freshness.tsx';
 import ExerciseDetailScreen, { TrendField } from '../app/exercise-detail.tsx';
-import { setExerciseLoadBasis } from '../src/lib/db/repositories/exercise-catalog.ts';
+import { listExercises, setExerciseLoadBasis } from '../src/lib/db/repositories/exercise-catalog.ts';
 import RoutineEditScreen, { RoutineLinesSection } from '../app/routine-edit.tsx';
 import { ExerciseOrder, ReorderToggle } from '../src/components/exercise/exercise-order.tsx';
 import { createRoutine, deleteRoutine, getRoutine } from '../src/lib/db/repositories/routines.ts';
@@ -109,7 +109,12 @@ import {
 // The two set grids. They joined the walk with the stopwatch clock field
 // (2026-09-23): workout-live needed a Reanimated stub and both needed
 // `useNavigation` from the expo-router stub — see db/render-hook.mjs.
-import WorkoutLiveScreen, { leaveLiveLogger } from '../app/workout-live.tsx';
+import WorkoutLiveScreen, { ExerciseBlock, leaveLiveLogger } from '../app/workout-live.tsx';
+import { AiAddDoor, BrowseCatalog } from '../src/components/exercise/exercise-picker.tsx';
+import { UndoRow } from '../src/components/nutrition/undo-row.tsx';
+import { lbToKg, weightSpec } from '../src/lib/exercise/format.ts';
+import { aiDoorCopy } from '../src/lib/exercise/match.ts';
+import { setHint, setRemovalWords, removeSetWithUndo } from '../src/lib/exercise/set-hints.ts';
 import WorkoutLogScreen from '../app/workout-log.tsx';
 import RecipesScreen from '../app/recipes.tsx';
 import RecipeDetailScreen from '../app/recipe-detail.tsx';
@@ -8347,6 +8352,379 @@ console.log('\n34. 2026-10-21 — Done, the label both ways, a food edited, a di
   ]);
   refute('meal-detail dish (opened, untouched)', opened, ['>Save<']);
 }
+
+
+/**
+ * 35. Round 3 (2026-10-21) — the live logger's per-set targets, Prev as a
+ * button, swipe-to-delete with Undo, Resume over Start on the Train hub, and
+ * Add with AI standing in the exercise picker.
+ *
+ * A server render fires no gestures, so the swipe itself is a device fact; the
+ * gesture-handler stub draws the OPEN frame (the row and the Delete it
+ * reveals), which is what lets this suite see the action and press it through
+ * the element tree. The rules under all of it are db/exercise.test.mjs §16.
+ */
+console.log('\n35. Round 3 — set targets, Prev, swipe-to-delete, Resume first, Add with AI');
+{
+  const findEl = (node, match) => {
+    if (node === null || node === undefined || typeof node !== 'object') return null;
+    if (match(node)) return node;
+    for (const child of React.Children.toArray(node.props?.children ?? [])) {
+      const hit = findEl(child, match);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const labelled = (label) => (el) => el.props?.accessibilityLabel === label;
+  /** Every `<input>` whose aria-label is exactly `label`, as an attribute map. */
+  const inputFor = (html, label) => {
+    const tag = (html?.match(/<input[^>]*>/g) || []).find((t) =>
+      t.includes(`aria-label="${label}"`)
+    );
+    return tag
+      ? Object.fromEntries([...tag.matchAll(/([a-zA-Z-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]))
+      : null;
+  };
+  const placeholders = (html, field, n) =>
+    Array.from({ length: n }, (_, i) => inputFor(html, `${field} for set ${i + 1}`)?.placeholder)
+      .map(String)
+      .join(',');
+
+  // Last time: a 45 lb warm-up, then 95 × 8 · 8 · 7. Overhead Press is used by
+  // no other section, so its history is exactly this (compound: 6–10 reps).
+  clearWorkoutDraft(db, 'live');
+  const ohp = (reps, lb, setType = 'normal') => ({
+    exercise: 'Overhead Press',
+    exerciseId: 'overhead-press',
+    reps,
+    weightKg: lbToKg(lb),
+    setType,
+  });
+  const lastOhp = logWorkout(db, { date: todayISODate(), kind: 'strength' }, [
+    ohp(10, 45, 'warmup'),
+    ohp(8, 95),
+    ohp(8, 95),
+    ohp(7, 95),
+  ]);
+
+  // THE LIVE LOGGER, NEW, from the hub's freshest-muscle start (3 working sets).
+  const live = render('workout-live (round 3 targets)', WorkoutLiveScreen, {
+    exerciseIds: 'overhead-press',
+  });
+  expect('workout-live (round 3 targets)', live, [
+    'Overhead Press',
+    // The engine's own why, under the title, while rows show its target.
+    'Hold the load — add a rep toward the top of the range.',
+    // Last time's warm-up comes back as a warm-up row, ahead of the working sets.
+    'aria-label="Set 1 type: warmup. Tap to change."',
+    // Prev is a button now (67), and says what it will copy.
+    'aria-label="Last time, set 2: 8 reps, 95 lb. Fill this set with it."',
+    // Swipe-to-delete's revealed action, one per row (69).
+    'aria-label="Delete set 1 of Overhead Press"',
+    'aria-label="Delete set 4 of Overhead Press"',
+  ]);
+  const weights = placeholders(live, 'Weight', 4);
+  const reps = placeholders(live, 'Reps', 4);
+  weights === '45,95,95,95' && reps === '10,9,9,8'
+    ? ok(
+        'the grey numbers: the warm-up as it was, then 95 × 9 · 9 · 8 — hold the load, one rep more per set'
+      )
+    : bad('round 3 placeholders', `weights ${weights} · reps ${reps}`);
+  refute('workout-live (round 3 targets)', live, ['Delete set 5 of Overhead Press']);
+
+  // AWAY: the same session resumed with Away on — last time's numbers, no why-line.
+  const target = {
+    kind: 'hold',
+    weightKg: lbToKg(95),
+    reps: 9,
+    repHigh: 10,
+    note: 'Hold the load — add a rep toward the top of the range.',
+  };
+  const prevRows = [
+    {
+      reps: 8,
+      weightKg: lbToKg(95),
+      rpe: null,
+      durationSec: null,
+      distanceM: null,
+      setType: 'normal',
+    },
+    {
+      reps: 7,
+      weightKg: lbToKg(95),
+      rpe: null,
+      durationSec: null,
+      distanceM: null,
+      setType: 'normal',
+    },
+  ];
+  const blankRow = (key) => ({
+    key,
+    weight: '',
+    reps: '',
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: false,
+    pr: false,
+  });
+  const ohpBlock = {
+    key: 1,
+    exerciseId: 'overhead-press',
+    name: 'Overhead Press',
+    loggingType: 'weight_reps',
+    measures: 'reps,load',
+    mechanic: 'compound',
+    restSec: 120,
+    prev: prevRows,
+    bestE1rm: null,
+    linkedToNext: false,
+    sets: [blankRow(1), blankRow(2)],
+    target,
+  };
+  saveWorkoutDraft(db, 'live', {
+    version: DRAFT_VERSION,
+    startedAt: Date.now() - 60_000,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: true,
+    blocks: [ohpBlock],
+  });
+  const awayHtml = render('workout-live (round 3, away)', WorkoutLiveScreen, { resume: '1' });
+  placeholders(awayHtml, 'Reps', 2) === '8,7'
+    ? ok('Away on: the rows show last time (8 · 7), not a progression step for another machine')
+    : bad('away placeholders', placeholders(awayHtml, 'Reps', 2));
+  refute('workout-live (round 3, away)', awayHtml, ['Hold the load']);
+  clearWorkoutDraft(db, 'live');
+
+  // THE EDITOR of last time's session: no targets, no why-line — it happened.
+  const editHtml = render('workout-live (round 3, editing)', WorkoutLiveScreen, {
+    workoutId: lastOhp,
+  });
+  expect('workout-live (round 3, editing)', editHtml, [
+    'Save changes',
+    'aria-label="Delete set 2 of Overhead Press"',
+  ]);
+  refute('workout-live (round 3, editing)', editHtml, ['Hold the load']);
+
+  // THE BLOCK'S OWN WIRING, pressed through the element tree. ExerciseBlock is
+  // hook-free (the RoutineLinesSection precedent), so each control's onPress is
+  // the screen's own handler as passed in.
+  const calls = [];
+  const units = DEFAULT_UNIT_PREFERENCES;
+  const hints = ohpBlock.sets.map((set, index) =>
+    setHint({ block: ohpBlock, index, set, basis: null, away: false, editing: false, units })
+  );
+  const removed = removeSetWithUndo(
+    [
+      {
+        ...ohpBlock,
+        sets: [blankRow(1), blankRow(2), { ...blankRow(3), reps: '6', weight: '95' }],
+      },
+    ],
+    1,
+    3,
+    units
+  ).removed;
+  const blockProps = (over = {}) => ({
+    block: ohpBlock,
+    loadBasis: null,
+    units,
+    spec: weightSpec(units),
+    hints,
+    targetNote: target.note,
+    emptySetKey: null,
+    undo: null,
+    onUndo: () => calls.push('undo'),
+    onUsePrev: (bk, sk) => calls.push(`prev ${bk}/${sk}`),
+    onPatch: () => {},
+    onAddSet: () => {},
+    onRemoveSet: (bk, sk) => calls.push(`remove ${bk}/${sk}`),
+    onCycleType: () => {},
+    onToggleDone: (b, s) => calls.push(`tick ${b.key}/${s.key}`),
+    onRemove: () => {},
+    onOpenDetail: () => {},
+    ...over,
+  });
+  const tree = ExerciseBlock(blockProps());
+  findEl(
+    tree,
+    labelled('Last time, set 2: 7 reps, 95 lb. Fill this set with it.')
+  )?.props.onPress();
+  // The swipeable's revealed action: find the row's swipeable by its prop, draw
+  // its action as the gesture would, and press it.
+  const swipe = findEl(tree, (el) => typeof el.props?.renderRightActions === 'function');
+  const action = swipe && swipe.props.renderRightActions();
+  action?.props.accessibilityLabel === 'Delete set 1 of Overhead Press'
+    ? ok('the first row’s swipe reveals "Delete set 1 of Overhead Press"')
+    : bad('swipe action label', action?.props.accessibilityLabel);
+  action?.props.onPress();
+  const stamp = findEl(tree, labelled('Mark set 2 complete'));
+  stamp?.props.onLongPress();
+  stamp?.props.onAccessibilityAction({ nativeEvent: { actionName: 'delete' } });
+  stamp?.props.onPress();
+  calls.join(' | ') === 'prev 1/2 | remove 1/1 | remove 1/2 | remove 1/2 | tick 1/2'
+    ? ok(
+        'pressed: Prev copies into its own row; swipe, long-press and the VoiceOver action delete; ✓ ticks'
+      )
+    : bad('block wiring', calls.join(' | '));
+  stamp?.props.accessibilityActions?.[0]?.label === 'Delete set 2'
+    ? ok('VoiceOver, which cannot swipe, is offered "Delete set 2" on the stamp')
+    : bad('a11y action', JSON.stringify(stamp?.props.accessibilityActions));
+
+  // The Undo row, under the table, wired to the screen's undo.
+  const withUndo = ExerciseBlock(blockProps({ undo: setRemovalWords(removed) }));
+  const undoRow = findEl(withUndo, (el) => el.type === UndoRow);
+  undoRow?.props.offer.said === 'Removed set 3 of Overhead Press' &&
+  undoRow.props.offer.figure === '6 × 95 lb'
+    ? ok('a deleted set leaves "Removed set 3 of Overhead Press · 6 × 95 lb" under the table')
+    : bad('undo row', JSON.stringify(undoRow?.props.offer));
+  undoRow?.props.onUndo();
+  calls.at(-1) === 'undo' ? ok('…and its Undo is the screen’s') : bad('undo wiring');
+  expect(
+    'ExerciseBlock (undo + refused tick)',
+    render(
+      'ExerciseBlock (undo + refused tick)',
+      ExerciseBlock,
+      {},
+      blockProps({
+        undo: setRemovalWords(removed),
+        emptySetKey: 2,
+        hints: [null, null],
+      })
+    ),
+    [
+      'Removed set 3 of Overhead Press',
+      'Undo removing set 3 of Overhead Press',
+      'Nothing in this set yet. Type what you did, or tap Prev.',
+    ]
+  );
+
+  // THE TRAIN HUB: with a session open, Resume is the one accent and the
+  // largest control; Train today steps down to an outlined start.
+  saveWorkoutDraft(db, 'live', {
+    version: DRAFT_VERSION,
+    startedAt: Date.now() - 10 * 60_000,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [{ ...ohpBlock, sets: [{ ...blankRow(1), weight: '95', reps: '8', done: true }] }],
+  });
+  const hubOpen = render('exercise hub (round 3, session open)', ExerciseScreen);
+  expect('exercise hub (round 3, session open)', hubOpen, [
+    'Session in progress',
+    'Resume workout',
+    'Start recommended instead',
+  ]);
+  // Where each control sits: Resume first, above Train today and its start.
+  const resumeAt = hubOpen?.indexOf('Resume workout') ?? -1;
+  const startAt = hubOpen?.indexOf('Start recommended instead') ?? -1;
+  resumeAt >= 0 && startAt > resumeAt
+    ? ok('Resume workout comes first; Train today’s start follows it, as the second choice')
+    : bad('hub order', JSON.stringify({ resumeAt, startAt }));
+  clearWorkoutDraft(db, 'live');
+  const hubIdle = render('exercise hub (round 3, no session)', ExerciseScreen);
+  refute('exercise hub (round 3, no session)', hubIdle, [
+    'Resume workout',
+    'Start recommended instead',
+  ]);
+  // The accent is a CLASS, which a server render does not print, so who wears
+  // it is pinned from the source: Resume's button is the pine fill, and Train
+  // today steps down (plate, no cap, outlined start) exactly while a session
+  // is open — the screen's budget stays one either way.
+  const hubSource = readFileSync(new URL('../app/exercise.tsx', import.meta.url), 'utf8');
+  const lead = hubSource.slice(hubSource.indexOf('function ResumeLead'));
+  /rounded-btn bg-pine[^"]*">\s*<Ionicons name="play"[^>]*\/>\s*<Text[^>]*>Resume workout/.test(
+    lead
+  ) &&
+  hubSource.includes("<Block device={sessionOpen ? 'plate' : 'stamp'} cap={!sessionOpen}>") &&
+  hubSource.includes(
+    "sessionOpen ? 'border border-hairline active:bg-paper-dim' : 'bg-pine active:opacity-70'"
+  ) &&
+  hubSource.includes('sessionOpen={drafts.live !== null || drafts.manual !== null}')
+    ? ok('the accent moves to Resume while a session is open, and back to Start when none is')
+    : bad('hub accent source pin');
+  /text: 'Resume it', onPress: resume, isPreferred: true/.test(hubSource)
+    ? ok('the "already in progress" alert sets Resume it as the preferred (bold) answer')
+    : bad('alert isPreferred');
+
+  // THE PICKER: Add with AI stands at the foot of the catalog on every search.
+  const catalog = listExercises(db);
+  const browse = (search, filtered, door) =>
+    render(
+      `exercise picker (${search || 'empty'})`,
+      BrowseCatalog,
+      {},
+      {
+        search,
+        setSearch: () => {},
+        muscle: null,
+        setMuscle: () => {},
+        filtered,
+        onSelect: () => {},
+        onOpenDetail: () => {},
+        onNew: () => {},
+        aiDoor: door,
+        onAi: () => {},
+      }
+    );
+  expect(
+    'exercise picker (empty)',
+    browse(
+      '',
+      catalog,
+      aiDoorCopy({ query: '', offered: false, shown: catalog.length, available: true })
+    ),
+    ['Not in the catalog?', 'Add with AI', 'aria-label="Add an exercise with AI"']
+  );
+  const benchHits = catalog.filter((e) => /bench/i.test(e.name));
+  expect(
+    'exercise picker (bench)',
+    browse(
+      'bench',
+      benchHits,
+      aiDoorCopy({ query: 'bench', offered: false, shown: benchHits.length, available: true })
+    ),
+    ['Barbell Bench Press', 'Not what you’re after?', 'aria-label="Add bench with AI"']
+  );
+  const noKeyHtml = browse(
+    '',
+    catalog,
+    aiDoorCopy({ query: '', offered: false, shown: 69, available: false })
+  );
+  expect('exercise picker (no key)', noKeyHtml, ['needs a model key', 'Add with AI']);
+  let aiPressed = 0;
+  const browseTree = BrowseCatalog({
+    search: '',
+    setSearch: () => {},
+    muscle: null,
+    setMuscle: () => {},
+    filtered: [],
+    onSelect: () => {},
+    onOpenDetail: () => {},
+    onNew: () => {},
+    aiDoor: aiDoorCopy({ query: '', offered: false, shown: 0, available: true }),
+    onAi: () => aiPressed++,
+  });
+  findEl(browseTree, labelled('Add an exercise with AI'))?.props.onPress();
+  aiPressed === 1 ? ok('…and the row opens Add with AI') : bad('ai door press');
+  expect(
+    'Add with AI (nothing typed yet)',
+    render(
+      'Add with AI (nothing typed yet)',
+      AiAddDoor,
+      {},
+      { query: '', onCancel: () => {}, onCreated: () => {} }
+    ),
+    ['Name or describe the movement.', 'aria-label="Exercise to add with AI"', 'Write the entry']
+  );
+
+  deleteWorkout(db, lastOhp);
+}
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

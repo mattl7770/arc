@@ -80,6 +80,25 @@ import {
   pressClockKey,
   secondsToClock,
 } from '../src/lib/exercise/clock-entry.ts';
+import {
+  hintFields,
+  prevPatch,
+  prevSpoken,
+  removeSetWithUndo,
+  restampMovement,
+  setFigure,
+  setHint,
+  setRemovalWords,
+  setTargetOf,
+  setUndoStands,
+  snapLoadDirected,
+  targetApplies,
+  tickPatch,
+  undoSetRemoval,
+} from '../src/lib/exercise/set-hints.ts';
+import { aiDoorCopy } from '../src/lib/exercise/match.ts';
+import { suggestProgression } from '../src/lib/exercise/progression.ts';
+import { DEFAULT_UNIT_PREFERENCES } from '../src/lib/user/types.ts';
 
 let pass = 0;
 let fail = 0;
@@ -1925,6 +1944,383 @@ console.log('15. a Start taken straight back is dropped quietly (owner, 2026-09-
     raw.close();
   }
   rmSync(dir, { recursive: true, force: true });
+}
+
+
+console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and delete with Undo');
+{
+  const LB = DEFAULT_UNIT_PREFERENCES; // lb, mi
+  const KG = { ...DEFAULT_UNIT_PREFERENCES, weight: 'kg', distance: 'km' };
+  const set = (key, over) => ({
+    key,
+    weight: '',
+    reps: '',
+    rpe: '',
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: false,
+    pr: false,
+    ...over,
+  });
+  const prevRow = (reps, weightKg, over) => ({
+    reps,
+    weightKg,
+    rpe: null,
+    durationSec: null,
+    distanceM: null,
+    ...over,
+  });
+  const range = { low: 6, high: 10 };
+  const hold100 = setTargetOf(
+    suggestProgression({
+      sessions: [{ date: '2026-10-14', weightKg: 100, reps: 8, rpe: null }],
+      repRange: range,
+      incrementKg: lbToKg(2.5),
+    }),
+    range.high
+  );
+
+  // --- the target is the engine's, untouched --------------------------------
+  hold100 && hold100.kind === 'hold' && hold100.weightKg === 100 && hold100.reps === 9
+    ? ok('setTargetOf keeps the engine’s hold: the same 100 kg, one rep more (9)')
+    : bad('hold target', JSON.stringify(hold100));
+  setTargetOf(
+    suggestProgression({ sessions: [], repRange: range, incrementKg: lbToKg(2.5) }),
+    range.high
+  ) === undefined
+    ? ok('…and no target when the engine says find a weight')
+    : bad('find_weight target');
+  setTargetOf({ kind: 'hold', targetWeightKg: null, targetReps: 12, note: '' }, 12) === undefined
+    ? ok('…nor for a movement it progresses by reps or time (no load to hold)')
+    : bad('reps-only target');
+
+  // --- hold, per row: +1 rep on what each row did, capped at the top ----------
+  const benchBlock = {
+    prev: [prevRow(8, 100), prevRow(8, 100), prevRow(7, 100), prevRow(10, 100)],
+    target: hold100,
+    measures: 'reps,load',
+  };
+  const held = [0, 1, 2, 3, 4].map((index) =>
+    setHint({
+      block: benchBlock,
+      index,
+      set: set(index + 1),
+      basis: 'total',
+      away: false,
+      editing: false,
+      units: KG,
+    })
+  );
+  held.map((h) => h?.reps).join(',') === '9,9,8,10,9' &&
+  held.every((h) => h?.weightKg === 100 && h.source === 'target')
+    ? ok(
+        'hold: 8 · 8 · 7 · 10 last time reads 9 · 9 · 8 · 10 at 100 kg, and a new row the engine’s 9'
+      )
+    : bad('hold per row', JSON.stringify(held));
+
+  // --- progress rounds UP to a real plate, deload rounds DOWN -----------------
+  const progress = {
+    kind: 'progress',
+    weightKg: 100 + lbToKg(2.5),
+    reps: 6,
+    repHigh: 10,
+    note: '',
+  };
+  const pKg = setHint({
+    block: { prev: [prevRow(10, 100)], target: progress, measures: 'reps,load' },
+    index: 0,
+    set: set(1),
+    basis: null,
+    away: false,
+    editing: false,
+    units: KG,
+  });
+  near(pKg?.weightKg, 102.5) && pKg?.reps === 6
+    ? ok(
+        'progress in kg: +1.13 kg goes on the bar as 102.5 kg × 6 (the next plate, never 100 again)'
+      )
+    : bad('progress kg', JSON.stringify(pKg));
+  const pLb = snapLoadDirected(lbToKg(135) + lbToKg(2.5), LB, 'up');
+  near(pLb, lbToKg(140))
+    ? ok('progress in lb: 135 + 2.5 lb rounds up to 140 lb, a real plate pair')
+    : bad('progress lb', String(pLb));
+  near(snapLoadDirected(lbToKg(140), LB, 'up'), lbToKg(140))
+    ? ok('…and a load already on a step stays on it (140 lb is not pushed to 145)')
+    : bad('on-step epsilon');
+  near(snapLoadDirected(102.5 * 0.9, KG, 'down'), 90) && near(snapLoadDirected(90, KG, 'down'), 90)
+    ? ok('deload rounds down: 92.25 kg → 90 kg, and 90 stays 90')
+    : bad('deload snap');
+  near(snapLoadDirected(1, KG, 'down'), 1)
+    ? ok('…and a deload that would round to nothing keeps the engine’s own figure')
+    : bad('deload floor');
+
+  // --- where the target does NOT apply: last time, exactly ------------------
+  const lastFor = (over) =>
+    setHint({
+      block: {
+        prev: [prevRow(12, 60, { setType: 'warmup' }), prevRow(8, 100)],
+        target: hold100,
+        measures: 'reps,load',
+      },
+      index: 1,
+      set: set(2),
+      basis: 'total',
+      away: false,
+      editing: false,
+      units: KG,
+      ...over,
+    });
+  const warm = lastFor({ index: 0, set: set(1, { setType: 'warmup' }) });
+  warm?.source === 'last' && warm.weightKg === 60 && warm.reps === 12
+    ? ok('a warm-up row (as a new block marks last time’s) shows last time’s ramp, not the target')
+    : bad('warm-up row', JSON.stringify(warm));
+  lastFor({ set: set(2, { setType: 'warmup' }) })?.source === 'last'
+    ? ok('…and so does a row the owner marks as a warm-up now')
+    : bad('marked warm-up');
+  lastFor({ index: 0, set: set(1) })?.source === 'target'
+    ? ok('…while a warm-up row he turns into a working set takes the working target: the row decides')
+    : bad('unmarked warm-up');
+  const away = lastFor({ away: true });
+  away?.source === 'last' && away.reps === 8
+    ? ok('Away on: last time’s numbers, never a progression step for a different machine')
+    : bad('away hint', JSON.stringify(away));
+  lastFor({ basis: 'assisted' })?.source === 'last'
+    ? ok('an assisted movement (0062): last time, since its figure is help, not load')
+    : bad('assisted hint');
+  lastFor({ editing: true }) === null
+    ? ok('editing a stored session: no hint at all — every row there already happened')
+    : bad('editing hint');
+  const plank = setHint({
+    block: {
+      prev: [prevRow(null, null, { durationSec: 90 })],
+      target: undefined,
+      measures: 'time',
+    },
+    index: 0,
+    set: set(1),
+    basis: null,
+    away: false,
+    editing: false,
+    units: KG,
+  });
+  plank?.durationSec === 90 && hintFields(plank, 'time', KG).time === '1:30'
+    ? ok('a plank’s hint is last time’s 1:30, in the clock field’s own form')
+    : bad('plank hint', JSON.stringify(plank));
+  setHint({
+    block: { prev: [], target: undefined, measures: 'reps,load' },
+    index: 0,
+    set: set(1),
+    basis: null,
+    away: false,
+    editing: false,
+    units: KG,
+  }) === null
+    ? ok('a movement never done: no hint (find a weight)')
+    : bad('never done');
+  !targetApplies({ target: hold100, measures: 'reps', basis: null, away: false, editing: false }) &&
+  targetApplies({
+    target: hold100,
+    measures: 'reps,load',
+    basis: 'per_hand',
+    away: false,
+    editing: false,
+  })
+    ? ok('targetApplies: load AND reps needed; any load basis but assisted')
+    : bad('targetApplies');
+
+  // --- the ✓ logs what the row shows (the found bug) -------------------------
+  const benchHint = held[0];
+  const filled = tickPatch(set(1), benchHint, 'reps,load', KG);
+  filled?.weight === '100' && filled.reps === '9' && filled.storedWeightKg === 100
+    ? ok('✓ on an untouched row logs its grey 100 × 9, with the exact kilograms behind the 100')
+    : bad('tick fill', JSON.stringify(filled));
+  const typed = tickPatch(set(1, { reps: '7' }), benchHint, 'reps,load', KG);
+  typed && !('reps' in typed) && typed.weight === '100'
+    ? ok('…a typed figure is kept (7 reps), only the empty load is taken')
+    : bad('tick keeps typed', JSON.stringify(typed));
+  tickPatch(set(1), null, 'reps,load', KG) === null
+    ? ok('✓ on an empty row with nothing to offer is REFUSED — never an empty set saved silently')
+    : bad('empty refusal');
+  tickPatch(set(1, { rpe: '8' }), null, 'reps,load', KG) === null
+    ? ok('…an RPE alone is not a set either')
+    : bad('rpe-only refusal');
+  const typedOnly = tickPatch(set(1, { reps: '5' }), null, 'reps,load', KG);
+  typedOnly !== null && Object.keys(typedOnly).length === 0
+    ? ok('…while a row with a figure typed ticks as typed, nothing added')
+    : bad('typed only', JSON.stringify(typedOnly));
+  const heldLb = tickPatch(set(1), { ...benchHint, weightKg: 61.235 }, 'reps,load', KG);
+  heldLb?.weight === '61.2' && heldLb.storedWeightKg === 61.235
+    ? ok('a held 61.235 kg shows 61.2 and is logged as 61.235 kg, not the rounded display')
+    : bad('stored kg', JSON.stringify(heldLb));
+
+  // --- Prev copies last time in whole (67) -----------------------------------
+  const copied = prevPatch(prevRow(8, lbToKg(135)), 'reps,load', LB);
+  copied?.weight === '135' && copied.reps === '8' && near(copied.storedWeightKg, lbToKg(135))
+    ? ok('tap Prev: 8 × 135 lb copied into the row')
+    : bad('prev copy', JSON.stringify(copied));
+  const dip = prevPatch(prevRow(12, null), 'reps,load', LB);
+  dip?.weight === '' && dip.reps === '12'
+    ? ok('…a bodyweight dip last time copies as 12 reps with the load emptied, as it was')
+    : bad('prev bodyweight', JSON.stringify(dip));
+  prevPatch(undefined, 'reps,load', LB) === null &&
+  prevPatch(prevRow(null, null), 'reps,load', LB) === null
+    ? ok('…and no last time copies nothing')
+    : bad('prev none');
+  prevSpoken(prevRow(8, lbToKg(135)), 'reps,load', LB) === '8 reps, 135 lb'
+    ? ok('Prev’s spoken label: "8 reps, 135 lb"')
+    : bad('prev spoken', prevSpoken(prevRow(8, lbToKg(135)), 'reps,load', LB));
+
+  // --- delete a set, and its Undo (69) ---------------------------------------
+  const blockOf = (key, exerciseId, name, sets, over) => ({
+    key,
+    exerciseId,
+    name,
+    loggingType: 'weight_reps',
+    measures: 'reps,load',
+    mechanic: 'compound',
+    restSec: 120,
+    prev: [],
+    bestE1rm: null,
+    linkedToNext: false,
+    sets,
+    ...over,
+  });
+  // A stand-in stamp: beats a 100 kg record and every earlier set this session.
+  const ask = (session, _block, s) => {
+    const w = Number(s.weight);
+    const before = session.flatMap((b) => b.sets).map((x) => Number(x.weight));
+    return w > 100 && before.every((x) => w > x) ? ['heaviest'] : [];
+  };
+  const start = [
+    blockOf(
+      1,
+      'bench',
+      'Bench Press',
+      [
+        set(11, { weight: '110', reps: '5', done: true, pr: true, prKinds: ['heaviest'] }),
+        set(12, { weight: '105', reps: '6', done: true }),
+        set(13, { weight: '100', reps: '6' }),
+      ],
+      { linkedToNext: true }
+    ),
+    blockOf(2, 'row', 'Barbell Row', [set(21, { weight: '80', reps: '8', done: true })]),
+  ];
+  const cut = removeSetWithUndo(start, 1, 11, LB);
+  const words = cut.removed && setRemovalWords(cut.removed);
+  cut.blocks[0].sets.map((s) => s.key).join() === '12,13' &&
+  cut.removed?.index === 0 &&
+  words?.said === 'Removed set 1 of Bench Press' &&
+  words.figure === '5 × 110 lb' &&
+  words.spoken === 'Undo removing set 1 of Bench Press'
+    ? ok('delete: the set goes, and the Undo row reads "Removed set 1 of Bench Press · 5 × 110 lb"')
+    : bad('delete', JSON.stringify({ sets: cut.blocks[0].sets, words }));
+  cut.blocks[0].linkedToNext === true && cut.blocks[1] === start[1]
+    ? ok('…the superset bind is untouched, and the other block is the same object')
+    : bad('bind kept');
+  const restamped = restampMovement(cut.blocks, 'bench', ask);
+  restamped[0].sets[0].pr === true && restamped[0].sets[0].prKinds?.[0] === 'heaviest'
+    ? ok('…and the 105 the 110 was out-lifting by now carries the stamp: PRs follow the delete')
+    : bad('restamp after delete', JSON.stringify(restamped[0].sets));
+  restamped[1] === cut.blocks[1]
+    ? ok('…another movement’s stamps are not asked again')
+    : bad('restamp scope');
+  setUndoStands(restamped, cut.removed) &&
+  setUndoStands(
+    restamped.map((b) =>
+      b.key === 1 ? { ...b, sets: b.sets.map((s) => (s.key === 13 ? { ...s, reps: '7' } : s)) } : b
+    ),
+    cut.removed
+  )
+    ? ok('the Undo stands, and still stands after another row’s figure is edited')
+    : bad('undo stands');
+  const back = restampMovement(undoSetRemoval(restamped, cut.removed), 'bench', ask);
+  back[0].sets.map((s) => s.key).join() === '11,12,13' &&
+  back[0].sets[0].pr === true &&
+  back[0].sets[1].pr === false &&
+  back[0].sets[1].prKinds === undefined
+    ? ok('Undo: the 110 back at set 1 with its stamp, and the 105’s stamp taken back')
+    : bad('undo', JSON.stringify(back[0].sets));
+  const grown = restamped.map((b) => (b.key === 1 ? { ...b, sets: [...b.sets, set(14)] } : b));
+  !setUndoStands(grown, cut.removed) && undoSetRemoval(grown, cut.removed) === grown
+    ? ok('…a set added since closes it: putting one back would no longer be exact')
+    : bad('undo closes on add');
+  !setUndoStands(
+    restamped.filter((b) => b.key !== 1),
+    cut.removed
+  )
+    ? ok('…and so does removing the exercise')
+    : bad('undo closes on block remove');
+  removeSetWithUndo(start, 1, 999, LB).removed === null &&
+  removeSetWithUndo(start, 9, 11, LB).blocks === start
+    ? ok('a key that names nothing removes nothing')
+    : bad('unknown key');
+  setFigure(set(1, { time: '1:30' }), 'time', KG) === '1:30' &&
+  setFigure(set(1), 'reps,load', KG) === null
+    ? ok('the figure of a timed set is its clock; an empty row has none')
+    : bad('figure');
+  const notDone = restampMovement(
+    [blockOf(1, 'bench', 'Bench', [set(1, { weight: '120', pr: true, prKinds: ['heaviest'] })])],
+    'bench',
+    ask
+  );
+  notDone[0].sets[0].pr === false && notDone[0].sets[0].prKinds === undefined
+    ? ok('a set not done carries no stamp after a restamp')
+    : bad('not-done stamp');
+
+  // --- the draft carries the target and last time's set types ----------------
+  const withTarget = {
+    version: DRAFT_VERSION,
+    sessionId: 's',
+    startedAt: 1,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [
+      blockOf(1, 'bench', 'Bench', [set(1)], {
+        prev: [prevRow(10, 60, { setType: 'warmup' }), prevRow(8, 100)],
+        target: { kind: 'hold', weightKg: 100, reps: 9, repHigh: 10, note: 'Hold the load.' },
+      }),
+    ],
+  };
+  JSON.stringify(parseLiveDraft(JSON.parse(JSON.stringify(withTarget)))) ===
+  JSON.stringify(withTarget)
+    ? ok('a draft with a target and set-typed prev rows round-trips byte for byte')
+    : bad('target round trip', JSON.stringify(parseLiveDraft(withTarget)));
+  const junk = parseLiveDraft({
+    ...withTarget,
+    blocks: [
+      {
+        ...withTarget.blocks[0],
+        prev: [{ ...prevRow(8, 100), setType: 'bogus' }],
+        target: { kind: 'yolo', weightKg: 100, reps: 9, repHigh: 10 },
+      },
+    ],
+  });
+  junk && junk.blocks[0].target === undefined && !('setType' in junk.blocks[0].prev[0])
+    ? ok('…while a malformed target or an unknown set type is dropped, not trusted')
+    : bad('junk target', JSON.stringify(junk?.blocks[0]));
+  const old = parseLiveDraft({ ...withTarget, blocks: [blockOf(1, 'bench', 'Bench', [set(1)])] });
+  old && !('target' in old.blocks[0])
+    ? ok('…and a draft from before targets resumes without one (last time’s numbers)')
+    : bad('old draft');
+
+  // --- the picker's AI row says what the search found (68) -------------------
+  const door = (query, offered, shown, available = true) =>
+    aiDoorCopy({ query, offered, shown, available });
+  door('', false, 69).lead.startsWith('Not in the catalog?') &&
+  door('', false, 69).enabled &&
+  door('landmine press', true, 0).lead.startsWith('ARC doesn’t have this one.') &&
+  door('jefferson curl', true, 4).lead.startsWith('ARC doesn’t have a close match.') &&
+  door('bench', false, 6).lead.startsWith('Not what you’re after?') &&
+  door('bench', false, 6).spoken === 'Add bench with AI'
+    ? ok('the AI row stands on every search: empty, no match, a reach, and under real matches')
+    : bad('ai door copy');
+  const noKey = door('bench', false, 6, false);
+  !noKey.enabled && noKey.lead.includes('model key')
+    ? ok('…and with no model key it stays, says what it needs, and is off')
+    : bad('no key door');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

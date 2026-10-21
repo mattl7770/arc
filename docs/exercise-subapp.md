@@ -726,6 +726,8 @@ True when something was typed **and** nothing matched above the matcher's weakes
 
 The empty-query case lives inside the gate rather than at the call site, so there is one answer to "is the door drawn": nothing typed is not a question.
 
+> **Superseded in part, round 3 (2026-10-21), §17.5.** The owner: *"add with ai doesn't show up in regular add exercise button"*. The door is now drawn on **every** search, at the foot of the results. `offersAiEntry` no longer decides whether it is there, only what the row says (`aiDoorCopy`). The table above is now the table of which sentence appears.
+
 **A known limit, pinned rather than papered over.** `hack squat` keeps the door **shut**: "hack" is one substitution from the *Back Squat* alias, which is a whole-name FUZZY match and confident by every definition this module has. The owner gets Back Squat at the top of the list and the manual **New exercise** door. Widening the gate to catch it would mean distrusting tier 4 everywhere — the tier that makes `bnech press` work, a far commoner case than a one-letter collision with a real movement.
 
 ### 13.3 What the model is asked for
@@ -1097,3 +1099,81 @@ An independent review of the first cut raised three findings. All three were rea
 - **Major: detail's direction could contradict the row that opened it.** Detail's only line had become the change across the range, and on the default view it could point the opposite way to the hub row (−8% on the row, +20% on the screen). Fixed as §16.2 describes: the row's figure is detail's first line on every chip, and the range's change is a second line naming its range. The `directionOf` docblock had kept its old "can never disagree" claim over the changed behaviour. It now says why they agree and names the one edge (away-heavy last eight sessions) where they can still differ.
 - **Minor: the cost of a wrong drop was understated.** The rationale said a wrong drop "rounds away". It does not: the drop is silent, and a Start pressed minutes later dates the session from then. Corrected in `QUIET_LEAVE_MS` and §16.1, and put to the owner in §16.4.
 - **Minor: nothing tested what the screen feeds the drop.** Every test built its own baseline. Fixed with `liveStartFor`, the one `liveState` object, and the source pin (§16.1, *What the screen feeds it*). Each of the review's three example regressions now fails a test.
+
+## 17. Phase 13 — the logger round (round 3, 2026-10-21)
+
+Five owner notes from round 3 of device feedback (items 65, 67, 68, 69, 93) and one study (87). No migration: head stays `0065`, and `DRAFT_VERSION` stays 3, because both new draft fields are optional and parsed leniently (the `prKinds` precedent).
+
+### 17.1 Per-set targets (65)
+
+*"real intelligent autofilled weight and rep recommendations for each set."* Each set row's grey placeholders are now a **hint** (`setHint`, `src/lib/exercise/set-hints.ts`) from one of two places, and nothing in it is a new training rule:
+
+- **The target**: `suggestProgression` (§4.3), the Train-today card's own engine, read through `progressionFor` (now exported from `training-recommend.ts`) when the block is built and carried on the draft as `DraftBlock.target`. Last session, the rep range, RPE as reps in reserve, and the exclusion of away sessions all reach it through the engine.
+- **Last time**: the row's own numbers from the most recent home session (`lastSessionSets`), exactly what the placeholder showed before.
+
+The target applies (`targetApplies`) only to a working row of a movement that measures load and reps, whose figure is load and not assistance (0062), with Away off and outside the editor. Everything else (warm-up rows, planks, runs, assisted pull-ups, a lift with no home history, every row while Away is on, every row of a stored session) shows last time or nothing.
+
+Two translations from the session's target to a row:
+
+- **Hold** ("add a rep toward the top") applies per row: a row done at the held load last time is offered one rep more than it did, capped at the top of the range. So 8 · 8 · 7 reads 9 · 9 · 8, not 9 · 9 · 9. A row with no comparable history takes the engine's rep target.
+- **Progress and deload** are new loads, put on real plates (`snapLoadDirected`, the `snapLoadKg` steps of 2.5 kg or a 5 lb pair): progress rounds **up**, deload rounds **down**. Rounding to nearest could turn "+1.1 kg" into the same weight at fewer reps. A held load is never rounded.
+
+The engine's one-line why ("Hold the load — add a rep toward the top of the range.") sits under the block title while any row shows a target.
+
+**Warm-ups first.** Rows line up with last time's by position, so a new block now marks last time's leading warm-ups as warm-up rows (`PrevSet.setType`, read by `lastSessionSets`), and the count asked for is **working** sets. A working target on a warm-up row would be logged by a tick as a working set at the wrong load. The row's own type decides the hint: a pre-marked warm-up the owner turns into a working set takes the target.
+
+### 17.2 What a tick logs (the found bug)
+
+A ✓ on an empty row used to mark it done with nothing in it, and Finish saved a set of nulls while the grey numbers beside it looked logged. Now (`tickPatch`):
+
+- every **empty** field takes the row's grey figure; a typed field is kept;
+- a load taken from a hint records the exact kilograms behind it (`storedWeightKg`, the editor's own mechanism), so a held 61.235 kg is logged as 61.235, not as the rounded 61.2;
+- a row with nothing typed and nothing to offer is **refused**: it is not ticked, a line under it says why, and VoiceOver hears it.
+
+Finish also drops a live set with no figure in it (a done row emptied after the tick, or one from an older draft), and says "Nothing to save yet" rather than writing an empty workout. The editor keeps its done rows as stored.
+
+### 17.3 Tap Prev (67)
+
+The Prev cell is a 44pt button when there is a last time for the row. A tap copies last time's numbers in whole (`prevPatch`), overwriting what was typed. A load last time left empty (a bodyweight dip) is emptied too. RPE and the set type are left alone. A done set re-asks its PR stamp, as any edit to its figures does.
+
+### 17.4 Delete a set, with Undo (69)
+
+The owner chose **swipe left to delete**. Each row sits in `react-native-gesture-handler`'s `ReanimatedSwipeable` (a dependency since the app shell, so in the binary; no new build). The swipe reveals a Delete; a tap on it removes the set. The logger draws its own `GestureHandlerRootView`, rather than changing the root layout every screen shares. **Long-press on the stamp** stays as the shortcut, and VoiceOver, which cannot swipe a row, gets Delete as an action on the stamp. A tap on the set number still cycles the set type. The edit-mode delete drafted first was dropped when the owner chose the swipe: three doors to one act was one too many.
+
+The Undo follows the estimate review's rule (`review-undo.ts`): screen state, never the draft; one offer at a time; no timer; drawn as `UndoRow` under the block's table ("Removed set 3 of Bench Press · 8 × 135 lb"). It stands while putting the set back is exact: the block still holds exactly the sets the removal left. Editing another row's figures does not close it; adding or deleting a set, or removing the exercise, does.
+
+**Consistency.** A superset bind lives on the block, and deleting a set never removes a block, so binds cannot change. A **done** set leaving or coming back re-asks the movement's PR stamps in session order, each against the done sets before it (`restampMovement`): the set that held the session's best going away can hand the stamp to the one after it, and an Undo takes it back. Watch pairing reads the saved workout, not the draft, so it is untouched. The same screen is the logged-session editor, so all of this works there too, where no stamps are drawn.
+
+### 17.5 Add with AI, always (68)
+
+The picker's **Add with AI** row now stands at the foot of the results plate on every search. C12's gate (`offersAiEntry`) decides what the row says (`aiDoorCopy`, `match.ts`), not whether it is there:
+
+| Search | Row says |
+| --- | --- |
+| empty | "Not in the catalog? AI can write the catalog entry…" |
+| nothing confident (C12's open cases) | "ARC doesn't have this one." / "…a close match." (unchanged) |
+| real matches above it | "Not what you're after? AI can write the catalog entry…" |
+| no model key | "Adding with AI needs a model key — set one in the Coach settings." The button is drawn, off. |
+
+Catalog first still holds, by order: the matches come before the row. From an empty search the row opens `AiAddDoor`, which asks for the words first (one field, one accent: Write the entry). With words already typed it opens straight into the running review, as before. Nothing is written before Save.
+
+### 17.6 Resume over Start (93)
+
+*"resume in progress workout should be bigger than start a new one when applicable."* On the Train hub, the Session in progress card now takes the screen's single accent: the stamp, its hatched cap and a full-width **Resume workout**. Train today steps down to a plate with outlined starts ("Start recommended instead"), and the budget stays one. With both slots open, the set grid's session leads and the free-form one is a row beneath. The "A workout is already in progress" alert marks **Resume it** as iOS's preferred (bold) answer. Home shows only a Resume row, with no start beside it, so it is unchanged.
+
+### 17.7 The study (87)
+
+`docs/spikes/progressive-overload.md`: PR stamps against a per-set ahead / on-target / short mark compared with the row's own target. It recommends keeping strength PRs and adding the mark, and asks the owner which he meant. Not built.
+
+### 17.8 Tests
+
+- `db/exercise.test.mjs` §16: `setTargetOf`; hold per row (8 · 8 · 7 · 10 → 9 · 9 · 8 · 10, a new row 9); progress up and deload down in kg and lb, including the on-step epsilon and the zero floor; warm-up, away, assisted, editing, a plank and a never-done movement; the tick's fill, keep, refusal and exact kilograms; Prev's copy, bodyweight and nothing; delete, Undo, what closes it, a superset bind kept, stamps handed on and taken back; the draft round trip with a target and typed prev rows, and junk dropped; `aiDoorCopy`'s five sentences.
+- `db/screens-render.test.mjs` §34: a new logger over a real history (warm-up row, 45 then 95 × 9 · 9 · 8, the why-line, Prev's label, a Delete per row); Away resumed (last time, no why-line); the editor (no targets); `ExerciseBlock` pressed through its element tree (Prev, the swipe's Delete, long-press, the VoiceOver action, the tick, the Undo row and its Undo, the refused-tick line); the hub with and without a session (order in the markup, the accent pinned from source, the alert's preferred answer); the picker's row on an empty search, under real matches and with no key, pressed; `AiAddDoor` with nothing typed. The gesture handler is stubbed (`db/render-stubs/gesture-handler.mjs`) to draw the open frame, so the swipe's action can be found and pressed. The swipe gesture itself is a device fact.
+
+### 17.9 What only a phone can settle
+
+- **The swipe**: that a horizontal drag on a row reveals Delete without fighting the ScrollView's vertical scroll or the row's text fields, at what distance it opens, and that the paper-dim action reads as a delete with no red (the signal firewall).
+- **Grey numbers that log on a tick**: whether a target (9 reps where he did 8) is clear enough as a target, or whether the why-line under the title is needed to read it. And whether a refused tick's one line is enough feedback without a haptic.
+- **Warm-up rows up front**: a saved workout of 3 sets with two warm-ups last time now opens with 5 rows. Is that what he expects, or noise?
+- **Plate rounding**: a progress on a machine whose stack moves in 7 kg steps will show a 2.5 kg jump that cannot be loaded.
+- **Resume as the stamp**: whether the hub reads right with the accent at the top and Train today in a plain plate below it.
