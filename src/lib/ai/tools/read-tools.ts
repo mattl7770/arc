@@ -1055,7 +1055,8 @@ const getMetricSeries: CoachTool = {
         aggregation:
           spec.agg === 'sum'
             ? metricType === 'workout'
-              ? 'daily sum of Apple Health sessions NOT also logged in ARC (those are in get_training_summary)'
+              ? 'daily sum of Apple Health sessions NOT also logged in ARC (those are in ' +
+                'get_training_summary); a session two apps recorded counts once'
               : 'daily sum of every logged row'
             : 'one source per day, richest device first (same rule the Home screen uses)',
         days,
