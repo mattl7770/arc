@@ -10,6 +10,7 @@ import {
   rowsFromEstimate,
   rowsToMealItems,
 } from '@/components/nutrition/estimate-review';
+import { SearchedLines } from '@/components/coach/searched-lines';
 import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -34,6 +35,7 @@ import { useReviewDraft } from '@/hooks/use-review-draft';
 import { fmtAmount, fmtInt, pieceCount } from '@/lib/nutrition/format';
 import type { MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
 import type { VolumeUnit } from '@/lib/user/types';
+import type { WebSearchSummary } from '@/lib/ai/web-search';
 
 /**
  * Correcting a logged meal in plain English (owner, 2026-08-12): *"I should be
@@ -88,7 +90,7 @@ import type { VolumeUnit } from '@/lib/user/types';
 type Phase =
   | { kind: 'input' }
   | { kind: 'working' }
-  | { kind: 'review'; notes: string | null }
+  | { kind: 'review'; notes: string | null; searches: WebSearchSummary[] }
   /** The correction never reached the model, so it was kept (0057, backlog C3).
    *  The meal keeps the items it has until the drain lands. */
   | { kind: 'queued' }
@@ -140,7 +142,7 @@ export default function MealReviseScreen() {
     // pizza's eight over three logged slices.
     draft.replace(rowsFromEstimate(getDb(), estimate, { countIsEaten: true }));
     asking.begin(estimate.questions);
-    setPhase({ kind: 'review', notes: estimate.notes });
+    setPhase({ kind: 'review', notes: estimate.notes, searches: estimate.searches ?? [] });
   };
 
   const run = async () => {
@@ -383,6 +385,11 @@ export default function MealReviseScreen() {
 
       {phase.kind === 'review' ? (
         <View className="mt-6">
+          {phase.searches.length > 0 ? (
+            <View className="mb-3">
+              <SearchedLines searches={phase.searches} />
+            </View>
+          ) : null}
           {phase.notes ? (
             <View className="mb-4">
               <Block device="margin">

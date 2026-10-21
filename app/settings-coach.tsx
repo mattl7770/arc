@@ -58,6 +58,13 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * back if the hours move off it — because the wheel commits every time it
  * settles and a spin must not destroy anything (coach-nudges.ts).
  * A ruled plate like the model picker: these are settings, a record.
+ *
+ * ## Web search (2026-10-21, docs/decisions.md "Provider-side web search")
+ *
+ * One switch, ON by default by the owner's answer ("whenever it helps"): the
+ * Coach and the food estimators may run the provider's web search inside their
+ * own model call. Persisted beside the model choice (api-key-store.ts), and read
+ * on every turn, so turning it off takes effect on the next request.
  */
 
 /** The notification settings, written through and resynced on every change. */
@@ -78,10 +85,12 @@ export default function SettingsCoachScreen() {
   const isHydrated = () => apiKeyStore.isHydrated();
   const isPersistent = () => apiKeyStore.isPersistent();
   const getModel = () => apiKeyStore.getModel();
+  const isWebSearchOn = () => apiKeyStore.isWebSearchOn();
   const keySet = useSyncExternalStore(apiKeyStore.subscribe, has, has);
   const hydrated = useSyncExternalStore(apiKeyStore.subscribe, isHydrated, isHydrated);
   const persistent = useSyncExternalStore(apiKeyStore.subscribe, isPersistent, isPersistent);
   const model = useSyncExternalStore(apiKeyStore.subscribe, getModel, getModel);
+  const webSearch = useSyncExternalStore(apiKeyStore.subscribe, isWebSearchOn, isWebSearchOn);
 
   const [draft, setDraft] = useState('');
   const canSave = draft.trim().length > 0;
@@ -223,6 +232,38 @@ export default function SettingsCoachScreen() {
                 2026-08-11 — the picker above it affords the switch. */}
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
               Sonnet is the cheaper of the two; Opus is stronger on deep, whole-history analysis.
+            </Text>
+          </Block>
+        </View>
+
+        {/* Web search (2026-10-21): on by the owner's own answer, so the model
+            searches whenever it judges that helps. A ruled plate like the
+            nudges switch below: a setting, a record. */}
+        <View className="mt-4">
+          <Block device="plate">
+            <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+              <View className="flex-1">
+                <Text className="font-serif text-[15px] text-ink">Web search</Text>
+                <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                  When it helps: the Coach and food estimates · ~1¢ a search
+                </Text>
+              </View>
+              <Switch
+                accessibilityLabel="Web search"
+                value={webSearch}
+                onValueChange={(on) => void apiKeyStore.setWebSearch(on)}
+                trackColor={{ true: palette.ink, false: palette.hairlineStrong }}
+                ios_backgroundColor={palette.hairlineStrong}
+              />
+            </View>
+          </Block>
+        </View>
+        <View className="mt-4">
+          <Block device="margin">
+            <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+              The search runs at Anthropic, inside the Coach&rsquo;s own call. A query names the
+              food or the fact, never your health data. The country comes from this phone&rsquo;s
+              time zone and region settings, not its location.
             </Text>
           </Block>
         </View>

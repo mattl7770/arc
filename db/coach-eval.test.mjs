@@ -32,6 +32,11 @@ import {
 } from '../src/lib/ai/tools/index.ts';
 import { buildCoachSystemPrompt } from '../src/lib/ai/system-prompt.ts';
 import {
+  COACH_WEB_SEARCH_MAX_USES,
+  WEB_SEARCH_TOOL_NAME,
+  webSearchTool,
+} from '../src/lib/ai/web-search.ts';
+import {
   FOOD_ENTRY_SYSTEM_PROMPT,
   MEAL_ESTIMATION_SYSTEM_PROMPT,
 } from '../src/lib/nutrition/estimate.ts';
@@ -393,7 +398,28 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   const proseTok = (s) => Math.round(s.length / 3.6);
 
   const systemTokens = proseTok(buildCoachSystemPrompt({ notificationsLive: false }));
-  const allToolTokens = jsonTok(JSON.stringify(toWireTools(COACH_TOOLS)));
+  // ── 2026-10-21: PROVIDER-SIDE WEB SEARCH (items 62 and 91). **9,107 →
+  // 9,140 schema, 3,626 → 3,662 prompt. Neither ceiling moved.**
+  //
+  // The search server tool rides the Coach's `tools` array on every turn the
+  // switch is on (the default), so it is billed HERE, honestly, at its widest
+  // shape: the 20260209 version with `allowed_callers` (+33; Haiku's basic
+  // version is +23). What this cannot measure is the provider's own text for
+  // the tool — the API adds the search tool's instructions server-side, as it
+  // does for every server tool — and that is not ARC's prompt to trim; it shows
+  // up in the usage caption's input count on the phone.
+  //
+  // The prompt paid +36 for ONE bullet: what search is for (public facts: a
+  // local menu, a product, new research) and the privacy rule the owner's
+  // brief required — a query never carries their health data. It is in the
+  // cached prefix because it binds every turn; the region itself is per-turn
+  // and rides the uncached context block (turn-context.ts), not this.
+  const allToolTokens = jsonTok(
+    JSON.stringify([
+      ...toWireTools(COACH_TOOLS),
+      webSearchTool('claude-sonnet-5', COACH_WEB_SEARCH_MAX_USES),
+    ])
+  );
   const readToolTokens = jsonTok(JSON.stringify(toWireTools(READ_TOOLS)));
 
   // The ceilings rose at the 2026-08-10 merge and that was a deliberate trade,
@@ -1156,7 +1182,9 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // **9,093 schema (9,039 + 19 + 35), 3,644 prompt, pass prefix 7,020.** The
   // two measurements add exactly; neither ceiling moved.
   allToolTokens < 9250
-    ? ok(`the ${COACH_TOOLS.length} tool schemas fit the budget (~${allToolTokens} tok)`)
+    ? ok(
+        `the ${COACH_TOOLS.length} tool schemas + the web search tool fit the budget (~${allToolTokens} tok)`
+      )
     : bad(
         'tool schemas over budget',
         `${allToolTokens} tok — trim descriptions before adding more`
@@ -1237,6 +1265,38 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   cold > warm * 4
     ? ok(`a cold turn costs ${(cold / warm).toFixed(1)}× a warm one — why the cache TTL is 1h`)
     : bad('cache economics wrong', `${cold} vs ${warm}`);
+}
+
+console.log('7. web search: a reserved name, a privacy rule, a region line outside the prefix');
+{
+  // The server tool's name is reserved: a registry tool called `web_search`
+  // would be indistinguishable from a provider search in the persisted record
+  // (the Searched line, the chips, the failure rule all key on the name).
+  !COACH_TOOLS.some((tool) => tool.name === WEB_SEARCH_TOOL_NAME)
+    ? ok('no registry tool takes the name web_search')
+    : bad('a registry tool is named web_search');
+
+  const prompt = buildCoachSystemPrompt({ notificationsLive: false });
+  prompt.includes('web_search') && prompt.includes('never carries their health data')
+    ? ok('the cached prompt names what search is for and that a query carries no health data')
+    : bad('privacy rule missing from the prompt');
+  !/Region:/.test(prompt)
+    ? ok('…and holds no region: the cached prefix stays byte-identical across countries')
+    : bad('region leaked into the cached prefix');
+
+  const { db } = freshDb();
+  const withRegion = buildTurnContext(db, NOW, {
+    region: 'Region: NZ (time zone Pacific/Auckland)',
+  });
+  const lines = withRegion.split('\n');
+  lines.indexOf('Region: NZ (time zone Pacific/Auckland)') ===
+  lines.findIndex((line) => line.startsWith('Current date:')) + 1
+    ? ok('the per-turn context carries the region line, right under the date')
+    : bad('region line', lines.slice(0, 3).join(' | '));
+  !buildTurnContext(db, NOW).includes('Region:') &&
+  !buildTurnContext(db, NOW, { region: null }).includes('Region:')
+    ? ok('no region given (the unattended pass, an unreadable phone) → no line')
+    : bad('region line without a region');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

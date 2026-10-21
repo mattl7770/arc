@@ -7,6 +7,9 @@ import { clockFromISO, dayParts, logicalDate, todayISODate } from '@/lib/db/date
 import type { AiTurnOutcome } from '@/lib/db/types';
 import { isRetryableOutcome, type CoachChatView } from '@/hooks/use-coach-chat';
 
+import { webSearchesOf } from '@/lib/ai/web-search';
+
+import { SearchedLines } from './searched-lines';
 import { TypingIndicator } from './typing-indicator';
 
 type Props = {
@@ -368,6 +371,9 @@ export function MessageBubble({ message, onRetry }: Props) {
             {message.tools.join(' · ')}
           </Text>
         ) : null}
+        {/* What the turn looked up on the web, and where the answer came from.
+            Read off the persisted tool record, so a reload draws the same. */}
+        {!message.streaming ? <SearchedLines searches={webSearchesOf(message.toolCalls)} /> : null}
         {message.usageCaption && !message.streaming ? (
           <Text className="mt-0.5 font-mono text-[10px] tracking-[0.5px] text-ink-muted">
             {message.usageCaption}

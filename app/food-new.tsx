@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 
+import { SearchedLines } from '@/components/coach/searched-lines';
 import { keypadDoneKey } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -26,6 +27,7 @@ import {
 } from '@/lib/nutrition/estimate';
 import { microsLine } from '@/lib/nutrition/format';
 import type { AmountUnit } from '@/lib/nutrition/types';
+import type { WebSearchSummary } from '@/lib/ai/web-search';
 
 /**
  * Create a custom catalog food (source='user'), reached from food search with
@@ -224,6 +226,8 @@ export default function FoodNewScreen() {
    *  user editing them: most of the numbers are still the model's, and a
    *  half-corrected estimate is still an estimate. */
   const [described, setDescribed] = useState(false);
+  /** What the model looked up for the last description, for the Searched line. */
+  const [searches, setSearches] = useState<WebSearchSummary[]>([]);
   const keySet = isMealEstimationAvailable();
   // The model call is a live stream. Leaving mid-describe must stop it, or it
   // runs to completion and is billed in full while its result lands on an
@@ -249,6 +253,7 @@ export default function FoodNewScreen() {
     setFat(numText(entry.fat_g_100g));
     setFiber(numText(entry.fiber_g_100g));
     setMicros(entry.micros);
+    setSearches(entry.searches ?? []);
     setDescribed(true);
   };
 
@@ -419,6 +424,7 @@ export default function FoodNewScreen() {
             food, and the entry will be marked as an estimate in your catalog.
           </Text>
         ) : null}
+        {described ? <SearchedLines searches={searches} /> : null}
       </View>
 
       <View className="mt-5">

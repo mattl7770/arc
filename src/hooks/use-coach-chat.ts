@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { streamCoachReply } from '@/lib/ai/coach-service';
 import { CoachTurnError } from '@/lib/ai/model-client';
+import { isWebSearchCall } from '@/lib/ai/web-search';
 import { humanizeToolName, isRetiredWriteName, toolByName } from '@/lib/ai/tools';
 import { claimsCompletedWrite } from '@/lib/ai/write-claim';
 import type { CoachToolCall } from '@/lib/ai/types';
@@ -131,6 +132,17 @@ function isWriteTool(name: string): boolean {
   return toolByName(name)?.readOnly === false || isRetiredWriteName(name);
 }
 
+/**
+ * The transparency chips: the registry tools a turn used. A web search is left
+ * out, because it has its own "Searched" line under the bubble saying what was
+ * searched and where the answer came from (src/components/coach/searched-lines).
+ */
+function toolChips(toolCalls: CoachToolCall[]): string[] {
+  return toolCalls
+    .filter((call) => !isWebSearchCall(call))
+    .map((call) => humanizeToolName(call.name));
+}
+
 /** The receipts for the "these changes landed" line; [] for a read-only turn. */
 function landedWrites(toolCalls: CoachToolCall[]): string[] {
   return landedWriteReceipts(toolCalls, isWriteTool, humanizeToolName);
@@ -172,7 +184,7 @@ function loadThread(conversationId: string): CoachChatMessage[] {
     .filter((row) => row.role === 'user' || row.role === 'assistant')
     .map((row) => {
       const calls = parseToolCalls(row.tool_calls);
-      const tools = calls.map((call) => humanizeToolName(call.name));
+      const tools = toolChips(calls);
       const { writes, declined, phantomWrite } = writeFidelity(row.content, calls);
       return {
         id: row.id,
@@ -330,7 +342,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // CUT OFF, and a cut-off reply must never be stored or shown as a
           // finished one — least of all when it already wrote to the record.
           const outcome = outcomeForStopReason(result.stopReason);
-          const tools = result.toolCalls.map((call: CoachToolCall) => humanizeToolName(call.name));
+          const tools = toolChips(result.toolCalls);
           // THE WHOLE TURN, not its settled answer (owner report, 2026-10-21:
           // *"after you approve something coach's message gets overridden, can
           // lose info"*). This used to be `result.text`, which is only what the
@@ -351,11 +363,9 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // (src/lib/ai/cost.ts). A single lump token total cannot distinguish a
           // warm prefix re-read from paying full price for it, and those differ
           // by 20×.
-          const caption = usageCaption(
-            result.usage,
-            apiKeyStore.getModel(),
-            result.toolCalls.length
-          );
+          // Registry calls only: searches are counted by the caption itself,
+          // from the billed `webSearchRequests`.
+          const caption = usageCaption(result.usage, apiKeyStore.getModel(), tools.length);
           patch((m) => ({
             ...m,
             streaming: false,
@@ -389,7 +399,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // persist the audit record so approved writes are never untraceable.
           // Retry appends alongside this row; it is never deleted.
           if (err instanceof CoachTurnError) {
-            const tools = err.toolCalls.map((call) => humanizeToolName(call.name));
+            const tools = toolChips(err.toolCalls);
             const { writes, declined, phantomWrite } = writeFidelity(
               err.partialText,
               err.toolCalls
@@ -409,6 +419,9 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
               outcome: 'failed',
               persisted: true,
               tools,
+              // The record, as the reload path carries it: the next turn's
+              // digest and the "Searched" lines both read it.
+              toolCalls: err.toolCalls,
               ...(writes.length > 0 ? { writes } : {}),
               ...(declined.length > 0 ? { declined } : {}),
               ...(phantomWrite ? { phantomWrite } : {}),

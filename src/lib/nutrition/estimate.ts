@@ -26,6 +26,13 @@ import { normalizeFoodName, searchFoods } from '@/lib/db/repositories/foods';
 import type { JsonText } from '@/lib/db/types';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
+import { deviceRegion, regionLine } from '@/lib/ai/region';
+import {
+  ESTIMATOR_WEB_SEARCH_MAX_USES,
+  webSearchesOf,
+  type WebSearchOptions,
+  type WebSearchSummary,
+} from '@/lib/ai/web-search';
 
 import type { MealItemNode } from './composite';
 import { countLabel } from './format';
@@ -205,6 +212,13 @@ export type MealEstimate = {
    * skipping costs accuracy, not coherence.
    */
   questions: EstimateQuestion[];
+  /**
+   * The web searches the model ran for this estimate (2026-10-21), for the
+   * review's "Searched" line. Absent or empty on most meals, and never written
+   * anywhere: the review shows where a figure came from, the meal row does not
+   * keep it.
+   */
+  searches?: WebSearchSummary[];
 };
 
 /** Thrown when no model key is configured (the UI points the user to Settings). */
@@ -273,7 +287,56 @@ export type VisionContentBlock = VisionTextBlock | VisionImageBlock;
 export type MealEstimationRequest = {
   system: string;
   messages: { role: 'user'; content: VisionContentBlock[] }[];
+  /** The per-call context block (region, the search rule); see {@link estimatorContext}. */
+  systemContext?: string;
+  /** The provider's web search, capped; null when off. */
+  webSearch?: WebSearchOptions | null;
 };
+
+/**
+ * What every estimator call carries beyond its prompt (2026-10-21, items 62 and
+ * 91): whether the model may search, and the phone's region line.
+ */
+export type EstimatorOptions = { webSearch: boolean; region: string | null };
+
+/** No search and no region — the pure builders' default, and the tests'. */
+export const NO_ESTIMATOR_OPTIONS: EstimatorOptions = { webSearch: false, region: null };
+
+/** The live options: the Settings switch, and the region from the phone's settings. */
+export function currentEstimatorOptions(): EstimatorOptions {
+  return { webSearch: apiKeyStore.isWebSearchOn(), region: regionLine(deviceRegion()) };
+}
+
+/**
+ * The estimators' per-call context: a SECOND system block, after the prompt
+ * (model-client.ts sends it uncached), so none of it counts against
+ * {@link ESTIMATOR_PROMPT_CEILING} — which is why it is here rather than in the
+ * prompts, whose ceiling had two tokens left. It carries the region, so a Big
+ * Mac is priced from the local menu, and the search rule, including the one
+ * privacy line: a query is about the food and the place, never the person.
+ */
+export function estimatorContext(options: EstimatorOptions): {
+  systemContext?: string;
+  webSearch?: WebSearchOptions;
+} {
+  const lines: string[] = [];
+  if (options.region) {
+    lines.push(`${options.region}. Price a chain or branded item from that country's menu.`);
+  }
+  if (options.webSearch) {
+    lines.push(
+      'Web search is available: use it when a published figure (a chain menu, a product label) ' +
+        'beats an estimate. A query names only the food and the place, never anything about the ' +
+        'person. Your reply is still ONLY the JSON object.'
+    );
+  }
+  return {
+    // Both keys are absent when there is nothing to say, so a request built
+    // with no options is byte-identical to the one built before search existed.
+    ...(lines.length > 0 ? { systemContext: lines.join('\n') } : {}),
+    ...(options.webSearch ? { webSearch: { maxUses: ESTIMATOR_WEB_SEARCH_MAX_USES } } : {}),
+  };
+}
 
 /**
  * The visual-estimation system prompt. Peer-reviewed work (docs/nutrition-subapp.md
@@ -530,7 +593,10 @@ export const ESTIMATOR_PROMPT_CEILING = 1000;
  * client's `runCoachTurn` takes (system + messages, no tools). The photo case
  * puts the image block before the text, as the vision docs recommend.
  */
-export function buildMealEstimationRequest(input: EstimateInput): MealEstimationRequest {
+export function buildMealEstimationRequest(
+  input: EstimateInput,
+  options: EstimatorOptions = NO_ESTIMATOR_OPTIONS
+): MealEstimationRequest {
   const content: VisionContentBlock[] = [];
   if (input.kind === 'photo') {
     content.push({
@@ -549,6 +615,7 @@ export function buildMealEstimationRequest(input: EstimateInput): MealEstimation
   return {
     system: MEAL_ESTIMATION_SYSTEM_PROMPT,
     messages: [{ role: 'user', content }],
+    ...estimatorContext(options),
   };
 }
 
@@ -891,24 +958,50 @@ export async function estimateMeal(
   const fetchImpl = loadStreamingFetch();
   if (!apiKey || !fetchImpl) throw new MealEstimationUnavailableError();
 
-  const req = buildMealEstimationRequest(input);
+  const req = buildMealEstimationRequest(input, currentEstimatorOptions());
+  const turn = await runEstimatorTurn({ apiKey, fetchImpl }, req, signal);
+  if (turn.refused) {
+    throw new Error('The model declined to estimate this meal.');
+  }
+  return { ...parseMealEstimate(turn.text), searches: turn.searches };
+}
+
+/**
+ * One estimator call through the Coach's model client: no registry tools, the
+ * provider's web search when the request carries it, and the reply's text.
+ * Shared by the three estimators, so a meal, a revision and a food description
+ * cannot differ in how they search or in what they report back.
+ */
+async function runEstimatorTurn(
+  connection: { apiKey: string; fetchImpl: FetchLike },
+  req: MealEstimationRequest,
+  signal?: AbortSignal
+): Promise<{ text: string; refused: boolean; searches: WebSearchSummary[] }> {
   let text = '';
   const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
-    { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
+    { apiKey: connection.apiKey, model: apiKeyStore.getModel(), fetchImpl: connection.fetchImpl },
+    {
+      system: req.system,
+      ...(req.systemContext ? { systemContext: req.systemContext } : {}),
+      messages: req.messages as unknown as WireMessage[],
+      tools: [],
+      webSearch: req.webSearch ?? null,
+    },
     {
       onToken: (chunk) => {
         text += chunk;
       },
       signal,
-      // No tools in an estimation turn; the model answers in text.
+      // No registry tools in an estimator turn: the model answers in text. A
+      // web search is the provider's own tool and never reaches this callback.
       executeTool: async () => ({ content: '' }),
     }
   );
-  if (result.stopReason === 'refusal') {
-    throw new Error('The model declined to estimate this meal.');
-  }
-  return parseMealEstimate(text.length > 0 ? text : result.text);
+  return {
+    text: text.length > 0 ? text : result.text,
+    refused: result.stopReason === 'refusal',
+    searches: webSearchesOf(result.toolCalls),
+  };
 }
 
 // --- Revising a logged meal in plain English ---------------------------------
@@ -1076,7 +1169,8 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
 /** Build the revision request: the meal as it stands, then the correction. */
 export function buildMealRevisionRequest(
   meal: MealRevisionSubject,
-  instruction: string
+  instruction: string,
+  options: EstimatorOptions = NO_ESTIMATOR_OPTIONS
 ): MealEstimationRequest {
   const line = (item: MealRevisionItem, indent: string): string[] => {
     // EVERY micro the item records, by the key the model answers in (sodium
@@ -1152,6 +1246,7 @@ export function buildMealRevisionRequest(
   return {
     system: MEAL_REVISION_SYSTEM_PROMPT,
     messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+    ...estimatorContext(options),
   };
 }
 
@@ -1171,23 +1266,12 @@ export async function reviseMeal(
   const fetchImpl = loadStreamingFetch();
   if (!apiKey || !fetchImpl) throw new MealEstimationUnavailableError();
 
-  const req = buildMealRevisionRequest(meal, instruction);
-  let text = '';
-  const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
-    { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
-    {
-      onToken: (chunk) => {
-        text += chunk;
-      },
-      signal,
-      executeTool: async () => ({ content: '' }),
-    }
-  );
-  if (result.stopReason === 'refusal') {
+  const req = buildMealRevisionRequest(meal, instruction, currentEstimatorOptions());
+  const turn = await runEstimatorTurn({ apiKey, fetchImpl }, req, signal);
+  if (turn.refused) {
     throw new Error('The model declined to revise this meal.');
   }
-  return parseMealEstimate(text.length > 0 ? text : result.text);
+  return { ...parseMealEstimate(turn.text), searches: turn.searches };
 }
 
 // --- Describing a CATALOG ENTRY in plain English (C2) -------------------------
@@ -1237,6 +1321,8 @@ export type FoodEntryEstimate = {
    * (`coerceMicros`), so an invented key never reaches the row.
    */
   micros: JsonText | null;
+  /** The web searches behind this entry, for the "Searched" line; never saved. */
+  searches?: WebSearchSummary[];
 };
 
 /**
@@ -1300,12 +1386,16 @@ export const FOOD_ENTRY_SYSTEM_PROMPT = [
 ].join('\n');
 
 /** Build the food-entry request: the system prompt above, and the description. */
-export function buildFoodEntryRequest(description: string): MealEstimationRequest {
+export function buildFoodEntryRequest(
+  description: string,
+  options: EstimatorOptions = NO_ESTIMATOR_OPTIONS
+): MealEstimationRequest {
   return {
     system: FOOD_ENTRY_SYSTEM_PROMPT,
     messages: [
       { role: 'user', content: [{ type: 'text', text: `Describe this food: ${description}` }] },
     ],
+    ...estimatorContext(options),
   };
 }
 
@@ -1400,23 +1490,12 @@ export async function estimateFoodEntry(
   const fetchImpl = loadStreamingFetch();
   if (!apiKey || !fetchImpl) throw new MealEstimationUnavailableError();
 
-  const req = buildFoodEntryRequest(description);
-  let text = '';
-  const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
-    { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
-    {
-      onToken: (chunk) => {
-        text += chunk;
-      },
-      signal,
-      executeTool: async () => ({ content: '' }),
-    }
-  );
-  if (result.stopReason === 'refusal') {
+  const req = buildFoodEntryRequest(description, currentEstimatorOptions());
+  const turn = await runEstimatorTurn({ apiKey, fetchImpl }, req, signal);
+  if (turn.refused) {
     throw new Error('The model declined to describe this food.');
   }
-  return parseFoodEntry(text.length > 0 ? text : result.text);
+  return { ...parseFoodEntry(turn.text), searches: turn.searches };
 }
 
 /**

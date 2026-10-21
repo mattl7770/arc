@@ -32,8 +32,22 @@
  * A `refusal` stop reason is surfaced, never retried. The system prompt and
  * tool list carry prompt-cache breakpoints (buildMessagesRequest) so the large
  * fixed prefix bills at cache-read rates across a turn's round-trips.
+ *
+ * Web search (2026-10-21, src/lib/ai/web-search.ts) is the provider's SERVER
+ * tool: the request may carry it, the provider runs it inside the same call,
+ * and its blocks (`server_tool_use`, `web_search_tool_result`, cited text) are
+ * accumulated and echoed verbatim like thinking blocks. Two loop paths exist
+ * for it: `pause_turn` resumes by re-sending the paused content unchanged, and
+ * a search called beside a client tool runs at the start of the next request.
  */
 import type { CoachStopReason, CoachToolCall, CoachTurnResult } from './types';
+import {
+  isWebSearchCall,
+  WebSearchLedger,
+  webSearchTool,
+  type WebSearchOptions,
+  type WireServerTool,
+} from './web-search';
 
 // --- Configuration -----------------------------------------------------------
 
@@ -185,6 +199,13 @@ export type AgenticRequest = {
   /** The conversation so far, oldest first, ending in the user turn. */
   messages: WireMessage[];
   tools: WireTool[];
+  /**
+   * The provider's web search server tool, capped at `maxUses` per turn
+   * (src/lib/ai/web-search.ts). Absent or null sends no search tool. It is also
+   * dropped when the configured model has no known tool version, so a model
+   * the table does not know degrades to no search rather than a 400.
+   */
+  webSearch?: WebSearchOptions | null;
 };
 
 /** What executing one tool produced — the caller owns semantics (and gating). */
@@ -208,7 +229,11 @@ export type ToolExecutionOutcome = {
 export type CoachTurnHandlers = {
   /** Called for each streamed text fragment, in order. */
   onToken: (chunk: string) => void;
-  /** Called as each tool call starts — drives "checking your data…" UI. */
+  /**
+   * Called as each tool call starts — drives "checking your data…" UI. Also
+   * fires (name `web_search`) as a provider search starts, which runs nothing
+   * here: it only keeps the activity line honest through the search's pause.
+   */
   onToolCall?: (call: { name: string; input: unknown }) => void;
   /** Execute one tool call. Throwing here becomes an is_error tool result. */
   executeTool: (name: string, input: unknown) => Promise<ToolExecutionOutcome>;
@@ -274,12 +299,18 @@ export function buildMessagesRequest(
   if (request.systemContext && request.systemContext.trim().length > 0) {
     system.push({ type: 'text', text: request.systemContext });
   }
-  const tools =
-    request.tools.length > 0
-      ? request.tools.map((tool, i) =>
-          i === request.tools.length - 1 ? { ...tool, cache_control: cache } : tool
-        )
-      : undefined;
+  const custom = request.tools.map((tool, i) =>
+    i === request.tools.length - 1 ? { ...tool, cache_control: cache } : tool
+  );
+  // The web search server tool goes AFTER the registry, outside the tool
+  // breakpoint, so that breakpoint stays where it always was. The system
+  // breakpoint still caches it with everything else: its definition only
+  // changes when the model or the Settings toggle does.
+  const server: WireServerTool | null = request.webSearch
+    ? webSearchTool(config.model, request.webSearch.maxUses)
+    : null;
+  const all: (WireTool | WireServerTool)[] = server ? [...custom, server] : custom;
+  const tools = all.length > 0 ? all : undefined;
 
   return {
     url: ANTHROPIC_MESSAGES_URL,
@@ -368,7 +399,8 @@ type StreamDelta =
   | { type: 'text_delta'; text: string }
   | { type: 'input_json_delta'; partial_json: string }
   | { type: 'thinking_delta'; thinking: string }
-  | { type: 'signature_delta'; signature: string };
+  | { type: 'signature_delta'; signature: string }
+  | { type: 'citations_delta'; citation: Record<string, unknown> };
 
 type StreamEventData = {
   type: string;
@@ -386,6 +418,8 @@ export type Usage = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Provider-side web searches billed (`usage.server_tool_use.web_search_requests`). */
+  webSearchRequests?: number;
 };
 
 export const ZERO_USAGE: Usage = {
@@ -401,6 +435,9 @@ export function addUsage(a: Usage, b: Usage): Usage {
     outputTokens: a.outputTokens + b.outputTokens,
     cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
     cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
+    ...(a.webSearchRequests || b.webSearchRequests
+      ? { webSearchRequests: (a.webSearchRequests ?? 0) + (b.webSearchRequests ?? 0) }
+      : {}),
   };
 }
 
@@ -428,9 +465,13 @@ export class MessageAccumulator {
   // Explicit field, not a constructor parameter property — Node's strip-only
   // TS mode (the headless tests) can't erase parameter properties.
   private readonly onToken: (chunk: string) => void;
+  // Fired as a server tool block opens (a web search starting), so the UI can
+  // say "web search…" through the pause while the provider runs it.
+  private readonly onServerTool: ((name: string) => void) | undefined;
 
-  constructor(onToken: (chunk: string) => void) {
+  constructor(onToken: (chunk: string) => void, onServerTool?: (name: string) => void) {
     this.onToken = onToken;
+    this.onServerTool = onServerTool;
   }
 
   consume(event: SseEvent): void {
@@ -446,8 +487,15 @@ export class MessageAccumulator {
         const index = data.index ?? this.blocks.length;
         // Copy so accumulation never mutates the parsed event.
         this.blocks[index] = { ...(data.content_block ?? { type: 'text', text: '' }) };
-        if ((this.blocks[index] as WireToolUseBlock).type === 'tool_use') {
+        // A web search's `server_tool_use` streams its input exactly like a
+        // client `tool_use` does: input_json_delta fragments, parsed at stop.
+        const kind = this.blocks[index]!.type;
+        if (kind === 'tool_use' || kind === 'server_tool_use') {
           this.partialJson.set(index, '');
+        }
+        if (kind === 'server_tool_use') {
+          const name = (this.blocks[index] as { name?: unknown }).name;
+          if (typeof name === 'string') this.onServerTool?.(name);
         }
         break;
       }
@@ -466,13 +514,19 @@ export class MessageAccumulator {
           b.thinking = (b.thinking ?? '') + delta.thinking;
         } else if (delta.type === 'signature_delta') {
           (block as WireOpaqueBlock & { signature?: string }).signature = delta.signature;
+        } else if (delta.type === 'citations_delta') {
+          // One citation per delta, appended to the text block's list. Kept
+          // whole: a web citation's `encrypted_index` must go back unchanged on
+          // a continuation of this turn.
+          const b = block as WireOpaqueBlock & { citations?: unknown };
+          b.citations = [...(Array.isArray(b.citations) ? b.citations : []), delta.citation];
         }
         break;
       }
       case 'content_block_stop': {
         const index = data.index ?? 0;
         const block = this.blocks[index];
-        if (block && block.type === 'tool_use') {
+        if (block && (block.type === 'tool_use' || block.type === 'server_tool_use')) {
           const raw = this.partialJson.get(index) ?? '';
           let input: unknown = {};
           if (raw.trim() !== '') {
@@ -510,11 +564,18 @@ export class MessageAccumulator {
     const u = raw as Record<string, unknown>;
     const num = (key: string, current: number) =>
       typeof u[key] === 'number' && (u[key] as number) > 0 ? (u[key] as number) : current;
+    // Search counts ride a nested object, cumulative like the rest.
+    const server = u.server_tool_use as Record<string, unknown> | undefined;
+    const searches =
+      server && typeof server.web_search_requests === 'number' && server.web_search_requests > 0
+        ? server.web_search_requests
+        : (this.usage.webSearchRequests ?? 0);
     this.usage = {
       inputTokens: num('input_tokens', this.usage.inputTokens),
       outputTokens: num('output_tokens', this.usage.outputTokens),
       cacheReadTokens: num('cache_read_input_tokens', this.usage.cacheReadTokens),
       cacheWriteTokens: num('cache_creation_input_tokens', this.usage.cacheWriteTokens),
+      ...(searches > 0 ? { webSearchRequests: searches } : {}),
     };
   }
 
@@ -534,7 +595,8 @@ async function streamOnce(
   config: ModelClientConfig,
   request: AgenticRequest,
   onToken: (chunk: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onServerTool?: (name: string) => void
 ): Promise<AccumulatedMessage> {
   const { url, headers, body } = buildMessagesRequest(config, request);
   const response = await config.fetchImpl(url, { method: 'POST', headers, body, signal });
@@ -560,7 +622,7 @@ async function streamOnce(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const parser = new SseParser();
-  const accumulator = new MessageAccumulator(onToken);
+  const accumulator = new MessageAccumulator(onToken, onServerTool);
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -682,6 +744,16 @@ export async function runCoachTurn(
 ): Promise<CoachTurnResult> {
   const messages: WireMessage[] = [...request.messages];
   const toolCalls: CoachToolCall[] = [];
+  // The turn's web searches (src/lib/ai/web-search.ts). Their records join
+  // `toolCalls` in the order the searches were made, so they persist and replay
+  // with everything else — but a search is not a write, so whether a failure
+  // carries an audit record out is still decided by the CLIENT calls alone.
+  const searches = new WebSearchLedger();
+  const ranClientTools = () => toolCalls.some((call) => !isWebSearchCall(call));
+  const sealed = () => {
+    searches.finish();
+    return toolCalls;
+  };
   // The reply text, split at the last tool boundary: `answer` is what the model
   // has said SINCE the most recent tool result, `narration` everything it said
   // before that. Only `answer` settles — see settledText.
@@ -696,24 +768,47 @@ export async function runCoachTurn(
       // Preserve the audit trail if writes already executed this turn — mirror
       // the streamOnce catch below so an unmount mid-turn still persists the
       // tool-call record (use-coach-chat drops a bare AbortError without saving).
-      throw toolCalls.length > 0
-        ? new CoachTurnError(abortError(), transcript(narration, answer), toolCalls)
+      throw ranClientTools()
+        ? new CoachTurnError(abortError(), transcript(narration, answer), sealed())
         : abortError();
     }
 
     let reply: AccumulatedMessage;
     try {
-      reply = await streamOnce(config, { ...request, messages }, handlers.onToken, handlers.signal);
+      reply = await streamOnce(
+        config,
+        { ...request, messages },
+        handlers.onToken,
+        handlers.signal,
+        // A search starting drives the same activity line a tool call does
+        // ("web search…"): the stream stalls while the provider runs it, and
+        // a silent stall reads as a hang. Nothing executes here.
+        (name) => handlers.onToolCall?.({ name, input: {} })
+      );
     } catch (error) {
       // Tool calls already executed against the database — carry their record
       // out with the failure so the caller can persist the audit trail.
-      if (toolCalls.length > 0) {
-        throw new CoachTurnError(error, transcript(narration, answer), toolCalls);
+      if (ranClientTools()) {
+        throw new CoachTurnError(error, transcript(narration, answer), sealed());
       }
       throw error;
     }
     usage = addUsage(usage, reply.usage);
     answer += textOf(reply.blocks);
+    // Searches first: in a mixed round they were requested alongside (and
+    // recorded before) the client tools run below.
+    toolCalls.push(...searches.observe(reply.blocks));
+
+    // PAUSE_TURN: the provider paused its own server-side loop (a long search
+    // turn). The documented continuation is the paused assistant content sent
+    // back UNCHANGED, with no new user message and the same tools; the API
+    // resumes where it stopped, and a resumed turn can pause again. Each resume
+    // spends one of MAX_MODEL_CALLS_PER_TURN, which is the cap on that loop.
+    // No seam is added: the continuation finishes the same sentence.
+    if (reply.stopReason === 'pause_turn') {
+      messages.push({ role: 'assistant', content: reply.blocks });
+      continue;
+    }
 
     // A tool_use stop with no tool_use blocks would send an empty tool_result
     // turn (a 400) — treat that malformed shape as a normal end of turn too.
@@ -731,7 +826,7 @@ export async function runCoachTurn(
       return {
         text: settledText(narration, answer),
         transcript: transcript(narration, answer).trimEnd(),
-        toolCalls,
+        toolCalls: sealed(),
         stopReason,
         usage,
       };
@@ -739,6 +834,10 @@ export async function runCoachTurn(
 
     // Tool round: echo the assistant turn verbatim (thinking blocks included),
     // run every requested tool, and answer with their results in ONE user turn.
+    // A web search called in the same group as a client tool has NOT run yet
+    // (its `server_tool_use` has no result): the API runs it at the start of
+    // the next request, which is why the follow-up must hold only tool_result
+    // blocks and the same tools. Both already hold here.
     messages.push({ role: 'assistant', content: reply.blocks });
 
     const results: WireToolResultBlock[] = [];
@@ -749,8 +848,8 @@ export async function runCoachTurn(
         // Preserve the audit trail if writes already executed this turn — mirror
         // the streamOnce catch below so an unmount mid-turn still persists the
         // tool-call record (use-coach-chat drops a bare AbortError without saving).
-        throw toolCalls.length > 0
-          ? new CoachTurnError(abortError(), transcript(narration, answer), toolCalls)
+        throw ranClientTools()
+          ? new CoachTurnError(abortError(), transcript(narration, answer), sealed())
           : abortError();
       }
       handlers.onToolCall?.({ name: toolUse.name, input: toolUse.input });
@@ -803,7 +902,7 @@ export async function runCoachTurn(
   return {
     text: settledText(narration, answer),
     transcript: transcript(narration, answer).trimEnd(),
-    toolCalls,
+    toolCalls: sealed(),
     stopReason: 'tool_use_limit',
     usage,
   };

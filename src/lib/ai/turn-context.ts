@@ -72,9 +72,21 @@ export function ageOn(dateOfBirth: string | null, today: string): number | null 
  * plain "Label: fact" lines — stable to test, cheap in tokens, and unambiguous
  * to the model.
  */
-export function buildTurnContext(db: Database, now: Date = new Date()): string {
+export function buildTurnContext(
+  db: Database,
+  now: Date = new Date(),
+  options: { region?: string | null } = {}
+): string {
   const today = todayISODate(now);
   const lines: string[] = [`Current date: ${today} (${weekdayOf(today)})`];
+
+  // --- Region (2026-10-21, item 91): the country from the phone's own time
+  // zone and region settings (src/lib/ai/region.ts `regionLine`), so a menu
+  // item, a brand or a "what's open" question is answered for where the user
+  // is. Passed IN rather than read here: this module stays pure and its tests
+  // stay deterministic. Absent when the caller has none (the unattended pass,
+  // a phone whose settings say nothing).
+  if (options.region) lines.push(options.region);
 
   // --- Who (profile + units) — so age/sex-dependent reasoning and every cited
   // unit are right from the first token.

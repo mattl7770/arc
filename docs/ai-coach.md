@@ -1,7 +1,7 @@
 # ARC AI Coach — Capability Specification
 
 **Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, and protocol write-back (2026-07-27)
-**Last updated:** 2026-08-14 (§5 write receipts + phantom-write detection; §4 day-stamped thread history)
+**Last updated:** 2026-10-21 (§2h provider-side web search + the region line); 2026-08-14 (§5 write receipts + phantom-write detection; §4 day-stamped thread history)
 **Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, protocol write-back (2026-07-27); Modes + Experiments tools shipped (2026-07-31/08-01), **Modes retired and replaced by `set_status` (2026-09-19, migration 0061 — see `docs/information-architecture.md` §Status)**; **perception layer shipped (2026-08-08** — per-turn "Current state" context block, readiness/sleep/training-engine/lab-trend visibility; see `docs/coach-intelligence-review.md` for the review that drove it and the phases that follow**)**
 **Last updated:** 2026-08-08
 
@@ -184,6 +184,21 @@ Three rails make it safe, and all three are code rather than prompt copy. **Pari
 **Six status-change tools retired into it** — `complete_reminder`, `dismiss_reminder`, `complete_experiment`, `abandon_experiment`, `forget`, `retire_knowledge_entry`. Each executed a single `UPDATE … SET status`; together they cost **970 tokens**, and `edit_record` costs 216, which is what funds the registry with **no ceiling raise** (`db/coach-eval.test.mjs` §6). Their **cards are byte-identical** and their receipts keep their verbs; the chip row is the one loss — all six now read "edit record", because `humanizeToolName` runs on the tool name. `RETIRED_WRITE_NAMES` (`src/lib/ai/tools/index.ts`) keeps a persisted call naming one of them classified as a write, so no historical receipt is lost.
 
 **Two behavioural rails moved from those descriptions into read PAYLOADS**, because a generic tool's description cannot carry domain prose and the prompt has single-digit headroom: `list_reminders` emits *"a recurring reminder is never completed…"* when the device actually has a recurring reminder, and `get_experiments` emits *"an experiment with no adherence behind it is abandoned (with a reason), never concluded"* when one is running. Both reads always precede the write — the id comes from them — and both rails are also card-time refusals, so a model that skips the read meets a throw rather than an approved write. Result fields are not in the ceiling budget; descriptions are.
+
+### 2h. Shipped — provider-side web search (2026-10-21, items 62 and 91; ADR "Provider-side web search")
+
+Not a registry tool: Anthropic's **web search server tool**, carried in the same request and run by the provider inside that call, so the phone's only egress is still the model call. The model searches **whenever it judges that helps** (the owner's call), in Coach chat (`max_uses` **3**) and in the three food estimators — describe/photograph a meal, correct a logged meal, describe a catalog food (`max_uses` **2**). **Settings › Coach › Web search** turns it off; it is ON by default.
+
+| Piece | Where | What it does |
+| --- | --- | --- |
+| Tool + version table | `src/lib/ai/web-search.ts` `webSearchTool` | `web_search_20260209` + `allowed_callers: ["direct"]` on Sonnet 5 / Opus 5, `web_search_20250305` on Haiku 4.5, nothing on an unknown model (a guessed type is a 400). Appended after the registry, outside the tool cache breakpoint. |
+| Wire handling | `src/lib/ai/model-client.ts` | `server_tool_use` input streams like `tool_use`; `web_search_tool_result` and cited text (`citations_delta`) are kept whole and echoed verbatim within the turn (`encrypted_content` / `encrypted_index` must survive). `pause_turn` resumes by re-sending the paused content unchanged. A search beside a client tool runs at the start of the next request. `usage.server_tool_use.web_search_requests` is summed into `webSearchRequests`. |
+| The record | `WebSearchLedger` → `ai_messages.tool_calls` | One `web_search` entry per search: query, domains found, domains cited (no encrypted data). No migration. A failure after searches alone is a plain error, since a search is not a write. |
+| The UI | `src/components/coach/searched-lines.tsx` | `Searched "big mac nutrition new zealand" · mcdonalds.co.nz` under the bubble (from the record, so a reload draws the same) and on the meal / correction / food-description reviews. Search records are left out of the tool chips. |
+| Region | `src/lib/ai/region.ts` | The country from `Intl` time zone (wins, it follows a trip) then the locale's region; `Region: NZ (time zone Pacific/Auckland)` in the per-turn context (`turn-context.ts`) and the estimators' context block. Never GPS; omitted when `Intl` is absent. |
+| Cost | `src/lib/ai/cost.ts` | $10 per 1,000 searches (~1¢) on top of tokens; the caption names "N searches". |
+
+**Privacy rule:** a query never carries the user's health data. It is one bullet in the cached prompt (the Coach) and a line in the estimators' per-call context (their prompt ceiling had 2 tokens left). **Budget:** schemas 9,140 with the search tool measured in (< 9,250), prompt 3,662 (< 3,700), estimation prompt 998 (< 1,000) — none raised. Tests: `db/model-client.test.mjs` §13–18, `db/coach-eval.test.mjs` §6–7.
 
 ### 2e. Planned — not yet designed in code
 

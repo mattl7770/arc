@@ -9,6 +9,7 @@ import {
   rowsFromEstimate,
   rowsToMealItems,
 } from '@/components/nutrition/estimate-review';
+import { SearchedLines } from '@/components/coach/searched-lines';
 import { Block } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -46,6 +47,7 @@ import {
 } from '@/lib/media/meal-photo-store';
 import { downscaleJpeg, pickPhotoBase64 } from '@/lib/media/photo-library';
 import type { NewMealItem } from '@/lib/nutrition/types';
+import type { WebSearchSummary } from '@/lib/ai/web-search';
 
 /**
  * AI meal estimation → editable review (docs/nutrition-subapp.md §6). Describe a
@@ -133,7 +135,7 @@ type Phase =
   | { kind: 'input' }
   | { kind: 'camera' }
   | { kind: 'estimating' }
-  | { kind: 'review'; title: string; notes: string | null }
+  | { kind: 'review'; title: string; notes: string | null; searches: WebSearchSummary[] }
   /** The request never left the phone, so it was kept (0057, backlog C3). The
    *  meal is already in today's list under `name`; this phase says so. */
   | { kind: 'queued'; name: string; photoKept: boolean }
@@ -189,7 +191,12 @@ export default function MealEstimateScreen() {
   const toReview = (estimate: MealEstimate) => {
     draft.replace(rowsFromEstimate(getDb(), estimate));
     asking.begin(estimate.questions);
-    setPhase({ kind: 'review', title: estimate.title, notes: estimate.notes });
+    setPhase({
+      kind: 'review',
+      title: estimate.title,
+      notes: estimate.notes,
+      searches: estimate.searches ?? [],
+    });
   };
 
   /**
@@ -668,6 +675,8 @@ export default function MealEstimateScreen() {
               est · AI
             </Text>
           </View>
+          {/* Where a looked-up figure came from (a chain's menu, a label). */}
+          <SearchedLines searches={phase.searches} />
 
           {phase.notes ? (
             <View className="mt-2">
