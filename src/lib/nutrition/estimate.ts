@@ -48,6 +48,10 @@ export type EstimateInput = (
    *  src/lib/db/repositories/food-history.ts) — never the system prompt, which
    *  is at its ceiling. Absent or null on a cold start: nothing is added. */
   usual?: string | null;
+  /** His last corrections of past estimates, as a block for the USER turn
+   *  (2026-10-21, item 86; src/lib/db/repositories/food-log-ratings.ts) —
+   *  never the system prompt. Absent or null when nothing was corrected. */
+  corrections?: string | null;
 };
 
 /** One part of a composite dish (0058, backlog C4) — a plain priced row that
@@ -619,6 +623,7 @@ export function buildMealEstimationRequest(
     content.push({ type: 'text', text: `Estimate this meal: ${input.description}` });
   }
   if (input.usual) content.push({ type: 'text', text: input.usual });
+  if (input.corrections) content.push({ type: 'text', text: input.corrections });
   return {
     system: MEAL_ESTIMATION_SYSTEM_PROMPT,
     messages: [{ role: 'user', content }],

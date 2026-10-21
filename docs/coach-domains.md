@@ -570,6 +570,16 @@ Health seam), `db/wearables.test.mjs` §28 (a weight corrected before, after and
 moved row, a declined card, parity as source) and `db/screens-render.test.mjs` §33 (the row's
 control and each editor).
 
+## 10e. Estimate ratings, read-only (2026-10-21, 0066)
+
+`estimate_ratings` lists the meal screen's *Was this right?* verdicts (docs/nutrition-subapp.md
+§23): meal id, day, meal name, `good` / `bad`, the issue (`portion` / `item` / `macros`) and the
+correction line. It reads through `listMealRatings`, the function the estimator's examples are
+built from, so the Coach is told exactly what the estimator learns. Read-only on purpose: the
+verdict is the user's own, given on the meal; `remove` is `refuse`, naming that screen. In the
+CASCADE walk `food_log_ratings` is a meal's own part. Schema **~9,140 → ~9,147** of 9,250 (one enum
+key, fields free); the prompt did not move.
+
 ## 11. The card learned two things
 
 `WriteConfirmation` and `PendingWrite` now carry `kind` (`create | edit | delete | status`) and

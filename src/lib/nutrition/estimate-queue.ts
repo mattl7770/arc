@@ -50,6 +50,7 @@
 import type { Database } from '@/lib/db/database';
 import { ModelRequestError } from '@/lib/ai/model-client';
 import { usualFoodsContextFor } from '@/lib/db/repositories/food-history';
+import { correctionsContextFor } from '@/lib/db/repositories/food-log-ratings';
 import {
   getMeal,
   listMealItems,
@@ -300,8 +301,14 @@ export async function runEstimateQueueDrain(db: Database): Promise<DrainResult> 
     if (listPendingEstimates(db).length === 0) return idle;
     return await drainEstimateQueue(db, {
       estimators: {
-        // His usual foods ride the user turn here too (item 73).
-        estimate: (input) => estimateMeal({ ...input, usual: usualFoodsContextFor(db) }),
+        // His usual foods and his last corrections ride the user turn here too
+        // (items 73 and 86).
+        estimate: (input) =>
+          estimateMeal({
+            ...input,
+            usual: usualFoodsContextFor(db),
+            corrections: correctionsContextFor(db),
+          }),
         revise: (meal, instruction) => reviseMeal(meal, instruction),
       },
       pendingStore: nativePendingEstimateStore(),

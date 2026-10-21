@@ -1561,5 +1561,44 @@ console.log('14. 0065 gives a template line a piece noun without touching an exi
   db.close();
 }
 
+// ===========================================================================
+// 15. 0066 — `food_log_ratings`, on a device at 65 that already has estimated
+//     meals. A new table: it touches no existing row, every meal starts
+//     unrated, and a rating can be written against a meal logged before it.
+// ===========================================================================
+console.log('15. 0066 adds food_log_ratings beside meals logged before it');
+{
+  const db = new DatabaseSync(':memory:');
+  stageAt(db, 65) === 65 ? ok('staged at 65') : bad('stage at 65');
+  db.exec(`
+    INSERT INTO meals (id, date, name, kcal, source) VALUES ('m-1', '2026-10-20', 'Lunch', 520, 'ai_suggested');
+    INSERT INTO meal_items (id, meal_id, name, amount, unit, kcal, confidence)
+      VALUES ('mi-1', 'm-1', 'Chicken salad', 350, 'g', 520, 'medium');
+  `);
+  const before = JSON.stringify([
+    db.prepare('SELECT * FROM meals ORDER BY id').all(),
+    db.prepare('SELECT * FROM meal_items ORDER BY id').all(),
+  ]);
+  const result = migrate(executor(db), MIGRATIONS);
+  result.applied.includes('0066_food_log_ratings') &&
+  db.prepare('PRAGMA user_version').get().user_version >= 66
+    ? ok('0066 applied on a populated database; user_version moves to 66')
+    : bad('0066 not applied', JSON.stringify(result.applied));
+  JSON.stringify([
+    db.prepare('SELECT * FROM meals ORDER BY id').all(),
+    db.prepare('SELECT * FROM meal_items ORDER BY id').all(),
+  ]) === before && db.prepare('SELECT count(*) n FROM food_log_ratings').get().n === 0
+    ? ok('meals and items are byte-identical, and every meal starts unrated')
+    : bad('0066 moved a row');
+  db.exec(
+    "INSERT INTO food_log_ratings (id, meal_id, rating, issue, before_items) VALUES ('r-1', 'm-1', 'bad', 'portion', '[]')"
+  );
+  db.exec("DELETE FROM meals WHERE id = 'm-1'");
+  db.prepare('SELECT count(*) n FROM food_log_ratings').get().n === 0
+    ? ok('a meal logged before 0066 can be rated, and its rating goes with it')
+    : bad('rating outlived its meal');
+  db.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

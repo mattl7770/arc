@@ -1103,7 +1103,7 @@ export function copyMealItems(db: Database, items: MealItemWithServing[]): NewMe
 export type TakenRow = { __rowid: number } & Record<string, Scalar>;
 
 /** The four tables a meal's record spans (0002, 0014, 0033, 0057). */
-type MealTable = 'meals' | 'meal_items' | 'meal_photos' | 'pending_estimates';
+type MealTable = 'meals' | 'meal_items' | 'meal_photos' | 'pending_estimates' | 'food_log_ratings';
 
 function takeRows(db: Database, table: MealTable, where: string, params: Scalar[]): TakenRow[] {
   return db.all<TakenRow>(
@@ -1113,13 +1113,13 @@ function takeRows(db: Database, table: MealTable, where: string, params: Scalar[
 }
 
 /**
- * {@link takeRows} over a table a database may predate — `meal_photos` (0033)
- * and `pending_estimates` (0057). The same tolerance `deleteMealWithPhotos`
+ * {@link takeRows} over a table a database may predate — `meal_photos` (0033),
+ * `pending_estimates` (0057) and `food_log_ratings` (0066). The same tolerance `deleteMealWithPhotos`
  * always had: the meal must still go, and parts it cannot have are none.
  */
 function takeRowsIfPresent(
   db: Database,
-  table: 'meal_photos' | 'pending_estimates',
+  table: 'meal_photos' | 'pending_estimates' | 'food_log_ratings',
   where: string,
   params: Scalar[]
 ): TakenRow[] {
@@ -1348,11 +1348,14 @@ export type TakenMeal = {
   photos: TakenRow[];
   /** A queued estimate (0057) — at most one, by its UNIQUE meal_id. */
   pending: TakenRow[];
+  /** Its "was this right?" verdict (0066) — at most one, by its UNIQUE meal_id. */
+  ratings: TakenRow[];
 };
 
 /**
  * Delete a meal the way the meal screen always has — {@link deleteMeal}, whose
- * CASCADE takes its items, its photo rows and a queued estimate — having first
+ * CASCADE takes its items, its photo rows, a queued estimate and its rating —
+ * having first
  * read every one of those rows. The FILES are not touched here: the database
  * layer knows no directory, and a file removed now is the one thing an Undo
  * could not bring back (src/lib/media/meal-photo-store.ts holds them).
@@ -1365,6 +1368,7 @@ export function takeMeal(db: Database, mealId: string): TakenMeal | null {
     items: takeRows(db, 'meal_items', 'meal_id = ?', [mealId]),
     photos: takeRowsIfPresent(db, 'meal_photos', 'meal_id = ?', [mealId]),
     pending: takeRowsIfPresent(db, 'pending_estimates', 'meal_id = ?', [mealId]),
+    ratings: takeRowsIfPresent(db, 'food_log_ratings', 'meal_id = ?', [mealId]),
   };
   deleteMeal(db, mealId);
   return taken;
@@ -1385,8 +1389,8 @@ export function takenPendingFileNames(taken: TakenMeal): string[] {
 /**
  * Put back what {@link takeMeal} took, in one transaction: the meal row with
  * its own totals (verbatim — a free-form meal's typed numbers have no items to
- * re-derive them from), then its items parents-first, its photo rows and its
- * queued estimate. The day's totals are sums over `meals` rows, so they return
+ * re-derive them from), then its items parents-first, its photo rows, its
+ * queued estimate and its rating. The day's totals are sums over `meals` rows, so they return
  * to exactly the figure they had.
  */
 export function restoreMeal(db: Database, taken: TakenMeal): void {
@@ -1397,6 +1401,7 @@ export function restoreMeal(db: Database, taken: TakenMeal): void {
     }
     for (const row of taken.photos) putRow(db, 'meal_photos', row);
     for (const row of taken.pending) putRow(db, 'pending_estimates', row);
+    for (const row of taken.ratings) putRow(db, 'food_log_ratings', row);
   });
 }
 
@@ -1408,7 +1413,9 @@ export type CombinedMeals = {
   kept: TakenRow;
   /** The items it held before — they stay with it when the combine is undone. */
   keptItemIds: string[];
-  absorbed: { meal: TakenRow; itemIds: string[]; photoIds: string[] }[];
+  /** `ratings`: an absorbed meal's "was this right?" row (0066), which the
+   *  CASCADE takes with the meal and the Undo puts back. */
+  absorbed: { meal: TakenRow; itemIds: string[]; photoIds: string[]; ratings: TakenRow[] }[];
   /** The "(as logged)" items written for free-form meals — deleted by the Undo. */
   standInIds: string[];
   /** The combined meal as the combine LEFT it — its row and every item, every
@@ -1486,6 +1493,7 @@ export function combineMeals(
     meal: takeRows(db, 'meals', 'id = ?', [meal.id])[0]!,
     itemIds: itemIdsOf(meal.id),
     photoIds: photoIdsOf(meal.id),
+    ratings: takeRowsIfPresent(db, 'food_log_ratings', 'meal_id = ?', [meal.id]),
   }));
   const freeForm = all.filter(
     (meal, index) => (index === 0 ? keptItemIds : absorbed[index - 1]!.itemIds).length === 0
@@ -1610,6 +1618,7 @@ export function uncombineMeals(db: Database, combined: CombinedMeals): void {
           ...a.photoIds,
         ]);
       }
+      for (const row of a.ratings) putRow(db, 'food_log_ratings', row);
     }
     const kept = clearedIfGone(db, combined.kept, 'recipe_id', 'recipes');
     const RESTORED = [

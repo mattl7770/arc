@@ -2191,3 +2191,73 @@ The note, verbatim: *"Caffeine warning? i.e., i have a standing no caffeine befo
 - **Whether 5 mg is the right floor** in his own logs (a cocoa, a green tea, a chocolate square).
 - **The cold-launch path** — Action Button → Describe → Save before Home has drawn today — finds the row.
 - **The setting's place** — whether he looks for it on Daily targets.
+
+## 23. Was this right? — a rating of the estimate, and the correction it teaches (2026-10-21, device round 3 item 86, migration 0066)
+
+*(§22 is a sibling branch's; this section was written beside it.)* The owner: *"good/bad rating for food logs & questions asked to collect data and make them better"*. His decision: the rating is about **how accurate the log was**. A "bad" asks **one** question — portion, item or macros? — and the correction becomes an example the estimator sees next time.
+
+### The row (`food_log_ratings`, 0066)
+
+One row per meal, `meal_id` UNIQUE → `meals` ON DELETE CASCADE. `rating` is `good` / `bad`; `issue` is `portion` / `item` / `macros`, NULL until answered; for a `bad`, `before_items` is the meal's top-level items when he said "off" and `after_items` the same after his fix (NULL while nothing has changed). A snapshot is `{name, amount, unit, kcal, protein_g, carbs_g, fat_g}` per top-level row, a dish as its parts' sum. A `good` carries no issue and no snapshot, by CHECK — safe as a cross-column CHECK because the table is new (0034's lesson is about an ALTER over existing rows).
+
+**Why not a column.** `meal_items.confidence` is the model's claim about its own number; the rating is his verdict on it, later, and a `high` item rated off is exactly the case worth learning from. `meals.notes` is prose he reads. And a before → after pair is a record, not a property of the meal's current state.
+
+**Why at the meal, not the item.** "Which item?" would be a second question. Which item was wrong is in the pair.
+
+**Why CASCADE.** The rating is an annotation *of* the meal; with the meal gone it is a verdict on nothing, and an example built from a meal he deleted would teach a meal that did not happen. `takeMeal` / `restoreMeal` and `combineMeals` / `uncombineMeals` carry the row, so the delete Undo and the combine's split still put back every row exactly (an absorbed meal's rating goes with it on combine and returns on the split; the surviving meal keeps its own).
+
+### The line (`src/components/nutrition/estimate-rating.tsx`, on `app/meal-detail.tsx`)
+
+On a meal whose `source` is `ai_suggested` and which holds items (so not one still waiting on its queued estimate), one line between the Items plate and the Actions plate:
+
+- **Unrated:** `WAS THIS RIGHT?  [GOOD] [OFF]`.
+- **Off:** records the verdict and the `before`, then `WHAT WAS OFF?  [PORTION] [ITEM] [MACROS]`.
+- **Answered:** `ESTIMATE  OFF · PORTION` and a *Change*, with one muted sentence: what to do (*Set the portion on the item above.*) and the consequence (*What you change is kept as an example for the next estimate.*). Once fixed: `OFF · PORTION · CORRECTED` — *Kept as an example for the next estimate.*
+- **Good:** `ESTIMATE  GOOD`, *Change*. Good clears the issue and both snapshots, so a correction he takes back stops being an example.
+- **Change** asks Good / Off again, with a *Cancel*; Off over an answer asks the question again, keeping the first `before`.
+
+No device of its own, label voice, hairline chips at the 44 pt floor, ink text — **no accent and no signal colour**: a verdict on an estimate is a fact about the data, not a biological state.
+
+**Where the answer goes.** *Portion* is fixed by hand: with one row the portion editor opens on it (a counted row with nothing to re-price opens its count; a dish opens to its parts and its whole-dish amount); with several, the sentence says to tap the one that was off. *Item* and *Macros* push **Adjust with AI** (`app/meal-revise.tsx`, `issue` param), whose placeholder for macros reads *e.g. the label says 20 g protein and 210 kcal*. Nothing new writes the meal: every fix is an existing writer.
+
+**One place, never a modal.** Not offered at the estimate's review: the review is already the correction surface, mid-decision, with Save carrying the accent. A wrong portion is often found later anyway.
+
+### The correction window
+
+`after_items` is written by `settleMealRating` — the items as they stand, or NULL when they are back to exactly `before`, writing only when that changes something. The meal screen calls it on every re-read (focus, and after each of its own writes) **while its window is open**: from the answer to the end of that visit, so a fix made here or on Adjust with AI and back is kept. A later visit reopens the window only while nothing has been corrected yet, so an unrelated edit a week on does not rewrite an example. A combine on the Eat tab or a Coach edit never settles a rating.
+
+### The learning loop (`src/lib/nutrition/ratings.ts`, pure)
+
+The last **eight** corrections (newest change first, `bad` with an `after`), one line per meal, at most two changes per line and the rest counted:
+
+```
+Estimates this person corrected before (estimated → actual; protein/carbs/fat g). Calibrate similar foods and portions by them; they are not part of this meal:
+- portion off: "Chicken salad" 350 g · 520 kcal → 250 g · 371 kcal
+- item off: "Butter" 10 g · 72 kcal → "Olive oil" 10 g · 88 kcal
+- macros off: "Protein bar" 210 kcal · 10/25/8 → 250 kcal · 20/22/9
+- off: missed "Croissant" 70 g · 290 kcal
+```
+
+Rows pair by the catalog's own name normalization (`foodKey`, never fuzzy); a portion change wins over a figures change; unpaired rows are swaps in order, then *was not there* / *missed*. A change below the printed digit is no change. **Food names and figures only** — no dates, times, meal names or notes; a name is flattened to one line and capped at 40 characters, so it cannot add a line of its own.
+
+**Where it goes, and what it costs.** A text block appended to the **user** turn, after his usual foods (§21): `EstimateInput.corrections` and one `content.push` in `buildMealEstimationRequest` — the two additive changes to `estimate.ts`. Both callers pass it: the live estimate (`app/meal-estimate.tsx`) and the offline queue's drain. The revision and food-entry estimators do not (a revision IS a correction in progress). **The system prompt is untouched**: `ESTIMATOR_PROMPT_CEILING` stays 1,000 and the prompt still measures **~998**. The block is capped at **1,600 characters (~444 tokens)** — oldest lines go first; eight typical corrections cost **~198 tokens per call** (chars/3.6), the worst case **~433** (five lines at their longest kept). Nothing corrected costs nothing. With thirty usual foods (~471), the two blocks together stay under ~920 tokens per call, uncached.
+
+### The Coach reads them
+
+`estimate_ratings`, read-only, in the domain registry (`src/lib/ai/domains/read-domains.ts`): each rating's meal id, day, meal name, verdict, issue, and the exact line the estimator sees — through `listMealRatings`, the estimator's own read, so the two cannot disagree. Not editable, not removable (the refusal names the meal screen). One enum key: the tool schemas went **~9,140 → ~9,147** of 9,250; the system prompt is unchanged at ~3,662 of 3,700. Neither ceiling moved.
+
+### Verification
+
+- `npm run db:validate` §8: all migrations applied in order; the id is `text PRIMARY KEY NOT NULL`; nullability; NULL id, a bad rating word, a NULL rating, a bad issue, invalid JSON in either snapshot, a `good` with an issue or a snapshot, an unknown meal and a second rating of one meal all rejected; the trigger; the CASCADE taking only its own meal's row.
+- `db/migrate.test.mjs` §15: 0066 on a device at 65 with an estimated meal — applied, meals and items byte-identical, nothing rated; a pre-0066 meal can be rated and its rating goes with it.
+- `db/nutrition-v2.test.mjs` §98: the repository (good, off, the kept `before`, the issue refused without an off, a gone meal refused); settle (a no-op writes nothing, the fix recorded, put back is NULL); the lines (portion, swap, macros matched case-blind, missed, rounding noise, two per line); the block's contents (no dates, times, meal names, notes or the right item), the cold start, an injected newline; eight at most, newest first, a re-rated Good dropped; the budget and the two token measures; the request carrying it as a user block after the usual foods with the system prompt byte-identical inside the unmoved ceiling; both callers; defensive parsing; the delete Undo and the combine's split restoring the row exactly. §96's caller pins follow the new call shape.
+- `db/coach-domains.test.mjs` §10: `query_records { domain: "estimate_ratings" }` returns the estimator's own line; the domain is in neither write enum. The CASCADE walk maps `food_log_ratings` as a meal's own part.
+- `db/screens-render.test.mjs` §40: unrated, between Items and Actions; nothing on a hand-logged meal or a pending one; the question; answered (*Set the portion…*); corrected; good; the line alone with Change → Cancel and Off → the question again; no pine, signal or accent; the wiring as source (settle only inside the window, Item / Macros pushing Adjust with AI with the answer, nothing on the review screen).
+
+### What only the phone can settle
+
+- **Whether the line is seen, and whether it nags.** It sits under the items on every estimated meal until answered. Whether that reads as a quiet question or as an unchecked box is a week-of-use question.
+- **Whether the model uses the examples well** — calibrating "chicken salad" down without shrinking every salad, and never pulling a corrected food into a meal that does not show it. Mock-harness tested only.
+- **Portion with several items.** The sentence points up; whether he finds the row, and whether the editor opening by itself on a one-item meal feels right.
+- **The window's edges.** A further fix on a later visit, after one was recorded, is not (the window is closed once corrected); *Change* → Off → the issue reopens it.
+- **Item and Macros without a model key** land on Adjust with AI's "needs a model key" page; the items above remain the offline path.

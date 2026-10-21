@@ -11,7 +11,7 @@
  * passes. Extend the assertions when you add tables or constraints.
  */
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -208,5 +208,67 @@ rejects('weight_kg >= 1000 rejected (fat-finger)', () =>
 // the client, not assertable here. See the trigger comment in 0001_init.sql.
 
 db.close();
+
+// ---------------------------------------------------------------------------
+// 8. 0066 — `food_log_ratings`, over EVERY migration in order (it needs 0002's
+//    `meals`). Only when validating the default schema: a file passed on the
+//    command line is validated alone, as before.
+// ---------------------------------------------------------------------------
+if (process.argv[2] === undefined) {
+  console.log('8. 0066 food_log_ratings (all migrations applied in order)');
+  const full = new DatabaseSync(':memory:');
+  full.exec('PRAGMA foreign_keys = ON;');
+  const dir = join(here, 'migrations');
+  for (const file of readdirSync(dir).filter((f) => /^\d+_.+\.sql$/.test(f)).sort()) {
+    full.exec(readFileSync(join(dir, file), 'utf8'));
+  }
+  const cols = full.prepare('PRAGMA table_info(food_log_ratings)').all();
+  const idCol = cols.find((c) => c.name === 'id');
+  idCol && idCol.pk === 1 && idCol.notnull === 1 && idCol.type === 'TEXT'
+    ? ok('food_log_ratings.id is text PRIMARY KEY NOT NULL')
+    : bad('id column', JSON.stringify(idCol));
+  ['meal_id', 'rating', 'created_at', 'updated_at'].every(
+    (name) => cols.find((c) => c.name === name)?.notnull === 1
+  ) && ['issue', 'before_items', 'after_items'].every((name) => cols.find((c) => c.name === name)?.notnull === 0)
+    ? ok('meal_id, rating and the stamps are NOT NULL; issue and the snapshots are nullable')
+    : bad('nullability', JSON.stringify(cols.map((c) => [c.name, c.notnull])));
+  full.exec(`INSERT INTO meals (id, date, name, source) VALUES ('${id('m1')}', '2026-10-21', 'Lunch', 'ai_suggested');
+             INSERT INTO meals (id, date, name) VALUES ('${id('m2')}', '2026-10-21', 'Dinner');`);
+  const ins = (cols, vals) => () => full.exec(`INSERT INTO food_log_ratings (${cols}) VALUES (${vals});`);
+  rejects('NULL id rejected (food_log_ratings)', ins('id, meal_id, rating', `NULL, '${id('m1')}', 'good'`));
+  rejects("rating outside ('good','bad') rejected", ins('id, meal_id, rating', `'${id('r0')}', '${id('m1')}', 'meh'`));
+  rejects('NULL rating rejected', ins('id, meal_id, rating', `'${id('r0')}', '${id('m1')}', NULL`));
+  rejects("issue outside ('portion','item','macros') rejected", ins('id, meal_id, rating, issue', `'${id('r0')}', '${id('m1')}', 'bad', 'taste'`));
+  rejects('invalid JSON in before_items rejected', ins('id, meal_id, rating, before_items', `'${id('r0')}', '${id('m1')}', 'bad', '[{'`));
+  rejects('invalid JSON in after_items rejected', ins('id, meal_id, rating, after_items', `'${id('r0')}', '${id('m1')}', 'bad', 'nope'`));
+  rejects('a "good" carrying an issue rejected', ins('id, meal_id, rating, issue', `'${id('r0')}', '${id('m1')}', 'good', 'portion'`));
+  rejects('a "good" carrying a snapshot rejected', ins('id, meal_id, rating, before_items', `'${id('r0')}', '${id('m1')}', 'good', '[]'`));
+  rejects('a rating of no meal rejected (FK)', ins('id, meal_id, rating', `'${id('r0')}', '${id('nomeal')}', 'good'`));
+  try {
+    ins('id, meal_id, rating, issue, before_items', `'${id('r1')}', '${id('m1')}', 'bad', 'portion', '[{"name":"Chicken salad","amount":350}]'`)();
+    ins('id, meal_id, rating', `'${id('r2')}', '${id('m2')}', 'good'`)();
+    ok('a bad with its issue and snapshot, and a bare good, insert');
+  } catch (e) {
+    bad('valid ratings insert', e.message);
+  }
+  rejects('a second rating of one meal rejected (UNIQUE meal_id)', ins('id, meal_id, rating', `'${id('r3')}', '${id('m1')}', 'good'`));
+  full.exec(`UPDATE food_log_ratings SET updated_at = '2000-01-01T00:00:00.000Z' WHERE id = '${id('r1')}';`);
+  full.exec(`UPDATE food_log_ratings SET after_items = '[{"name":"Chicken salad","amount":250}]' WHERE id = '${id('r1')}';`);
+  full.prepare('SELECT updated_at FROM food_log_ratings WHERE id = ?').get(id('r1')).updated_at !==
+  '2000-01-01T00:00:00.000Z'
+    ? ok('the AFTER UPDATE trigger stamps updated_at')
+    : bad('updated_at trigger');
+  full.exec(`DELETE FROM meals WHERE id = '${id('m1')}';`);
+  const left = full.prepare('SELECT meal_id FROM food_log_ratings ORDER BY meal_id').all().map((r) => r.meal_id);
+  left.length === 1 && left[0] === id('m2')
+    ? ok('deleting a meal CASCADEs to its rating, and only its own')
+    : bad('rating cascade', JSON.stringify(left));
+  const fk = full.prepare('PRAGMA foreign_key_list(food_log_ratings)').all();
+  fk.length === 1 && fk[0].table === 'meals' && fk[0].on_delete === 'CASCADE'
+    ? ok('its one foreign key is meals ON DELETE CASCADE')
+    : bad('fk', JSON.stringify(fk));
+  full.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
