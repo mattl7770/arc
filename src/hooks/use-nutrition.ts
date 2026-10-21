@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 
 import { getDb } from '@/lib/db/client';
-import { shiftISODate, todayISODate } from '@/lib/db/date';
+import { getDayStartsAt, shiftISODate, todayISODate } from '@/lib/db/date';
 import {
   activeNutritionTargets,
   dailyIntakeSeries,
@@ -13,6 +13,7 @@ import {
   firstMealDate,
   listTodayMeals,
   mealItemCounts,
+  mealTimingBetween,
   partialMealMetrics,
   todayTotals,
   type DayIntakePoint,
@@ -24,6 +25,7 @@ import { recipeCount, recipesCookedSince } from '@/lib/db/repositories/recipes';
 import { getGoalDirection } from '@/lib/db/repositories/user';
 import { countTotalsOnlyMeals, mealKeyMicroLabels } from '@/lib/nutrition/key-micro';
 import type { Micros } from '@/lib/nutrition/micros';
+import { CURVE_WINDOW_DAYS, learnCurve, type ExpectedCurve } from '@/lib/nutrition/pace-curve';
 import type { PartialMealMetrics } from '@/lib/nutrition/remaining';
 import type { DayTotals, MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 import type { GoalDirection } from '@/lib/user/types';
@@ -90,6 +92,15 @@ export type NutritionDay = {
    *  target. The Home pillar withholds its verdict on such a day and these bars
    *  withhold theirs with it. */
   timezoneChanged: boolean;
+  /**
+   * The expected cumulative intake curves the "By the hour" fold draws today
+   * against (items 84/95) — learned from the last four weeks of meal times, or
+   * the default shape, labelled, until seven days exist. Read here, once per
+   * focus; the screen places NOW on them each render.
+   */
+  curves: { kcal: ExpectedCurve; protein_g: ExpectedCurve };
+  /** The boundary the curves and today's meals were bucketed under. */
+  dayStartsAt: string;
   /** Re-read today's meals + totals — call after an in-screen save. */
   reload: () => void;
 };
@@ -163,6 +174,13 @@ function readToday(): Omit<NutritionDay, 'reload'> {
   const kcal = series.map((p: DayIntakePoint) => p.kcal);
   const protein = series.map((p: DayIntakePoint) => p.protein_g);
   const meals = listTodayMeals(db, date);
+  const dayStartsAt = getDayStartsAt();
+  // The four weeks BEFORE today; learnCurve ignores anything outside them.
+  const history = mealTimingBetween(
+    db,
+    shiftISODate(date, -CURVE_WINDOW_DAYS),
+    shiftISODate(date, -1)
+  );
   return {
     meals,
     totals: todayTotals(db, date),
@@ -181,6 +199,11 @@ function readToday(): Omit<NutritionDay, 'reload'> {
     // so the tab and the pillar are graded off identical inputs.
     direction: getGoalDirection(db),
     timezoneChanged: isTimezoneChangedDay(db, date),
+    curves: {
+      kcal: learnCurve(history, 'kcal', date, dayStartsAt),
+      protein_g: learnCurve(history, 'protein_g', date, dayStartsAt),
+    },
+    dayStartsAt,
     kitchen: readKitchen(db, date),
     overTime: {
       kcal,

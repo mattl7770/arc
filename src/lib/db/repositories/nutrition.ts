@@ -78,6 +78,26 @@ export function listTodayMeals(db: Database, date: string): MealRow[] {
 }
 
 /**
+ * The timing of every meal filed under `from`..`to` (inclusive, `YYYY-MM-DD`) —
+ * the four columns the Eat tab's expected intake curve learns from
+ * (src/lib/nutrition/pace-curve.ts). An index range on `meals_date_idx`; at a
+ * few meals a day, four weeks is about a hundred rows.
+ */
+export type MealTiming = {
+  date: string;
+  time: string | null;
+  kcal: number | null;
+  protein_g: number | null;
+};
+
+export function mealTimingBetween(db: Database, from: string, to: string): MealTiming[] {
+  return db.all<MealTiming>(
+    `SELECT date, time, kcal, protein_g FROM meals WHERE date >= ? AND date <= ? ORDER BY date, time`,
+    [from, to]
+  );
+}
+
+/**
  * Summed intake for the day's "Today" card. sum() skips NULL macros (a meal
  * with no recorded protein doesn't zero the day) and the coalesce makes an
  * empty day read as zeros rather than NULLs.

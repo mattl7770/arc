@@ -242,11 +242,12 @@ export default function DataScreen() {
         router.push('/mission-history');
         return;
       case 'weight':
-        // `from` names this screen on the keypad's back control. That screen is
-        // reached from the Log tab twice and from here once, and the sheet's
-        // `‹ Log` is its default — so the one caller that is NOT the Log tab has
-        // to say so, or the control names a destination it will not go to.
-        router.push({ pathname: '/metric-entry', params: { from: 'Data' } });
+        // The weight RECORD (app/weight.tsx), not the keypad — since items 84/95
+        // (2026-10-21) it carries the 7-day trendline, and Water's reasoning
+        // applies: a trend row opens the record, and the record carries the way
+        // to add to it. The keypad is one tap further in (its back control
+        // names Weight), and the Log tab's Weight tile still opens it directly.
+        router.push('/weight');
         return;
       case 'water':
         // NOT the keypad, unlike Weight above. Water is the one metric whose

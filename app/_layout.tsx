@@ -314,6 +314,9 @@ export default function RootLayout() {
           <Stack.Screen name="muscle-freshness" />
           <Stack.Screen name="workout-import" />
           <Stack.Screen name="metric-entry" />
+          {/* The weight record and its trendline (items 84/95), pushed from the
+              Data tab's Weight row. */}
+          <Stack.Screen name="weight" />
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />
           <Stack.Screen name="labs" />

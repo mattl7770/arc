@@ -5,6 +5,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { CombineFooter, CombineMark, CombineToggle } from '@/components/nutrition/combine-meals';
 import { DayMicrosRow } from '@/components/nutrition/day-micros';
+import { IntakeByHour } from '@/components/nutrition/intake-pace';
 import { LogSheet } from '@/components/nutrition/log-sheet';
 import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider, GridCell } from '@/components/ui/block';
@@ -807,6 +808,8 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     timezoneChanged,
     keyMicros,
     mealKeyMicros,
+    curves,
+    dayStartsAt,
     reload,
   } = useNutrition();
   const [logOpen, setLogOpen] = useState(false);
@@ -831,7 +834,8 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
   // render, from the same clock and the same pace curve the Home pillar uses —
   // four bars grading against four slightly different instants would be the
   // cheapest possible way to make them disagree with each other.
-  const expected = expectedDayFraction(new Date());
+  const now = new Date();
+  const expected = expectedDayFraction(now);
   const gradeFor = (metric: DayMetric, eaten: number, target: number | null): SignalLevel =>
     macroGrade({
       metric,
@@ -861,6 +865,7 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
   // Narrowed once, for the hero's bar: `DayFigure`'s `eaten` branch may carry a
   // null target, its `remaining` branch never does.
   const kcalTarget = kcal.target;
+  const proteinFigure = macroFigures.find((m) => m.metric === 'protein_g');
   const corner = targetsCorner(targets, kcal.eaten);
   const recipes = recipeDetail(kitchen);
   const grocery = groceryDetail(kitchen);
@@ -968,6 +973,27 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                     fiberTarget: targets?.fiber_g ?? null,
                   })}
                   note={totalsOnlyNote(keyMicros.totalsOnlyMeals)}
+                />
+              ) : null}
+
+              {/* BY THE HOUR (items 95/84, 2026-10-21) — folded to one line under
+                  the bars until tapped: today's running total against the shape
+                  of a usual day, the ±10% band on the goal, protein beneath. Only
+                  with a calorie goal — the band and the curve are both shares of
+                  it. The NOW dots wear the grades the bars above already wear;
+                  see src/components/nutrition/intake-pace.tsx. */}
+              {kcalTarget !== null && kcalTarget > 0 ? (
+                <IntakeByHour
+                  meals={meals}
+                  curves={curves}
+                  goals={{ kcal: kcalTarget, protein_g: proteinFigure?.figure.target ?? null }}
+                  levels={{
+                    kcal: gradeFor('kcal', kcal.eaten, kcalTarget),
+                    protein_g: proteinFigure?.level ?? 'unknown',
+                  }}
+                  now={now}
+                  dayStartsAt={dayStartsAt}
+                  timezoneChanged={timezoneChanged}
                 />
               ) : null}
             </>

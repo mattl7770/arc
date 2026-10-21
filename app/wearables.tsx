@@ -7,8 +7,15 @@ import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { Sparkline } from '@/components/ui/sparkline';
 import { StackHeader } from '@/components/ui/stack-header';
+import { DailyTrendChart } from '@/components/ui/trend-chart';
 import { palette } from '@/constants/theme';
-import { useWearables, type WearableMetricRow } from '@/hooks/use-wearables';
+import { latestAverage } from '@/lib/charts/moving-average';
+import {
+  TREND_DAYS,
+  useWearables,
+  type WearableMetricRow,
+  type WearableTrend,
+} from '@/hooks/use-wearables';
 import { deviceLabel } from '@/lib/db/repositories/wearables';
 
 /**
@@ -37,6 +44,18 @@ import { deviceLabel } from '@/lib/db/repositories/wearables';
  * a stamped action. Signal colours are absent for the mirror reason: a sleep
  * duration is a measurement here, not a graded biological verdict, and grading
  * it would put a signal colour on a number nothing has actually assessed.
+ *
+ * ## Recovery trends, charted (items 84/95, 2026-10-21)
+ *
+ * The owner's third chart: *HRV and resting heart rate trends*. A sparkline
+ * answers "which way", and these two are the readings where the next question is
+ * "how far, and is it noise" — so they get the shared daily-trend idiom
+ * (src/components/ui/trend-chart.tsx): a dot per day, the trailing 7-day average
+ * as a line through them, the range stated in the gutter. One more plate, above
+ * the ledger it summarises, and drawn only once something has synced — the
+ * first-run field already says the record is empty. The rows below keep their
+ * sparklines: the chart is the closer read of two of them, not a replacement
+ * for the ledger. Ink only; the firewall holds — nothing here grades a value.
  *
  * ## No data, no number
  *
@@ -69,6 +88,31 @@ function shortDayOfInstant(iso: string): string {
 function reportingNote(rows: WearableMetricRow[]): string {
   const reporting = rows.filter((r) => !r.empty).length;
   return reporting === 0 ? 'No data yet' : `${reporting} of ${rows.length} reporting`;
+}
+
+/** One charted trend: the name, the newest 7-day average, and the chart. */
+function TrendBlock({ trend, first }: { trend: WearableTrend; first: boolean }) {
+  const avg = latestAverage(trend.points);
+  return (
+    <View className={first ? 'mt-2' : 'mt-4'}>
+      <Divider first={first} />
+      <View className={first ? 'flex-row items-baseline gap-2' : 'mt-3 flex-row items-baseline gap-2'}>
+        <Text className="flex-1 font-serif text-[15px] text-ink">{trend.name}</Text>
+        {avg !== null ? (
+          <Text className="font-mono text-[11px] text-ink-muted">
+            {`7-day avg ${Math.round(avg)} ${trend.unit}`}
+          </Text>
+        ) : null}
+      </View>
+      <DailyTrendChart
+        points={trend.points}
+        format={(v) => String(Math.round(v))}
+        unit={trend.unit}
+        name={trend.name}
+        testID={`trend-chart-${trend.key}`}
+      />
+    </View>
+  );
 }
 
 function MetricRow({ row, first }: { row: WearableMetricRow; first: boolean }) {
@@ -130,7 +174,7 @@ function MetricRow({ row, first }: { row: WearableMetricRow; first: boolean }) {
 
 export default function WearablesScreen() {
   const router = useRouter();
-  const { supported, enabled, lastSyncedAt, sections, workouts, allEmpty } = useWearables();
+  const { supported, enabled, lastSyncedAt, sections, trends, workouts, allEmpty } = useWearables();
 
   return (
     <Screen scroll>
@@ -166,6 +210,19 @@ export default function WearablesScreen() {
           </Block>
         </View>
       ) : null}
+
+      {/* Recovery trends — the two the owner named, charted. Drawn once anything
+          has synced; the first-run field above already speaks for an empty record. */}
+      {allEmpty ? null : (
+        <View className="mt-7">
+          <Block device="plate">
+            <SectionLabel label="Recovery trends" note={`Last ${TREND_DAYS} days`} />
+            {trends.map((trend, index) => (
+              <TrendBlock key={trend.key} trend={trend} first={index === 0} />
+            ))}
+          </Block>
+        </View>
+      )}
 
       {sections.map((section) => (
         <View key={section.title} className="mt-7">

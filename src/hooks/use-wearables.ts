@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 
 import { getDb } from '@/lib/db/client';
-import { todayISODate } from '@/lib/db/date';
+import {
+  TREND_WINDOW_DAYS,
+  trailingAverageSeries,
+  type TrendPoint,
+} from '@/lib/charts/moving-average';
+import { localDaysList, todayISODate } from '@/lib/db/date';
 import {
   dailyMetricSeries,
   deviceLabel,
@@ -54,6 +59,19 @@ export interface WearableMetricRow {
   emptyNote: string | null;
 }
 
+/**
+ * A recovery trend drawn as a chart (items 84/95, 2026-10-21): the last
+ * {@link TREND_DAYS} days of one metric, each day's winning reading plus the
+ * trailing 7-day average (src/lib/charts/moving-average.ts). HRV and resting HR
+ * only — the two the owner named; the other rows keep their sparklines.
+ */
+export interface WearableTrend {
+  key: 'hrv' | 'rhr';
+  name: string;
+  unit: string;
+  points: TrendPoint[];
+}
+
 export interface WearableSection {
   title: string;
   rows: WearableMetricRow[];
@@ -67,6 +85,9 @@ export interface WearablesOverview {
   enabled: boolean;
   lastSyncedAt: string | null;
   sections: WearableSection[];
+  /** HRV and resting HR, charted. Always both, empty or not — the chart says
+   *  so itself when a window holds too few readings. */
+  trends: WearableTrend[];
   workouts: WearableWorkout[];
   /** True when not a single wearable row exists yet. */
   allEmpty: boolean;
@@ -100,6 +121,9 @@ type MetricSpec = {
   /** canonical value → [display value string, unit label]. */
   format: (value: number, fahrenheit: boolean) => [string, string];
 };
+
+/** The charted window — the same 30 days the rows' sparklines cover. */
+export const TREND_DAYS = 30;
 
 const cToF = (c: number) => (c * 9) / 5 + 32;
 
@@ -211,6 +235,23 @@ function read(): Omit<WearablesOverview, 'reload'> {
     { title: 'Activity', rows: ACTIVITY.map(buildRow) },
   ];
 
+  // The chart's 30 days plus the six before them, so the first point of the
+  // trailing average has a full window instead of starting a week late.
+  const trendDates = localDaysList(today, TREND_DAYS);
+  const buildTrend = (key: 'hrv' | 'rhr', name: string, unit: string): WearableTrend => ({
+    key,
+    name,
+    unit,
+    points: trailingAverageSeries(
+      dailyMetricSeries(db, key, TREND_DAYS + TREND_WINDOW_DAYS - 1, today).map((p) => ({
+        date: p.date,
+        value: p.value,
+      })),
+      trendDates
+    ),
+  });
+  const trends = [buildTrend('hrv', 'HRV', 'ms'), buildTrend('rhr', 'Resting HR', 'bpm')];
+
   const workouts = recentWearableWorkouts(db, 8);
   const allEmpty = workouts.length === 0 && sections.every((s) => s.rows.every((r) => r.empty));
 
@@ -219,6 +260,7 @@ function read(): Omit<WearablesOverview, 'reload'> {
     enabled,
     lastSyncedAt: getHealthSyncState(db).lastSyncedAt,
     sections,
+    trends,
     workouts,
     allEmpty,
   };
