@@ -147,7 +147,11 @@ export default function MealEstimateScreen() {
   // `start=camera` opens straight into the viewfinder — the Eat tab's Photo
   // quick-log (app/nutrition.tsx). Without it the screen opens on the field,
   // which is the Describe quick-log and the default.
-  const { start } = useLocalSearchParams<{ start?: string }>();
+  // `describe` is a description typed elsewhere — the quick-log box behind the
+  // Action Button (app/quick-log.tsx, item 63). It fills the field and runs
+  // the estimate once, on arrival; the review is still the only way to a write.
+  const { start, describe } = useLocalSearchParams<{ start?: string; describe?: string }>();
+  const handoff = typeof describe === 'string' ? describe.trim() : '';
   const [permission, requestPermission] = useCameraPermission();
   const cameraRef = useRef<CameraHandle | null>(null);
   const cameraInstalled = isCameraAvailable();
@@ -158,7 +162,7 @@ export default function MealEstimateScreen() {
     start === 'camera' ? { kind: 'camera' } : { kind: 'input' }
   );
   const [seen, setSeen] = useState<SeenCode | null>(null);
-  const [description, setDescription] = useState('');
+  const [description, setDescription] = useState(handoff);
   // The review's rows, every edit the table can make, and the Undo for its ×
   // (src/hooks/use-review-draft.ts) — shared with app/meal-revise.tsx.
   const draft = useReviewDraft();
@@ -260,6 +264,21 @@ export default function MealEstimateScreen() {
       return false;
     }
   };
+
+  /**
+   * A description handed over by the quick-log box runs as if Estimate had been
+   * tapped — once, on mount: a route param cannot change under a mounted screen
+   * (the precedent is app/barcode-scan.tsx's handed-over code). Without a key
+   * the screen draws its not-configured state and nothing runs; the quick box
+   * checks for a key first and keeps the words as a note instead.
+   */
+  const handedOver = useRef(false);
+  useEffect(() => {
+    if (handedOver.current || handoff === '' || !available || start === 'camera') return;
+    handedOver.current = true;
+    void run({ kind: 'text', description: handoff });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * The photo-library path (owner request, 2026-08-11). It is a third INPUT to

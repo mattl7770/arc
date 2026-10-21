@@ -40,6 +40,11 @@ import {
   type NavStateLike,
   type TapRouting,
 } from '@/lib/notifications/taps';
+import {
+  QUICK_LOG_ROUTE,
+  registerQuickLaunchRouting,
+  type QuickLaunchRouting,
+} from '@/lib/log/quick-launch';
 import { runEstimateQueueDrain } from '@/lib/nutrition/estimate-queue';
 import { onForeground } from '@/lib/timezone/foreground';
 import { useCoachPassRunner } from '@/hooks/use-coach-pass';
@@ -319,9 +324,42 @@ export default function RootLayout() {
       if (tapsRef.current === taps) tapsRef.current = null;
     };
   }, [router, navRef]);
+  // The quick-log box (item 63): the Action Button's "Log in ARC" App Intent
+  // and the `arc://quick` link (src/lib/log/quick-launch.ts). Held behind the
+  // SAME gate as a notification tap, for the same reason, and re-checked at the
+  // same two moments — plus every return to the foreground, which is when an
+  // intent that brought a running app forward has left its stamp.
+  const quickRef = useRef<QuickLaunchRouting | null>(null);
+  useEffect(() => {
+    const quick = registerQuickLaunchRouting({
+      isReady: () =>
+        !coveredRef.current &&
+        navRef.isReady() &&
+        appNavigatorMounted(navRef.getRootState() as NavStateLike | undefined),
+      deliver: () => {
+        // Already open: its field has the keyboard. A second copy over the
+        // first would only be a second Back to press.
+        const current = navRef.getCurrentRoute() as { name?: string } | undefined;
+        if (current?.name === 'quick-log') return;
+        router.push(QUICK_LOG_ROUTE);
+      },
+    });
+    quickRef.current = quick;
+    const stopState = navRef.addListener('state', () => quick.flush());
+    const foregroundSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') quick.check();
+    });
+    return () => {
+      stopState();
+      foregroundSub.remove();
+      quick.stop();
+      if (quickRef.current === quick) quickRef.current = null;
+    };
+  }, [router, navRef]);
   useEffect(() => {
     coveredRef.current = lock.covered;
     tapsRef.current?.flush();
+    quickRef.current?.flush();
   }, [lock.covered]);
 
   // The Coach's own daily pass — driven HERE and only here, so it runs on app
@@ -389,6 +427,10 @@ export default function RootLayout() {
           <Stack.Screen name="muscle-freshness" />
           <Stack.Screen name="workout-import" />
           <Stack.Screen name="metric-entry" />
+          {/* The quick-log box (item 63) — opened by the Action Button's
+              "Log in ARC" App Intent or an arc://quick link, through the gate
+              above, never by a deep link on its own. */}
+          <Stack.Screen name="quick-log" />
           <Stack.Screen name="capture" />
           <Stack.Screen name="symptom" />
           <Stack.Screen name="labs" />
