@@ -19,6 +19,7 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { logMeal } from '@/lib/db/repositories/nutrition';
+import { joinNearbyMealWithUndo } from '@/lib/nutrition/undo-offers';
 
 /**
  * **Log** — every way to record a meal, behind one button.
@@ -172,7 +173,7 @@ function AddMealForm({ onSaved }: { onSaved: () => void }) {
     const normalized = normalizeTime(time);
     if (!canSave || normalized === null) return;
     try {
-      logMeal(getDb(), {
+      const id = logMeal(getDb(), {
         date: todayISODate(),
         time: normalized,
         name: name.trim(),
@@ -181,6 +182,10 @@ function AddMealForm({ onSaved }: { onSaved: () => void }) {
         carbs_g: toNumber(carbs),
         fat_g: toNumber(fat),
       });
+      // Within 45 minutes of a meal already logged — by the time TYPED here —
+      // it joins that meal as one "(as logged)" item (item 58); the receipt is
+      // drawn on the Eat tab under this sheet.
+      joinNearbyMealWithUndo(getDb(), id);
       onSaved();
     } catch (error) {
       // canSave gates the known cases; this is a backstop so a write failure

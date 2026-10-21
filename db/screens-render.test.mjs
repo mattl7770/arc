@@ -9333,5 +9333,126 @@ console.log('\n38. Item 70 — a finished session’s tick, and its Undo on Home
   deleteWorkout(db, w);
 }
 
+console.log('\n39. 2026-10-21 — a food joins its meal, saved and past meals in search, usual add-ons, a repeat');
+{
+  const { joinNearbyMealWithUndo } = await import('../src/lib/nutrition/undo-offers.ts');
+  const { MealHitsPlate } = await import('../app/food-search.tsx');
+  const { UsualAddOns } = await import('../src/components/nutrition/usual-add-ons.tsx');
+  const { RepeatFoodRow } = await import('../src/components/nutrition/repeat-food-offer.tsx');
+  const noop = () => {};
+  const today = todayISODate();
+
+  // 58 — THE JOIN, SAID. A real join on the suite's database: the receipt is
+  // drawn on the Eat tab, under Add food's field and under the scanner's count.
+  closeUndo();
+  logMealWithItems(db, {
+    date: today,
+    time: '05:10',
+    name: 'Brunch test',
+    items: [{ name: 'Sourdough', amount: 80, kcal: 210 }],
+  });
+  const kombucha = logMealWithItems(db, {
+    date: today,
+    time: '05:30',
+    name: 'Kombucha test',
+    items: [{ name: 'Kombucha', amount: 330, unit: 'ml', kcal: 60 }],
+  }).mealId;
+  const joined = joinNearbyMealWithUndo(db, kombucha);
+  joined?.name === 'Brunch test'
+    ? ok('the kombucha joined Brunch test, which kept its name')
+    : bad('render join', JSON.stringify(joined && joined.name));
+  const eat = render('nutrition (a food joined a meal)', NutritionScreen, {}, { asTab: true });
+  expect('nutrition (a food joined a meal)', eat, ['Added to Brunch test', '05:10', 'Undo adding Kombucha test to Brunch test']);
+  refute('nutrition (a food joined a meal)', eat, ['>Kombucha test<']);
+  expect('food-search (a food joined a meal)', render('food-search (a food joined a meal)', FoodSearchScreen), [
+    'Added to Brunch test',
+  ]);
+  expect('barcode-scan (a food joined a meal)', render('barcode-scan (a food joined a meal)', BarcodeScanScreen), [
+    'Added to Brunch test',
+  ]);
+  runUndo();
+  refute('nutrition (join undone)', render('nutrition (join undone)', NutritionScreen, {}, { asTab: true }), [
+    'Added to Brunch test',
+  ]);
+  expect('nutrition (join undone)', render('nutrition (join undone) list', NutritionScreen, {}, { asTab: true }), [
+    'Kombucha test',
+  ]);
+  closeUndo();
+
+  // 74 — SAVED AND PAST MEALS IN SEARCH: their own plates, one tap each.
+  const hitsHtml = render('food-search meal hits', MealHitsPlate, {}, {
+    label: 'Past meals',
+    hits: [{ kind: 'meal', id: 'm1', name: 'Pizza night', kcal: 1250, itemCount: 1, date: '2026-10-20' }],
+    onAdd: noop,
+  });
+  expect('food-search meal hits', hitsHtml, ['Past meals', 'Pizza night', '1 item · 2026-10-20', '1,250', 'Add Pizza night']);
+  render('food-search meal hits (none)', MealHitsPlate, {}, { label: 'Saved meals', hits: [], onAdd: noop }) === ''
+    ? ok('no hits: no plate at all')
+    : bad('empty hits plate drew');
+
+  // 64 — USUAL ADD-ONS: chips, the label voice, the 44 pt floor; none cold.
+  const addOn = (name, amount) => ({
+    key: `name:${name.toLowerCase()}`,
+    name,
+    times: 3,
+    latest: { name, amount, unit: 'ml', created_at: '' },
+  });
+  const chips = render('usual add-ons', UsualAddOns, {}, {
+    drink: 'Flat white',
+    addOns: [addOn('Oat milk', 60), addOn('Vanilla syrup', 10)],
+    volume: 'ml',
+    onAdd: noop,
+  });
+  expect('usual add-ons', chips, ['Usual', '+ Oat milk', '60 ml', '+ Vanilla syrup', 'Add Oat milk, 60 ml, to this meal with the Flat white']);
+  refute('usual add-ons', chips, ['bg-accent', 'text-accent']);
+  render('usual add-ons (cold start)', UsualAddOns, {}, { drink: 'Flat white', addOns: [], volume: 'ml', onAdd: noop }) === ''
+    ? ok('cold start: nothing is drawn')
+    : bad('cold start drew');
+  // On the meal screen, from real history: two earlier cortados with milk.
+  for (const d of [-3, -2]) {
+    logMealWithItems(db, {
+      date: shiftISODate(today, d),
+      time: '07:00',
+      name: 'Cortado run',
+      items: [
+        { name: 'Cortado test', amount: 120, unit: 'ml', kcal: 60 },
+        { name: 'Macadamia milk', amount: 40, unit: 'ml', kcal: 20 },
+      ],
+    });
+  }
+  const cortado = logMealWithItems(db, {
+    date: today,
+    time: '07:00',
+    name: 'Cortado run',
+    items: [{ name: 'Cortado test', amount: 120, unit: 'ml', kcal: 60 }],
+  }).mealId;
+  const md = render('meal-detail (usual add-ons)', MealDetailScreen, { id: cortado });
+  expect('meal-detail (usual add-ons)', md, ['Usual', '+ Macadamia milk']);
+
+  // 73/74 — THE REPEAT OFFER, both states.
+  const repeat = {
+    key: 'name:oat latte',
+    times: 3,
+    latest: { name: 'Oat latte', amount: 350, unit: 'ml' },
+  };
+  const offerHtml = render('repeat food (offered)', RepeatFoodRow, {}, {
+    offer: { repeat, saved: false },
+    onSave: noop,
+    onDismiss: noop,
+  });
+  expect('repeat food (offered)', offerHtml, ['Oat latte', 'logged 3×', 'Save as a food', 'Not now']);
+  const savedHtml = render('repeat food (saved)', RepeatFoodRow, {}, {
+    offer: { repeat, saved: true },
+    onSave: noop,
+    onDismiss: noop,
+  });
+  expect('repeat food (saved)', savedHtml, ['Saved Oat latte as a food. Find it in Add food.']);
+  refute('repeat food (saved)', savedHtml, ['role="button"']);
+  const eatSrc = readFileSync(new URL('../app/nutrition.tsx', import.meta.url), 'utf8');
+  eatSrc.includes('const repeat = useRepeatFoodOffer(today);') && eatSrc.includes('<RepeatFoodRow')
+    ? ok('the Eat tab takes the offer on focus and draws it at the foot of Eaten today')
+    : bad('eat tab wiring');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

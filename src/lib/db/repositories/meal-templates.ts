@@ -187,27 +187,31 @@ export function logMealFromTemplate(
 ): string | null {
   const template = getTemplate(db, templateId);
   if (!template) return null;
-  const items = listTemplateItems(db, templateId);
+  const items = templateItemsToLog(db, templateId);
   if (items.length === 0) return null;
-  return logMealWithItems(db, {
-    date,
-    time,
-    name: template.name,
-    items: items.map((i) => ({
-      food_id: i.food_id,
-      name: i.name,
-      amount: i.amount,
-      unit: i.unit,
-      serving_qty: i.serving_qty,
-      // `2 eggs` logs as two eggs (0065); NULL keeps a serving count a serving
-      // count, through the live join.
-      piece_name: i.piece_name,
-      kcal: i.kcal,
-      protein_g: i.protein_g,
-      carbs_g: i.carbs_g,
-      fat_g: i.fat_g,
-      fiber_g: i.fiber_g,
-      micros: repeatMicros(db, i),
-    })),
-  }).mealId;
+  return logMealWithItems(db, { date, time, name: template.name, items }).mealId;
+}
+
+/**
+ * A template's items as items to log — what {@link logMealFromTemplate} logs,
+ * and what Add food adds when a saved meal is picked from search (2026-10-21,
+ * item 74). Empty when the template is gone or holds nothing.
+ */
+export function templateItemsToLog(db: Database, templateId: string): NewMealItem[] {
+  return listTemplateItems(db, templateId).map((i) => ({
+    food_id: i.food_id,
+    name: i.name,
+    amount: i.amount,
+    unit: i.unit,
+    serving_qty: i.serving_qty,
+    // `2 eggs` logs as two eggs (0065); NULL keeps a serving count a serving
+    // count, through the live join.
+    piece_name: i.piece_name,
+    kcal: i.kcal,
+    protein_g: i.protein_g,
+    carbs_g: i.carbs_g,
+    fat_g: i.fat_g,
+    fiber_g: i.fiber_g,
+    micros: repeatMicros(db, i),
+  }));
 }

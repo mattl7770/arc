@@ -1032,8 +1032,26 @@ export function relogMeal(
     return id;
   }
   // "Log again" of a cooked recipe is cooking it again — provenance carries.
-  // The TREE carries too (0058): re-logging a pizza re-logs a pizza, not four
-  // loose rows. `assembleMealItems` is the single reader that knows the shape.
+  return logMealWithItems(db, {
+    date,
+    time,
+    name: meal.name,
+    notes: meal.notes,
+    source,
+    recipe_id: meal.recipe_id,
+    items: copyMealItems(db, items),
+  }).mealId;
+}
+
+/**
+ * A logged meal's items as items to log again — what `relogMeal` copies, and
+ * what Add food adds when a past meal is picked from search (2026-10-21, item
+ * 74). The TREE carries (0058): re-logging a pizza re-logs a pizza, not four
+ * loose rows — `assembleMealItems` is the single reader that knows the shape.
+ * Snapshots, not re-priced, plus any micro key the food records now and the
+ * snapshot never did ({@link repeatMicros}). `items` is in insertion order.
+ */
+export function copyMealItems(db: Database, items: MealItemWithServing[]): NewMealItem[] {
   const copy = (i: MealItemWithServing) => ({
     food_id: i.food_id,
     name: i.name,
@@ -1052,19 +1070,11 @@ export function relogMeal(
     // it names; on a part or a plain item both are already what they were.
     piece_name: i.piece_name,
   });
-  return logMealWithItems(db, {
-    date,
-    time,
-    name: meal.name,
-    notes: meal.notes,
-    source,
-    recipe_id: meal.recipe_id,
-    items: assembleMealItems(items).map((node) =>
-      node.kind === 'composite'
-        ? { ...copy(node.item), components: node.components.map(copy) }
-        : copy(node.item)
-    ),
-  }).mealId;
+  return assembleMealItems(items).map((node) =>
+    node.kind === 'composite'
+      ? { ...copy(node.item), components: node.components.map(copy) }
+      : copy(node.item)
+  );
 }
 
 // === Taking back, putting back, combining (owner, device, 2026-09-23) ========

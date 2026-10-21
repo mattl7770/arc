@@ -40,9 +40,15 @@ import { coerceMicros, MICROS, mergeMicros, parseMicros, serializeMicros } from 
 import { itemForPortion } from './servings';
 import type { AmountUnit, EstimateConfidence, FoodRow, MealItemWithServing } from './types';
 
-export type EstimateInput =
+export type EstimateInput = (
   | { kind: 'text'; description: string }
-  | { kind: 'photo'; base64Jpeg: string; mediaType: 'image/jpeg'; description?: string };
+  | { kind: 'photo'; base64Jpeg: string; mediaType: 'image/jpeg'; description?: string }
+) & {
+  /** His most-logged foods, as a block for the USER turn (2026-10-21, item 73;
+   *  src/lib/db/repositories/food-history.ts) — never the system prompt, which
+   *  is at its ceiling. Absent or null on a cold start: nothing is added. */
+  usual?: string | null;
+};
 
 /** One part of a composite dish (0058, backlog C4) — a plain priced row that
  *  happens to live under a header. One level only: a part has no parts. */
@@ -612,6 +618,7 @@ export function buildMealEstimationRequest(
   } else {
     content.push({ type: 'text', text: `Estimate this meal: ${input.description}` });
   }
+  if (input.usual) content.push({ type: 'text', text: input.usual });
   return {
     system: MEAL_ESTIMATION_SYSTEM_PROMPT,
     messages: [{ role: 'user', content }],

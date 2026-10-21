@@ -20,13 +20,29 @@ import {
  * draws an item removed from THAT meal. Either closes its own kind of offer
  * when it loses focus.
  *
+ * `closeOnLeave: false` draws without the closing rule — for a LOGGING screen
+ * pushed over a day list (Add food, the scanner), which shows a join receipt
+ * (item 58) that must survive being left: the list it returns to draws the same
+ * offer, and closes it by its own rule.
+ *
  * `useSyncExternalStore` with the same getter for the server snapshot, so the
  * headless render suite draws whatever offer a test has made.
  */
-export function useUndoOffer(on: UndoScope['on'], key: string): UndoOffer | null {
+export function useUndoOffer(
+  on: UndoScope['on'],
+  key: string,
+  { closeOnLeave = true }: { closeOnLeave?: boolean } = {}
+): UndoOffer | null {
   const offer = useSyncExternalStore(subscribeUndo, currentUndo, currentUndo);
 
-  useFocusEffect(useCallback(() => () => closeUndo((scope) => scope.on === on), [on]));
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        if (closeOnLeave) closeUndo((scope) => scope.on === on);
+      },
+      [on, closeOnLeave]
+    )
+  );
 
   return offerDrawnOn(offer, on, key);
 }

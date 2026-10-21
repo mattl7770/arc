@@ -49,6 +49,7 @@
  */
 import type { Database } from '@/lib/db/database';
 import { ModelRequestError } from '@/lib/ai/model-client';
+import { usualFoodsContextFor } from '@/lib/db/repositories/food-history';
 import {
   getMeal,
   listMealItems,
@@ -299,7 +300,8 @@ export async function runEstimateQueueDrain(db: Database): Promise<DrainResult> 
     if (listPendingEstimates(db).length === 0) return idle;
     return await drainEstimateQueue(db, {
       estimators: {
-        estimate: (input) => estimateMeal(input),
+        // His usual foods ride the user turn here too (item 73).
+        estimate: (input) => estimateMeal({ ...input, usual: usualFoodsContextFor(db) }),
         revise: (meal, instruction) => reviseMeal(meal, instruction),
       },
       pendingStore: nativePendingEstimateStore(),

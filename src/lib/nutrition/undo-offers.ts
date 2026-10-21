@@ -6,7 +6,9 @@
  *
  * The screens call these and nothing lower: `app/meal-detail.tsx` for an item's
  * × and for Delete this meal, `app/nutrition.tsx` for Combine, and
- * `app/food-search.tsx` for a catalog food's Delete (2026-09-25). Keeping the
+ * `app/food-search.tsx` for a catalog food's Delete (2026-09-25), and every
+ * path that logs a NEW meal for the join to a meal near it (2026-10-21, item
+ * 58: Add food, the scanner, the estimate, manual entry). Keeping the
  * pairing here, rather than in the screens' handlers, is what lets the
  * headless suite drive the same path the tap drives (db/nutrition-v2.test.mjs
  * §61, db/foods.test.mjs) instead of rebuilding offers by hand: a removal whose
@@ -19,8 +21,11 @@
  */
 import type { Database } from '@/lib/db/database';
 import { restoreFood, takeFood, type TakenFood } from '@/lib/db/repositories/foods';
+import { pendingEstimateMealIds } from '@/lib/db/repositories/pending-estimates';
 import {
   combineMeals,
+  getMeal,
+  listTodayMeals,
   restoreMealItems,
   takeMealItem,
   uncombineMeals,
@@ -34,6 +39,9 @@ import {
   takeMealWithPhotos,
   type PhotoFileStore,
 } from '@/lib/media/meal-photo-store';
+import { mealToJoin } from './auto-join';
+import { CombineRefused } from './combine';
+import type { MealRow } from './types';
 import { fmtInt } from './format';
 import { offerUndo, removalWords } from './undo-store';
 
@@ -116,6 +124,84 @@ export function combineWithUndo(
     settle: () => {},
   });
   return combined;
+}
+
+/** Where a just-logged food went, when it joined a meal (item 58). */
+export type JoinedMeal = {
+  /** The meal the food now lives in — the combine's kept row. */
+  keptId: string;
+  /** The meal the food was logged as, which the Undo puts back. */
+  createdId: string;
+  /** That meal's name as logged, for the screen that made it. */
+  createdName: string;
+  /** The name the joined meal keeps: the existing meal's. */
+  name: string;
+  /** The joined meal's time. */
+  time: string | null;
+  combined: CombinedMeals;
+};
+
+/**
+ * A meal just logged as a NEW meal — a food from Add food, a scan, an estimate,
+ * a manual entry — joins the meal logged nearest it on the same day, within
+ * 45 minutes (`AUTO_JOIN_MINUTES`, src/lib/nutrition/auto-join.ts; owner,
+ * device round 3, item 58), and the join is offered back on that day's list: *Added to Lunch · 12:40 · Undo*.
+ *
+ * It is the round-8 combine, not a second mechanism: `combineMeals` merges the
+ * two (keeping the EXISTING meal's name — the owner's call), and the Undo is
+ * `uncombineMeals`, which puts the new meal back exactly as it was logged — its
+ * id, its row, its items — and refuses when the joined meal has changed since.
+ * Null, writing nothing, when no meal is near enough or the combine refuses
+ * (a recipe on each) or fails: the food then stays its own meal, which is what
+ * it was before this existed. It never throws.
+ *
+ * `dayStartsAt` is for the headless suite; the app passes nothing and gets the
+ * installed boundary.
+ */
+export function joinNearbyMealWithUndo(
+  db: Database,
+  createdId: string,
+  dayStartsAt?: string
+): JoinedMeal | null {
+  let created: MealRow | undefined;
+  let combined: CombinedMeals;
+  try {
+    created = getMeal(db, createdId);
+    if (!created) return null;
+    const target = mealToJoin(listTodayMeals(db, created.date), created, {
+      pending: pendingEstimateMealIds(db, created.date),
+      dayStartsAt,
+    });
+    if (!target) return null;
+    combined = combineMeals(db, [target.id, created.id], { name: target.name });
+  } catch (error) {
+    // Refused (a recipe on each), or a write that failed and rolled back in
+    // its transaction: either way the food stays the meal it was logged as,
+    // which is never worse than before this existed — so it never throws into
+    // a save that has already succeeded.
+    if (!(error instanceof CombineRefused)) console.warn('[undo] join failed', error);
+    return null;
+  }
+  const time = typeof combined.result.meal.time === 'string' ? combined.result.meal.time : null;
+  offerUndo({
+    scope: { on: 'list', date: created.date },
+    icon: 'git-merge-outline',
+    said: `Added to ${combined.name}`,
+    figure: time,
+    spoken: `Undo adding ${created.name} to ${combined.name}`,
+    refusal: `Could not split ${created.name} back out — ${combined.name} has changed since.`,
+    undo: () => uncombineMeals(db, combined),
+    // A join deletes no file — a photo moved with its meal, and moves back.
+    settle: () => {},
+  });
+  return {
+    keptId: combined.keptId,
+    createdId: created.id,
+    createdName: created.name,
+    name: combined.name,
+    time,
+    combined,
+  };
 }
 
 /**

@@ -24,13 +24,18 @@ import {
   searchFoods,
   setFoodFavorite,
 } from '@/lib/db/repositories/foods';
+import { mealHitItems, type MealHit, searchMealHits } from '@/lib/db/repositories/food-history';
 import { addMealItem, logMealWithItems } from '@/lib/db/repositories/nutrition';
 import { foodDeleteConsequence } from '@/lib/nutrition/food-delete';
 import { fmtAmount, fmtInt, fmtQty, mealNameForProduct } from '@/lib/nutrition/format';
 import { commitScanMealName, offersScanMealName } from '@/lib/nutrition/scan-meal-name';
 import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
-import { deleteFoodWithUndo } from '@/lib/nutrition/undo-offers';
+import {
+  deleteFoodWithUndo,
+  joinNearbyMealWithUndo,
+  type JoinedMeal,
+} from '@/lib/nutrition/undo-offers';
 import { runUndo } from '@/lib/nutrition/undo-store';
 import type { VolumeUnit } from '@/lib/user/types';
 
@@ -105,6 +110,25 @@ import type { VolumeUnit } from '@/lib/user/types';
  * the Coach's `food_catalog` edit calls (docs/coach-domains.md, parity). Coming
  * back, the open row re-reads the food so its portion is drawn from what was
  * just saved.
+ *
+ * ## A food near a meal joins it (owner, device round 3, item 58)
+ *
+ * The add that would CREATE a meal logs it, then `joinNearbyMealWithUndo`: when
+ * a meal was logged within 45 minutes of now, the food goes into it, keeping
+ * that meal's name, and the receipt — *Added to Lunch · 12:40 · Undo* — is drawn
+ * under the search field, where the eye is. Every later add this visit goes to
+ * the same meal, as a session always has, so the session field for naming a
+ * meal is not offered: the meal is not one this visit made. Undo splits the
+ * food back out into the meal it was logged as, and this visit carries on with
+ * that one. The receipt survives Done: the Eat tab draws the same offer.
+ * A meal pushed in by `mealId` never joins anything — it is already chosen.
+ *
+ * ## Saved meals and past meals are found here too (item 74)
+ *
+ * A query also searches meal templates and past meals by name (one per name,
+ * the latest; only meals with items). A tap adds its items — as one meal of its
+ * own when this visit has none, then the same join rule; into this visit's meal
+ * otherwise.
  */
 
 /** What a from-scratch add names the meal when the food has no name to give —
@@ -195,6 +219,16 @@ export default function FoodSearchScreen() {
   // A catalog food deleted here, while it can still be put back. Closed when
   // this screen is left (src/hooks/use-undo-offer.ts).
   const undo = useUndoOffer('catalog', 'catalog');
+  // A food that joined a nearby meal (item 58) — its receipt is today's list
+  // offer, drawn here under the field and NOT closed on leaving: the Eat tab
+  // this screen returns to draws it too.
+  const joinUndo = useUndoOffer('list', todayISODate(), { closeOnLeave: false });
+  const [joined, setJoined] = useState<JoinedMeal | null>(null);
+  // Saved meals and past meals matching the query (item 74).
+  const [hits, setHits] = useState<{ templates: MealHit[]; meals: MealHit[] }>({
+    templates: [],
+    meals: [],
+  });
 
   // Re-read recents/favorites — and the live query's results — when the screen
   // regains focus (returning from Create-food, most importantly, so the new
@@ -203,6 +237,7 @@ export default function FoodSearchScreen() {
   const reload = useCallback(() => {
     setBase(readBase());
     setResults(query.trim() === '' ? [] : searchFoods(getDb(), query));
+    setHits(searchMealHits(getDb(), query, { excludeMealId: targetMealId }));
     // An open row reads its food again — it may just have been edited — and
     // starts its portion from the food as saved; a food gone meanwhile closes.
     setExpanded((prev) => {
@@ -213,7 +248,7 @@ export default function FoodSearchScreen() {
         ? prev
         : { ...prev, food: fresh, portion: initialPortion(fresh) };
     });
-  }, [query]);
+  }, [query, targetMealId]);
   useFocusEffect(reload);
 
   /** Open a row's editor, or close it — disarming any Delete either way. */
@@ -226,6 +261,7 @@ export default function FoodSearchScreen() {
     setQuery(text);
     expand(null);
     setResults(text.trim() === '' ? [] : searchFoods(getDb(), text));
+    setHits(searchMealHits(getDb(), text, { excludeMealId: targetMealId }));
   };
 
   /** The armed Delete, confirmed: the food goes, with its Undo. */
@@ -245,26 +281,33 @@ export default function FoodSearchScreen() {
     reload();
   };
 
-  /** Write one portion. `food` names the meal when this add is the one that
-   *  creates it — see the header; a later add leaves the title alone. */
-  const saveItem = (item: NewMealItem, food: FoodRow) => {
+  /**
+   * Write what was picked. `name` names the meal when this add is the one that
+   * creates it — see the header; a later add leaves the title alone. A created
+   * meal then joins a meal logged near it (item 58), and this visit carries on
+   * in the meal it joined.
+   */
+  const saveItems = (items: NewMealItem[], name: string) => {
+    if (items.length === 0) return;
     const db = getDb();
     try {
       if (targetMealId !== null) {
-        addMealItem(db, targetMealId, item);
+        for (const item of items) addMealItem(db, targetMealId, item);
       } else {
         const now = new Date();
-        const name = mealNameForProduct(food, daypartName(now));
         const { mealId: created } = logMealWithItems(db, {
           date: todayISODate(),
           time: clockFromISO(now.toISOString()),
           name,
-          items: [item],
+          items,
         });
-        setTargetMealId(created);
-        setCreatedName(name);
+        const join = joinNearbyMealWithUndo(db, created);
+        setJoined(join);
+        setTargetMealId(join ? join.keptId : created);
+        // A meal this visit did not make is never retitled here.
+        setCreatedName(join ? null : name);
       }
-      setAdded((n) => n + 1);
+      setAdded((n) => n + items.length);
       setExpanded(null);
       runSearch('');
       setBase(readBase());
@@ -272,6 +315,27 @@ export default function FoodSearchScreen() {
       // A CHECK violation or missing meal must never crash the tap handler.
       console.warn('[food-search] add failed', error);
     }
+  };
+
+  /** One portion of a catalog food — the food names a meal it creates. */
+  const saveItem = (item: NewMealItem, food: FoodRow) =>
+    saveItems([item], mealNameForProduct(food, daypartName(new Date())));
+
+  /** A saved meal or a past meal, picked from search: its items, its name. */
+  const addHit = (hit: MealHit) => saveItems(mealHitItems(getDb(), hit), hit.name);
+
+  /**
+   * The join's Undo: the food goes back into the meal it was logged as, and
+   * this visit carries on in that one — the meal it made after all.
+   */
+  const undoJoin = () => {
+    const done = runUndo();
+    if (done && joined) {
+      setTargetMealId(joined.createdId);
+      setCreatedName(joined.createdName);
+    }
+    setJoined(null);
+    setBase(readBase());
   };
 
   /** One-tap re-add from the recents rail, at the food's last-logged portion. */
@@ -460,6 +524,10 @@ export default function FoodSearchScreen() {
         ) : null}
       </View>
 
+      {/* Where a food went when it joined a meal near it (item 58) — under the
+          field, where the eye is, never below the fold. */}
+      {joinUndo ? <UndoRow offer={joinUndo} onUndo={undoJoin} first /> : null}
+
       {query.trim() === '' ? (
         <>
           {/* Recents — the single biggest daily-speed lever: one tap re-adds
@@ -533,9 +601,11 @@ export default function FoodSearchScreen() {
       ) : (
         <View className="mt-4">
           {results.length === 0 ? (
-            <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
-              Nothing matches “{query.trim()}”.
-            </Text>
+            hits.templates.length === 0 && hits.meals.length === 0 ? (
+              <Text className="mt-2 font-serif text-[14px] leading-6 text-ink-secondary">
+                Nothing matches “{query.trim()}”.
+              </Text>
+            ) : null
           ) : (
             <Block device="plate">
               <SectionLabel
@@ -563,6 +633,10 @@ export default function FoodSearchScreen() {
               </View>
             </Block>
           )}
+          {/* Saved meals and past meals by the same name (item 74). A tap adds
+              the whole meal, like a recent's +. */}
+          <MealHitsPlate label="Saved meals" hits={hits.templates} onAdd={addHit} />
+          <MealHitsPlate label="Past meals" hits={hits.meals} onAdd={addHit} />
         </View>
       )}
 
@@ -622,6 +696,61 @@ function lastPortionLabel(recent: RecentFood, volume: VolumeUnit): string | null
   }
   if (lastAmount !== null) return `Last: ${fmtAmount(lastAmount, food.basis, volume)}`;
   return null;
+}
+
+/**
+ * Saved meals or past meals that match the query (2026-10-21, item 74) — a
+ * ruled plate of its own, like Results, and drawn only when it has a row. One
+ * tap adds the meal's items; the trailing + says so, as on a recent.
+ */
+export function MealHitsPlate({
+  label,
+  hits,
+  onAdd,
+}: {
+  label: string;
+  hits: MealHit[];
+  onAdd: (hit: MealHit) => void;
+}) {
+  if (hits.length === 0) return null;
+  return (
+    <View className="mt-6">
+      <Block device="plate">
+        <SectionLabel label={label} />
+        <View className="mt-1">
+          {hits.map((hit, index) => {
+            const parts = [
+              `${hit.itemCount} item${hit.itemCount === 1 ? '' : 's'}`,
+              hit.date !== null ? hit.date : null,
+            ].filter(Boolean);
+            return (
+              <View key={`${hit.kind}:${hit.id}`}>
+                <Divider first={index === 0} />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Add ${hit.name}`}
+                  onPress={() => onAdd(hit)}
+                  className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+                  <View className="flex-1">
+                    <Text className="font-serif text-[15px] leading-5 text-ink">{hit.name}</Text>
+                    <Text className="mt-0.5 font-mono text-[10px] leading-4 text-ink-muted">
+                      {parts.join(' · ')}
+                    </Text>
+                  </View>
+                  <Text className="font-mono text-[13px] text-ink-secondary">
+                    {hit.kcal != null ? fmtInt(hit.kcal) : '—'}
+                  </Text>
+                  <View className="h-9 w-9 items-center justify-center rounded-btn border border-hairline">
+                    <Ionicons name="add" size={18} color={palette.ink} />
+                  </View>
+                </Pressable>
+              </View>
+            );
+          })}
+        </View>
+      </Block>
+    </View>
+  );
 }
 
 /**

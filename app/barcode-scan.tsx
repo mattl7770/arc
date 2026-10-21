@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
 import { SessionMealName } from '@/components/nutrition/session-meal-name';
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
@@ -11,6 +12,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { selectAllOnFocus } from '@/components/ui/select-on-focus';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
@@ -45,6 +47,8 @@ import {
 import { commitScanMealName, offersScanMealName } from '@/lib/nutrition/scan-meal-name';
 import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
+import { joinNearbyMealWithUndo, type JoinedMeal } from '@/lib/nutrition/undo-offers';
+import { runUndo } from '@/lib/nutrition/undo-store';
 import type { VolumeUnit } from '@/lib/user/types';
 
 /**
@@ -396,6 +400,10 @@ export default function BarcodeScanScreen() {
   // over it, null while the field is untouched (2026-09-23).
   const [createdName, setCreatedName] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState<string | null>(null);
+  // A first scan that joined a meal logged near it (item 58): its receipt, drawn
+  // under the running count and kept on leaving — the Eat tab draws it too.
+  const joinUndo = useUndoOffer('list', todayISODate(), { closeOnLeave: false });
+  const [joined, setJoined] = useState<JoinedMeal | null>(null);
   // Portion editor state (mirrors food search's). The typed amount is always in
   // the FOOD'S own unit (g or ml) — the oz/ml preference governs read-only
   // figures, never an entry box (see app/food-search.tsx's Portion type).
@@ -620,8 +628,13 @@ export default function BarcodeScanScreen() {
           name,
           items: [item],
         });
-        setTargetMealId(created);
-        setCreatedName(name);
+        // Near a meal already logged, the scan joins it (item 58) and every
+        // later scan this visit follows; a meal it did not make is never
+        // offered the name field.
+        const join = joinNearbyMealWithUndo(db, created);
+        setJoined(join);
+        setTargetMealId(join ? join.keptId : created);
+        setCreatedName(join ? null : name);
       }
       setAdded((n) => n + 1);
       resumeScanning();
@@ -667,6 +680,17 @@ export default function BarcodeScanScreen() {
     commitNameRef.current = commitName;
   });
   useEffect(() => () => commitNameRef.current(), []);
+
+  /** The join's Undo: the scan goes back into the meal it was logged as, and
+   *  this visit carries on in that one. */
+  const undoJoin = () => {
+    const done = runUndo();
+    if (done && joined) {
+      setTargetMealId(joined.createdId);
+      setCreatedName(joined.createdName);
+    }
+    setJoined(null);
+  };
 
   /** Close the flow back to where it started — see the header. */
   const done = () => {
@@ -719,6 +743,7 @@ export default function BarcodeScanScreen() {
           {added} added{targetMealId ? '' : ' to a new meal'}
         </Text>
       ) : null}
+      {joinUndo ? <UndoRow offer={joinUndo} onUndo={undoJoin} first /> : null}
 
       {/* Camera / permission — only while actively scanning. */}
       {phase.kind === 'scanning' ? (
