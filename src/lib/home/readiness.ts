@@ -545,8 +545,12 @@ function lift(level: SignalLevel): SignalLevel {
  * inside the resolution of the logging itself (a portion estimate is ±10% on its
  * own), so calling that difference a direction of travel would be reading noise
  * aloud.
+ *
+ * Exported for the Eat tab's intake-by-hour line (src/lib/nutrition/pace-curve.ts),
+ * which says "on pace" against a LEARNED curve with this same threshold, so the
+ * two never disagree about how far off is far enough to name.
  */
-const ON_PACE_BAND = 0.05;
+export const ON_PACE_BAND = 0.05;
 
 export type NutritionTotals = { kcal: number; protein_g: number; mealCount: number };
 export type NutritionTargets = { kcal: number | null; protein_g: number | null };

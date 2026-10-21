@@ -125,6 +125,12 @@ import RecipeReviseScreen from '../app/recipe-revise.tsx';
 import GroceryScreen from '../app/grocery.tsx';
 import NutritionScreen, { MACRO_BAR_FILL, MACRO_BAR_OVER } from '../app/nutrition.tsx';
 import { OVERFLOW_CAP } from '../src/lib/nutrition/bar.ts';
+// Items 95/84 (2026-10-21) — the intake-by-hour fold, the weight record and
+// the recovery trends, all drawn from src/components/ui/chart.tsx.
+import { IntakeByHour } from '../src/components/nutrition/intake-pace.tsx';
+import { defaultCurve, learnCurve } from '../src/lib/nutrition/pace-curve.ts';
+import { palette } from '../src/constants/theme.ts';
+import WeightScreen from '../app/weight.tsx';
 import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
 import NutritionHistoryScreen from '../app/nutrition-history.tsx';
 import MealDetailScreen, { DishAmountRow } from '../app/meal-detail.tsx';
@@ -2768,12 +2774,11 @@ const db = getDb();
         },
       ],
     });
-    expect('exercise hub (untouched draft)', render('exercise hub (untouched draft)', ExerciseScreen), [
-      'Session in progress',
-      'Barbell Row',
-      'Nothing logged yet',
-      'Resume',
-    ]);
+    expect(
+      'exercise hub (untouched draft)',
+      render('exercise hub (untouched draft)', ExerciseScreen),
+      ['Session in progress', 'Barbell Row', 'Nothing logged yet', 'Resume']
+    );
     clearWorkoutDraft(db, 'live');
 
     // -----------------------------------------------------------------------
@@ -3767,7 +3772,10 @@ const db = getDb();
   ]);
   (detail?.match(/aria-label="Edit this protocol"/g) ?? []).length === 1
     ? ok('protocol-detail has exactly one door into the protocol form')
-    : bad('protocol-detail doors', String((detail?.match(/aria-label="Edit this protocol"/g) ?? []).length));
+    : bad(
+        'protocol-detail doors',
+        String((detail?.match(/aria-label="Edit this protocol"/g) ?? []).length)
+      );
   // The loading dose belongs to a phase that is over. Printing it beside the
   // live one would hand the reader two doses of the same compound with nothing
   // saying which is current.
@@ -5869,12 +5877,17 @@ console.log('\n17b. A blank metric is one tap from an Apple Health sync (2026-09
     ...over,
   });
   const grid = (name, over) =>
-    render(name, MetricsGrid, {}, {
-      metrics,
-      context: context(over),
-      onSync: () => {},
-      onOpenSettings: () => {},
-    });
+    render(
+      name,
+      MetricsGrid,
+      {},
+      {
+        metrics,
+        context: context(over),
+        onSync: () => {},
+        onOpenSettings: () => {},
+      }
+    );
   const count = (html, needle) => (html === null ? 0 : html.split(needle).length - 1);
 
   // THE OFFER — the blank becomes the control, and only the blanks do.
@@ -5925,7 +5938,9 @@ console.log('\n17b. A blank metric is one tap from an Apple Health sync (2026-09
     'aria-label="HRV, no reading today, Apple Health sent none in 14 days. Sync again."',
   ]);
   count(none, '>Sync Apple Health<') === 1 && count(none, '>Sync again<') === 1
-    ? ok('HRV says what the last pass found and offers Sync again; Resting HR still offers the first sync')
+    ? ok(
+        'HRV says what the last pass found and offers Sync again; Resting HR still offers the first sync'
+      )
     : bad(
         'wrong offer count',
         `${count(none, '>Sync Apple Health<')} / ${count(none, '>Sync again<')}`
@@ -6086,19 +6101,28 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
     onCancelOther: noop,
   };
   const plateWith = (name, props) =>
-    render(name, QuestionsPlate, {}, {
-      questions: [shotsQ],
-      answers: {},
-      otherFor: null,
-      otherText: '',
-      otherBusy: false,
-      handlers: quietHandlers,
-      ...props,
-    });
-  const field = (html) => html?.match(/<input[^>]*aria-label="Your answer to: How many shots\?"[^>]*>/)?.[0] ?? '';
+    render(
+      name,
+      QuestionsPlate,
+      {},
+      {
+        questions: [shotsQ],
+        answers: {},
+        otherFor: null,
+        otherText: '',
+        otherBusy: false,
+        handlers: quietHandlers,
+        ...props,
+      }
+    );
+  const field = (html) =>
+    html?.match(/<input[^>]*aria-label="Your answer to: How many shots\?"[^>]*>/)?.[0] ?? '';
 
   const closed = plateWith('questions plate (Other closed)', {});
-  expect('questions plate (Other closed)', closed, ['Type another answer to: How many shots?', '>Other<']);
+  expect('questions plate (Other closed)', closed, [
+    'Type another answer to: How many shots?',
+    '>Other<',
+  ]);
   field(closed) === ''
     ? ok('closed, Other is a chip and there is no field')
     : bad('closed Other drew a field', field(closed));
@@ -6129,7 +6153,11 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
     otherFor: 'shots',
     otherText: 'a triple, iced',
   });
-  expect('questions plate (Other typed into)', typing, ['Apply this answer', '>Apply<', 'a triple, iced']);
+  expect('questions plate (Other typed into)', typing, [
+    'Apply this answer',
+    '>Apply<',
+    'a triple, iced',
+  ]);
   const busy = plateWith('questions plate (Other applying)', {
     otherFor: 'shots',
     otherText: 'a triple, iced',
@@ -7088,7 +7116,9 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
   dropped.stopped === 1 &&
   dropped.slotAtStop === true &&
   !slotHolds()
-    ? ok('left 4 s after Start with nothing typed: nothing asked, writes and the rest alert stopped first, then the slot cleared')
+    ? ok(
+        'left 4 s after Start with nothing typed: nothing asked, writes and the rest alert stopped first, then the slot cleared'
+      )
     : bad('quiet drop', JSON.stringify(dropped));
   refute('home (after a quiet drop)', render('home (after a quiet drop)', HomeScreen), [
     'Workout in progress',
@@ -7102,14 +7132,14 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
   // One weight typed: kept, exactly as since 2026-09-23.
   const typed = {
     ...started,
-    blocks: [
-      { ...started.blocks[0], sets: [set(1, { weight: '80' }), set(2)] },
-      started.blocks[1],
-    ],
+    blocks: [{ ...started.blocks[0], sets: [set(1, { weight: '80' }), set(2)] }, started.blocks[1]],
   };
   writtenAtStart('quiet-typed', typed);
   const keptTyped = leave('quiet-typed', typed, start, T0 + 4_000);
-  keptTyped.outcome === 'leave' && keptTyped.stopped === 0 && keptTyped.prevented === 0 && slotHolds()
+  keptTyped.outcome === 'leave' &&
+  keptTyped.stopped === 0 &&
+  keptTyped.prevented === 0 &&
+  slotHolds()
     ? ok('left 4 s after Start with a weight typed: kept, nothing asked')
     : bad('typed kept', JSON.stringify(keptTyped));
   expect('home (typed, left at 4 s)', render('home (typed, left at 4 s)', HomeScreen), [
@@ -7178,7 +7208,9 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
   editStart === null &&
   edit.outcome === 'ask-discard-changes' &&
   edit.prevented === 1
-    ? ok('settled leaves; a failed write still asks, unless there is nothing typed to lose; an edit with changes still asks')
+    ? ok(
+        'settled leaves; a failed write still asks, unless there is nothing typed to lose; an edit with changes still asks'
+      )
     : bad('other ways out', JSON.stringify([settled, failedTyped, failedQuiet, editStart, edit]));
 
   // What a server render cannot run: the screen's own inputs to all of the
@@ -7194,16 +7226,16 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
     liveSource.indexOf('dispatch: (action) => navigation.dispatch(action)')
   );
   const feeds = {
-    'one liveState from the four states': /const liveState = useMemo<LiveSessionState>\(\s*\(\) => \(\{ blocks, startedAt, away, restEndsAt \}\),\s*\[blocks, startedAt, away, restEndsAt\]\s*\)/.test(
-      liveSource
-    ),
+    'one liveState from the four states':
+      /const liveState = useMemo<LiveSessionState>\(\s*\(\) => \(\{ blocks, startedAt, away, restEndsAt \}\),\s*\[blocks, startedAt, away, restEndsAt\]\s*\)/.test(
+        liveSource
+      ),
     'the snapshot is liveStartFor over draft, workoutId and liveState':
       /const \[start\] = useState<LiveStart \| null>\(\(\) =>\s*liveStartFor\(\{ draft, workoutId \}, liveState\)\s*\)/.test(
         liveSource
       ),
-    'beforeRemove calls leaveLiveLogger': /^\s*addListener\('beforeRemove', \(e\) => \{\s*leaveLiveLogger\(/.test(
-      leaveCall
-    ),
+    'beforeRemove calls leaveLiveLogger':
+      /^\s*addListener\('beforeRemove', \(e\) => \{\s*leaveLiveLogger\(/.test(leaveCall),
     'the leave gets the snapshot and liveState': /\bstart,\s*session: liveState,/.test(leaveCall),
     'the leave reads the clock when it runs': /at: Date\.now\(\),/.test(leaveCall),
   };
@@ -7211,7 +7243,9 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
     .filter(([, holds]) => !holds)
     .map(([what]) => what);
   unfed.length === 0
-    ? ok('the logger feeds the drop what it tests: liveStartFor for the snapshot, one liveState for both sides')
+    ? ok(
+        'the logger feeds the drop what it tests: liveStartFor for the snapshot, one liveState for both sides'
+      )
     : bad('workout-live feeds', unfed.join('; '));
 
   // --- the Trend's range chips ---------------------------------------------------
@@ -7338,10 +7372,15 @@ console.log('\n28. 2026-09-25 — a Start taken straight back, and the Trend’s
     { metric: null, range: '1m' },
     today
   );
-  const emptyHtml = render('trend field (1M, nothing in it)', TrendField, {}, {
-    ...fieldProps('1m'),
-    view: emptyMonth,
-  });
+  const emptyHtml = render(
+    'trend field (1M, nothing in it)',
+    TrendField,
+    {},
+    {
+      ...fieldProps('1m'),
+      view: emptyMonth,
+    }
+  );
   expect('trend field (1M, nothing in it)', emptyHtml, [
     'Nothing to plot in the last month. Choose a longer range.',
     `aria-label="${chipLabel('3m')}"`,
@@ -7733,7 +7772,12 @@ console.log('\n29. Screen time — the keypad, the receipt, the link, Data and S
     ['Talk about this']
   );
 
-  const waiting = render('checkin-line (answering)', CheckinLine, {}, { answering: true, outcome: null });
+  const waiting = render(
+    'checkin-line (answering)',
+    CheckinLine,
+    {},
+    { answering: true, outcome: null }
+  );
   expect('checkin-line (answering)', waiting, ['· checking in…']);
   const silent = render(
     'checkin-line (silent)',
@@ -7832,7 +7876,14 @@ console.log('\n31. 2026-09-25 — combine on a past day, and `2 eggs` read as a 
     time: '08:10',
     name: 'Eggs',
     items: [
-      { name: 'Boiled egg', amount: 100, kcal: 143, protein_g: 13, serving_qty: 2, piece_name: 'egg' },
+      {
+        name: 'Boiled egg',
+        amount: 100,
+        kcal: 143,
+        protein_g: 13,
+        serving_qty: 2,
+        piece_name: 'egg',
+      },
     ],
   });
   const eggs = render('meal-detail (plain count)', MealDetailScreen, { id: eggsId });
@@ -8145,12 +8196,17 @@ console.log('\n33. 2026-09-26 — a Log-tab capture opens to its words, its figu
 
   // EACH EDITOR, opened to what its row shows.
   const editorFor = (name, id) =>
-    render(name, CaptureEditor, {}, {
-      capture: getCapture(db, id, units),
-      units,
-      onSave: noop,
-      onCancel: noop,
-    });
+    render(
+      name,
+      CaptureEditor,
+      {},
+      {
+        capture: getCapture(db, id, units),
+        units,
+        onSave: noop,
+        onCancel: noop,
+      }
+    );
   const line = editorFor('capture editor (a supplement line)', creatine);
   expect('capture editor (a supplement line)', line, [
     'value="Creatine · 5 g"',
@@ -8167,12 +8223,7 @@ console.log('\n33. 2026-09-26 — a Log-tab capture opens to its words, its figu
     '>lb<',
   ]);
   const felt = editorFor('capture editor (a symptom)', symptom);
-  expect('capture editor (a symptom)', felt, [
-    'value="Headache"',
-    'value="6"',
-    'Severity',
-    '/10',
-  ]);
+  expect('capture editor (a symptom)', felt, ['value="Headache"', 'value="6"', 'Severity', '/10']);
   // No accent on the Log tab past the command field: Save is ink.
   [line, noteEditor, figure, felt].every((html) => html && !/bg-pine/.test(html))
     ? ok('the editors spend no accent: Save is ink, the command field keeps the one')
@@ -8183,18 +8234,23 @@ console.log('\n33. 2026-09-26 — a Log-tab capture opens to its words, its figu
     : bad('an editor offers the time');
 
   // INSIDE THE PLATE, under its own row: the open editor is part of the row.
-  const open = render('recent logs (the weight open)', RecentLogs, {}, {
-    entries: feed,
-    onRemove: noop,
-    onEdit: noop,
-    editingId: weight.id,
-    editor: React.createElement(CaptureEditor, {
-      capture: getCapture(db, weight.id, units),
-      units,
-      onSave: noop,
-      onCancel: noop,
-    }),
-  });
+  const open = render(
+    'recent logs (the weight open)',
+    RecentLogs,
+    {},
+    {
+      entries: feed,
+      onRemove: noop,
+      onEdit: noop,
+      editingId: weight.id,
+      editor: React.createElement(CaptureEditor, {
+        capture: getCapture(db, weight.id, units),
+        units,
+        onSave: noop,
+        onCancel: noop,
+      }),
+    }
+  );
   const rowAt = open?.indexOf(`Weight, 176.4 lb, logged at ${weight.time}. Close.`) ?? -1;
   const editorAt = open?.indexOf('value="176.4"') ?? -1;
   // The next row's own control, not this row's ×, which also names its time.
@@ -8213,7 +8269,9 @@ console.log('\n33. 2026-09-26 — a Log-tab capture opens to its words, its figu
   logTabSource.includes('saveCaptureEdit(getDb(), editing, draft)') &&
   logTabSource.includes('useFocusEffect(useCallback(() => () => setEditing(null), []))') &&
   !/getPreferences\(/.test(logTabSource)
-    ? ok('the Log tab draws and saves an open editor in the units it opened in, and closes it on leaving')
+    ? ok(
+        'the Log tab draws and saves an open editor in the units it opened in, and closes it on leaving'
+      )
     : bad('log tab units pin');
 
   db.run('DELETE FROM log_entries WHERE id IN (?, ?)', [creatine, note]);
@@ -8784,6 +8842,228 @@ console.log('\n35. Round 3 — set targets, Prev, swipe-to-delete, Resume first,
   deleteWorkout(db, lastOhp);
 }
 
+console.log('\n36. Items 95/84 — intake by the hour, the weight trendline, the recovery trends');
+{
+  const today = todayISODate();
+  setNutritionTargets(db, {
+    effective_date: today,
+    kcal: 2400,
+    protein_g: 180,
+    carbs_g: 240,
+    fat_g: 70,
+  });
+
+  // FOLDED, on the real Eat tab: one line under the bars, no chart drawn.
+  const tab = render('Eat tab (intake by the hour, folded)', NutritionScreen, {}, { asTab: true });
+  expect('Eat tab (intake by the hour, folded)', tab, [
+    'By the hour',
+    'data-testid="intake-pace-folded"',
+  ]);
+  refute('Eat tab (intake by the hour, folded)', tab, [
+    'data-testid="intake-chart-kcal"',
+    'stroke-dasharray',
+  ]);
+
+  // A learned curve from ten synthetic three-meal days — the model is pure, so
+  // the component is rendered with a fixed clock and fixed inputs.
+  const history = [];
+  for (let k = 1; k <= 10; k++) {
+    const d = shiftISODate(today, -k);
+    history.push(
+      { date: d, time: '08:00', kcal: 500, protein_g: 30 },
+      { date: d, time: '12:30', kcal: 700, protein_g: 50 },
+      { date: d, time: '19:00', kcal: 800, protein_g: 60 }
+    );
+  }
+  const curves = {
+    kcal: learnCurve(history, 'kcal', today, '00:00'),
+    protein_g: learnCurve(history, 'protein_g', today, '00:00'),
+  };
+  const todayMeals = [
+    { date: today, time: '08:00', kcal: 500, protein_g: 30 },
+    { date: today, time: '12:30', kcal: 700, protein_g: 50 },
+    { date: today, time: null, kcal: 100, protein_g: 5 },
+  ];
+  const base = {
+    meals: todayMeals,
+    curves,
+    goals: { kcal: 2400, protein_g: 180 },
+    levels: { kcal: 'good', protein_g: 'caution' },
+    now: new Date(2026, 9, 21, 14, 0),
+    dayStartsAt: '00:00',
+    timezoneChanged: false,
+  };
+
+  const folded = render('intake by the hour (folded)', IntakeByHour, {}, base);
+  expect('intake by the hour (folded)', folded, ['By the hour', '140 kcal behind']);
+  refute('intake by the hour (folded)', folded, ['data-testid="intake-chart-kcal"']);
+
+  const open = render(
+    'intake by the hour (unfolded)',
+    IntakeByHour,
+    {},
+    {
+      ...base,
+      initiallyOpen: true,
+    }
+  );
+  expect('intake by the hour (unfolded)', open, [
+    'data-testid="intake-pace-open"',
+    'data-testid="intake-chart-kcal"',
+    'data-testid="intake-chart-protein"',
+    // What adjusts: the remainder, the landing range, the pace at this minute.
+    '1,100 kcal left · 860–1,340 more lands the day in range',
+    '~1,440 expected by 14:00 on your usual day · 140 kcal behind',
+    '95 g left · ~103 expected by now',
+    'Usual pace',
+    '±10% of goal',
+    'median of your last 4 weeks — 10 days with timed meals',
+    'The goal stays fixed for the day',
+    '1 meal with no time is drawn at now',
+    // The ±10% band around 2,400, and the goal labelled in the gutter.
+    'fill-opacity="0.55"',
+    '2,400',
+    '180 g',
+  ]);
+  if (open !== null) {
+    const dashed = (open.match(/stroke-dasharray="4 3"/g) || []).length;
+    check2(dashed === 2, 'the expected curve is dashed on both charts (2)', String(dashed));
+    // The NOW dots wear the grades handed in — the bars' own `bar` cut — and
+    // nothing else on either chart takes a signal colour.
+    check2(
+      open.includes(`fill="${palette.signalBar.good}"`) &&
+        open.includes(`fill="${palette.signalBar.caution}"`),
+      'the kcal dot wears the kcal bar’s grade, the protein dot the protein bar’s'
+    );
+    check2(
+      !open.includes(palette.pine) && !open.includes(palette.signalBar.poor),
+      'no accent and no other signal colour anywhere in the charts (the firewall)'
+    );
+    check2(!open.includes('NaN'), 'no NaN in any coordinate');
+    const steps = (open.match(/d="M[^"]* H[^"]* V[^"]*"/g) || []).length;
+    check2(steps === 2, 'the eaten lines are STEP paths, one per chart', String(steps));
+  }
+
+  const def = render(
+    'intake by the hour (default curve)',
+    IntakeByHour,
+    {},
+    {
+      ...base,
+      curves: { kcal: defaultCurve('00:00', 3), protein_g: defaultCurve('00:00', 3) },
+      initiallyOpen: true,
+    }
+  );
+  expect('intake by the hour (default curve)', def, [
+    'Default pace',
+    '3 of the 7 days with timed meals needed to learn your own are logged',
+    'on the default day',
+  ]);
+
+  const tz = render(
+    'intake by the hour (timezone changed)',
+    IntakeByHour,
+    {},
+    {
+      ...base,
+      timezoneChanged: true,
+      initiallyOpen: true,
+    }
+  );
+  expect('intake by the hour (timezone changed)', tz, [
+    'not paced — timezone changed today',
+    'no pace is drawn',
+  ]);
+  refute('intake by the hour (timezone changed)', tz, ['stroke-dasharray', 'Usual pace']);
+
+  // After the usual day's last meal the band speaks, not the pace: 2,300 of
+  // 2,400 at 21:30 is inside ±10%.
+  const closed = render('intake by the hour (day closed)', IntakeByHour, {}, {
+    ...base,
+    meals: [...todayMeals, { date: today, time: '19:10', kcal: 1000, protein_g: 60 }],
+    now: new Date(2026, 9, 21, 21, 30),
+    initiallyOpen: true,
+  });
+  expect('intake by the hour (day closed)', closed, [
+    'Your usual day is done eating by 21:30 — this one reads in range',
+    'In range now · up to 340 more stays in it',
+  ]);
+
+  // THE WEIGHT RECORD — the Data row now opens it; seven daily weigh-ins.
+  const before = new Set(db.all('SELECT id FROM body_metrics').map((r) => r.id));
+  for (let k = 0; k < 7; k++) logMetric(db, shiftISODate(today, -k), 'weight', 80 + k * 0.2);
+  const weightHtml = render('weight record (7 weigh-ins)', WeightScreen);
+  expect('weight record (7 weigh-ins)', weightHtml, [
+    'Last 30 days',
+    '7 weigh-ins',
+    'data-testid="trend-chart-weight"',
+    '7-day average',
+    '7-day avg',
+    'Log weight',
+  ]);
+  if (weightHtml !== null) {
+    check2(!weightHtml.includes('NaN'), 'weight chart: no NaN');
+    const dots = (weightHtml.match(/<circle/g) || []).length;
+    check2(dots === 7, 'weight chart: one dot per weigh-in day (7)', String(dots));
+  }
+  const dataSource = readFileSync(new URL('../app/(tabs)/data.tsx', import.meta.url), 'utf8');
+  check2(
+    dataSource.includes("router.push('/weight')"),
+    'the Data tab’s Weight row opens the weight record'
+  );
+  for (const r of db.all('SELECT id FROM body_metrics')) {
+    if (!before.has(r.id)) db.run('DELETE FROM body_metrics WHERE id = ?', [r.id]);
+  }
+  // The walk's earlier sections leave older weigh-ins on the record, so the
+  // window is empty while the latest-reading field is not — the chart says so
+  // in words rather than drawing an empty frame.
+  const emptyWeight = render('weight record (empty window)', WeightScreen);
+  expect('weight record (empty window)', emptyWeight, ['No readings in this window yet']);
+  refute('weight record (empty window)', emptyWeight, ['data-testid="trend-chart-weight"']);
+
+  // RECOVERY TRENDS — HRV with ten days, resting HR with one.
+  const rows = [];
+  for (let k = 0; k < 10; k++) {
+    const date = shiftISODate(today, -k);
+    rows.push({
+      date,
+      metricType: 'hrv',
+      value: 45 + k,
+      unit: 'ms',
+      sourceDevice: 'apple_watch',
+      sourceRawId: `fb3:hrv:${date}`,
+      startTime: null,
+      endTime: null,
+      metadata: {},
+    });
+  }
+  rows.push({
+    date: today,
+    metricType: 'rhr',
+    value: 52,
+    unit: 'bpm',
+    sourceDevice: 'apple_watch',
+    sourceRawId: `fb3:rhr:${today}`,
+    startTime: null,
+    endTime: null,
+    metadata: {},
+  });
+  upsertWearableRows(db, rows);
+  const ledger = render('wearables (recovery trends)', WearablesScreen);
+  expect('wearables (recovery trends)', ledger, [
+    'Recovery trends',
+    'Last 30 days',
+    'data-testid="trend-chart-hrv"',
+    '7-day avg 48 ms',
+    'One reading so far — a trend needs at least two.',
+  ]);
+  if (ledger !== null) check2(!ledger.includes('NaN'), 'recovery trends: no NaN');
+  db.run("DELETE FROM wearable_data WHERE source_raw_id LIKE 'fb3:%'");
+}
+
+function check2(cond, name, detail) {
+  cond ? ok(name) : bad(name, detail);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

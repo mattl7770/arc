@@ -2021,3 +2021,43 @@ The portion sheet prints the food **per 100 and per serving** (`foodLabelRows`),
 - **Whether the heal is seen, and his row actually heals** — that needs a scan of the bottle online. The sheet can redraw under the thumb a second after it opens; something already added keeps the old figures.
 - **The micro fields' density** — twelve fields, three to a row, at 375 pt.
 - **Whether `name · brand` reads right for catalog foods** on the Eat tab.
+## 20. By the hour — intake against a usual day, and the chart primitives (2026-10-21, items 95 + 84, no migration)
+
+The owner:
+
+> *"calorie goal could be graph with range: overall day goal is +-10% range to be good, graph showing calories and maybe protein by hour for the day vs where it should be? goal intelligently adjusts throughout the day based on what has been eated, etc"* — and — *"Better charts, trendlines, and data displays for everything"*
+
+His decisions: three charts first, in order — (1) today's calories and protein by hour against an expected curve LEARNED from his last four weeks of meal timing, with a ±10% band on the day goal; (2) weight with a 7-day trendline; (3) HRV and resting-HR trends. The calorie curve lives under the macro bars on the Eat tab, folded to one line until tapped.
+
+### The model (`src/lib/nutrition/pace-curve.ts`, pure)
+
+- **Learned curve.** Each of the 28 logical days before today with timed intake contributes its own cumulative curve (share of that day's timed total eaten by the start of each hour of the logical day); the expected curve is the hour-by-hour **median**. Today is excluded. Protein learns its own curve from `protein_g` the same way.
+- **Fallback.** Fewer than 7 such days → the default shape, which is `expectedDayFraction` — the owner's existing pace anchors (15% by 10:00, 40% by 13:00, 85% by 19:00, all by 21:00). The screen says which one it is drawing and how many days it had.
+- **Logical hours.** Meals bucket by minutes since the day boundary. Under 04:00 a 01:30 snack (filed under the previous day by `logicalDate`) lands in that day's 22nd hour, at the end of its curve.
+- **Untimed meals.** Left out of a past day's shape; on today they are eaten, counted in every figure, and drawn as a step at now.
+- **What "adjusts" means.** **The goal does not move** — `nutrition_targets` is a versioned daily number and nothing in ARC models an intra-day goal, so none was invented. What moves with each meal: what is left, the range of further intake that still lands the day inside ±10% (`landingRange`), and the pace against the curve at this minute (`intakePace`, using Home's own `ON_PACE_BAND`, 5% of the goal, now exported from readiness.ts).
+- **±10% is on target at day's end**, edges inclusive (`bandStatus`). Before the curve reaches 1 the words are pace (*on pace · 180 kcal ahead · 240 kcal behind*); after, the band (*in range · 300 kcal under range · 250 kcal over range*).
+- **Timezone-changed day:** no pace and no expected curve (a 31-hour day has no honest hour-of-day shape); the band and the running total still draw.
+
+### The fold (`src/components/nutrition/intake-pace.tsx`)
+
+Folded: `BY THE HOUR ··· 180 kcal ahead ▾`, under the macro bars (after the micros row), only when a calorie goal exists. It does not repeat the corner's `1,240 of 2,400 kcal`. Unfolded: a calorie chart (step line of the running total, dashed expected curve, the ±10% band as a `paper-deep` ground with the goal ruled through it, a hairline at now, a dot where today stands), the landing and pace lines, and a shorter protein chart on the same hour axis — goal rule, no band (protein is a floor). Two charts, never one chart with two scales. **The one colour:** each now-dot wears the grade its macro bar already wears (`macroGrade`, passed in, not recomputed), so it cannot disagree with the bar. The pace WORDS are against the learned curve while the bar's colour is graded on Home's fixed anchors; they answer different questions and the colour stays the pillar's.
+
+### The primitives, shared (`src/components/ui/chart.tsx`, `src/lib/charts/`)
+
+One frame (measures its width, y-labels in a right gutter, hour/date ticks below), one band, one line (`measured` solid 2pt ink; `expected` dashed 1.5pt `ink-secondary` — the only dashed stroke), one rule (`now` / `goal`), one dot (surface ring; ink by default, a `SignalLevel` only when handed one), one legend. No colour prop, so no caller can hand a chart the accent. The weight record and the recovery trends use the same set through `src/components/ui/trend-chart.tsx` (dots per day + trailing 7-day average; `src/lib/charts/moving-average.ts`: a calendar window, at least 3 readings, a gap rather than a guess).
+
+- **Weight:** the Data tab's Weight row now opens **`app/weight.tsx`**, a weight record on Water's precedent (latest reading, the 30-day chart, `Log weight` → the keypad). The keypad was write-only and cannot scroll; the Log tab's Weight tile still opens it directly. Two weigh-ins on one logical day are drawn as their mean.
+- **HRV / resting HR:** a **Recovery trends** plate at the top of Data › Wearables, the 30 days the rows' sparklines already cover. Ink only; the rows below keep their sparklines.
+
+### Verification
+
+- `db/charts.test.mjs` (new suite, 60 assertions): fewer than 7 days → the default, labelled; a normal four weeks with an outlier day, today and day 29 excluded; untimed and NULL meals ignored for shape; the 04:00 boundary putting a 01:30 snack at the end of the previous day (and the midnight reading that would have put it at the start); ±10% band edges including 1.1× under IEEE-754; landing range; pace words; the chart window; the trailing average across gaps, its lookback, its 3-reading floor, and daily means by logical day; the path geometry.
+- `db/screens-render.test.mjs` **§34**: the Eat tab folded (no chart in the markup); the fold unfolded with a learned curve (both charts, the band, two dashed curves, two step paths, the dots in the bars' own `bar` cuts and no accent, the landing / pace / protein lines, the source note); the default-curve and timezone variants; a closed day reading *in range*; the weight record with seven weigh-ins (seven dots) and with an empty window; Wearables' recovery trends with ten HRV days and one RHR reading.
+
+### What only the phone can settle
+
+- **Whether the learned curve is his eating or his logging.** If meals are logged in a batch at night, the curve learns the batch time and every afternoon reads *ahead*. The meal's own `time` is what is learned, so a meal re-timed on its screen fixes its day.
+- **Legibility at 132pt / 64pt.** Whether the step line, dashed curve and band read apart on hardware, and whether the gutter labels collide with the newest dot.
+- **The fold's place.** Under the micros row, inside the Today grid — whether it reads as part of the day or as one more row to skip.
+- **The weight route change.** Data › Weight now opens a record, not the keypad; whether that extra tap to log from Data is welcome.
