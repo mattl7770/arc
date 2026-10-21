@@ -91,6 +91,37 @@ export type SessionForTick = {
 const nameKey = (name: string): string => name.trim().toLowerCase();
 
 /**
+ * Today's OPEN Training rows in Home's order — the one definition both the
+ * tick below and the caffeine cut-off (item 72) read. Read-only.
+ */
+function openTrainingRows(db: Database, today: string): LogEntryRow[] {
+  const rows = db.all<LogEntryRow>(
+    `SELECT e.* FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND e.status = 'pending'
+        AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}
+      ORDER BY (e.scheduled_time IS NULL), e.scheduled_time, e.created_at, e.id`,
+    [today]
+  );
+  return rows.filter((row) => toMissionItem(row).category === TRAINING_CATEGORY);
+}
+
+/**
+ * Today's open Training rows that carry a time, as `{ title, time }` — what
+ * the caffeine cut-off measures against (src/lib/nutrition/caffeine-cutoff.ts).
+ * An untimed row has no "hours before" and is left out. Read-only, so the
+ * Coach's card can call it before the gate.
+ */
+export function openTimedTrainingRows(
+  db: Database,
+  today: string
+): { title: string; time: string }[] {
+  return openTrainingRows(db, today).flatMap((row) =>
+    row.scheduled_time ? [{ title: row.title, time: row.scheduled_time }] : []
+  );
+}
+
+/**
  * The row a session dated `session.date` would tick on `today`, or null —
  * read-only, so the Coach's card can say it before the gate.
  */
@@ -100,15 +131,7 @@ export function trainingRowFor(
   today: string
 ): { id: string; title: string } | null {
   if (session.away || session.date !== today) return null;
-  const rows = db.all<LogEntryRow>(
-    `SELECT e.* FROM log_entries e
-       JOIN daily_logs d ON d.id = e.daily_log_id
-      WHERE d.date = ? AND e.status = 'pending'
-        AND ${PLANNED_ROW_SQL} AND ${NOT_REMOVED_SQL}
-      ORDER BY (e.scheduled_time IS NULL), e.scheduled_time, e.created_at, e.id`,
-    [today]
-  );
-  const training = rows.filter((row) => toMissionItem(row).category === TRAINING_CATEGORY);
+  const training = openTrainingRows(db, today);
   if (training.length === 0) return null;
 
   // Every saved workout, archived ones too: a row titled after a workout he

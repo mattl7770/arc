@@ -16,7 +16,9 @@ import {
   listTemplateItems,
   listTemplates,
   logMealFromTemplate,
+  templateItemsToLog,
 } from '@/lib/db/repositories/meal-templates';
+import { confirmCaffeine } from '@/lib/nutrition/caffeine-confirm';
 import { fmtAmount, fmtInt, fmtQty, macroLine, portionLabel } from '@/lib/nutrition/format';
 import type { MealTemplateItemRow, MealTemplateSummary } from '@/lib/nutrition/types';
 import type { VolumeUnit } from '@/lib/user/types';
@@ -88,11 +90,14 @@ export default function MealTemplatesScreen() {
     setExpandedId(id);
   };
 
-  const logNow = (id: string) => {
-    const now = new Date();
-    logMealFromTemplate(getDb(), id, todayISODate(), clockFromISO(now.toISOString()));
-    router.back();
-  };
+  /** Log it now — past his caffeine cut-off before a timed workout (item 72)
+   *  it asks first, over the very items the template logs. */
+  const logNow = (id: string) =>
+    confirmCaffeine(templateItemsToLog(getDb(), id), () => {
+      const now = new Date();
+      logMealFromTemplate(getDb(), id, todayISODate(), clockFromISO(now.toISOString()));
+      router.back();
+    });
 
   const remove = (id: string) => {
     if (!deleteArmed) {

@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, Text, TextInput, type TextInputProps, View } from 'react-native';
+import { Pressable, Switch, Text, TextInput, type TextInputProps, View } from 'react-native';
 
 import { Block } from '@/components/ui/block';
 import { keypadDoneKey } from '@/components/ui/keyboard';
@@ -11,7 +11,17 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { activeNutritionTargets, setNutritionTargets } from '@/lib/db/repositories/nutrition';
-import { getGoalDirection, setGoalDirection } from '@/lib/db/repositories/user';
+import {
+  type CaffeineCutoff,
+  getCaffeineCutoff,
+  getGoalDirection,
+  setCaffeineCutoff,
+  setGoalDirection,
+} from '@/lib/db/repositories/user';
+import {
+  CAFFEINE_CUTOFF_MAX_HOURS,
+  CAFFEINE_CUTOFF_MIN_HOURS,
+} from '@/lib/nutrition/caffeine-cutoff';
 import { GOAL_DIRECTIONS, type GoalDirection } from '@/lib/user/types';
 
 /**
@@ -157,6 +167,22 @@ export default function NutritionTargetsScreen() {
     }
   };
 
+  /**
+   * His caffeine cut-off before training (item 72) — a live preference like the
+   * direction, written on tap, and not part of the target version either. It
+   * sits on this screen because it is a rule about what he eats and drinks,
+   * read on every food save; Settings holds the app's machinery, not his rules
+   * about food. The hours survive a switch-off.
+   */
+  const [cutoff, setCutoff] = useState<CaffeineCutoff>(() => getCaffeineCutoff(getDb()));
+  const changeCutoff = (next: CaffeineCutoff) => {
+    try {
+      setCutoff(setCaffeineCutoff(getDb(), next));
+    } catch (error) {
+      console.warn('[nutrition-targets] caffeine cut-off save failed', error);
+    }
+  };
+
   const prefill = (v: number | null | undefined): string => (v == null ? '' : String(v));
   const [kcal, setKcal] = useState(() => prefill(active?.kcal));
   const [protein, setProtein] = useState(() => prefill(active?.protein_g));
@@ -257,6 +283,60 @@ export default function NutritionTargetsScreen() {
 
         <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
           {DIRECTION_EFFECT[direction]}
+        </Text>
+      </View>
+
+      {/* Item 72 — his rule, stated once. A switch and a whole-hour stepper in
+          the outlined treatment the chips above wear: no accent, no colour,
+          and the line under it says exactly what it does and does not do. */}
+      <View className="mt-5">
+        <SectionLabel label="Caffeine cut-off before training" note="Saved on tap" />
+
+        <View className="mt-2 min-h-[44px] flex-row items-center gap-3">
+          <Text className="flex-1 font-serif text-[15px] text-ink">
+            No caffeine before a timed workout
+          </Text>
+          <Switch
+            accessibilityLabel="Caffeine cut-off before training"
+            value={cutoff.enabled}
+            onValueChange={(enabled) => changeCutoff({ ...cutoff, enabled })}
+            trackColor={{ true: palette.ink, false: palette.hairlineStrong }}
+            ios_backgroundColor={palette.hairlineStrong}
+          />
+        </View>
+
+        {cutoff.enabled ? (
+          <View className="mt-2 flex-row items-center gap-2">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="One hour less"
+              accessibilityState={{ disabled: cutoff.hours <= CAFFEINE_CUTOFF_MIN_HOURS }}
+              disabled={cutoff.hours <= CAFFEINE_CUTOFF_MIN_HOURS}
+              onPress={() => changeCutoff({ ...cutoff, hours: cutoff.hours - 1 })}
+              className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn border border-hairline active:bg-paper-dim">
+              <Text className="font-mono text-[15px] text-ink">−</Text>
+            </Pressable>
+            <Text
+              accessibilityLabel={`${cutoff.hours} hours`}
+              className="min-w-[64px] text-center font-mono text-[15px] text-ink">
+              {cutoff.hours} h
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="One hour more"
+              accessibilityState={{ disabled: cutoff.hours >= CAFFEINE_CUTOFF_MAX_HOURS }}
+              disabled={cutoff.hours >= CAFFEINE_CUTOFF_MAX_HOURS}
+              onPress={() => changeCutoff({ ...cutoff, hours: cutoff.hours + 1 })}
+              className="min-h-[44px] min-w-[44px] items-center justify-center rounded-btn border border-hairline active:bg-paper-dim">
+              <Text className="font-mono text-[15px] text-ink">+</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
+          {cutoff.enabled
+            ? `Logging caffeine within ${cutoff.hours} h before a timed Training row on today’s mission asks “Log anyway?” first. It never stops a log.`
+            : 'Off. Nothing asks before a log.'}
         </Text>
       </View>
 

@@ -2136,3 +2136,58 @@ Foods this person logs often (usual portion · kcal · protein/carbs/fat g). Not
 - **The Save-as-a-food offer's moment** — the first Eat-tab visit after the third identical log — and whether one sighting is enough for "once".
 - **Whether the model uses the usual foods well** — "my usual latte" resolving to his figures, and NOT pulling a listed food into a meal that does not show it. Mock-harness tested only.
 - **The add-on chips' density** under a drink, and whether "the bigger pour is the drink" ever picks wrong (a large glass of water logged with a latte).
+
+## 22. Round 15 — a caffeine cut-off before training (2026-10-21, device round 3 item 72, no migration)
+
+The note, verbatim: *"Caffeine warning? i.e., i have a standing no caffeine before workouts policy, if i log something with caffeine before a planned workout, it could prompt with a warning: are you sure you want to eat/drink this?"* His decision on the shape: he states the rule once ("no caffeine within 6 h before a planned workout"); logging something with caffeine inside that window before a **timed** Training row today asks *Log anyway?*. It **warns, never blocks**: one tap continues, Cancel returns to the screen unchanged. No migration: head stays `0065` (0066 is claimed by another branch); the rule lives in the `users.preferences` blob.
+
+**Why a deterministic check is allowed.** The standing rule is that judgment lives in the model, not in hardcoded rules. This is not ARC's judgment — it is his own rule, stated by him, and the check only reminds him of it at the moment it applies. It decides nothing (the save is one tap away), and it carries no colour and no verdict.
+
+### The setting
+
+**Daily targets** (`app/nutrition-targets.tsx`, reached from the Eat tab's Today corner) gains *Caffeine cut-off before training*: a switch (**off by default**) and a whole-hour stepper, 1–12 h, starting at **6** when switched on. Saved on tap, like the goal direction beside it, and like it NOT part of the immutable target version. It sits there rather than in Settings because it is a rule about what he eats and drinks; Settings holds the app's machinery. Stored at `preferences.caffeine = { cutoffOn, cutoffHours }` (`getCaffeineCutoff` / `setCaffeineCutoff`, `src/lib/db/repositories/user.ts`): a junk switch reads as off, a junk or out-of-range hour as 6, and the hours survive a switch-off.
+
+### The rule (`src/lib/nutrition/caffeine-cutoff.ts`, pure)
+
+- **Caffeine** is `caffeine_mg` in the items' per-portion micros — the figure the Eat tab prints, so the latte's shots answer, a barcode's label and the seed's 0063 figures all feed it. A meal is judged **whole** (its items summed); a composite is its parts, never its header. Nothing guesses caffeine from a name.
+- **The floor is 5 mg.** Decaf is not caffeine-free — USDA SR Legacy (NDB 14202) puts brewed decaf at ~2 mg a 240 g cup — and a rule that trips on decaf gets ignored. 5 mg is above a cup of decaf and below the smallest real dose in the catalog (a 10 g square of dark chocolate, 8 mg), so the square still asks: his rule says none, and it is only a question.
+- **A Training row** is the training tick's own definition (`src/lib/db/repositories/training-tick.ts`, which now reads it through one shared `openTrainingRows`): Home's TRAINING label, planned, not removed, and still **pending** — done, skipped and partial rows have been acted on. Only a **timed** row: an untimed workout has no "6 h before". Read by `openTimedTrainingRows`.
+- **The window** is inclusive at both ends: exactly 6 h before a 6 h rule asks, 6 h 1 min does not; a log at the row's own minute asks (*at the start of Push Day*), a minute after it does not. Minutes count from his `dayStartsAt`, so on a 04:00 day an 01:00 row is after a 23:00 coffee.
+- **Which row**: the next one at or after the log time. **When**: a new meal is logged now; an add INTO a meal is measured at that meal's day and time; anything dated another day never asks (the rows are today's).
+- **A revision** (Adjust, `app/meal-revise.tsx`) asks only for caffeine it **adds** (≥ 5 mg over what the meal held): the meal's caffeine as logged is what he already answered for. The prompt states the revised total.
+
+### The prompt (`src/lib/nutrition/caffeine-confirm.ts`)
+
+`confirmCaffeine(items, save, { into, priorMg })`. No warning: `save` runs at once, as before. A warning: a native Alert titled *Caffeine before training* — *This has about 80 mg caffeine, 3 h before Push Day (18:00). Your rule: none within 6 h. Log anyway?* — with **Cancel** (nothing written; the editor, sheet or review stays as it was) and **Log anyway** (the same `save`). No destructive red. The span is exact (*2 h 40 min*), never rounded up into the rule. A check that fails for any reason lets the save through: a reminder that cost him a meal record would be worse than none. Because the save may be the day's first touch (the Action Button straight into Describe), it arrives the day first — the call Home and the training tick make — and only when the rule is on and the items carry ≥ 5 mg. The DB read itself (`caffeineCheck`, `src/lib/db/repositories/caffeine-check.ts`) is read-only.
+
+### Which paths ask
+
+| path | asks? |
+| --- | --- |
+| Add food (`app/food-search.tsx`) — a catalog food, a recent's +, a saved or past meal from search | **yes**, at the meal it adds into (or now) |
+| Scan a barcode (`app/barcode-scan.tsx`) | **yes**, the same way; Cancel leaves the portion sheet open |
+| Describe / photograph (`app/meal-estimate.tsx`) Save — and the quick-log box, which hands food there | **yes** |
+| Adjust a meal (`app/meal-revise.tsx`) | **yes**, for added caffeine only, at the meal's time |
+| A drink's usual add-on (`app/meal-detail.tsx` — the extra shot) | **yes**, at the meal's time |
+| Log again (`app/meal-detail.tsx`) | **yes**, over exactly the items `relogMeal` copies |
+| A saved meal (`app/meal-templates.tsx`) | **yes**, over `templateItemsToLog` |
+| Cook a recipe (`app/recipe-detail.tsx`) | **yes**, over the counted lines `logRecipe` writes |
+| The Coach's `log_recipe` | **a clause on its card** — *· about 96 mg caffeine, 3 h before Push Day (18:00) — your rule: none within 6 h*. The card is already where he decides; a second dialog after Approve would ask the same question twice. It costs nothing in the cached prefix (a card string, not a schema), and can never throw the card. |
+| The Coach's `log_meal` | **no** — typed totals only, no caffeine figure to read |
+| Manual entry (`src/components/nutrition/log-sheet.tsx`) | **no** — typed totals, no caffeine figure |
+| The offline estimate queue's drain (0057) | **no** — it runs later with nobody there to answer; the caffeine lands with the numbers |
+| Night out (`src/lib/status/night-out.ts`) | **no** — alcohol, no caffeine |
+| Re-portioning or re-counting an item already logged (meal detail) | **no** — an edit to a record, not a new log |
+
+**The Coach's day context** carries the rule on the `User:` line only while it is on (*· own rule: no caffeine within 6 h before training*) — per-turn, uncached, nothing when off; `db/coach-eval.test.mjs` §6's ceilings do not move.
+
+### Verification
+
+- `db/nutrition-v2.test.mjs` **§98** — the pure rule: the owner's sentence word for word; the 6 h edge in, 6 h 1 min out, the row's own minute in, a minute after out; the exact span; decaf and the floor (2.4 mg no, 5 mg and 8 mg yes); off; no row; the hours his; the next row named; the 04:00 boundary; a multi-item meal summing, a composite as its parts, two 3 mg items passing together; a revision only for what it adds. **§99** — the setting: off by default, 6 h, other keys kept, hours surviving a switch-off, the 1–12 range, a junk switch off. **§100** — over SQLite with a real training block and a timed supplement: the supplement never named; after the row nothing; decaf; an add into a meal at its time; another day; done and skipped rows ignored and a re-opened one counted; untimed-only days; the check read-only. **§101** — the turn-context clause only while on; the `log_recipe` card's clause (96 mg from 0063's coffee), at now with no time, silent out of the window, on a past day and when off. **§102** — source pins that every covered path's writer sits behind `confirmCaffeine`, that the queue drain and Night out do not, the Cancel / Log anyway buttons with no destructive style, and the setting on Daily targets. §90's naming pin still reads `saveItems`.
+
+### What only the phone can settle
+
+- **The Alert on a real tap** — over the barcode sheet, the estimate review and Add food's open editor — and that Cancel really leaves each exactly as it was.
+- **Whether 5 mg is the right floor** in his own logs (a cocoa, a green tea, a chocolate square).
+- **The cold-launch path** — Action Button → Describe → Save before Home has drawn today — finds the row.
+- **The setting's place** — whether he looks for it on Daily targets.

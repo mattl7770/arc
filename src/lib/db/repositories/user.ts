@@ -20,6 +20,7 @@ import type {
   Preferences,
   UnitPreferences,
 } from '@/lib/user/types';
+import { normalizeCutoffHours } from '@/lib/nutrition/caffeine-cutoff';
 import {
   DEFAULT_GOAL_DIRECTION,
   DEFAULT_UNIT_PREFERENCES,
@@ -250,6 +251,41 @@ export function setGoalDirection(db: Database, direction: GoalDirection): void {
   const obj = parseObject(user.preferences);
   obj.goals = { ...readSection(obj, 'goals'), direction };
   db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+}
+
+/** His caffeine cut-off before training (item 72): whether it is on, and its hours. */
+export type CaffeineCutoff = { enabled: boolean; hours: number };
+
+/**
+ * The caffeine cut-off before training (item 72, src/lib/nutrition/
+ * caffeine-cutoff.ts) — **off** unless he turned it on (`=== true`, the Apple
+ * Health toggle's reading: a prompt that appears by itself is a prompt nobody
+ * asked for), with its hours, 1–12, defaulting to 6.
+ *
+ * A single durable thing he *sets*, so it sits in the preferences blob beside
+ * the goal direction, no migration. The hours survive a switch-off, so turning
+ * it back on restores the rule he last stated.
+ */
+export function getCaffeineCutoff(db: Database): CaffeineCutoff {
+  const section = readSection(parseObject(getOrCreateUser(db).preferences), 'caffeine');
+  return {
+    enabled: section.cutoffOn === true,
+    hours: normalizeCutoffHours(section.cutoffHours),
+  };
+}
+
+/** Write the cut-off, preserving unrelated preference keys; returns what is stored. */
+export function setCaffeineCutoff(db: Database, next: CaffeineCutoff): CaffeineCutoff {
+  const user = getOrCreateUser(db);
+  const obj = parseObject(user.preferences);
+  const stored = { enabled: next.enabled === true, hours: normalizeCutoffHours(next.hours) };
+  obj.caffeine = {
+    ...readSection(obj, 'caffeine'),
+    cutoffOn: stored.enabled,
+    cutoffHours: stored.hours,
+  };
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+  return stored;
 }
 
 /**

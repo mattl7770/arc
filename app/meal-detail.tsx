@@ -17,7 +17,7 @@ import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
-import { addUsualAddOn, mealAddOns } from '@/lib/db/repositories/food-history';
+import { addUsualAddOn, mealAddOns, mealHitItems } from '@/lib/db/repositories/food-history';
 import { getFood } from '@/lib/db/repositories/foods';
 import { saveMealAsTemplate } from '@/lib/db/repositories/meal-templates';
 import { saveMealAsRecipe } from '@/lib/db/repositories/recipes';
@@ -45,6 +45,7 @@ import {
   planLoggedCount,
 } from '@/lib/nutrition/review-rows';
 import { mealPhotoViews, type MealPhotoView } from '@/lib/media/meal-photo-store';
+import { confirmCaffeine } from '@/lib/nutrition/caffeine-confirm';
 import { deleteMealWithUndo, removeItemWithUndo } from '@/lib/nutrition/undo-offers';
 import { closeUndo, onMeal, runUndo } from '@/lib/nutrition/undo-store';
 import {
@@ -59,8 +60,14 @@ import {
 import { keyMicroLabel, partsAsItem } from '@/lib/nutrition/key-micro';
 import { mealDayLabel, parseClockParts, partsFromClock, shiftDay } from '@/lib/nutrition/meal-time';
 import { amountForQty, rescaleLoggedItem } from '@/lib/nutrition/servings';
-import type { UsualAddOn } from '@/lib/nutrition/repeats';
-import type { AmountUnit, FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/types';
+import { addOnItem, type UsualAddOn } from '@/lib/nutrition/repeats';
+import type {
+  AmountUnit,
+  FoodRow,
+  MealItemWithServing,
+  MealRow,
+  NewMealItem,
+} from '@/lib/nutrition/types';
 
 /** The fractions a person actually says, for "I ate half the pizza" (C4). */
 const PART_FRACTIONS: { label: string; factor: number; spoken: string }[] = [
@@ -538,15 +545,22 @@ export default function MealDetailScreen() {
   };
 
   /** One tap on a drink's usual add-on: logged into this meal as last time. A
-   *  write like any other here, so it re-reads and closes an item Undo. */
-  const addAddOn = (addOn: UsualAddOn) => {
-    try {
-      addUsualAddOn(getDb(), mealId, addOn);
-    } catch (error) {
-      console.warn('[meal-detail] add-on failed', error);
-    }
-    reload();
-  };
+   *  write like any other here, so it re-reads and closes an item Undo. An
+   *  extra shot past his caffeine cut-off before a timed workout (item 72)
+   *  asks first, at this meal's time; Cancel adds nothing. */
+  const addAddOn = (addOn: UsualAddOn) =>
+    confirmCaffeine(
+      [addOnItem(addOn)],
+      () => {
+        try {
+          addUsualAddOn(getDb(), mealId, addOn);
+        } catch (error) {
+          console.warn('[meal-detail] add-on failed', error);
+        }
+        reload();
+      },
+      { into: mealId }
+    );
 
   /** Put back the last removal; the repository did the work, so re-read. A
    *  refused Undo stays on the row, saying so, until the next write. */
@@ -776,10 +790,20 @@ export default function MealDetailScreen() {
     );
   };
 
+  /** Log again, now — past his caffeine cut-off before a timed workout (item
+   *  72) it asks first, over the very items `relogMeal` copies. */
   const logAgain = () => {
-    const now = new Date();
-    relogMeal(getDb(), meal.id, todayISODate(), clockFromISO(now.toISOString()));
-    router.back();
+    let items: NewMealItem[] = [];
+    try {
+      items = mealHitItems(getDb(), { kind: 'meal', id: meal.id });
+    } catch (error) {
+      console.warn('[meal-detail] could not read the meal to log again', error);
+    }
+    confirmCaffeine(items, () => {
+      const now = new Date();
+      relogMeal(getDb(), meal.id, todayISODate(), clockFromISO(now.toISOString()));
+      router.back();
+    });
   };
 
   const onDelete = () => {

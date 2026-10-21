@@ -44,6 +44,7 @@ import {
   OffLookupError,
   type OffLabel,
 } from '@/lib/nutrition/openfoodfacts';
+import { confirmCaffeine } from '@/lib/nutrition/caffeine-confirm';
 import { commitScanMealName, offersScanMealName } from '@/lib/nutrition/scan-meal-name';
 import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
@@ -613,8 +614,14 @@ export default function BarcodeScanScreen() {
    * Only at CREATION: adding a second scan to the meal this screen already
    * created leaves the title alone (see the helper's header), and a meal pushed
    * in via `mealId` is someone else's record and is never retitled here.
+   *
+   * Past his caffeine cut-off before a timed workout (item 72) it asks first;
+   * Cancel leaves the portion sheet open, as it was.
    */
-  const addItem = (item: NewMealItem, food: FoodRow) => {
+  const addItem = (item: NewMealItem, food: FoodRow) =>
+    confirmCaffeine([item], () => writeItem(item, food), { into: targetMealId });
+
+  const writeItem = (item: NewMealItem, food: FoodRow) => {
     const db = getDb();
     try {
       if (targetMealId !== null) {

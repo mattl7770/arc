@@ -22,6 +22,7 @@ import { usualFoodsContextFor } from '@/lib/db/repositories/food-history';
 import { logMealWithItems } from '@/lib/db/repositories/nutrition';
 import { placeholderMealName, queueNewMealEstimate } from '@/lib/db/repositories/pending-estimates';
 import { writePendingEstimatePhoto } from '@/lib/media/pending-estimate-store';
+import { confirmCaffeine } from '@/lib/nutrition/caffeine-confirm';
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
 import { useEstimateQuestions } from '@/hooks/use-estimate-questions';
 import { useReviewDraft } from '@/hooks/use-review-draft';
@@ -385,9 +386,15 @@ export default function MealEstimateScreen() {
     }
   };
 
+  /** Save — past his caffeine cut-off before a timed workout (item 72) it asks
+   *  first; Cancel leaves the review as it is. */
   const save = () => {
     if (rows.length === 0) return;
     const items: NewMealItem[] = rowsToMealItems(rows);
+    confirmCaffeine(items, () => writeMeal(items));
+  };
+
+  const writeMeal = (items: NewMealItem[]) => {
     const now = new Date();
     const title = phase.kind === 'review' ? phase.title : 'Meal';
     try {

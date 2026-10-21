@@ -26,6 +26,7 @@ import {
 } from '@/lib/db/repositories/foods';
 import { mealHitItems, type MealHit, searchMealHits } from '@/lib/db/repositories/food-history';
 import { addMealItem, logMealWithItems } from '@/lib/db/repositories/nutrition';
+import { confirmCaffeine } from '@/lib/nutrition/caffeine-confirm';
 import { foodDeleteConsequence } from '@/lib/nutrition/food-delete';
 import { fmtAmount, fmtInt, fmtQty, mealNameForProduct } from '@/lib/nutrition/format';
 import { commitScanMealName, offersScanMealName } from '@/lib/nutrition/scan-meal-name';
@@ -286,35 +287,44 @@ export default function FoodSearchScreen() {
    * creates it — see the header; a later add leaves the title alone. A created
    * meal then joins a meal logged near it (item 58), and this visit carries on
    * in the meal it joined.
+   *
+   * Past his caffeine cut-off before a timed workout (item 72) it asks first;
+   * Cancel leaves the screen exactly as it was — the editor still open.
    */
   const saveItems = (items: NewMealItem[], name: string) => {
     if (items.length === 0) return;
-    const db = getDb();
-    try {
-      if (targetMealId !== null) {
-        for (const item of items) addMealItem(db, targetMealId, item);
-      } else {
-        const now = new Date();
-        const { mealId: created } = logMealWithItems(db, {
-          date: todayISODate(),
-          time: clockFromISO(now.toISOString()),
-          name,
-          items,
-        });
-        const join = joinNearbyMealWithUndo(db, created);
-        setJoined(join);
-        setTargetMealId(join ? join.keptId : created);
-        // A meal this visit did not make is never retitled here.
-        setCreatedName(join ? null : name);
-      }
-      setAdded((n) => n + items.length);
-      setExpanded(null);
-      runSearch('');
-      setBase(readBase());
-    } catch (error) {
-      // A CHECK violation or missing meal must never crash the tap handler.
-      console.warn('[food-search] add failed', error);
-    }
+    confirmCaffeine(
+      items,
+      () => {
+        const db = getDb();
+        try {
+          if (targetMealId !== null) {
+            for (const item of items) addMealItem(db, targetMealId, item);
+          } else {
+            const now = new Date();
+            const { mealId: created } = logMealWithItems(db, {
+              date: todayISODate(),
+              time: clockFromISO(now.toISOString()),
+              name,
+              items,
+            });
+            const join = joinNearbyMealWithUndo(db, created);
+            setJoined(join);
+            setTargetMealId(join ? join.keptId : created);
+            // A meal this visit did not make is never retitled here.
+            setCreatedName(join ? null : name);
+          }
+          setAdded((n) => n + items.length);
+          setExpanded(null);
+          runSearch('');
+          setBase(readBase());
+        } catch (error) {
+          // A CHECK violation or missing meal must never crash the tap handler.
+          console.warn('[food-search] add failed', error);
+        }
+      },
+      { into: targetMealId }
+    );
   };
 
   /** One portion of a catalog food — the food names a meal it creates. */
