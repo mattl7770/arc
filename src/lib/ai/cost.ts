@@ -39,6 +39,14 @@ const CACHE_READ_MULTIPLIER = 0.1;
  */
 const CACHE_WRITE_MULTIPLIER = 2;
 
+/**
+ * USD per provider-side web search: $10 per 1,000 on the Claude API (the web
+ * search tool's published pricing, checked 2026-10-21), on top of tokens. The
+ * same on every model. A search that errors is not billed, and the API leaves
+ * it out of `web_search_requests`, which is the count this multiplies.
+ */
+const WEB_SEARCH_USD = 10 / 1000;
+
 /** Estimated USD for one turn's usage on a given model; null for unknown models. */
 export function estimateCost(usage: CoachUsage, model: string): number | null {
   const price = PRICES[model];
@@ -48,7 +56,8 @@ export function estimateCost(usage: CoachUsage, model: string): number | null {
     usage.inputTokens * perToken +
     usage.cacheReadTokens * perToken * CACHE_READ_MULTIPLIER +
     usage.cacheWriteTokens * perToken * CACHE_WRITE_MULTIPLIER +
-    (usage.outputTokens * price.output) / 1_000_000
+    (usage.outputTokens * price.output) / 1_000_000 +
+    (usage.webSearchRequests ?? 0) * WEB_SEARCH_USD
   );
 }
 
@@ -80,6 +89,9 @@ export function usageCaption(
   const parts: string[] = [];
 
   if (toolCount > 0) parts.push(`${toolCount} tool call${toolCount === 1 ? '' : 's'}`);
+  // A search bills per search, not per token, so it is named on its own.
+  const searches = usage.webSearchRequests ?? 0;
+  if (searches > 0) parts.push(`${searches} search${searches === 1 ? '' : 'es'}`);
   // Cold writes are the expensive event worth seeing; a warm read is the cheap
   // one worth confirming. Showing whichever happened tells you which you got.
   if (usage.cacheWriteTokens > 0)

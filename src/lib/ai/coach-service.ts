@@ -8,6 +8,8 @@ import { apiKeyStore } from './api-key-store';
 import { buildCoachSystemPrompt } from './system-prompt';
 import { buildTurnContext } from './turn-context';
 import { buildWireHistory } from './history-window';
+import { deviceRegion, regionLine } from './region';
+import { COACH_WEB_SEARCH_MAX_USES } from './web-search';
 import {
   COACH_TOOLS,
   DEFAULT_WRITE_META,
@@ -149,9 +151,13 @@ export async function streamCoachReply(
       // which is when the prompt is built and sent; a tool call minutes later
       // reads the clock again for itself (below) rather than inheriting this
       // instant.
-      systemContext: buildTurnContext(db, clock()),
+      systemContext: buildTurnContext(db, clock(), { region: regionLine(deviceRegion()) }),
       messages,
       tools: toWireTools(COACH_TOOLS),
+      // The provider's web search, whenever the model judges it helps (the
+      // owner's call, 2026-10-21). Off when he turns it off in Settings › Coach,
+      // and dropped by the client for a model with no known tool version.
+      webSearch: apiKeyStore.isWebSearchOn() ? { maxUses: COACH_WEB_SEARCH_MAX_USES } : null,
     },
     {
       onToken: options.onToken,

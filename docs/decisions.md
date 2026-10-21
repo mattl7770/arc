@@ -1,5 +1,70 @@
 # Architecture Decision Records (ADR)
 
+## 2026-10-21 — Provider-side web search
+
+**Context.** Device round 3, items 62 and 91, the owner verbatim: *"web search in food logging +
+coach in general"* and *"location data for food logging; different countries fast food menus
+notably?"*. A Big Mac in New Zealand is not a Big Mac in the US, and a model estimating from
+memory cannot tell them apart or know this year's menu.
+
+**Decision.**
+
+1. **Search runs at the provider, as Anthropic's web search server tool.** The Coach turn and the
+   three food estimators (photo/describe a meal, correct a logged meal, describe a catalog food)
+   carry the tool in the same Messages API request they already make. The provider runs the query
+   and returns the results inside that response. **The phone's egress is unchanged:** the one model
+   call (CLAUDE.md §3). Nothing on the device fetches a search page, and the Coach still cannot
+   fetch a URL (no `web_fetch`).
+2. **The model decides, "whenever it helps"** — the owner's call. Caps: **3 searches per Coach
+   turn**, **2 per estimate** (`max_uses`). The tool docs put a simple factual lookup at one to
+   three searches; a meal names one or two things worth looking up, and the estimate is a call the
+   user is waiting on. Settings › Coach has a **Web search** switch, ON by default (only "off" is
+   stored, in the Keychain beside the model choice).
+3. **Version per model, no guessing.** `web_search_20260209` with `allowed_callers: ["direct"]` on
+   Sonnet 5 and Opus 5; the basic `web_search_20250305` on Haiku 4.5. Direct calls, not dynamic
+   filtering: filtering runs the search inside a code-execution container, which adds block types
+   and `caller` fields to the reply and is not ZDR-eligible, for a token saving that is small on a
+   menu lookup. A model the table does not know gets **no** search: a wrong tool type is a 400 that
+   takes the turn down. Every selectable model today is Claude, so there is no other provider to
+   degrade for; that rule is the answer if one is ever added.
+4. **The wire is followed as documented.** `server_tool_use` and `web_search_tool_result` blocks
+   and cited text (`citations_delta`, carrying `encrypted_index`) are accumulated and echoed back
+   **verbatim** within a turn; `pause_turn` is resumed by re-sending the paused content unchanged
+   with the same tools; a search called beside a client tool runs at the start of the next request,
+   whose follow-up holds only `tool_result` blocks. Across turns ARC replays prose plus the tool
+   digest, never raw blocks, so **nothing encrypted is stored**.
+5. **What is kept.** Each search is a `web_search` record in the turn's existing
+   `ai_messages.tool_calls` JSON — the query, the domains found and the domains cited. **No
+   migration.** The thread draws a quiet `Searched "query" · domain` line under the bubble from it
+   (live and after a reload alike), and the next turn's digest tells the model what it searched. The
+   estimate reviews draw the same line; an estimate's searches are not saved on the meal.
+6. **Privacy.** A query never carries the user's health data. One bullet in the Coach's cached
+   prompt says so (+36 tokens, inside the 3,700 ceiling); the estimators carry the same rule in
+   their per-call context block, because their prompt ceiling had two tokens left.
+7. **Region from the phone's own settings, never its location.** `Intl.DateTimeFormat()
+   .resolvedOptions()` gives the time zone and the locale. The **time zone wins** when it maps to one
+   country — iOS moves it when the phone lands somewhere new, so it follows a trip — and the
+   locale's region subtag is the fallback. Both are named when they disagree. No GPS, no permission,
+   no native module, no `expo-localization`. The line (`Region: NZ (time zone Pacific/Auckland)`)
+   rides the **uncached** per-turn context of the Coach and of each estimate, never the cached prefix.
+   The search tool's own `user_location` is NOT sent: the API rejects an unsupported country code
+   with a 400, and the model already has the region in context. This codebase holds that Hermes
+   ships no `Intl`; the read is guarded, and an absent `Intl` simply omits the line.
+
+**Cost.** $10 per 1,000 searches on the Claude API (the web search tool's published pricing,
+checked 2026-10-21), so ~1¢ a search, plus the results as input tokens on that request and on any
+later request of the same turn. An errored search is not billed. The usage caption names searches
+and the cost model adds them (`src/lib/ai/cost.ts`). Worst case a Coach turn adds ~3¢ and an
+estimate ~2¢ plus their result tokens.
+
+**Ceilings.** Coach tool schemas 9,107 → 9,140 with the search tool measured in (< 9,250); Coach
+system prompt 3,626 → 3,662 (< 3,700); the estimation prompt unchanged at 998 (< 1,000). None was
+raised. The provider's own instructions for the tool are added server-side and cannot be measured
+here.
+
+**Revisit if** search fires on turns that did not need it often enough to show in the captions, or a
+real menu lookup returns figures the owner finds worse than the estimate.
+
 ## 2026-09-23 — The Coach may delete what a screen can delete
 
 > **Amended 2026-09-25 — the owner's answers to the questions this ADR left open**

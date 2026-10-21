@@ -39,8 +39,13 @@ export type AiMessageRow = {
  * Coach cited trace back to the tool results it actually read.
  */
 export type CoachToolCall = {
-  /** The wire `tool_use` block id. */
+  /** The wire `tool_use` block id (`srvtoolu_…` for a web search). */
   id: string;
+  /**
+   * A registry tool's name, or `web_search` for a provider-side search
+   * (src/lib/ai/web-search.ts), whose `result` is the JSON of its query and
+   * the domains it found and cited. A search reads the web, never the record.
+   */
   name: string;
   /** The model-supplied input, exactly as parsed off the wire. */
   input: unknown;
@@ -100,6 +105,12 @@ export type CoachUsage = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /**
+   * Provider-side web searches the turn ran (2026-10-21), billed per search on
+   * top of tokens. Absent on a turn that searched nothing, and on every row
+   * written before search existed.
+   */
+  webSearchRequests?: number;
 };
 
 /** The full outcome of one Coach turn (possibly many model round-trips). */

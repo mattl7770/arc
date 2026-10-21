@@ -24,6 +24,13 @@ import { DEFAULT_MODEL, isCoachModel } from './model-client';
 
 const KEYCHAIN_API_KEY = 'arc.coach.api_key';
 const KEYCHAIN_MODEL = 'arc.coach.model';
+/**
+ * The web search switch (2026-10-21, docs/decisions.md "Provider-side web
+ * search"): `'off'` when the owner turned it off, absent otherwise. ON is the
+ * default by his own answer, so only the exception is stored, and a phone that
+ * never touched the switch searches.
+ */
+const KEYCHAIN_WEB_SEARCH = 'arc.coach.web_search';
 
 /** The slice of expo-secure-store this module uses. */
 type SecureStoreModule = {
@@ -65,12 +72,14 @@ type Listener = () => void;
 
 let apiKey: string | null = null;
 let model: string | null = null;
+let webSearch = true;
 let hydrated = false;
 // Set the moment the user acts (setKey/clearKey/setModel) so a slow boot-time
 // hydrate() read that resolves LATER can never clobber what they just chose —
 // including an explicit clear (which looks identical to "never set" without it).
 let keyTouched = false;
 let modelTouched = false;
+let webSearchTouched = false;
 const listeners = new Set<Listener>();
 
 function emit(): void {
@@ -119,6 +128,13 @@ export const apiKeyStore = {
   getModel(): string {
     return model !== null && isCoachModel(model) ? model : DEFAULT_MODEL;
   },
+  /**
+   * Whether the model may run the provider's web search (Coach chat and the
+   * food estimators). ON unless the owner switched it off in Settings › Coach.
+   */
+  isWebSearchOn(): boolean {
+    return webSearch;
+  },
   /** True when the key is Keychain-backed; false in memory-only fallback. */
   isPersistent(): boolean {
     return persistent;
@@ -138,13 +154,15 @@ export const apiKeyStore = {
     const store = secureStore;
     if (store && persistent) {
       try {
-        const [storedKey, storedModel] = await Promise.all([
+        const [storedKey, storedModel, storedWebSearch] = await Promise.all([
           store.getItemAsync(KEYCHAIN_API_KEY),
           store.getItemAsync(KEYCHAIN_MODEL),
+          store.getItemAsync(KEYCHAIN_WEB_SEARCH),
         ]);
         // Never overwrite a value the user set or cleared during the read window.
         if (!keyTouched && storedKey && storedKey.trim().length > 0) apiKey = storedKey;
         if (!modelTouched && storedModel && isCoachModel(storedModel)) model = storedModel;
+        if (!webSearchTouched) webSearch = storedWebSearch !== 'off';
       } catch {
         persistent = false;
       }
@@ -178,6 +196,18 @@ export const apiKeyStore = {
     model = next;
     emit();
     persistInBackground((store) => store.setItemAsync(KEYCHAIN_MODEL, next, deviceOnly(store)));
+  },
+
+  /** Turn web search on or off (and persist it). Off is the only value stored. */
+  async setWebSearch(on: boolean): Promise<void> {
+    webSearchTouched = true;
+    webSearch = on;
+    emit();
+    persistInBackground((store) =>
+      on
+        ? store.deleteItemAsync(KEYCHAIN_WEB_SEARCH)
+        : store.setItemAsync(KEYCHAIN_WEB_SEARCH, 'off', deviceOnly(store))
+    );
   },
 
   /** Change notifications for useSyncExternalStore. */
