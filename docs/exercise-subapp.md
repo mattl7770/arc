@@ -1177,3 +1177,17 @@ Catalog first still holds, by order: the matches come before the row. From an em
 - **Warm-up rows up front**: a saved workout of 3 sets with two warm-ups last time now opens with 5 rows. Is that what he expects, or noise?
 - **Plate rounding**: a progress on a machine whose stack moves in 7 kg steps will show a 2.5 kg jump that cannot be loaded.
 - **Resume as the stamp**: whether the hub reads right with the accent at the top and Train today in a plain plate below it.
+
+## 18. Phase 14 — the session bar (item 71, 2026-10-21)
+
+Owner: *"should be able to use the rest of the app while in an exercise session."* Leaving the logger has kept the session since §14, and Home and the Train hub offer it back, but nothing was on screen while he was in Eat or Labs, and nothing said how long the rest had left. Now a slim bar carries the open session everywhere except the live logger.
+
+- **Where.** Directly above the tab bar (`app/(tabs)/_layout.tsx` draws `TabSessionBar` above `BottomTabBar` in the tab view's own column), and at the foot of every pushed screen (`Screen`, after its safe-area view). Both are in the layout, never floated, so every screen shortens by the bar's height and its last row still scrolls clear. On a pushed screen the bar owns the bottom safe-area inset, and a screen that asked for the `bottom` edge has it dropped while the bar is up. Never on the live logger (`sessionBarOnScreen`), and never doubled on a tab root. Screens that build their own root instead of using `Screen` (only the Coach tab and the native modals) are covered by the tab bar's copy or are modal.
+- **What.** The saved workout's name (or "Workout", the logger's title), the elapsed clock from `startedAt`, and the rest: `REST 1:27` counting down, then **Rest done**. Done stays done: a rest that ran out is over until the logger starts the next one. A watch-session fill shows no elapsed clock, as the logger shows none. One 44pt button; a tap pushes `/workout-live?resume=1`, the href Home's Resume row pushes.
+- **One timer.** The bar keeps no state of its own. It reads the `live` draft (`readOpenLiveSession`, through `parseLiveDraft`, the gate Home and the hub use) and computes both clocks from the draft's instants with the logger's own arithmetic (`restRemainingSec`, pinned against the logger's source). It schedules no alert and writes no draft. Its one-second interval only redraws.
+- **Hearing the end.** `workout_drafts` now announces every write and clear (`subscribeWorkoutDrafts`), so a host that is not on screen still learns at once that Finish, Discard, the hub's trash or the quiet drop emptied the slot. Without that, the bar would show a finished session for the length of the pop.
+- **Look.** Chrome, like the logger's docked rest line: plate stock under a filled 1px rule, square, no device. Serif names, mono measures, label says REST. No accent and no signal colour.
+
+Tests: db/exercise.test.mjs §16 (reading, both clocks, placement, the announcements) and db/screens-render.test.mjs §34 (drawn on a pushed screen and above the tab bar, absent on the logger and on a tab root, Rest done, the tap's route, gone after Finish and a hub discard, the source pins).
+
+**What only a device can settle:** the bar's height and weight above the tab bar; the push and back-swipe with the bar riding the screen; the keyboard covering it on a pushed form; the one-second redraw with no visible jitter; and whether "Rest done" should stay up as long as it does.

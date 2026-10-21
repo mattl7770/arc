@@ -58,7 +58,32 @@ export function useNavigation() {
   return {
     addListener: () => () => {},
     dispatch: () => {},
+    // The navigator this screen sits in — read by `Screen` to decide whether it
+    // draws the session bar at its foot (src/lib/exercise/session-bar.ts).
+    getState: () => (route.navigator ? { type: route.navigator } : undefined),
   };
+}
+
+/**
+ * Where the rendered screen sits (item 71, the session bar). `navigator` is the
+ * containing navigator's type ('stack' for a pushed screen, 'tab' for a tab
+ * root). It defaults to NONE — no navigation state — so every screen this suite
+ * rendered before the bar existed renders exactly as it did; a suite that is
+ * about the bar says where the screen is.
+ */
+let route = { name: 'screen', navigator: undefined };
+
+export function __setRoute(next) {
+  route = { name: 'screen', navigator: undefined, ...next };
+}
+
+export function useRoute() {
+  return { key: `${route.name}-key`, name: route.name, params };
+}
+
+/** A server render is a screen on top. */
+export function useIsFocused() {
+  return true;
 }
 
 /**

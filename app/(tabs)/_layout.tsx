@@ -1,6 +1,8 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Tabs } from 'expo-router/js-tabs';
+import { BottomTabBar, Tabs } from 'expo-router/js-tabs';
+import { View } from 'react-native';
 
+import { TabSessionBar } from '@/components/exercise/session-bar';
 import { palette } from '@/constants/theme';
 
 /**
@@ -94,6 +96,17 @@ export default function TabsLayout() {
       // regardless of where you'd been. Nothing else in the app calls back()
       // from a tab root, so this changes only that case.
       backBehavior="history"
+      // A workout in progress (item 71) sits directly ABOVE the bar, in the
+      // same column — so the tab roots shorten by its height instead of
+      // scrolling under it, and the tab bar keeps its own safe-area inset
+      // beneath. It draws nothing while no session is open; see
+      // src/components/exercise/session-bar.tsx.
+      tabBar={(props) => (
+        <View>
+          <TabSessionBar />
+          <BottomTabBar {...props} />
+        </View>
+      )}
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: palette.pine,

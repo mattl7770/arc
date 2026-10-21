@@ -26,7 +26,17 @@ import {
   clearWorkoutDraft,
   readWorkoutDraft,
   saveWorkoutDraft,
+  subscribeWorkoutDrafts,
 } from '../src/lib/db/repositories/workout-drafts.ts';
+import { createRoutine, deleteRoutine } from '../src/lib/db/repositories/routines.ts';
+import {
+  LIVE_LOGGER_RESUME,
+  LIVE_LOGGER_ROUTE,
+  readOpenLiveSession,
+  restRemainingSec,
+  sessionBarOnScreen,
+  sessionBarView,
+} from '../src/lib/exercise/session-bar.ts';
 import {
   DRAFT_VERSION,
   liveDraftHasData,
@@ -2321,6 +2331,183 @@ console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and 
   !noKey.enabled && noKey.lead.includes('model key')
     ? ok('…and with no model key it stays, says what it needs, and is off')
     : bad('no key door');
+}
+
+// ---------------------------------------------------------------------------
+// Item 71. Owner: "should be able to use the rest of the app while in an
+// exercise session." A slim bar above the tab bar (and at a pushed screen's
+// foot) carries the workout, its elapsed clock and the rest countdown, and is
+// one tap back to the logger. Its decisions are pure
+// (src/lib/exercise/session-bar.ts); the render suite §34 draws it.
+console.log('17. the session bar reads the one session and the one rest');
+{
+  const { db } = freshDb();
+  const T0 = new Date(2026, 9, 21, 18, 0, 0).getTime();
+  const block = {
+    key: 1,
+    exerciseId: 'barbell-bench-press',
+    name: 'Barbell Bench Press',
+    loggingType: 'weight_reps',
+    measures: 'reps,load',
+    mechanic: 'compound',
+    restSec: 90,
+    prev: [],
+    bestE1rm: null,
+    linkedToNext: false,
+    sets: [
+      {
+        key: 2,
+        weight: '80',
+        reps: '8',
+        rpe: '',
+        time: '',
+        distance: '',
+        setType: 'normal',
+        done: true,
+        pr: false,
+      },
+    ],
+  };
+  const draft = (over = {}) => ({
+    version: DRAFT_VERSION,
+    sessionId: 'bar-session',
+    startedAt: T0,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [block],
+    ...over,
+  });
+
+  // --- shows only with an open session -------------------------------------------
+  readOpenLiveSession(db) === null ? ok('an empty slot: no session, so no bar') : bad('empty slot');
+  saveWorkoutDraft(db, 'live', { version: DRAFT_VERSION - 1, blocks: [block] });
+  readOpenLiveSession(db) === null
+    ? ok('a draft from another build is no session either — the same gate Home and the hub read')
+    : bad('stale version');
+  saveWorkoutDraft(db, 'manual', { version: DRAFT_VERSION, sets: [] });
+  clearWorkoutDraft(db, 'live');
+  readOpenLiveSession(db) === null
+    ? ok('the manual slot alone puts nothing on the bar (it has no clock and no rest)')
+    : bad('manual slot');
+  clearWorkoutDraft(db, 'manual');
+
+  saveWorkoutDraft(db, 'live', draft());
+  const open = readOpenLiveSession(db);
+  open?.name === 'Workout' && open.draft.startedAt === T0
+    ? ok('an open session with no saved workout is named as the logger titles it: "Workout"')
+    : bad('unnamed session', JSON.stringify(open)?.slice(0, 120));
+
+  const routineId = createRoutine(db, { name: '  Push day ', notes: null, exercises: [] });
+  saveWorkoutDraft(db, 'live', draft({ routineId }));
+  readOpenLiveSession(db)?.name === 'Push day'
+    ? ok("a session started from a saved workout carries that workout's name")
+    : bad('routine name', readOpenLiveSession(db)?.name);
+  deleteRoutine(db, routineId);
+  readOpenLiveSession(db)?.name === 'Workout'
+    ? ok('…and falls back to "Workout" when that saved workout has since been deleted')
+    : bad('deleted routine name');
+
+  // --- the elapsed clock and the rest, from the draft's own instants ------------
+  const session = { draft: draft({ restEndsAt: T0 + 25 * 60_000 + 90_000 }), name: 'Push day' };
+  const at = T0 + 25 * 60_000 + 3_000; // 25:03 in, 87 s of rest left
+  const v = sessionBarView(session, at);
+  v.elapsed === '25:03' && v.rest?.kind === 'running' && v.rest.clock === '1:27'
+    ? ok('25:03 elapsed and 1:27 of rest — both computed from the draft, not counted')
+    : bad('running view', JSON.stringify(v));
+  v.accessibilityLabel ===
+  'Push day in progress, 25:03 elapsed, rest 1:27 left. Return to the workout'
+    ? ok('VoiceOver hears the whole bar as one button that says where it goes')
+    : bad('a11y label', v.accessibilityLabel);
+  const later = sessionBarView(session, at + 30_000);
+  later.rest?.kind === 'running' && later.rest.clock === '0:57' && later.elapsed === '25:33'
+    ? ok('thirty seconds on, both clocks have moved thirty seconds — one clock, two readings')
+    : bad('later view', JSON.stringify(later));
+  const done = sessionBarView(session, T0 + 25 * 60_000 + 90_000);
+  done.rest?.kind === 'done' && /rest done/.test(done.accessibilityLabel)
+    ? ok('at the target instant the rest reads done')
+    : bad('done at target', JSON.stringify(done));
+  const longAfter = sessionBarView(session, T0 + 2 * 3_600_000);
+  longAfter.rest?.kind === 'done'
+    ? ok('…and stays done: a rest that ran out is over until the logger starts the next')
+    : bad('done later');
+  sessionBarView({ draft: draft(), name: 'Workout' }, at).rest === null
+    ? ok('no rest set: the bar says nothing about rest')
+    : bad('no rest');
+
+  // The arithmetic is the logger's own: the same rounding at the edge, so the
+  // bar never reads 0:01 beside a logger at 0:00 (the source pin is §34).
+  restRemainingSec(null, at) === null &&
+  restRemainingSec(at + 400, at) === 0 &&
+  restRemainingSec(at + 600, at) === 1 &&
+  restRemainingSec(at - 5_000, at) === 0
+    ? ok('rest left rounds to the nearest second and never goes negative, as the logger does')
+    : bad('rest rounding');
+
+  // A watch-session fill already happened: the logger shows its day, not a
+  // running clock, and so does the bar.
+  const fill = sessionBarView({ draft: draft({ ingestId: 'w1' }), name: 'Workout' }, at);
+  fill.elapsed === null && !/elapsed/.test(fill.accessibilityLabel)
+    ? ok('a watch-session fill shows no elapsed clock, as the logger shows none')
+    : bad('fill elapsed', JSON.stringify(fill));
+  sessionBarView(session, T0 - 60_000).elapsed === '0:00'
+    ? ok('a clock set back before the start reads 0:00, not a negative time')
+    : bad('clock set back');
+
+  // --- where it is drawn ---------------------------------------------------------
+  sessionBarOnScreen('stack', 'labs') &&
+  sessionBarOnScreen('stack', 'workout-log') &&
+  !sessionBarOnScreen('stack', LIVE_LOGGER_ROUTE) &&
+  !sessionBarOnScreen('tab', 'index') &&
+  !sessionBarOnScreen(undefined, 'labs') &&
+  LIVE_LOGGER_ROUTE === 'workout-live'
+    ? ok('a pushed screen draws it, the live logger never, a tab root leaves it to the tab bar')
+    : bad('placement');
+  LIVE_LOGGER_RESUME.pathname === '/workout-live' && LIVE_LOGGER_RESUME.params.resume === '1'
+    ? ok("a tap goes where Home's Resume row goes: the live logger, resuming the slot")
+    : bad('resume href');
+
+  // --- it hears the session end ----------------------------------------------------
+  // Every write and every clear announces itself, so a bar that is not the
+  // focused screen still learns at once that the session has gone.
+  let heard = 0;
+  const stop = subscribeWorkoutDrafts(() => heard++);
+  saveWorkoutDraft(db, 'live', draft());
+  const afterSave = heard;
+  clearOwnLiveDraft(db, 'bar-session'); // Finish / the logger's own Discard
+  const afterFinish = heard;
+  saveWorkoutDraft(db, 'live', draft());
+  clearWorkoutDraft(db, 'live'); // the Train hub's trash
+  afterSave === 1 && afterFinish === 2 && heard === 4 && readOpenLiveSession(db) === null
+    ? ok('a write, a Finish and a hub discard are each announced — and the bar then reads nothing')
+    : bad('announcements', `${afterSave} ${afterFinish} ${heard}`);
+  saveWorkoutDraft(db, 'live', draft({ sessionId: 'theirs' }));
+  const beforeRefusal = heard;
+  clearOwnLiveDraft(db, 'bar-session');
+  heard === beforeRefusal && readOpenLiveSession(db) !== null
+    ? ok("a clear refused for someone else's session announces nothing and the bar stays")
+    : bad('refused clear');
+  const loud = subscribeWorkoutDrafts(() => {
+    throw new Error('listener broke');
+  });
+  const warn = console.warn;
+  console.warn = () => {};
+  let survived = false;
+  try {
+    clearWorkoutDraft(db, 'live');
+    survived = readWorkoutDraft(db, 'live') === null;
+  } finally {
+    console.warn = warn;
+  }
+  survived && heard === beforeRefusal + 1
+    ? ok('a listener that throws stops neither the clear nor the other listeners')
+    : bad('throwing listener');
+  loud();
+  stop();
+  saveWorkoutDraft(db, 'live', draft());
+  heard === beforeRefusal + 1 ? ok('an unsubscribed bar hears nothing more') : bad('unsubscribe');
+  clearWorkoutDraft(db, 'live');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

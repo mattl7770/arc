@@ -1,7 +1,13 @@
 import { memo, type ReactNode, type Ref, useMemo } from 'react';
 import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
-import { type Edge, SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import {
+  type Edge,
+  SafeAreaProvider,
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 
+import { LiveSessionBar, useScreenSession } from '@/components/exercise/session-bar';
 import { paperGrid, palette } from '@/constants/theme';
 
 /**
@@ -290,12 +296,25 @@ type ScreenProps = {
  * `keyboardShouldPersistTaps="handled"` is the third path out: a tap on any
  * non-touchable part of the sheet dismisses the keyboard, while a tap that a
  * child handles still reaches that child.
+ *
+ * ## The one thing it draws: a workout in progress, at a pushed screen's foot
+ *
+ * While a live workout is open, a pushed screen ends in the session bar (item
+ * 71, src/components/exercise/session-bar.tsx) — never on the live logger, and
+ * never on a tab root, whose bar sits above the tab bar instead. It goes AFTER
+ * the safe-area view, in the column, so the content (and the scroll view) ends
+ * above it and the last row still scrolls clear. The bar then owns the bottom
+ * inset: a screen that asked for the `bottom` edge has it dropped while the
+ * bar is up, or the home indicator would be padded for twice.
  */
 export function Screen({ children, scroll = false, edges = ['top'], scrollRef }: ScreenProps) {
+  const session = useScreenSession();
+  const insets = useSafeAreaInsets();
+  const contentEdges = session ? edges.filter((edge) => edge !== 'bottom') : edges;
   return (
     <View className="flex-1 bg-paper">
       <PaperGrid />
-      <SafeAreaView edges={edges} className="flex-1">
+      <SafeAreaView edges={contentEdges} className="flex-1">
         {scroll ? (
           <ScrollView
             ref={scrollRef}
@@ -309,6 +328,7 @@ export function Screen({ children, scroll = false, edges = ['top'], scrollRef }:
           <View className="flex-1 px-5">{children}</View>
         )}
       </SafeAreaView>
+      {session ? <LiveSessionBar session={session} inset={insets.bottom} /> : null}
     </View>
   );
 }
