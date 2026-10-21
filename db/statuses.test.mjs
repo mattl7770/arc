@@ -274,12 +274,19 @@ console.log('\n2. production ordering AND the numbering guard, in one');
 
   // A device in the pre-0061 world: an OPEN-ENDED sick mode set last month from
   // the Home picker, and a Travel range booked for next week.
+  //
+  // "Next week" counts from the day the release LANDS — the day 0061 stamps
+  // its retirement row with, SQLite's `date('now')` — not from the suite's
+  // fixed TODAY. Booked off TODAY, the range fell before the retirement row
+  // once the wall clock passed TODAY + 7, and the assertion below failed on
+  // every run from 2026-09-27 on while the migration was right (2026-10-21).
+  const landsOn = raw.prepare(`SELECT date('now') AS d`).get().d;
   raw
     .prepare(`INSERT INTO day_modes (id, mode, start_date, end_date) VALUES (?, ?, ?, ?)`)
     .run('m-sick', 'sick', daysAgo(30), null);
   raw
     .prepare(`INSERT INTO day_modes (id, mode, start_date, end_date) VALUES (?, ?, ?, ?)`)
-    .run('m-travel', 'travel', shiftISODate(TODAY, 7), shiftISODate(TODAY, 11));
+    .run('m-travel', 'travel', shiftISODate(landsOn, 7), shiftISODate(landsOn, 11));
 
   // …then the release lands.
   migrate(executorFor(raw, db), MIGRATIONS);
@@ -296,9 +303,9 @@ console.log('\n2. production ordering AND the numbering guard, in one');
     ? ok('the day after the retirement reads Normal — the open-ended mode is over')
     : bad('open-ended mode survived', getActiveMode(db, after));
 
-  getActiveMode(db, shiftISODate(TODAY, 8)) === 'normal'
+  getActiveMode(db, shiftISODate(landsOn, 8)) === 'normal'
     ? ok('…and next week reads Normal too — the scheduled Travel range is cancelled')
-    : bad('future mode survived', getActiveMode(db, shiftISODate(TODAY, 8)));
+    : bad('future mode survived', getActiveMode(db, shiftISODate(landsOn, 8)));
 }
 
 // ===========================================================================
