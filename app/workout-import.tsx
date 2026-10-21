@@ -30,6 +30,7 @@ import {
   WorkoutImportUnavailableError,
   type ImportedWorkout,
 } from '@/lib/exercise/import-workout';
+import { tickTrainingAfterSave } from '@/lib/exercise/training-tick-offer';
 import type { SetInput, WorkoutKind } from '@/lib/exercise/types';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
@@ -274,8 +275,9 @@ export default function WorkoutImportScreen() {
         })
         .filter((s): s is NonNullable<typeof s> => s !== null)
     );
+    let savedId: string;
     try {
-      logWorkout(
+      savedId = logWorkout(
         getDb(),
         {
           date,
@@ -302,6 +304,10 @@ export default function WorkoutImportScreen() {
     } catch (error) {
       console.warn('[exercise] pair-on-save failed', error);
     }
+    // Item 70: a reviewed import is a session he confirmed. It ticks today's
+    // earliest open Training row only when the photo's session is dated today;
+    // an import of an older session ticks nothing. Guarded inside.
+    tickTrainingAfterSave(getDb(), savedId);
     router.back();
   };
 

@@ -5,7 +5,7 @@
  * Run: npm run db:test.
  */
 import { DatabaseSync } from 'node:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -109,6 +109,23 @@ import {
 import { aiDoorCopy } from '../src/lib/exercise/match.ts';
 import { suggestProgression } from '../src/lib/exercise/progression.ts';
 import { DEFAULT_UNIT_PREFERENCES } from '../src/lib/user/types.ts';
+import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
+import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
+import { startStatus } from '../src/lib/db/repositories/statuses.ts';
+import {
+  releaseWorkoutTick,
+  tickTrainingForWorkout,
+  trainingRowFor,
+  untickTraining,
+} from '../src/lib/db/repositories/training-tick.ts';
+import {
+  tickTrainingAfterSave,
+  trainingTickOffer,
+  trainingTickWords,
+} from '../src/lib/exercise/training-tick-offer.ts';
+import { closeUndo, currentUndo, offerUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
+import { todayISODate } from '../src/lib/db/date.ts';
+import { arriveDay } from '../src/lib/db/seed.ts';
 
 let pass = 0;
 let fail = 0;
@@ -2508,6 +2525,321 @@ console.log('17. the session bar reads the one session and the one rest');
   saveWorkoutDraft(db, 'live', draft());
   heard === beforeRefusal + 1 ? ok('an unsubscribed bar hears nothing more') : bad('unsubscribe');
   clearWorkoutDraft(db, 'live');
+}
+
+console.log('18. item 70 — a finished session ticks the earliest open Training row, with Undo');
+{
+  const TODAY = '2026-10-21';
+  const YESTERDAY = '2026-10-20';
+  const block = (db, items) =>
+    createProtocolWithVersion(
+      db,
+      { name: 'Strength block', type: 'training_block' },
+      { items: items.map(([title, time]) => ({ title, scheduled_time: time, dose: null, notes: null })) }
+    );
+  const stack = (db) =>
+    createProtocolWithVersion(
+      db,
+      { name: 'Stack', type: 'supplement_stack' },
+      { items: [{ title: 'Creatine', scheduled_time: '06:00', dose: '5 g', notes: null }] }
+    );
+  const session = (db, opts = {}) =>
+    logWorkout(db, {
+      date: opts.date ?? TODAY,
+      kind: 'strength',
+      routineId: opts.routineId ?? null,
+      away: opts.away ?? false,
+    });
+  const rowOf = (raw, title, date = TODAY) =>
+    raw
+      .prepare(
+        `SELECT e.id, e.status, e.value FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+          WHERE d.date = ? AND e.title = ?`
+      )
+      .get(date, title);
+  const statusOf = (raw, title, date) => rowOf(raw, title, date)?.status;
+  const markOf = (raw, title, date) => JSON.parse(rowOf(raw, title, date)?.value ?? '{}').by_workout;
+  const routine = (db, name) => createRoutine(db, { name, notes: null, exercises: [] });
+
+  // --- the earliest open row, and only a Training one ------------------------
+  {
+    const { db, raw } = freshDb();
+    stack(db);
+    block(db, [
+      ['Lift', '18:00'],
+      ['Zone 2', '07:00'],
+    ]);
+    const first = session(db);
+    const tick = tickTrainingForWorkout(db, first, TODAY);
+    tick?.title === 'Zone 2' &&
+    statusOf(raw, 'Zone 2') === 'completed' &&
+    statusOf(raw, 'Lift') === 'pending' &&
+    statusOf(raw, 'Creatine') === 'pending'
+      ? ok('the earliest open Training row ticks (07:00 before 18:00), and the 06:00 supplement does not')
+      : bad('earliest open', JSON.stringify(tick));
+    const zone = JSON.parse(rowOf(raw, 'Zone 2').value);
+    zone.by_workout === first && zone.done_on === TODAY
+      ? ok('…through the normal tick: done_on stamped, and the row carries the session’s id')
+      : bad('mark', JSON.stringify(zone));
+
+    // Two sessions in a day: the second takes the next open row.
+    const second = session(db);
+    const tick2 = tickTrainingForWorkout(db, second, TODAY);
+    tick2?.title === 'Lift' && markOf(raw, 'Lift') === second
+      ? ok('a second session the same day ticks the next open Training row')
+      : bad('second session', JSON.stringify(tick2));
+    tickTrainingForWorkout(db, session(db), TODAY) === null
+      ? ok('…and a third, with none left open, ticks nothing')
+      : bad('third session');
+
+    // The same session never ticks twice — a repeated call, or an edit.
+    replaceWorkout(db, first, { kind: 'strength', durationMin: 45, notes: 'edited' }, []);
+    tickTrainingForWorkout(db, first, TODAY) === null && markOf(raw, 'Zone 2') === first
+      ? ok('an edited session does not tick again, and keeps the row it ticked')
+      : bad('edit re-tick');
+  }
+
+  // --- done and skipped rows are never touched -------------------------------
+  {
+    const { db, raw } = freshDb();
+    block(db, [
+      ['Zone 2', '07:00'],
+      ['Lift', '18:00'],
+    ]);
+    tickTrainingForWorkout(db, session(db), TODAY); // generates the day
+    setMissionStatus(db, rowOf(raw, 'Zone 2').id, 'pending', TODAY);
+    setMissionStatus(db, rowOf(raw, 'Zone 2').id, 'skipped', TODAY);
+    const t = tickTrainingForWorkout(db, session(db), TODAY);
+    t?.title === 'Lift' && statusOf(raw, 'Zone 2') === 'skipped'
+      ? ok('a skipped row is passed over, and stays skipped')
+      : bad('skipped', JSON.stringify(t));
+    tickTrainingForWorkout(db, session(db), TODAY) === null
+      ? ok('…and with the rest done, nothing ticks')
+      : bad('all settled');
+  }
+  {
+    const { db, raw } = freshDb();
+    block(db, [
+      ['Zone 2', '07:00'],
+      ['Lift', '18:00'],
+    ]);
+    arriveDay(db, TODAY);
+    tickTrainingForWorkout(db, session(db, { away: true }), TODAY) === null &&
+    statusOf(raw, 'Zone 2') === 'pending' && statusOf(raw, 'Lift') === 'pending'
+      ? ok('an Away session ticks nothing')
+      : bad('away');
+    setMissionStatus(db, rowOf(raw, 'Zone 2').id, 'completed', TODAY);
+    const t = tickTrainingForWorkout(db, session(db), TODAY);
+    t?.title === 'Lift' && markOf(raw, 'Zone 2') === undefined
+      ? ok('a row ticked by hand is passed over and wears no session’s mark')
+      : bad('done by hand', JSON.stringify(t));
+  }
+
+  // --- a row that names a saved workout ---------------------------------------
+  {
+    const { db, raw } = freshDb();
+    const push = routine(db, 'Push Day');
+    const pull = routine(db, 'Pull Day');
+    block(db, [
+      ['PUSH DAY', '07:00'],
+      ['Cardio', '18:00'],
+    ]);
+    const viaPush = session(db, { routineId: push });
+    const t = tickTrainingForWorkout(db, viaPush, TODAY);
+    t?.title === 'PUSH DAY' && statusOf(raw, 'Cardio') === 'pending'
+      ? ok('a row named after a saved workout ticks when THAT workout finishes (case-folded)')
+      : bad('named match', JSON.stringify(t));
+
+    const { db: db2, raw: raw2 } = freshDb();
+    routine(db2, 'Push Day');
+    const pull2 = routine(db2, 'Pull Day');
+    block(db2, [
+      ['Push Day', '07:00'],
+      ['Cardio', '18:00'],
+    ]);
+    const free = tickTrainingForWorkout(db2, session(db2), TODAY);
+    free?.title === 'Cardio' && statusOf(raw2, 'Push Day') === 'pending'
+      ? ok('a free session falls through the named row to the next open unnamed one')
+      : bad('free fallthrough', JSON.stringify(free));
+    tickTrainingForWorkout(db2, session(db2, { routineId: pull2 }), TODAY) === null &&
+    statusOf(raw2, 'Push Day') === 'pending'
+      ? ok('a different saved workout never ticks the named row; with nothing else open, nothing')
+      : bad('non-matching named');
+
+    const { db: db3, raw: raw3 } = freshDb();
+    routine(db3, 'Push Day');
+    const pull3 = routine(db3, 'Pull Day');
+    block(db3, [
+      ['Push Day', '07:00'],
+      ['Pull Day', '12:00'],
+      ['Mobility', '18:00'],
+    ]);
+    const fall = tickTrainingForWorkout(db3, session(db3, { routineId: pull3 }), TODAY);
+    fall?.title === 'Pull Day' && statusOf(raw3, 'Push Day') === 'pending'
+      ? ok('Pull Day skips the earlier Push Day row and ticks its own')
+      : bad('named fallthrough', JSON.stringify(fall));
+    trainingRowFor(db3, { date: TODAY, routineId: null, away: false }, TODAY)?.title === 'Mobility'
+      ? ok('…and the read-only choice a card shows agrees: a free session would take Mobility')
+      : bad('trainingRowFor');
+    void pull;
+  }
+
+  // --- a session for yesterday ------------------------------------------------
+  {
+    const { db, raw } = freshDb();
+    block(db, [['Lift', '18:00']]);
+    arriveDay(db, YESTERDAY); // yesterday's day exists, its row open
+    const late = session(db, { date: YESTERDAY });
+    tickTrainingForWorkout(db, late, TODAY) === null &&
+    statusOf(raw, 'Lift', YESTERDAY) === 'pending' &&
+    rowOf(raw, 'Lift', TODAY) === undefined
+      ? ok('a session logged for yesterday ticks nothing, on either day')
+      : bad('yesterday');
+  }
+
+  // --- the Status rule ---------------------------------------------------------
+  {
+    const { db, raw } = freshDb();
+    block(db, [
+      ['Zone 2', '07:00'],
+      ['Lift', '18:00'],
+    ]);
+    startStatus(db, { label: 'Sick', startDate: TODAY, source: 'user', excuses: true });
+    const t = tickTrainingForWorkout(db, session(db), TODAY);
+    t?.title === 'Zone 2' && statusOf(raw, 'Lift') === 'pending'
+      ? ok('a status changes nothing about which row ticks')
+      : bad('status', JSON.stringify(t));
+  }
+
+  // --- delete takes back only its own tick -----------------------------------
+  {
+    const { db, raw } = freshDb();
+    block(db, [
+      ['Zone 2', '07:00'],
+      ['Lift', '18:00'],
+    ]);
+    const a = session(db);
+    tickTrainingForWorkout(db, a, TODAY);
+    const b = session(db);
+    tickTrainingForWorkout(db, b, TODAY);
+    const reopened = deleteWorkout(db, a, TODAY);
+    const zone = JSON.parse(rowOf(raw, 'Zone 2').value);
+    reopened.join() === 'Zone 2' &&
+    statusOf(raw, 'Zone 2') === 'pending' &&
+    zone.by_workout === undefined &&
+    zone.done_on === undefined &&
+    statusOf(raw, 'Lift') === 'completed'
+      ? ok('deleting a session re-opens the row IT ticked — mark and done_on gone — and no other')
+      : bad('delete undo', JSON.stringify({ reopened, zone }));
+
+    // He un-ticks the session's row on Home and ticks it again by hand: the
+    // tick is his now, and deleting the session leaves it alone.
+    const liftId = rowOf(raw, 'Lift').id;
+    setMissionStatus(db, liftId, 'pending', TODAY);
+    setMissionStatus(db, liftId, 'completed', TODAY);
+    deleteWorkout(db, b, TODAY).length === 0 && statusOf(raw, 'Lift') === 'completed'
+      ? ok('a row re-ticked by hand is not taken back by deleting the session')
+      : bad('hand re-tick survives delete');
+    const lone = session(db);
+    releaseWorkoutTick(db, lone, TODAY).length === 0
+      ? ok('deleting a session that ticked nothing re-opens nothing')
+      : bad('release nothing');
+  }
+
+  // --- the Undo ----------------------------------------------------------------
+  {
+    const { db, raw } = freshDb();
+    block(db, [
+      ['Zone 2', '07:00'],
+      ['Lift', '18:00'],
+    ]);
+    const words = trainingTickWords('Zone 2');
+    words.said === 'Ticked Training: Zone 2' &&
+    words.figure === null &&
+    words.spoken === 'Undo ticking Zone 2' &&
+    words.icon === 'barbell-outline'
+      ? ok('the row says "Ticked Training: Zone 2" and VoiceOver hears "Undo ticking Zone 2"')
+      : bad('words', JSON.stringify(words));
+
+    const tick = tickTrainingForWorkout(db, session(db), TODAY);
+    let synced = 0;
+    offerUndo(trainingTickOffer(db, tick, () => synced++));
+    const offer = currentUndo();
+    offer?.scope.on === 'training' && offer.scope.date === TODAY
+      ? ok('the Undo is offered in the shared slot, scoped to today’s training')
+      : bad('offer scope', JSON.stringify(offer?.scope));
+    // untickTraining runs against the real clock's today for the days-ahead
+    // re-derive; the row itself is addressed by id.
+    runUndo() === true &&
+    statusOf(raw, 'Zone 2') === 'pending' &&
+    markOf(raw, 'Zone 2') === undefined &&
+    statusOf(raw, 'Lift') === 'pending' &&
+    synced === 1 &&
+    currentUndo() === null
+      ? ok('Undo unticks exactly that row, re-syncs reminders, and closes')
+      : bad('undo', JSON.stringify({ synced, z: statusOf(raw, 'Zone 2') }));
+
+    // A row he settled himself since cannot be undone by the session's Undo.
+    const again = tickTrainingForWorkout(db, session(db), TODAY);
+    offerUndo(trainingTickOffer(db, again, () => {}));
+    setMissionStatus(db, again.entryId, 'pending', TODAY);
+    setMissionStatus(db, again.entryId, 'skipped', TODAY);
+    runUndo() === false && currentUndo()?.refused === true && statusOf(raw, 'Zone 2') === 'skipped'
+      ? ok('an Undo after he changed the row himself is refused, and the row keeps his decision')
+      : bad('refused undo');
+    throws(() => untickTraining(db, again, TODAY))
+      ? ok('…and untickTraining itself refuses a row that no longer holds the tick')
+      : bad('untick refuse');
+    closeUndo();
+  }
+
+  // --- the app-side helper: tick, sync, offer ---------------------------------
+  {
+    const { db, raw } = freshDb();
+    block(db, [['Lift', '23:59']]);
+    const today = todayISODate();
+    const w = logWorkout(db, { date: today, kind: 'strength' });
+    let synced = 0;
+    const tick = tickTrainingAfterSave(db, w, () => synced++);
+    tick?.title === 'Lift' &&
+    statusOf(raw, 'Lift', today) === 'completed' &&
+    synced === 1 &&
+    currentUndo()?.said === 'Ticked Training: Lift'
+      ? ok('tickTrainingAfterSave ticks today’s row, re-syncs reminders once, and offers the Undo')
+      : bad('after-save helper', JSON.stringify({ tick, synced }));
+    closeUndo();
+    const none = tickTrainingAfterSave(db, 'no-such-workout', () => synced++);
+    none === null && synced === 1 && currentUndo() === null
+      ? ok('…and offers nothing when nothing ticked')
+      : bad('helper with nothing');
+  }
+
+  // --- every finish path calls it --------------------------------------------
+  {
+    const src = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
+    const live = src('app/workout-live.tsx');
+    const log = src('app/workout-log.tsx');
+    const imp = src('app/workout-import.tsx');
+    const coach = src('src/lib/ai/tools/write-tools.ts');
+    live.includes('if (!stored && savedId) tickTrainingAfterSave(getDb(), savedId);')
+      ? ok('the live logger ticks after a NEW session’s commit, never after an edit')
+      : bad('workout-live wiring');
+    log.includes('tickTrainingAfterSave(getDb(), savedId);')
+      ? ok('the free-form logger ticks after its commit')
+      : bad('workout-log wiring');
+    imp.includes('tickTrainingAfterSave(getDb(), savedId);')
+      ? ok('the photo import ticks after its commit')
+      : bad('workout-import wiring');
+    coach.includes('tickTrainingForWorkout(db, id, todayISODate(context.now))')
+      ? ok('the Coach’s log_workout ticks after its commit, on the turn’s own today')
+      : bad('log_workout wiring');
+    // Pairing never ticks: the pass attaches a watch record to a session that
+    // was already saved (and already ticked, or not).
+    !src('src/lib/db/repositories/workout-ingest.ts').includes('tickTraining') &&
+    !src('src/lib/health/sync.ts').includes('tickTraining')
+      ? ok('the pairing pass and the Health sync never tick')
+      : bad('pairing ticks');
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

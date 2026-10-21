@@ -239,7 +239,11 @@ const workoutsDomain: CoachDomainEntry = {
         .filter((p): p is string => p !== null)
         .join(' · ');
     },
-    run: (db, row) => deleteWorkout(db, row.id),
+    // Takes back the Training tick the session made, if it still stands
+    // (item 70) — the repository does it, so this door and the screen's agree.
+    run: (db, row, context) => {
+      deleteWorkout(db, row.id, todayISODate(context.now));
+    },
   },
 };
 

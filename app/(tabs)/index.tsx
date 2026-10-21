@@ -11,6 +11,7 @@ import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
 import { MissionEmpty } from '@/components/home/mission-empty';
 import { ReadinessStrip } from '@/components/home/readiness-strip';
+import { UndoRow } from '@/components/nutrition/undo-row';
 import { StatusControl } from '@/components/status/status-control';
 import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
@@ -21,7 +22,10 @@ import { useStatuses } from '@/hooks/use-statuses';
 import { useTimezoneNote } from '@/hooks/use-timezone-note';
 import { useTodayMission } from '@/hooks/use-today-mission';
 import { useWorkoutDrafts } from '@/hooks/use-training';
+import { useUndoOffer } from '@/hooks/use-undo-offer';
+import { todayISODate } from '@/lib/db/date';
 import { openSessionLine } from '@/lib/exercise/draft';
+import { runUndo } from '@/lib/nutrition/undo-store';
 import { alcoholLastNightLine, type DrinksInput } from '@/lib/nutrition/drinks';
 import type { RailChip } from '@/lib/status/chips';
 import { endOpenStatus, toggleStatus } from '@/lib/status/store';
@@ -229,6 +233,14 @@ export default function HomeScreen() {
   // The one thing here the user did not ask for: the Coach's own daily pass,
   // shown only when it judged the day worth a word (it usually says nothing).
   const pass = useCoachPassMessage();
+  // The Training row a session just finished ticked, while it can be taken
+  // back (item 70, src/lib/exercise/training-tick-offer.ts).
+  const tickUndo = useUndoOffer('training', todayISODate());
+  const reloadMission = mission.reload;
+  const undoTick = useCallback(() => {
+    runUndo();
+    reloadMission();
+  }, [reloadMission]);
 
   return (
     <Screen scroll>
@@ -288,6 +300,14 @@ export default function HomeScreen() {
           <Ionicons name="chevron-forward" size={12} color={palette.inkMuted} />
         </Pressable>
       ) : null}
+
+      {/*
+          Item 70 — a session just finished ticked a Training row, and this is
+          where the logger returned to. The food Undo's row (UndoRow), drawn
+          here unruled like the two lines above it: a fact about now, with its
+          one way back. No accent, no timer; leaving Home closes it.
+      */}
+      {tickUndo ? <UndoRow offer={tickUndo} onUndo={undoTick} first /> : null}
 
       <View className="mt-5">
         {planned ? (

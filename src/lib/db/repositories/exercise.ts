@@ -11,10 +11,11 @@
  * exact same code runs on device and in the headless tests (db/exercise.test.mjs).
  */
 import type { Database } from '../database';
-import { localWeekRange, shiftISODate } from '../date';
+import { localWeekRange, shiftISODate, todayISODate } from '../date';
 import { newId } from '../id';
 import type { DateString } from '../types';
 import { resolveExerciseByName } from './exercise-catalog';
+import { releaseWorkoutTick } from './training-tick';
 import { pairedIngestFor, pairedIngestForMany } from './workout-ingest';
 import {
   asMeasures,
@@ -296,9 +297,24 @@ export function replaceWorkout(
  * cascade here, unlike the ones pointing at a log from a protocol: a set has no
  * meaning without the session it belongs to, so an orphan would be worse than
  * nothing. Unknown ids are a no-op.
+ *
+ * **It takes back the Training tick the session made, and only that one**
+ * (item 70, ./training-tick.ts): a row still completed under this session's
+ * mark goes back to pending. Returns the titles re-opened, so a screen can
+ * re-sync what depends on them. After the DELETE, not before: if the delete
+ * throws, the tick is left as it was, and the session with it. And a failure
+ * of the release itself is not the delete's: the session IS gone, and a tick
+ * left standing is one tap on Home to take back, so it is swallowed rather
+ * than reported as "Delete failed — the session is unchanged".
  */
-export function deleteWorkout(db: Database, id: string): void {
+export function deleteWorkout(db: Database, id: string, today: string = todayISODate()): string[] {
   db.run('DELETE FROM workouts WHERE id = ?', [id]);
+  try {
+    return releaseWorkoutTick(db, id, today);
+  } catch (error) {
+    console.warn('[exercise] releasing the training tick failed', error);
+    return [];
+  }
 }
 
 /**

@@ -1191,3 +1191,50 @@ Owner: *"should be able to use the rest of the app while in an exercise session.
 Tests: db/exercise.test.mjs §16 (reading, both clocks, placement, the announcements) and db/screens-render.test.mjs §34 (drawn on a pushed screen and above the tab bar, absent on the logger and on a tab root, Rest done, the tap's route, gone after Finish and a hub discard, the source pins).
 
 **What only a device can settle:** the bar's height and weight above the tab bar; the push and back-swipe with the bar riding the screen; the keyboard covering it on a pushed form; the one-second redraw with no visible jitter; and whether "Rest done" should stay up as long as it does.
+
+## 19. A finished session ticks the day's Training row (item 70, 2026-10-21)
+
+Owner: *"exercise protocol should auto complete when i finish exercising"*. His decision: finishing any session today ticks the **earliest open Training row** of today's mission, with Undo. A row that names a saved workout is ticked only by that saved workout; any other session goes on to the next open Training row that names no different workout, or ticks nothing. No migration.
+
+### 18.1 The rule, as built (`src/lib/db/repositories/training-tick.ts`)
+
+- **Training row**: a row Home labels TRAINING (`toMissionItem(row).category`), which is a `training_block` protocol's items.
+- **Open**: `pending`, planned, not removed. Done, skipped and partial rows are never touched. A carried row is open and on today's list, so it takes its turn; ticking it settles the debt as late, as a hand tick does.
+- **Earliest**: Home's own order (time, untimed last, then insertion).
+- **Names a saved workout**: there is no link field between a protocol item and a saved workout, so a row names one when its title **is** that workout's name, trimmed and case-folded, otherwise exact (never a substring: `Push` is not `Push Day`). The session matches through its `routine_id`. Archived workouts still count as names.
+- **The tick is the normal tick**: `setMissionStatus(…, 'completed', today)` (so `done_on`, carried-debt settling and everything else behave as on Home), then `rederiveDaysAhead`, and on the app side the reminder re-sync, which clears a delivered nudge for the row.
+- **The link**: the ticked row's `value.by_workout` holds the session's id. `setMissionStatus` now removes it on any other status, as it removes `done_on`, so it is only ever on a row that the session's tick still holds.
+
+### 18.2 What never ticks, and why
+
+| Case | Ticks? | Why |
+| --- | --- | --- |
+| A session dated a past day (backdated free-form, an older photo, the Coach with `date`, a watch blank from yesterday) | No | Ticking a past row is a backfill. That is a deliberate gesture with guards of its own (`backfillPastRow`: the window, carried rows, rows a copy settled) and a re-derive of today. Doing it behind a save would rewrite a day he has already closed. |
+| Away session | No | His rule. |
+| Health session he has not filled in | No | It is a `wearable_data` row, not a session. Filling it in through the logger is his confirmation, so that save ticks, if it is today's. |
+| Pairing a logged session with the watch's copy | No | Pairing adds the watch's numbers to a session that was already saved (and so already ticked, or not). Ticking on pair would tick twice or tick something he never saved. |
+| An edit (session screen, Coach `edit_record`) | No | The tick belongs to the save that created the session. An edit leaves the row as it is, even if it moves the date or sets Away. |
+| A second call for the same session | No | Refused while any row carries the session's mark. |
+| A day status | No effect | Nothing here reads `day_statuses` (the Status rule). |
+
+### 18.3 The finish paths
+
+All four call it **after the commit, in their own guard**, like pair-on-save, so a tick problem can never report the session as unsaved: the live logger (new sessions only, including a filled-in watch blank), the free-form logger, the photo import (all through `tickTrainingAfterSave`, `src/lib/exercise/training-tick-offer.ts`), and the Coach's `log_workout`. The Coach's card names the row before the gate (`Log workout · 40 min · ticks Training: Zone 2`), and its receipt carries `tickedTraining`. The Coach tab's after-turn re-sync covers the reminder.
+
+### 18.4 Undo, and delete
+
+The logger closes as it saves, so the Undo takes the shared slot (`undo-store.ts`, scope `training`) and is drawn as the food Undo's `UndoRow` on whichever screen the logger returns to: **Home** (under the open-session line) or the **Train hub** (under the title). It reads *Ticked Training: Zone 2 · Undo*. No timer; leaving the screen closes it. Undo re-opens exactly that row, and refuses with *Could not untick Zone 2 — it has changed since.* if he has since changed the row himself.
+
+`deleteWorkout` re-opens the row its session ticked, and only while it still holds the mark: a row he un-ticked and ticked again by hand is his and stays. It runs after the DELETE and its own failure is swallowed (the session is gone; a stale tick is one tap on Home). The session screen re-syncs reminders when a row re-opened; the Coach's `delete_record` goes through the same repository.
+
+### 18.5 Tests
+
+- `db/exercise.test.mjs` §17: the earliest open row and no supplement; the mark and `done_on`; two and three sessions in a day; an edit not re-ticking; skipped and hand-done rows passed over; Away; a named row matching (case-folded), a free session falling through it, a different saved workout ticking nothing, Pull Day skipping an earlier Push Day; the read-only choice agreeing; a session for yesterday; a status changing nothing; delete re-opening only its own tick, not a hand re-tick, and nothing for a session that ticked nothing; the Undo's words, scope, untick, re-sync and refusal; the app helper; each finish path wired (pinned from source), and pairing never ticking.
+- `db/coach-tools.test.mjs` §49: the card names the row, a past date names none, execute ticks and reports it, nothing left means nothing said, `delete_record` re-opens it.
+- `db/screens-render.test.mjs` §36: Home and the hub draw the row; its Undo, pressed through the element tree, re-opens the row and both screens stop drawing it.
+
+### 18.6 What only a phone can settle
+
+- **Where he lands.** Finish goes back to whatever pushed the logger. From the Train tab and from Home's Resume line the row is there; from a notification tap that landed elsewhere the offer waits, undrawn, until the next Home or Train visit (it closes on leaving either). Whether that late Undo reads right, or should be dropped, is a device call.
+- **The literal earliest rule.** With rows *Zone 2 (07:00, unnamed)* and *Push Day (18:00, named)*, finishing Push Day at 08:00 ticks Zone 2: the earliest eligible row wins over an exact name. That is his rule as written; whether he wants the named row to win when the session matches it is a question for him.
+- **Undo placement on Home.** One unruled line between the open-session line and the hero. Whether it reads as the receipt for the session he just finished, or as noise above the hero.
