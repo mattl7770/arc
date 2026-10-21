@@ -19,9 +19,11 @@
  * the assistant turn and a `tool_result` user turn, and continue — until the
  * model answers in plain text (`end_turn`) or a guard trips.
  *
- * A turn's SETTLED text is what the model said after the last tool result, not
- * every text block it emitted along the way — see {@link settledText}. The live
- * `onToken` stream is unchanged and still carries everything, in order.
+ * A turn returns its text twice: SETTLED (`text`, what the model said after the
+ * last tool result — see {@link settledText}) for the callers that parse an
+ * answer, and the whole TRANSCRIPT (`transcript`, every round, exactly what
+ * `onToken` streamed) for the Coach thread, which must never drop a word the
+ * reader already saw.
  *
  * Model notes (claude-opus-5, the default): thinking is on by default and its
  * blocks stream with empty text; they are accumulated verbatim and echoed back
@@ -199,6 +201,8 @@ export type ToolExecutionOutcome = {
    * tool wrote anything.
    */
   receipt?: string;
+  /** The card line of a DECLINED write — see `CoachToolCall.declinedSummary`. */
+  declinedSummary?: string;
 };
 
 export type CoachTurnHandlers = {
@@ -626,19 +630,36 @@ const textOf = (blocks: WireContentBlock[]): string =>
  * dies mid-flight carries the whole {@link transcript} out on `CoachTurnError`,
  * because the audit record of a broken turn should be lossless.
  *
- * Nothing legitimately depends on the concatenation: `text` has exactly three
- * consumers (use-coach-chat's bubble/persistence, coach-service's empty-refusal
- * check, coach-pass's sentinel check), and all three want the answer.
+ * ## …but the Coach THREAD keeps everything (2026-10-21)
+ *
+ * The premise above is false for a WRITE, and the system prompt is what makes
+ * it false: it tells the Coach to "Present the drafted entry in full BEFORE
+ * calling" (system-prompt.ts), so the text ahead of a write call is the very
+ * thing the user is approving, not throat-clearing. Settling the thread on the
+ * answer turned a full drafted entry into "Saved." the instant the card was
+ * approved: the bubble, the `ai_messages` row, and every later turn's history
+ * lost the draft. Owner, verbatim: *"after you approve something coach's
+ * message gets overridden, can lose info"*.
+ *
+ * It is not safe for reads either. Nothing stops the model writing a plan and
+ * then calling a read to check one number in it, and no heuristic can tell
+ * that plan from "let me check" — dropping content is unrecoverable, while
+ * keeping narration costs a sentence. So the result carries BOTH:
+ * `text` (this function — the answer, which the coach pass's sentinel check and
+ * every JSON extraction riding this client need) and `transcript` (everything,
+ * which use-coach-chat renders, persists and replays). The refusal check in
+ * coach-service reads either; they are empty together.
  */
 function settledText(narration: string, answer: string): string {
   return answer.trim().length > 0 ? answer : narration;
 }
 
 /**
- * Everything the model said this turn, in order — the lossless audit fragment
- * carried out on {@link CoachTurnError}. `narration` already carries the seam
- * the loop appended when it parked each round, so this is a plain join and is
- * byte-identical to the single `text` accumulator this pair replaced.
+ * Everything the model said this turn, in order: the lossless audit fragment
+ * carried out on {@link CoachTurnError}, and (trailing whitespace trimmed) the
+ * `transcript` a turn returns. `narration` already carries the seam the loop
+ * appended when it parked each round, so this is a plain join and is
+ * byte-identical to what `onToken` streamed.
  */
 function transcript(narration: string, answer: string): string {
   return narration + answer;
@@ -650,8 +671,9 @@ function transcript(narration: string, answer: string): string {
  * lives), feed the results back, and repeat until it answers in text.
  *
  * Returns the settled text ({@link settledText} — the post-tool answer, which
- * is a SUFFIX of what `onToken` streamed rather than all of it), the complete
- * tool-call record for persistence, and why the turn stopped.
+ * is a SUFFIX of what `onToken` streamed rather than all of it), the whole
+ * transcript (all of it), the complete tool-call record for persistence, and
+ * why the turn stopped.
  */
 export async function runCoachTurn(
   config: ModelClientConfig,
@@ -706,7 +728,13 @@ export async function runCoachTurn(
               reply.stopReason === 'model_context_window_exceeded'
             ? 'max_tokens'
             : 'end_turn';
-      return { text: settledText(narration, answer), toolCalls, stopReason, usage };
+      return {
+        text: settledText(narration, answer),
+        transcript: transcript(narration, answer).trimEnd(),
+        toolCalls,
+        stopReason,
+        usage,
+      };
     }
 
     // Tool round: echo the assistant turn verbatim (thinking blocks included),
@@ -744,6 +772,9 @@ export async function runCoachTurn(
         ...(outcome.isError ? { isError: true } : {}),
         ...(outcome.declined ? { declined: true } : {}),
         ...(outcome.receipt ? { receipt: outcome.receipt } : {}),
+        ...(outcome.declined && outcome.declinedSummary
+          ? { declinedSummary: outcome.declinedSummary }
+          : {}),
       });
       results.push({
         type: 'tool_result',
@@ -754,12 +785,11 @@ export async function runCoachTurn(
     }
     messages.push({ role: 'user', content: results });
 
-    // Everything said this round was written before these results arrived, so
-    // it is narration: park it and start the answer clean. The LIVE stream is
-    // untouched — the reader still watches "checking your training…" arrive and
-    // still gets a seam before the continuation — but the text the turn settles
-    // on, persists and replays is only what the model says with the data in
-    // hand (see settledText).
+    // Everything said this round was written before these results arrived:
+    // park it and start the answer clean. The LIVE stream is untouched — the
+    // reader still watches it arrive and still gets a seam before the
+    // continuation — and the transcript keeps it with that same seam. Only the
+    // SETTLED `text` (the answer parsers want) leaves it out; see settledText.
     if (answer.length > 0) {
       if (!answer.endsWith('\n')) {
         handlers.onToken('\n\n');
@@ -770,5 +800,11 @@ export async function runCoachTurn(
     }
   }
 
-  return { text: settledText(narration, answer), toolCalls, stopReason: 'tool_use_limit', usage };
+  return {
+    text: settledText(narration, answer),
+    transcript: transcript(narration, answer).trimEnd(),
+    toolCalls,
+    stopReason: 'tool_use_limit',
+    usage,
+  };
 }

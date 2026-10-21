@@ -205,7 +205,8 @@ console.log('1. the claim detector: completed writes fire, offers and reads do n
 console.log('2. the REAL call site: a receipt exists if and only if a tool wrote');
 {
   // Same three resolutions db/coach-tools.test.mjs §16 needs to load
-  // coach-service under raw node ESM. Nothing else is faked: the agentic loop,
+  // coach-service under raw node ESM (plus `react`, for §7's hook). Nothing
+  // else is faked: the agentic loop,
   // the tool registry, the repositories and the SQLite writes are the real ones.
   const LOADER_HOOK = `
 const stub = (source) => ({
@@ -215,6 +216,8 @@ const stub = (source) => ({
 const STUBS = new Map([
   ['expo/fetch', stub('export const fetch = (...args) => globalThis.__ARC_TEST_FETCH__(...args);')],
   ['@/lib/db/client', stub('export const getDb = () => globalThis.__ARC_TEST_DB__;')],
+  // §7 drives the REAL use-coach-chat hook; 'react' is the headless hook runner.
+  ['react', { url: ${JSON.stringify(new URL('./hook-runner.mjs', import.meta.url).href)}, shortCircuit: true }],
 ]);
 export async function resolve(specifier, context, next) {
   const hit = STUBS.get(specifier);
@@ -222,7 +225,10 @@ export async function resolve(specifier, context, next) {
   try {
     return await next(specifier, context);
   } catch (error) {
-    if (specifier.startsWith('.')) return next(specifier + '/index.ts', context);
+    // A directory import ('./tools', or the hook's '@/lib/ai/tools').
+    if (specifier.startsWith('.') || specifier.startsWith('@/')) {
+      return next(specifier + '/index.ts', context);
+    }
     throw error;
   }
 }
@@ -477,6 +483,206 @@ console.log('6. the thread the model reads is dated, so time can pass in it');
   shed[0].content.includes('[yesterday]')
     ? ok('the first surviving turn keeps its stamp after the shed and the summary fold')
     : bad('shed + summary', JSON.stringify(shed));
+}
+
+// =============================================================================
+// Owner report, round 3 (2026-10-21), verbatim: "after you approve something
+// coach's message gets overridden, can lose info".
+//
+// The Coach is told to present a draft IN FULL before calling the write. The
+// hook settled the bubble on `result.text`, which is only what the model said
+// after its LAST tool call, so on approval the draft the owner had just read
+// was swapped for "Saved." in the bubble, in `ai_messages`, and in every later
+// turn's history. These drive the REAL hook (db/hook-runner.mjs stands in for
+// react) over the REAL service, gate, repositories and SQLite; only the model
+// stream is scripted.
+console.log('7. the whole turn stays in the thread: draft, card and answer, through the hook');
+{
+  const { useCoachChat } = await import('../src/hooks/use-coach-chat.ts');
+  const { renderHook } = await import('./hook-runner.mjs');
+
+  const DRAFT =
+    'Here is the recipe as drafted:\n\nChicken bowl, 2 servings\n- 200 g chicken thighs\n- 150 g jasmine rice';
+  const GROCERY_DRAFT = 'And the shopping for it:\n- Milk (2)\n- Spinach';
+  const GROCERIES = { items: [{ name: 'Milk', qty: '2' }, { name: 'Spinach' }] };
+
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  async function until(predicate) {
+    for (let i = 0; i < 2000; i++) {
+      if (predicate()) return true;
+      await tick();
+    }
+    return false;
+  }
+  const lastOf = (h) => h.result.messages[h.result.messages.length - 1];
+
+  /**
+   * One user turn through the hook. `decisions` answers each card in order;
+   * every card is recorded with the bubble as the owner saw it at that moment.
+   */
+  async function turn(h, text, replies, decisions = [], requests = []) {
+    const queue = [...replies];
+    globalThis.__ARC_TEST_FETCH__ = async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return responseOf(queue.shift());
+    };
+    const gates = [];
+    h.result.send(text);
+    for (;;) {
+      const moved = await until(() => h.result.pendingWrite !== null || !h.result.isResponding);
+      if (!moved) throw new Error(`turn "${text}" never settled`);
+      const pending = h.result.pendingWrite;
+      if (!pending) break;
+      gates.push({ card: pending.summary, bubble: lastOf(h).content });
+      h.result.resolveWrite(pending.id, decisions.shift() ?? false);
+    }
+    return { gates, requests };
+  }
+
+  const assistantRows = (raw) =>
+    raw
+      .prepare(
+        "SELECT content, tool_calls FROM ai_messages WHERE role = 'assistant' ORDER BY created_at, rowid"
+      )
+      .all();
+
+  // --- APPROVED: the reported case --------------------------------------------
+  {
+    const { db, raw } = freshDb();
+    globalThis.__ARC_TEST_DB__ = db;
+    const h = renderHook(() => useCoachChat());
+    const { gates } = await turn(
+      h,
+      'save that recipe',
+      [toolUseReply(DRAFT, 'save_recipe', RECIPE), textReply('Saved. It is in your recipe book.')],
+      [true]
+    );
+    const bubble = lastOf(h);
+    const expected = `${DRAFT}\n\nSaved. It is in your recipe book.`;
+
+    gates.length === 1 && gates[0].bubble === DRAFT
+      ? ok('at the card, the bubble holds the full draft the owner is approving')
+      : bad('draft at the gate', JSON.stringify(gates));
+    bubble.content === expected && bubble.content.startsWith(gates[0].bubble)
+      ? ok('after Approve the draft STAYS, with the answer appended under it (was: "Saved." alone)')
+      : bad('approved bubble', JSON.stringify(bubble.content));
+    JSON.stringify(bubble.writes) === JSON.stringify([gates[0].card]) &&
+    raw.prepare('SELECT title FROM recipes').all().length === 1
+      ? ok('…and the card survives as its receipt, with the row really written')
+      : bad('approved receipt', JSON.stringify({ writes: bubble.writes, card: gates[0].card }));
+
+    const rows = assistantRows(raw);
+    rows.length === 1 && rows[0].content === expected
+      ? ok('the persisted ai_messages row is the whole turn, identical to the bubble')
+      : bad('persisted row', JSON.stringify(rows));
+
+    // A reload reads the row, so it must agree with the live thread exactly.
+    h.unmount();
+    const again = renderHook(() => useCoachChat());
+    const reloaded = lastOf(again);
+    reloaded.content === expected &&
+    JSON.stringify(reloaded.writes) === JSON.stringify([gates[0].card])
+      ? ok('a reloaded thread shows the same draft, answer and receipt')
+      : bad('reloaded bubble', JSON.stringify(reloaded));
+
+    // THE HISTORY THE MODEL SEES on the next turn — the request actually sent.
+    const { requests } = await turn(again, 'thanks', [textReply('Any time.')]);
+    const replayed = requests[0].messages.find((m) => m.role === 'assistant');
+    const replayedText = typeof replayed?.content === 'string' ? replayed.content : '';
+    replayedText.includes('200 g chicken thighs') && replayedText.includes('Saved. It is in')
+      ? ok('the next turn replays the draft to the model, not just "Saved."')
+      : bad('replayed history', JSON.stringify(requests[0].messages));
+    again.unmount();
+  }
+
+  // --- DECLINED: the draft is what the owner wants to edit next ---------------
+  {
+    const { db, raw } = freshDb();
+    globalThis.__ARC_TEST_DB__ = db;
+    const h = renderHook(() => useCoachChat());
+    const { gates } = await turn(
+      h,
+      'save that recipe',
+      [
+        toolUseReply(DRAFT, 'save_recipe', RECIPE),
+        textReply("Understood, I won't save it. Tell me what to change."),
+      ],
+      [false]
+    );
+    const bubble = lastOf(h);
+    const expected = `${DRAFT}\n\nUnderstood, I won't save it. Tell me what to change.`;
+    bubble.content === expected
+      ? ok('after Decline the draft stays too, above the acknowledgement')
+      : bad('declined bubble', JSON.stringify(bubble.content));
+    bubble.writes === undefined &&
+    JSON.stringify(bubble.declined) === JSON.stringify([gates[0].card]) &&
+    !bubble.phantomWrite &&
+    raw.prepare('SELECT title FROM recipes').all().length === 0
+      ? ok('no receipt and no row; the refused card is kept, in its own words')
+      : bad('declined trace', JSON.stringify(bubble));
+    h.unmount();
+    const reloaded = lastOf(renderHook(() => useCoachChat()));
+    reloaded.content === expected &&
+    JSON.stringify(reloaded.declined) === JSON.stringify([gates[0].card])
+      ? ok('…and both survive a reload (declinedSummary rides the stored tool record)')
+      : bad('declined reload', JSON.stringify(reloaded));
+  }
+
+  // --- TWO TOOL CALLS, two rounds: approve one, decline the other -------------
+  {
+    const { db, raw } = freshDb();
+    globalThis.__ARC_TEST_DB__ = db;
+    const h = renderHook(() => useCoachChat());
+    const { gates } = await turn(
+      h,
+      'save the recipe and add what I need',
+      [
+        toolUseReply(DRAFT, 'save_recipe', RECIPE, 'toolu_1'),
+        toolUseReply(GROCERY_DRAFT, 'add_grocery_items', GROCERIES, 'toolu_2'),
+        textReply('Recipe saved; the groceries are left off.'),
+      ],
+      [true, false]
+    );
+    const bubble = lastOf(h);
+    const expected = `${DRAFT}\n\n${GROCERY_DRAFT}\n\nRecipe saved; the groceries are left off.`;
+    gates.length === 2 &&
+    gates[0].bubble === DRAFT &&
+    gates[1].bubble === `${DRAFT}\n\n${GROCERY_DRAFT}` &&
+    bubble.content === expected
+      ? ok('every round is kept, in order: the bubble only ever grows, card to card to answer')
+      : bad('two-call bubble', JSON.stringify({ gates, content: bubble.content }));
+    JSON.stringify(bubble.writes) === JSON.stringify([gates[0].card]) &&
+    JSON.stringify(bubble.declined) === JSON.stringify([gates[1].card]) &&
+    raw.prepare('SELECT title FROM recipes').all().length === 1 &&
+    raw.prepare('SELECT name FROM grocery_items').all().length === 0
+      ? ok('the approved card is a receipt, the declined one a decline line, and the DB agrees')
+      : bad('two-call trace', JSON.stringify(bubble));
+    assistantRows(raw)[0]?.content === expected
+      ? ok('…and the row holds all three texts')
+      : bad('two-call row', JSON.stringify(assistantRows(raw)));
+    h.unmount();
+  }
+
+  // --- A READ-ONLY turn keeps its pre-tool text as well -----------------------
+  // Text ahead of a read is not reliably narration: a plan written and then
+  // checked against one number is still the plan. Keeping a "let me check"
+  // costs a sentence; dropping content cannot be undone.
+  {
+    const { db } = freshDb();
+    globalThis.__ARC_TEST_DB__ = db;
+    const h = renderHook(() => useCoachChat());
+    const PLAN = 'Plan for today: zone 2 for 40 minutes, then mobility. Checking your log first.';
+    await turn(h, 'plan my day', [
+      toolUseReply(PLAN, 'get_today_snapshot', {}),
+      textReply('Nothing logged yet, so the plan stands.'),
+    ]);
+    lastOf(h).content === `${PLAN}\n\nNothing logged yet, so the plan stands.` &&
+    lastOf(h).writes === undefined &&
+    lastOf(h).declined === undefined
+      ? ok('a read-only turn keeps the plan written before its read')
+      : bad('read-only bubble', JSON.stringify(lastOf(h)));
+    h.unmount();
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
