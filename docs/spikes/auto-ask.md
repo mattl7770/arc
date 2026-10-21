@@ -17,6 +17,8 @@ The fix also closed a second gap the finding exposed. An answer's effect can onl
 
 It was paid for inside the 1,000 ceiling (967 → 973) by the confidence trim the constant had named, plus one fold. The full account is in `docs/nutrition-subapp.md` §12l, "Device finding".
 
+**Device round 3, 2026-10-21 (item 60): questions were being combined, and Other took two taps.** Two changes landed in `docs/nutrition-subapp.md` §18. First, one decision per question: both prompts forbid a compound, and the parser refuses one (`isCompoundAsk`). Second, §3.3's "Other" no longer opens a `TextInput` in a well below the chips. The Other chip itself becomes the field, focused on arrival, and Return applies it. §3.3 below describes the original design.
+
 The original proposal follows unchanged.
 **Migration:** **none.** (Confirmed at build: C5 needed no schema at all. Its two branch-mates were renumbered `0048`→`0057` and `0049`→`0058` at commit — see `0057`’s header for why a *free* number below main’s head is worse than a taken one.) Questions are a property of an estimate in flight, not of a logged record — nothing is persisted that `meal_items` cannot already hold.
 **Citations verified against `main` at `950c846`.** `main` moves several times a day; if a line number below misses, the surrounding quote is the anchor.

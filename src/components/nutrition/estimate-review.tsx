@@ -14,6 +14,7 @@ import { fmtAmount, fmtInt, pieceNounFor, piecesLabel, pluralNoun } from '@/lib/
 import { keyMicroLabel, partsAsItem } from '@/lib/nutrition/key-micro';
 import {
   amountLabel,
+  ANSWERED_BY_TYPING,
   currentPortion,
   isComposite,
   type ReviewItem,
@@ -551,6 +552,128 @@ export type QuestionHandlers = {
   onCancelOther: () => void;
 };
 
+const NO_TYPED: Record<string, string> = {};
+
+const CHIP =
+  'min-h-[44px] items-center justify-center rounded-btn border border-hairline px-4 active:bg-paper-dim';
+const CHIP_ON = 'min-h-[44px] max-w-full items-center justify-center rounded-btn bg-ink px-4';
+const CHIP_TEXT = 'font-label text-[13px] uppercase tracking-[1.2px] text-ink';
+const CHIP_TEXT_ON = 'font-label text-[13px] uppercase tracking-[1.2px] text-paper-hi';
+
+/**
+ * The Other chip, closed. Answered by typing, it fills with ink like any
+ * answered chip and carries what was typed — so the answer reads where it was
+ * given, and a tap reopens it to change.
+ */
+function OtherChip({
+  ask,
+  said,
+  onPress,
+}: {
+  ask: string;
+  /** The typed answer that stands, or null when this question has none. */
+  said: string | null;
+  onPress: () => void;
+}) {
+  const on = said !== null;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected: on }}
+      accessibilityLabel={
+        on ? `Change your typed answer to: ${ask}` : `Type another answer to: ${ask}`
+      }
+      onPress={onPress}
+      className={on ? CHIP_ON : CHIP}>
+      <Text numberOfLines={1} className={on ? CHIP_TEXT_ON : CHIP_TEXT}>
+        {on && said !== '' ? said : 'Other'}
+      </Text>
+    </Pressable>
+  );
+}
+
+/**
+ * The Other chip, OPEN: the chip itself becomes the field (device round 3,
+ * item 60 — "clicking on other should instantly bring up typing and type
+ * directly into the other box").
+ *
+ * - **In place.** It takes the chip's slot in the row and grows to the rest of
+ *   the line (wrapping to its own when the row is full), at the chip's height
+ *   and corner, outlined in ink because it is the live control. No well: the
+ *   plate is this block's one device, and a well inside it was a second.
+ * - **Focused on arrival.** `autoFocus` puts the caret in it and the keyboard
+ *   up in the same tap that opened it. The tap on Other is still the opt-in the
+ *   owner asked for (C5: typing only ever behind a click); it is now the ONLY
+ *   tap before typing.
+ * - **Return answers it.** `returnKeyType="done"` with `onSubmitEditing` — the
+ *   same commit-and-dismiss every other field on this screen uses
+ *   (src/components/ui/keyboard.ts). The trailing control says Apply for the
+ *   eye, and Cancel while the field is empty.
+ * - **Left as it was, it closes.** Blurring a field that is empty — or that
+ *   still reads the typed answer it was reopened on — puts the chip back, so a
+ *   stray tap on Other costs nothing and never a second model call.
+ */
+function OtherField({
+  ask,
+  standing,
+  text,
+  busy,
+  onText,
+  onApply,
+  onCancel,
+}: {
+  ask: string;
+  /** The typed answer this field was reopened on, or null. */
+  standing: string | null;
+  text: string;
+  busy: boolean;
+  onText: (text: string) => void;
+  onApply: () => void;
+  onCancel: () => void;
+}) {
+  const said = text.trim();
+  // Nothing to apply: empty, or the answer that already stands.
+  const empty = said === '' || said === standing;
+  return (
+    <View className="min-h-[44px] min-w-[180px] grow flex-row items-center rounded-btn border border-ink pl-3">
+      <TextInput
+        autoFocus
+        value={text}
+        onChangeText={onText}
+        onSubmitEditing={() => {
+          if (!empty && !busy) onApply();
+        }}
+        onBlur={() => {
+          if (empty && !busy) onCancel();
+        }}
+        returnKeyType="done"
+        placeholder="Type your answer"
+        placeholderTextColor={palette.inkMuted}
+        editable={!busy}
+        accessibilityLabel={`Your answer to: ${ask}`}
+        className="min-h-[42px] flex-1 py-2 font-serif text-[15px] leading-5 text-ink"
+      />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={empty ? 'Cancel this typed answer' : 'Apply this answer'}
+        accessibilityState={{ disabled: busy }}
+        disabled={busy}
+        hitSlop={8}
+        onPress={empty ? onCancel : onApply}
+        className="min-h-[42px] items-center justify-center px-3 active:opacity-60">
+        <Text
+          className={
+            busy || empty
+              ? 'font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted'
+              : 'font-label text-[12px] uppercase tracking-[1.2px] text-ink'
+          }>
+          {busy ? 'Working…' : empty ? 'Cancel' : 'Apply'}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
 /**
  * The questions, above the item table.
  *
@@ -570,6 +693,7 @@ export type QuestionHandlers = {
 export function QuestionsPlate({
   questions,
   answers,
+  typed = NO_TYPED,
   otherFor,
   otherText,
   otherBusy,
@@ -577,6 +701,8 @@ export function QuestionsPlate({
 }: {
   questions: EstimateQuestion[];
   answers: QuestionAnswers;
+  /** What was typed, per question answered by typing — drawn on its Other chip. */
+  typed?: Record<string, string>;
   /** The question whose typed answer is open, or null. */
   otherFor: string | null;
   otherText: string;
@@ -629,90 +755,40 @@ export function QuestionsPlate({
                         accessibilityState={{ selected: on }}
                         accessibilityLabel={`${question.ask} ${option.label}`}
                         onPress={() => handlers.onAnswer(question.id, on ? null : optionIndex)}
-                        className={
-                          on
-                            ? 'min-h-[44px] items-center justify-center rounded-btn bg-ink px-4'
-                            : 'min-h-[44px] items-center justify-center rounded-btn border border-hairline px-4 active:bg-paper-dim'
-                        }>
-                        <Text
-                          className={
-                            on
-                              ? 'font-label text-[13px] uppercase tracking-[1.2px] text-paper-hi'
-                              : 'font-label text-[13px] uppercase tracking-[1.2px] text-ink'
-                          }>
-                          {option.label}
-                        </Text>
+                        className={on ? CHIP_ON : CHIP}>
+                        <Text className={on ? CHIP_TEXT_ON : CHIP_TEXT}>{option.label}</Text>
                       </Pressable>
                     );
                   })}
                   {question.allowOther ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Type another answer to: ${question.ask}`}
-                      onPress={() => handlers.onOpenOther(question.id)}
-                      className="min-h-[44px] items-center justify-center rounded-btn border border-hairline px-4 active:bg-paper-dim">
-                      <Text className="font-label text-[13px] uppercase tracking-[1.2px] text-ink">
-                        Other
-                      </Text>
-                    </Pressable>
+                    isOther ? (
+                      <OtherField
+                        ask={question.ask}
+                        standing={chosen === ANSWERED_BY_TYPING ? (typed[question.id] ?? null) : null}
+                        text={otherText}
+                        busy={otherBusy}
+                        onText={handlers.onOtherText}
+                        onApply={() => handlers.onApplyOther(question.id)}
+                        onCancel={handlers.onCancelOther}
+                      />
+                    ) : (
+                      <OtherChip
+                        ask={question.ask}
+                        said={chosen === ANSWERED_BY_TYPING ? (typed[question.id] ?? '') : null}
+                        onPress={() => handlers.onOpenOther(question.id)}
+                      />
+                    )
                   ) : null}
                 </View>
 
-                {/* A capture surface is a well, and the input inside it is bare.
-                    Reached by a CLICK, which is the owner's constraint: typing
-                    is opt-in behind the Other chip and never the default. */}
+                {/* The one place a second model call happens, said out loud —
+                    and what it does NOT do, because a resent photo would be
+                    billed in full every time. */}
                 {isOther ? (
-                  <View className="mt-3">
-                    <Block device="well">
-                      <TextInput
-                        value={otherText}
-                        onChangeText={handlers.onOtherText}
-                        placeholder="e.g. it was a triple"
-                        placeholderTextColor={palette.inkMuted}
-                        editable={!otherBusy}
-                        accessibilityLabel={`Your answer to: ${question.ask}`}
-                        className="min-h-[36px] font-serif text-[15px] leading-6 text-ink"
-                      />
-                    </Block>
-                    <View className="mt-2 flex-row gap-2">
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Apply this answer"
-                        accessibilityState={{ disabled: otherBusy || otherText.trim() === '' }}
-                        disabled={otherBusy || otherText.trim() === ''}
-                        onPress={() => handlers.onApplyOther(question.id)}
-                        className={
-                          otherBusy || otherText.trim() === ''
-                            ? 'min-h-[44px] flex-1 items-center justify-center rounded-btn border border-paper-deep'
-                            : 'min-h-[44px] flex-1 items-center justify-center rounded-btn border border-ink active:opacity-60'
-                        }>
-                        <Text
-                          className={
-                            otherBusy || otherText.trim() === ''
-                              ? 'font-label text-[13px] uppercase tracking-[1.2px] text-ink-muted'
-                              : 'font-label text-[13px] uppercase tracking-[1.2px] text-ink'
-                          }>
-                          {otherBusy ? 'Working…' : 'Apply'}
-                        </Text>
-                      </Pressable>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel="Cancel this typed answer"
-                        onPress={handlers.onCancelOther}
-                        className="min-h-[44px] items-center justify-center px-3 active:opacity-60">
-                        <Text className="font-label text-[12px] uppercase tracking-[1.2px] text-ink-muted">
-                          Cancel
-                        </Text>
-                      </Pressable>
-                    </View>
-                    {/* The one place a second model call happens, said out loud
-                        — and what it does NOT do, because a resent photo would
-                        be billed in full every time. */}
-                    <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
-                      Applying asks the model again, in words only — the photo is not sent a second
-                      time.
-                    </Text>
-                  </View>
+                  <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
+                    Applying asks the model again, in words only — the photo is not sent a second
+                    time.
+                  </Text>
                 ) : null}
               </View>
             </View>

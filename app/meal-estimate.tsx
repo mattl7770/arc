@@ -689,6 +689,7 @@ export default function MealEstimateScreen() {
                 questions={asking.questions}
                 answers={asking.answers}
                 otherFor={asking.otherFor}
+                typed={asking.typed}
                 otherText={asking.otherText}
                 otherBusy={asking.otherBusy}
                 handlers={asking.handlers}
