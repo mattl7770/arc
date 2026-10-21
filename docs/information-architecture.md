@@ -130,6 +130,18 @@ Three rules the editor keeps. **The time is not offered:** it is the moment the 
 
 **Not tiles, on purpose:** notes/voice live in the hero field; other body numbers live in the keypad chips; **Medication/peptides** fold into the Supplement sheet as a type toggle (they're usually part of a protocol stack); **habits** are completed on Home's mission, not re-logged here.
 
+### The quick-log box — the Action Button's door (item 63, built 2026-10-21; needs an EAS build)
+
+*"Action button brings up log anything box + this works for foods, if possible a button to open photo logger too."* The box is its own pushed screen, **`/quick-log`** (`app/quick-log.tsx`), not a tab and not a mode of the Log tab: it opens over whatever was on screen, keyboard up, with the command field's well and its one pine send. It is reached from **outside** the app only — the **"Log in ARC"** App Intent (Settings › Action Button › Shortcut › ARC; also in Shortcuts and Spotlight with no setup) or the link **`arc://quick`** — and both are held behind the app lock exactly as a tapped notification is (`src/lib/log/quick-launch.ts`; the ADR is in `docs/decisions.md`, 2026-10-21).
+
+What a line does (`src/lib/log/quick-line.ts`):
+
+- **A metric files as the Log tab files it** — `weight 178`, `16 oz water`, `hrv 48`, `st 200` — through the same parser, the same screen-time filing and the same range check, on the logical day, and the box says what it filed. A measurement the range check refuses (`weight 0`) is a note, as on the Log tab.
+- **Anything else is food.** The words go to `/meal-estimate?describe=…`, which fills its field and runs the estimate once; nothing is logged until its review is saved. Without a model key the words are kept as a note instead, and the box says why.
+- **One rule stricter than the Log tab:** a weight found by its unit alone (`180 lb`) counts only when the number and unit are the whole line, so `1 lb ground beef` is food, not a one-pound weigh-in sent to Apple Health.
+
+**Photograph a meal** under the well opens the photo logger (`/meal-estimate?start=camera`), the Eat tab's Photo quick-log. Both hand-offs *replace* the box, so the estimate's Save lands back where the button was pressed.
+
 ### Nutrition & Exercise (sub-app screens → tabs 2026-08-09) — real as of 2026-07-25
 **As of 2026-08-09 these two are tabs** (Eat, Train) as well as pushed routes — see "The tab bar". They remain sub-app *screens* in every other sense: the families beneath them (food search, meal detail, targets, templates, micros, history; workout live/log, routines, programs, exercise detail) are still stack-pushed from the hub.
 Built out from the mockups and wired to the on-device DB. **Nutrition:** manual meal entry → `meals` table (0002); "Today" sums kcal + macros, "Eaten today" lists the day. Growing into photo/text logging (Phase 3, Coach), templates, micros, grocery, pantry, recipes. **Exercise:** live/past session logging (`app/workout-log.tsx`) → `workouts` + `workout_sets` (0003); week summary + recent sessions read live. Growing into templates, the fuller workout builder, VO₂max/mobility metrics, progressive-overload analytics. The **Supplement/Therapy capture sheet** is also real (one-tap quick-log + manual add → ad-hoc `log_entries`). All cross-link from Data (history/trends) later.

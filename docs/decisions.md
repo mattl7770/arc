@@ -65,6 +65,58 @@ here.
 **Revisit if** search fires on turns that did not need it often enough to show in the captions, or a
 real menu lookup returns figures the owner finds worse than the estimate.
 
+## 2026-10-21 — Action Button via a native App Intent
+
+**Owner's choice, 2026-10-21** (item 63: *"Action button brings up log anything box + this works for
+foods, if possible a button to open photo logger too"*): a **native App Intent**, so ARC appears by
+name under Settings › Action Button › Shortcut, rather than a hand-built Shortcut that opens a URL.
+**It needs an EAS build, and every line of its Swift is uncompiled until one runs** — there is no
+Xcode on the machine it was written on.
+
+**What exists.** `modules/arc-intents/`, a local Expo module shaped like `modules/arc-backup/`, plus
+one config plugin:
+
+- `app-target/ArcQuickLogIntent.swift` — `ArcQuickLogIntent: AppIntent` ("Log in ARC",
+  `openAppWhenRun = true`) and `ArcAppShortcuts: AppShortcutsProvider` (phrases "Log in ARC",
+  "Quick log in ARC"; short title "Log in ARC"), both `@available(iOS 17.0, *)` — the Action Button
+  only exists on iPhones that ship with 17+.
+- `app.plugin.js`, listed in `app.json` `plugins` — copies that file into `ios/<Project>/` at prebuild
+  and links it into the **app target's** Sources phase through Expo's own
+  `IOSConfig.XcodeProjectFile.withBuildSourceFile`. The intent sits in the app target, not the pod,
+  because App Shortcuts are read from the metadata Xcode extracts from the app's own bundle and an app
+  has one `AppShortcutsProvider`; a static-library pod is the place that metadata is least likely to
+  be found. No Info.plist key is needed.
+- `ios/ArcIntents.podspec` + `ios/ArcIntentsModule.swift`, autolinked from `modules/` exactly as
+  `ArcBackup` is (`expo-modules-autolinking resolve --platform apple` lists pod `ArcIntents`, class
+  `ArcIntentsModule` — checked on Windows). It exposes `takeQuickLogRequest()` and an
+  `onQuickLogRequested` event to JavaScript.
+
+**Why a stamp, not a URL.** The intent does not open `arc://quick`. `openAppWhenRun` brings the app
+forward and runs `perform()` in ARC's process, and on a cold launch that is before the JavaScript
+bundle exists. A URL handed to the app at that moment reaches expo-router only if it happens to land
+before the router reads its initial URL, or after it subscribes — a race this ADR declines to bet the
+feature on. So `perform()` writes the time into `UserDefaults` (which waits for JavaScript however
+long the bundle takes) and posts a `NotificationCenter` notification (which wakes JavaScript at once
+when it is already running). The module hands the stamp over once and clears it; a stamp older than
+two minutes is dropped, so a launch that crashed before reading it cannot open the box tomorrow.
+`arc://quick` exists too, for a plain Shortcut or a link; it enters the same queue.
+
+**`OpenIntent` was not used.** It is the iOS 18 protocol for opening a specific `AppEntity` (its
+`target`), and the quick box has no entity to open. `openAppWhenRun` on a plain `AppIntent` is the
+iOS 16+ door that says only "open the app", which is all this is. (iOS 26 deprecates it for
+`supportedModes`; a deprecation warning, not an error. Move when the floor rises.)
+
+**The lock.** The request — from the intent or the link — is never routed on arrival. It waits behind
+the notification tap's gate (`src/lib/notifications/taps.ts`): the lock's cover down AND the root
+Stack mounted, re-checked when the cover lifts, on every navigation change and on every foreground.
+Two presses before Face ID open one box. `src/lib/log/quick-launch.ts`; `db/log.test.mjs` §24–§27.
+
+**What a build has to prove.** That both Swift files compile; that "Log in ARC" is listed under
+Settings › Action Button › Shortcut › ARC after install with no setup; that a press on a locked phone
+opens the box after Face ID, cold and warm. If the build fails on them, remove
+`"./modules/arc-intents/app.plugin.js"` from `app.json` and delete `modules/arc-intents/` — the app
+returns to having no intent, and `arc://quick` still works.
+
 ## 2026-09-23 — The Coach may delete what a screen can delete
 
 > **Amended 2026-09-25 — the owner's answers to the questions this ADR left open**

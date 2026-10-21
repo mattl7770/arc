@@ -84,6 +84,17 @@ import {
   metricByKey,
 } from '../src/lib/log/metrics.ts';
 import { parseCommand } from '../src/lib/log/parse.ts';
+import {
+  ARC_INTENTS_MODULE,
+  QUICK_LOG_EVENT,
+  QUICK_LOG_ROUTE,
+  createQuickLaunchLedger,
+  isFreshRequest,
+  isQuickLink,
+  requestQuickLaunch,
+  routeQuickLaunches,
+} from '../src/lib/log/quick-launch.ts';
+import { quickLineAction } from '../src/lib/log/quick-line.ts';
 
 let pass = 0;
 let fail = 0;
@@ -1589,6 +1600,345 @@ console.log('23. every capture corrects through the Log tab’s own path, and it
   whole('log_entries', creatineId) === corrected
     ? ok('a corrected row removes and comes back as corrected')
     : bad('undo after edit');
+}
+
+// ---------------------------------------------------------------------------
+// 24–27. The quick-log box behind the Action Button (item 63; ADR "Action
+// Button via a native App Intent", 2026-10-21). §24 the gate, §25 what a line
+// does, §26 the link and the screens it reaches, §27 the native wiring — the
+// Swift is uncompiled on this machine, so its names are pinned at the source.
+console.log('24. quick launch: held while the lock is up, delivered once when it lifts');
+{
+  const NOW = Date.UTC(2026, 9, 21, 9, 0, 0);
+  const fakeSource = () => {
+    const listeners = new Set();
+    return {
+      stamp: null,
+      takes: 0,
+      take() {
+        this.takes++;
+        const s = this.stamp;
+        this.stamp = null;
+        return s;
+      },
+      onRequest(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      fire() {
+        for (const l of [...listeners]) l();
+      },
+      get listening() {
+        return listeners.size;
+      },
+    };
+  };
+  const fakeGate = (ready = false) => ({
+    ready,
+    delivered: 0,
+    isReady() {
+      return this.ready;
+    },
+    deliver() {
+      this.delivered++;
+    },
+  });
+
+  // COLD, LOCKED: the intent ran before JavaScript; the stamp is waiting.
+  const ledger = createQuickLaunchLedger();
+  const source = fakeSource();
+  source.stamp = NOW - 1500;
+  const gate = fakeGate(false);
+  const routing = routeQuickLaunches(source, gate, ledger, () => NOW);
+  gate.delivered === 0 && ledger.pending === true && source.stamp === null
+    ? ok('a cold intent launch under the lock is taken (once) and HELD, not routed')
+    : bad('cold locked', JSON.stringify({ d: gate.delivered, p: ledger.pending }));
+  routing.flush();
+  routing.flush();
+  gate.delivered === 0
+    ? ok('state changes while still locked deliver nothing')
+    : bad('delivered under the lock');
+  gate.ready = true;
+  routing.flush();
+  routing.flush();
+  routing.check();
+  gate.delivered === 1 && ledger.pending === false
+    ? ok('the lock lifts: delivered exactly once, however many re-checks follow')
+    : bad('once after unlock', String(gate.delivered));
+
+  // WARM: the event, and a second press, before Face ID — one box.
+  gate.ready = false;
+  source.stamp = NOW;
+  source.fire();
+  source.stamp = NOW;
+  source.fire();
+  gate.ready = true;
+  routing.flush();
+  gate.delivered === 2
+    ? ok('two warm presses behind the lock open ONE box when it lifts')
+    : bad('warm coalesce', String(gate.delivered));
+  // The event and the foreground re-check race on one press: whoever reads first.
+  source.stamp = NOW;
+  source.fire();
+  routing.check();
+  gate.delivered === 3
+    ? ok('the event and the foreground re-check on one press deliver once')
+    : bad('event vs foreground', String(gate.delivered));
+
+  // THE LINK DOOR: arc://quick while the app is open and unlocked goes straight through.
+  requestQuickLaunch(ledger);
+  gate.delivered === 4
+    ? ok('an arc://quick request wakes the router and delivers at once when the gate is open')
+    : bad('link wake', String(gate.delivered));
+
+  // STALE / SKEWED stamps.
+  source.stamp = NOW - 3 * 60 * 1000;
+  routing.check();
+  source.stamp = NOW + 2000;
+  routing.check();
+  gate.delivered === 5 &&
+  isFreshRequest(NOW - 119_000, NOW) &&
+  !isFreshRequest(NOW - 121_000, NOW) &&
+  !isFreshRequest(NOW + 6000, NOW) &&
+  !isFreshRequest(null, NOW) &&
+  !isFreshRequest(Number.NaN, NOW)
+    ? ok('a stamp older than two minutes is dropped; a few seconds of clock skew is not')
+    : bad('freshness', String(gate.delivered));
+
+  // STOP: nothing is delivered after it, and a waiting request survives it.
+  routing.stop();
+  requestQuickLaunch(ledger);
+  source.listening === 0 && gate.delivered === 5 && ledger.pending === true
+    ? ok('a stopped router delivers nothing and lets go of the event; the request waits')
+    : bad('stop', JSON.stringify({ l: source.listening, d: gate.delivered }));
+  const again = routeQuickLaunches(null, gate, ledger, () => NOW);
+  gate.delivered === 6 && ledger.pending === false
+    ? ok('the next registration (a remounted layout) delivers what waited, once')
+    : bad('remount', String(gate.delivered));
+  again.stop();
+
+  // A LINK BEFORE ANY ROUTER EXISTS — the cold initial URL is read first.
+  const early = createQuickLaunchLedger();
+  requestQuickLaunch(early);
+  const lockedGate = fakeGate(false);
+  const late = routeQuickLaunches(null, lockedGate, early, () => NOW);
+  lockedGate.delivered === 0 && early.pending
+    ? ok('a link read before the layout registers waits, and is held by a locked gate')
+    : bad('early link');
+  lockedGate.ready = true;
+  late.flush();
+  late.flush();
+  lockedGate.delivered === 1
+    ? ok('…and is delivered once when the gate opens')
+    : bad('early link delivery', String(lockedGate.delivered));
+  late.stop();
+
+  // FAILURES: a throwing gate holds; a throwing delivery is not retried.
+  const shaky = createQuickLaunchLedger();
+  let attempts = 0;
+  const r = routeQuickLaunches(
+    null,
+    {
+      isReady: () => {
+        throw new Error('no state');
+      },
+      deliver: () => attempts++,
+    },
+    shaky
+  );
+  requestQuickLaunch(shaky);
+  r.stop();
+  const r2 = routeQuickLaunches(
+    null,
+    {
+      isReady: () => true,
+      deliver: () => {
+        attempts++;
+        throw new Error('push failed');
+      },
+    },
+    shaky
+  );
+  r2.flush();
+  r2.stop();
+  attempts === 1 && shaky.pending === false
+    ? ok('a gate that throws holds the request; a delivery that throws is attempted once')
+    : bad('failures', JSON.stringify({ attempts, pending: shaky.pending }));
+}
+
+console.log('25. quick box: a metric files as the Log tab files it, anything else is food');
+{
+  // 09:00 under a midnight boundary: screen time files to yesterday (noon rule).
+  const at = new Date(2026, 9, 21, 9, 0, 0, 0);
+  const act = (line) => quickLineAction(line, undefined, at, '00:00');
+  const cases = [
+    ['weight 178', (a) => a.kind === 'metric' && a.metric === 'weight'],
+    ['weight 178 this morning', (a) => a.kind === 'metric' && a.metric === 'weight'],
+    ['16 oz water', (a) => a.kind === 'metric' && a.metric === 'water'],
+    ['hrv 48', (a) => a.kind === 'metric' && a.metric === 'hrv' && a.canonical === 48],
+    ['bf 18', (a) => a.kind === 'metric' && a.metric === 'body_fat' && a.canonical === 18],
+    ['180 lb', (a) => a.kind === 'metric' && a.metric === 'weight'],
+    ['48 ms', (a) => a.kind === 'metric' && a.metric === 'hrv'],
+    ['st 200', (a) => eq(a, { kind: 'screen_time', date: '2026-10-20', minutes: 200 })],
+    ['weight 0', (a) => eq(a, { kind: 'note', text: 'weight 0' })],
+    ['screen 30h', (a) => a.kind === 'note'],
+    ['2 eggs and toast', (a) => eq(a, { kind: 'food', description: '2 eggs and toast' })],
+    ['1 lb ground beef', (a) => a.kind === 'food'],
+    ['chicken thighs 0.5 kg', (a) => a.kind === 'food'],
+    ['grilled salmon, ½ cup rice, steamed broccoli', (a) => a.kind === 'food'],
+    ['black coffee', (a) => a.kind === 'food'],
+    ['glass of water', (a) => a.kind === 'food'],
+    ['  oats  with   berries ', (a) => eq(a, { kind: 'food', description: 'oats  with   berries' })],
+    ['   ', (a) => a.kind === 'empty'],
+  ];
+  const wrong = cases.filter(([line, pass]) => !pass(act(line)));
+  wrong.length === 0
+    ? ok(`${cases.length} sample lines land as metric, screen time, note, food or nothing as expected`)
+    : bad('quick lines', wrong.map(([l]) => `${l} → ${JSON.stringify(act(l))}`).join('; '));
+
+  // The one place the box is stricter than the Log tab, and why.
+  parseCommand('1 lb ground beef').kind === 'metric' && act('1 lb ground beef').kind === 'food'
+    ? ok('a unit-only weight inside a food line ("1 lb ground beef") is food here, not a weigh-in')
+    : bad('unit-only hazard');
+
+  // A line that is a metric here is the SAME metric the Log tab files.
+  const same = ['weight 178', '16 oz water', 'hrv 48', 'bf 18'].every((line) => {
+    const a = act(line);
+    const p = parseCommand(line);
+    return a.kind === 'metric' && p.kind === 'metric' && a.metric === p.metric && near(a.canonical, p.canonical);
+  });
+  same ? ok('every metric line files the value parseCommand gives the Log tab') : bad('metric parity');
+
+  // Past midnight under a 04:00 boundary, screen time files wherever the
+  // command field's own rule files it (§14/§20: Apple's day is the calendar's),
+  // because the box calls the same `screenTimeFiling` with the same boundary.
+  const small = new Date(2026, 9, 21, 1, 0, 0, 0);
+  const late = quickLineAction('st 200', undefined, small, '04:00');
+  eq(late, { kind: 'screen_time', ...screenTimeFiling(parseCommand('st 200'), small, '04:00') })
+    ? ok('past midnight under a 04:00 boundary, screen time files exactly as the command field files it')
+    : bad('boundary parity', JSON.stringify(late));
+  // And the metric rows land under the LOGICAL day: at 01:00 under a 04:00
+  // boundary that is still the 20th (the screen passes todayISODate(now)).
+  todayISODate(small, '04:00') === '2026-10-20'
+    ? ok('at 01:00 under a 04:00 boundary the box files to the 20th, the logical day')
+    : bad('logical day', todayISODate(small, '04:00'));
+}
+
+console.log('26. quick box: arc://quick, the route it reaches, and the hand-offs');
+{
+  const yes = ['arc://quick', 'arc:///quick', 'arc://quick/', 'arc://quick?from=shortcut', '/quick', 'quick', 'ARC://Quick'];
+  const no = ['arc://quick-log', 'arc://quickly', 'arc://log/quick', 'arc://', 'arc://log/screen-time?minutes=200', 'arc://expo-sharing'];
+  yes.every(isQuickLink) && !no.some(isQuickLink)
+    ? ok('arc://quick (any slash, query or case) is the link; its neighbours are not')
+    : bad('isQuickLink', JSON.stringify({ y: yes.filter((p) => !isQuickLink(p)), n: no.filter(isQuickLink) }));
+
+  // The redirect queues on the APP ledger and navigates nowhere on its own.
+  const gate = { delivered: 0, isReady: () => true, deliver() { this.delivered++; } };
+  const routing = routeQuickLaunches(null, gate);
+  const cold = redirectSystemPath({ path: 'arc://quick', initial: true });
+  const warm = redirectSystemPath({ path: 'arc://quick', initial: false });
+  routing.stop();
+  cold === null && warm === null && gate.delivered === 2
+    ? ok('+native-intent hands arc://quick to the gate and returns null, cold or warm')
+    : bad('redirect', JSON.stringify({ cold, warm, d: gate.delivered }));
+  redirectSystemPath({ path: 'arc://quick-log', initial: false }) === 'arc://quick-log' &&
+  redirectSystemPath({ path: 'arc://expo-sharing', initial: true }) === '/recipe-import'
+    ? ok('every other path is untouched, and a share still goes to /recipe-import')
+    : bad('redirect neighbours');
+
+  const src = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
+  const layout = src('app/_layout.tsx');
+  QUICK_LOG_ROUTE === '/quick-log' &&
+  /<Stack\.Screen name="quick-log" \/>/.test(layout) &&
+  /registerQuickLaunchRouting\(\{\s*isReady: \(\) =>\s*!coveredRef\.current &&\s*navRef\.isReady\(\) &&\s*appNavigatorMounted\(/.test(layout) &&
+  /router\.push\(QUICK_LOG_ROUTE\)/.test(layout) &&
+  /quickRef\.current\?\.flush\(\);/.test(layout) &&
+  /if \(state === 'active'\) quick\.check\(\);/.test(layout)
+    ? ok('the layout gates the box on the cover AND the mounted Stack, and re-checks on unlock and foreground')
+    : bad('layout wiring');
+
+  const screen = src('app/quick-log.tsx');
+  /quickLineAction\(text, units, now\)/.test(screen) &&
+  /pathname: '\/meal-estimate', params: \{ describe: action\.description \}/.test(screen) &&
+  /pathname: '\/meal-estimate', params: \{ start: 'camera' \}/.test(screen) &&
+  /todayISODate\(now\)/.test(screen) &&
+  /logMetricCapture\(db, date, action\.metric, action\.canonical\)/.test(screen) &&
+  /recordScreenTime\(db, action\.date, action\.minutes, 'typed'\)/.test(screen) &&
+  /autoFocus/.test(screen)
+    ? ok('the screen focuses its box, files metrics on the logical day, and hands food and the camera to /meal-estimate')
+    : bad('quick-log screen');
+
+  const estimate = src('app/meal-estimate.tsx');
+  /describe\?: string/.test(estimate) &&
+  /useState\(handoff\)/.test(estimate) &&
+  /void run\(\{ kind: 'text', description: handoff \}\)/.test(estimate)
+    ? ok('meal-estimate fills its field from `describe` and runs it once')
+    : bad('meal-estimate handoff');
+}
+
+console.log('27. quick box: the App Intent and its module are wired into the build');
+{
+  const src = (p) => readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
+  const exists = (p) => {
+    try {
+      readFileSync(new URL(`../${p}`, import.meta.url));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const intent = src('modules/arc-intents/app-target/ArcQuickLogIntent.swift');
+  const module = src('modules/arc-intents/ios/ArcIntentsModule.swift');
+  const podspec = src('modules/arc-intents/ios/ArcIntents.podspec');
+  const config = JSON.parse(src('modules/arc-intents/expo-module.config.json'));
+  const plugin = src('modules/arc-intents/app.plugin.js');
+  const app = JSON.parse(src('app.json')).expo;
+
+  /^import AppIntents$/m.test(intent) &&
+  /struct ArcQuickLogIntent: AppIntent \{/.test(intent) &&
+  /static let title: LocalizedStringResource = "Log in ARC"/.test(intent) &&
+  /static let openAppWhenRun: Bool = true/.test(intent) &&
+  /func perform\(\) async throws -> some IntentResult \{/.test(intent) &&
+  /struct ArcAppShortcuts: AppShortcutsProvider \{/.test(intent) &&
+  /static var appShortcuts: \[AppShortcut\] \{/.test(intent) &&
+  /intent: ArcQuickLogIntent\(\)/.test(intent)
+    ? ok('the Swift declares the "Log in ARC" intent (opens the app) and its AppShortcutsProvider')
+    : bad('intent declarations');
+  const phrases = [...intent.matchAll(/^\s*"([^"]*)",?$/gm)].map((m) => m[1]);
+  phrases.length >= 1 && phrases.every((p) => (p.match(/\\\(\.applicationName\)/g) ?? []).length === 1)
+    ? ok(`every App Shortcut phrase names the app exactly once (${phrases.length} phrases)`)
+    : bad('phrases', JSON.stringify(phrases));
+
+  // The three strings, spelled in three places.
+  const key = /"arc\.quickLog\.requestedAt"/;
+  const note = /Notification\.Name\("ArcQuickLogRequested"\)/;
+  key.test(intent) && key.test(module) && note.test(intent) && note.test(module)
+    ? ok('the intent and the module agree on the UserDefaults key and the notification name')
+    : bad('stamp strings');
+  module.includes(`Name("${ARC_INTENTS_MODULE}")`) &&
+  module.includes(`let arcQuickLogEvent = "${QUICK_LOG_EVENT}"`) &&
+  /Events\(arcQuickLogEvent\)/.test(module) &&
+  /Function\("takeQuickLogRequest"\)/.test(module) &&
+  /takeQuickLogRequest/.test(src('src/lib/log/quick-launch.ts'))
+    ? ok('the module name, event and function match what quick-launch.ts asks for')
+    : bad('module ↔ JS names');
+
+  eq(config, { platforms: ['apple'], apple: { modules: ['ArcIntentsModule'] } }) &&
+  /public class ArcIntentsModule: Module/.test(module) &&
+  /s\.name\s+= 'ArcIntents'/.test(podspec) &&
+  /s\.dependency 'ExpoModulesCore'/.test(podspec)
+    ? ok('expo-module.config.json, the class and the podspec name one module (autolinked from modules/)')
+    : bad('module config');
+
+  // The intent rides the APP target, never the pod: outside ios/, and a plugin puts it there.
+  !exists('modules/arc-intents/ios/ArcQuickLogIntent.swift') &&
+  app.plugins.includes('./modules/arc-intents/app.plugin.js') &&
+  /withBuildSourceFile/.test(plugin) &&
+  /'app-target', INTENT_FILE/.test(plugin) &&
+  /const INTENT_FILE = 'ArcQuickLogIntent\.swift'/.test(plugin) &&
+  !/AppShortcutsProvider/.test(module)
+    ? ok('app.json runs the plugin that compiles the intent into the app target; the pod holds no second provider')
+    : bad('plugin wiring');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

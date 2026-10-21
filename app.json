@@ -75,7 +75,8 @@
           "NSHealthUpdateUsageDescription": "ARC writes the weight, body-fat percentage, waist and water you record in ARC to Apple Health, so other apps on your iPhone can see them. Nothing else is written.",
           "background": false
         }
-      ]
+      ],
+      "./modules/arc-intents/app.plugin.js"
     ],
     "experiments": {
       "typedRoutes": true,
