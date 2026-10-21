@@ -8181,5 +8181,344 @@ console.log('97. saved meals and past meals in search; a drink’s usual add-ons
     : bad('not a drink');
 }
 
+// ===========================================================================
+// 98–102. Device round 3, item 72 (docs/nutrition-subapp.md §22): his caffeine
+// cut-off before training. He states the rule once; a log with caffeine inside
+// the window before a TIMED, still-open Training row today asks "Log anyway?".
+// It warns, never blocks.
+// ===========================================================================
+const cutoffMod = await import('../src/lib/nutrition/caffeine-cutoff.ts');
+const caffeineCheckMod = await import('../src/lib/db/repositories/caffeine-check.ts');
+const recipesRepo = await import('../src/lib/db/repositories/recipes.ts');
+const { createProtocolWithVersion } = await import('../src/lib/db/repositories/protocols.ts');
+const { setMissionStatus } = await import('../src/lib/db/repositories/mission.ts');
+const { arriveDay } = await import('../src/lib/db/seed.ts');
+const { buildTurnContext } = await import('../src/lib/ai/turn-context.ts');
+const { WRITE_TOOLS } = await import('../src/lib/ai/tools/index.ts');
+
+const caf = (mg) => JSON.stringify({ caffeine_mg: mg });
+
+console.log('98. item 72 — the cut-off rule itself (pure)');
+{
+  const { caffeineWarning, caffeineMgOf, caffeineWarningMessage, CAFFEINE_FLOOR_MG } = cutoffMod;
+  const push = [{ title: 'Push Day', time: '18:00' }];
+  const warn = (over = {}) =>
+    caffeineWarning({ mg: 80, logTime: '15:00', rows: push, ruleHours: 6, ...over });
+
+  // The owner's own sentence, word for word.
+  const w = warn();
+  w &&
+  caffeineWarningMessage(w) ===
+    'This has about 80 mg caffeine, 3 h before Push Day (18:00). Your rule: none within 6 h. Log anyway?'
+    ? ok('the prompt reads: about 80 mg caffeine, 3 h before Push Day (18:00); your rule; Log anyway?')
+    : bad('message', w && caffeineWarningMessage(w));
+
+  // The window's edges: inclusive at both ends, and nothing after the row.
+  warn({ logTime: '12:00' })?.minutesBefore === 360
+    ? ok('exactly 6 h before a 6 h rule asks (the edge is inside)')
+    : bad('6 h edge');
+  warn({ logTime: '11:59' }) === null ? ok('6 h 1 min before does not ask') : bad('outside');
+  const atStart = warn({ logTime: '18:00' });
+  atStart?.minutesBefore === 0 &&
+  caffeineWarningMessage(atStart).includes('at the start of Push Day (18:00)')
+    ? ok('a log at the row’s own minute asks, and says “at the start of”')
+    : bad('at the row', JSON.stringify(atStart));
+  warn({ logTime: '18:01' }) === null && warn({ logTime: '21:00' }) === null
+    ? ok('a log time after the row does not ask')
+    : bad('after the row');
+  caffeineWarningMessage(warn({ logTime: '15:20' })).includes('2 h 40 min before')
+    ? ok('the span is exact (2 h 40 min), never rounded up into the rule')
+    : bad('span words');
+
+  // Decaf, the floor, the setting off, no row.
+  warn({ mg: 2.4 }) === null && warn({ mg: CAFFEINE_FLOOR_MG - 0.01 }) === null
+    ? ok('decaf (USDA ~2.4 mg a cup) and anything under the 5 mg floor never asks')
+    : bad('decaf');
+  warn({ mg: CAFFEINE_FLOOR_MG }) !== null && warn({ mg: 8 }) !== null
+    ? ok('5 mg asks, and so does a square of dark chocolate (8 mg) — his rule says none')
+    : bad('floor');
+  warn({ ruleHours: null }) === null ? ok('the setting off: nothing asks') : bad('off');
+  warn({ rows: [] }) === null ? ok('no timed Training row today: nothing asks') : bad('no row');
+  warn({ ruleHours: 2 }) === null && warn({ ruleHours: 3 }) !== null
+    ? ok('the hours are his: the same 3 h gap asks under a 3 h rule and not under 2 h')
+    : bad('hours');
+
+  // Which row: the next one ahead, not the first listed.
+  const next = warn({
+    rows: [
+      { title: 'Evening lift', time: '19:00' },
+      { title: 'Zone 2', time: '07:00' },
+      { title: 'Mobility', time: '16:30' },
+    ],
+  });
+  next?.title === 'Mobility' && next.minutesBefore === 90
+    ? ok('it names the NEXT row (16:30), past one already behind (07:00)')
+    : bad('next row', JSON.stringify(next));
+
+  // His day boundary: at 04:00, an 01:00 row is later in the day than 23:00.
+  const night = { mg: 80, logTime: '23:00', rows: [{ title: 'Night run', time: '01:00' }], ruleHours: 6 };
+  caffeineWarning({ ...night, dayStartMinutes: 240 })?.minutesBefore === 120 &&
+  caffeineWarning(night) === null
+    ? ok('minutes count from his dayStartsAt: 23:00 → 01:00 is 2 h on a 04:00 day, “after” on a midnight one')
+    : bad('day boundary');
+
+  // Multi-item meals sum; a composite is its parts; a revision asks only for what it adds.
+  const meal = [
+    { name: 'Latte', micros: caf(126) },
+    { name: 'Croissant', micros: JSON.stringify({ sodium_mg: 300 }) },
+    { name: 'Square', micros: caf(8) },
+    { name: 'Plain' },
+    {
+      name: 'Iced mocha',
+      micros: caf(999), // a header's own figure is never written (0058)
+      components: [{ micros: caf(63.6) }, { micros: caf(63.6) }, { micros: null }],
+    },
+  ];
+  near(caffeineMgOf(meal), 126 + 8 + 127.2)
+    ? ok('a multi-item meal sums its caffeine; a composite counts its parts, never its header')
+    : bad('sum', String(caffeineMgOf(meal)));
+  warn({ mg: 3 }) === null && warn({ mg: caffeineMgOf([{ micros: caf(3) }, { micros: caf(3) }]) }) !== null
+    ? ok('two 3 mg items together pass the floor — the meal is judged whole')
+    : bad('summed floor');
+  warn({ mg: 126, priorMg: 126 }) === null &&
+  warn({ mg: 130, priorMg: 126 }) === null &&
+  warn({ mg: 252, priorMg: 126 })?.mg === 252
+    ? ok('a revision asks only for caffeine it ADDS (≥ 5 mg); the prompt states the meal’s total')
+    : bad('priorMg');
+}
+
+/** A training block with timed (or untimed) rows, plus a timed supplement, arrived on TODAY. */
+function trainingDay(db, items) {
+  createProtocolWithVersion(
+    db,
+    { name: 'Strength block', type: 'training_block' },
+    { items: items.map(([title, time]) => ({ title, scheduled_time: time, dose: null, notes: null })) }
+  );
+  createProtocolWithVersion(
+    db,
+    { name: 'Stack', type: 'supplement_stack' },
+    { items: [{ title: 'Creatine', scheduled_time: '17:00', dose: '5 g', notes: null }] }
+  );
+  arriveDay(db, TODAY);
+}
+const rowId = (db, title) =>
+  db.get(
+    `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ? AND e.title = ?`,
+    [TODAY, title]
+  )?.id;
+const [ty, tm, td] = TODAY.split('-').map(Number);
+const at = (hh, mm = 0) => new Date(ty, tm - 1, td, hh, mm);
+
+console.log('99. item 72 — the setting, in the preferences blob (no migration)');
+{
+  const { db } = freshDb();
+  const off = userRepo.getCaffeineCutoff(db);
+  off.enabled === false && off.hours === 6
+    ? ok('off by default; 6 h is what a switch-on starts at')
+    : bad('default', JSON.stringify(off));
+  userRepo.setGoalDirection(db, 'cut');
+  userRepo.setCaffeineCutoff(db, { enabled: true, hours: 4 });
+  const on = userRepo.getCaffeineCutoff(db);
+  on.enabled && on.hours === 4 && userRepo.getGoalDirection(db) === 'cut'
+    ? ok('on at 4 h, and every other preference key survives the write')
+    : bad('set', JSON.stringify(on));
+  userRepo.setCaffeineCutoff(db, { enabled: false, hours: 4 });
+  const back = userRepo.setCaffeineCutoff(db, { ...userRepo.getCaffeineCutoff(db), enabled: true });
+  back.hours === 4 ? ok('the hours survive a switch-off') : bad('survive', JSON.stringify(back));
+  const stored = (hours) => userRepo.setCaffeineCutoff(db, { enabled: true, hours }).hours;
+  stored(13) === 6 && stored(0) === 6 && stored(2.5) === 6 && stored(12) === 12 && stored(1) === 1
+    ? ok('1–12 whole hours; anything else stores the default rather than a rule he never stated')
+    : bad('range');
+  db.run(`UPDATE users SET preferences = json_set(preferences, '$.caffeine.cutoffOn', 'yes')`);
+  userRepo.getCaffeineCutoff(db).enabled === false
+    ? ok('a junk switch reads as off — the prompt never turns itself on')
+    : bad('junk on');
+}
+
+console.log('100. item 72 — today’s open, timed Training rows, by the training tick’s definition');
+{
+  const { caffeineCheck, mealWhen } = caffeineCheckMod;
+  const latte = [{ name: 'Latte', micros: caf(80) }];
+
+  const { db } = freshDb();
+  trainingDay(db, [
+    ['Push Day', '18:00'],
+    ['Walk', null],
+  ]);
+  caffeineCheck(db, latte, null, { now: at(15) }) === null
+    ? ok('the setting off: no warning, whatever the mission holds')
+    : bad('off in db');
+  userRepo.setCaffeineCutoff(db, { enabled: true, hours: 6 });
+  const w = caffeineCheck(db, latte, null, { now: at(15) });
+  w?.title === 'Push Day' && w.time === '18:00' && w.minutesBefore === 180 && w.mg === 80
+    ? ok('a latte logged now (15:00) warns against Push Day at 18:00 — 3 h, 80 mg')
+    : bad('warns', JSON.stringify(w));
+  caffeineCheck(db, latte, null, { now: at(16, 30) })?.title === 'Push Day'
+    ? ok('the 17:00 supplement row is not training, and is never named')
+    : bad('supplement');
+  caffeineCheck(db, latte, null, { now: at(18, 5) }) === null
+    ? ok('a log after the row: nothing (the untimed Walk has no “before”)')
+    : bad('after');
+  caffeineCheck(db, [{ name: 'Decaf', micros: caf(2) }], null, { now: at(15) }) === null &&
+  caffeineCheck(db, [{ name: 'Toast' }], null, { now: at(15) }) === null
+    ? ok('decaf and a food recording no caffeine never ask')
+    : bad('decaf db');
+
+  // Added INTO a meal: its day and time, not now.
+  const meal = (date, time, name) =>
+    logMealWithItems(db, { date, time, name, items: [{ name: 'Apple', amount: 150, kcal: 80 }] })
+      .mealId;
+  const breakfast = meal(TODAY, '07:30', 'Breakfast');
+  const snack = meal(TODAY, '14:00', 'Snack');
+  const yday = meal(shiftISODate(TODAY, -1), '15:00', 'Yesterday');
+  caffeineCheck(db, latte, mealWhen(db, breakfast), { now: at(15) }) === null &&
+  caffeineCheck(db, latte, mealWhen(db, snack), { now: at(19) })?.minutesBefore === 240 &&
+  caffeineCheck(db, latte, mealWhen(db, yday), { now: at(15) }) === null
+    ? ok('an add into a meal is measured at the meal’s time (07:30 no, 14:00 yes); another day never asks')
+    : bad('into a meal');
+
+  // Done or skipped rows have been acted on.
+  setMissionStatus(db, rowId(db, 'Push Day'), 'completed', TODAY);
+  caffeineCheck(db, latte, null, { now: at(15) }) === null
+    ? ok('a row already done does not count')
+    : bad('done');
+  setMissionStatus(db, rowId(db, 'Push Day'), 'skipped', TODAY);
+  caffeineCheck(db, latte, null, { now: at(15) }) === null
+    ? ok('a row skipped does not count')
+    : bad('skipped');
+  setMissionStatus(db, rowId(db, 'Push Day'), 'pending', TODAY);
+  caffeineCheck(db, latte, null, { now: at(15) })?.title === 'Push Day'
+    ? ok('…and re-opened, it counts again')
+    : bad('re-opened');
+
+  // Only untimed Training rows.
+  const { db: untimed } = freshDb();
+  trainingDay(untimed, [['Walk', null]]);
+  userRepo.setCaffeineCutoff(untimed, { enabled: true, hours: 12 });
+  caffeineCheck(untimed, latte, null, { now: at(6) }) === null
+    ? ok('only untimed Training rows today: nothing asks')
+    : bad('untimed only');
+
+  // Read-only: the Coach's card calls it before the gate.
+  const before = JSON.stringify(db.all('SELECT * FROM log_entries ORDER BY id'));
+  caffeineCheck(db, latte, null, { now: at(15) });
+  JSON.stringify(db.all('SELECT * FROM log_entries ORDER BY id')) === before
+    ? ok('the check is read-only')
+    : bad('wrote');
+}
+
+console.log('101. item 72 — the Coach: its day context, and the log_recipe card line');
+{
+  const { db } = freshDb();
+  trainingDay(db, [['Push Day', '18:00']]);
+  const plain = buildTurnContext(db, at(15));
+  userRepo.setCaffeineCutoff(db, { enabled: true, hours: 6 });
+  const ruled = buildTurnContext(db, at(15));
+  !plain.includes('caffeine') && ruled.includes(' · own rule: no caffeine within 6 h before training')
+    ? ok('the per-turn context names his rule only while it is on (uncached; nothing when off)')
+    : bad('turn context', ruled.split('\n').find((l) => l.startsWith('User:')));
+
+  // A recipe with a counted coffee line: 480 g of the seed's black coffee
+  // (0063: 40 mg per 100 g), two servings — one serving is 96 mg.
+  const recipeId = createRecipe(db, {
+    title: 'Cold brew',
+    servings: 2,
+    ingredients: [{ raw_text: '480 g coffee' }],
+  });
+  const coffee = searchFoods(db, 'coffee, black').find((f) => f.name === 'Coffee, black');
+  const line = recipesRepo.listIngredients(db, recipeId)[0];
+  recipesRepo.resolveIngredient(db, line.id, coffee.id, 480);
+  const tool = WRITE_TOOLS.find((t) => t.name === 'log_recipe');
+  const card = (args) =>
+    tool.confirmSummary({ recipe_id: recipeId, servings: 1, ...args }, db, { now: at(15) });
+  const shown = card({ time: '15:00' });
+  shown.endsWith(' · about 96 mg caffeine, 3 h before Push Day (18:00) — your rule: none within 6 h')
+    ? ok('the log_recipe card carries one clause: about 96 mg, 3 h before Push Day, his rule')
+    : bad('card', shown);
+  card({}).includes('3 h before Push Day')
+    ? ok('…a card with no time is measured at now')
+    : bad('card now', card({}));
+  !card({ time: '08:00' }).includes('caffeine') &&
+  !card({ time: '15:00', date: shiftISODate(TODAY, -1) }).includes('caffeine')
+    ? ok('…and says nothing outside the window, or on a past day')
+    : bad('card quiet');
+  userRepo.setCaffeineCutoff(db, { enabled: false, hours: 6 });
+  !card({ time: '15:00' }).includes('caffeine')
+    ? ok('…or with the setting off')
+    : bad('card off');
+}
+
+console.log('102. item 72 — every hand path asks before it writes; the queue drain does not');
+{
+  /** Every `writer` call sits inside `fn`'s body, and `fn`'s one call site is
+   *  an argument of confirmCaffeine(…). */
+  const gatedBy = (text, fn, writer) => {
+    const def = text.indexOf(`const ${fn} = (`);
+    if (def === -1) return false;
+    const end = text.indexOf('\n  };\n', def);
+    for (let i = text.indexOf(writer); i !== -1; i = text.indexOf(writer, i + 1)) {
+      if (i < def || i > end) return false;
+    }
+    const uses = [...text.matchAll(new RegExp(`\\b${fn}\\b`, 'g'))]
+      .map((m) => m.index)
+      .filter((i) => i !== def + 'const '.length);
+    if (uses.length !== 1) return false;
+    const open = text.lastIndexOf('confirmCaffeine(', uses[0]);
+    return open !== -1 && !text.slice(open, uses[0]).includes(';');
+  };
+  /** Every `writer` call sits inside a lambda passed to confirmCaffeine(…). */
+  const inLambda = (text, writer) => {
+    let any = false;
+    for (let i = text.indexOf(writer); i !== -1; i = text.indexOf(writer, i + 1)) {
+      const open = text.lastIndexOf('confirmCaffeine(', i);
+      if (open === -1 || text.slice(open, i).includes('\n  };')) return false;
+      any = true;
+    }
+    return any;
+  };
+  const fsx = src2('app/food-search.tsx');
+  inLambda(fsx, 'addMealItem(db') && inLambda(fsx, 'logMealWithItems(db')
+    ? ok('Add food (a catalog food, a recent’s +, a saved or past meal) asks, at the meal it adds to')
+    : bad('food-search');
+  const bc = src2('app/barcode-scan.tsx');
+  gatedBy(bc, 'writeItem', 'addMealItem(db') && gatedBy(bc, 'writeItem', 'logMealWithItems(db')
+    ? ok('the barcode scanner asks')
+    : bad('barcode');
+  gatedBy(src2('app/meal-estimate.tsx'), 'writeMeal', 'logMealWithItems(getDb()')
+    ? ok('Describe / photo — and the quick-log box, which hands food to it — asks on Save')
+    : bad('estimate');
+  const rv = src2('app/meal-revise.tsx');
+  gatedBy(rv, 'writeRevision', 'replaceMealItems(getDb()') &&
+  /priorMg = caffeineMgOf\(listMealItems\(getDb\(\), mealId\)\)/.test(rv) &&
+  rv.includes('{ into: mealId, priorMg }')
+    ? ok('Revise asks — only for caffeine it adds, at the meal’s own time')
+    : bad('revise');
+  const md = src2('app/meal-detail.tsx');
+  inLambda(md, 'addUsualAddOn(getDb()') && inLambda(md, 'relogMeal(getDb()')
+    ? ok('meal detail: a drink’s usual add-on and Log again both ask')
+    : bad('meal-detail');
+  inLambda(src2('app/meal-templates.tsx'), 'logMealFromTemplate(getDb()')
+    ? ok('a saved meal (template) logged now asks')
+    : bad('templates');
+  gatedBy(src2('app/recipe-detail.tsx'), 'writeLog', 'logRecipe(getDb()')
+    ? ok('a cooked recipe asks')
+    : bad('recipe');
+  !src2('src/lib/nutrition/estimate-queue.ts').includes('caffeine') &&
+  !src2('src/lib/status/night-out.ts').includes('caffeine')
+    ? ok('the offline queue’s drain (nobody there to ask) and Night out (alcohol) do not')
+    : bad('skipped paths');
+  const confirm = src2('src/lib/nutrition/caffeine-confirm.ts');
+  /text: 'Cancel', style: 'cancel'/.test(confirm) &&
+  /text: 'Log anyway', onPress: save/.test(confirm) &&
+  !confirm.includes("style: 'destructive'")
+    ? ok('the prompt is Cancel / Log anyway — no destructive red; Log anyway runs the same save')
+    : bad('confirm buttons');
+  const targets = src2('app/nutrition-targets.tsx');
+  targets.includes('Caffeine cut-off before training') && targets.includes('setCaffeineCutoff(getDb()')
+    ? ok('the setting lives on Daily targets, saved on tap')
+    : bad('settings screen');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -33,7 +33,12 @@ import {
   statusesIn,
 } from '@/lib/db/repositories/statuses';
 import { screenTimeOn } from '@/lib/db/repositories/screen-time';
-import { getGoalDirection, getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
+import {
+  getCaffeineCutoff,
+  getGoalDirection,
+  getOrCreateUser,
+  getPreferences,
+} from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { type DayAlcohol, drinksPhrase } from '@/lib/nutrition/drinks';
@@ -109,10 +114,18 @@ export function buildTurnContext(
   // exists to close. It is what Home's nutrition pillar grades against
   // (home/readiness.ts `kcalLevel`), so a model reasoning about a 600 kcal
   // surplus without it is guessing at whether that is the plan or the problem.
+  //
+  // His caffeine cut-off before training (item 72) rides here too, but only
+  // when it is ON. Unlike the goal it is not a dial that always has a position:
+  // it is a rule he states, so its absence is the honest default and costs
+  // nothing. Without it a model asked about a pre-workout coffee could not know
+  // he has a rule — which the app itself reminds him of on every food save.
+  const cutoff = getCaffeineCutoff(db);
   lines.push(
     `User: ${who.length > 0 ? who.join(', ') : 'profile not filled in'} · units: ` +
       `weight ${units.weight}, volume ${units.volume}, length ${units.length}` +
-      ` · goal: ${getGoalDirection(db)}`
+      ` · goal: ${getGoalDirection(db)}` +
+      (cutoff.enabled ? ` · own rule: no caffeine within ${cutoff.hours} h before training` : '')
   );
 
   // --- Readiness, derived HERE rather than at its own line below, because the

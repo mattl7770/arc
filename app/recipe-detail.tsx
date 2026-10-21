@@ -35,6 +35,7 @@ import {
   setRecipeFavorite,
   unresolveIngredient,
 } from '@/lib/db/repositories/recipes';
+import { confirmCaffeine } from '@/lib/nutrition/caffeine-confirm';
 import { fmtInt, fmtQty } from '@/lib/nutrition/format';
 import { useKeepScreenAwake } from '@/lib/media/keep-awake';
 import { pickPhotoBase64 } from '@/lib/media/photo-library';
@@ -1276,8 +1277,17 @@ function LogSheet({
   const uncountedCount = scaled.filter((l) => l.state === 'uncounted').length;
   const countedCount = scaled.filter((l) => l.state === 'counted').length;
 
+  /** Log it — past his caffeine cut-off before a timed workout (item 72) it
+   *  asks first, over the counted lines (the ones that become priced items). */
   const log = () => {
     if (!canLog) return;
+    confirmCaffeine(
+      scaled.filter((line) => line.state === 'counted'),
+      writeLog
+    );
+  };
+
+  const writeLog = () => {
     const now = new Date();
     const result = logRecipe(getDb(), recipe.id, portion, {
       date: todayISODate(),

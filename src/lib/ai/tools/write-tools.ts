@@ -82,7 +82,10 @@ import {
   logRecipe,
   portionFactor,
   recipeNutrition,
+  scaleRecipeLines,
 } from '@/lib/db/repositories/recipes';
+import { caffeineCheck } from '@/lib/db/repositories/caffeine-check';
+import { caffeineCardNote } from '@/lib/nutrition/caffeine-cutoff';
 import { catalogResolveRecipe } from '@/lib/recipes/estimate';
 import type { RecipePortion } from '@/lib/recipes/types';
 import { createExperiment } from '@/lib/db/repositories/experiments';
@@ -2000,6 +2003,40 @@ function parseRecipePortion(args: Record<string, unknown>): RecipePortion {
   return { servings: servings ?? 1 };
 }
 
+/**
+ * His caffeine cut-off (item 72) on the log_recipe card — one clause, never a
+ * second dialog: the card is already where he decides, and a native Alert
+ * stacked on an Approve would ask the same question twice. Measured over the
+ * counted lines (the ones logRecipe writes as priced items), at the card's own
+ * time, or now when the model gives none. Empty when nothing breaks his rule,
+ * and empty rather than a thrown card if the read fails — a reminder must never
+ * cost him the log. (log_meal records typed totals only, with no caffeine
+ * figure, so its card has nothing to say.)
+ */
+function recipeCaffeineNote(
+  db: Database,
+  recipeId: string,
+  factor: number,
+  args: Record<string, unknown>,
+  now: Date | undefined
+): string {
+  try {
+    const at = now ?? new Date();
+    const counted = scaleRecipeLines(listIngredients(db, recipeId), factor).filter(
+      (line) => line.state === 'counted'
+    );
+    const warning = caffeineCheck(
+      db,
+      counted,
+      { date: logDate(args, at), time: optTime(args, 'time') ?? null },
+      { now: at }
+    );
+    return warning ? ` · ${caffeineCardNote(warning)}` : '';
+  } catch {
+    return '';
+  }
+}
+
 const logRecipeTool: CoachTool = {
   name: 'log_recipe',
   description:
@@ -2039,7 +2076,10 @@ const logRecipeTool: CoachTool = {
       nutrition.complete && nutrition.perServing.kcal !== null
         ? ` (~${Math.round(nutrition.perServing.kcal * recipe.servings * factor)} kcal)`
         : ` (nutrition incomplete — ${plural(nutrition.unresolvedCount, 'ingredient')} uncounted)`;
-    return `Log ${portionLabel} of "${recipe.title}"${kcalNote}${pastDateSuffix(args, context?.now)}`;
+    return (
+      `Log ${portionLabel} of "${recipe.title}"${kcalNote}${pastDateSuffix(args, context?.now)}` +
+      recipeCaffeineNote(db, recipe.id, factor, args, context?.now)
+    );
   },
   execute: (db, input, context) => {
     const args = asRecord(input);

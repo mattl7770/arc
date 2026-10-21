@@ -29,6 +29,8 @@ import {
   MealEstimationUnavailableError,
   reviseMeal,
 } from '@/lib/nutrition/estimate';
+import { caffeineMgOf } from '@/lib/nutrition/caffeine-cutoff';
+import { confirmCaffeine } from '@/lib/nutrition/caffeine-confirm';
 import { isQueueableFailure } from '@/lib/nutrition/estimate-queue';
 import { useEstimateQuestions } from '@/hooks/use-estimate-questions';
 import { useReviewDraft } from '@/hooks/use-review-draft';
@@ -191,9 +193,25 @@ export default function MealReviseScreen() {
     }
   };
 
+  /**
+   * Save the revision — past his caffeine cut-off before a timed workout (item
+   * 72) it asks first, but only for caffeine the revision ADDS: the meal's own
+   * caffeine as it stands is what he already answered for when he logged it.
+   * It is measured at the meal's own day and time. Cancel leaves the review.
+   */
   const save = () => {
     if (rows.length === 0) return;
     const items: NewMealItem[] = rowsToMealItems(rows);
+    let priorMg = 0;
+    try {
+      priorMg = caffeineMgOf(listMealItems(getDb(), mealId));
+    } catch (error) {
+      console.warn('[meal-revise] could not read the meal’s caffeine', error);
+    }
+    confirmCaffeine(items, () => writeRevision(items), { into: mealId, priorMg });
+  };
+
+  const writeRevision = (items: NewMealItem[]) => {
     try {
       replaceMealItems(getDb(), mealId, items);
       router.back();
