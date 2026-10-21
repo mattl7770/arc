@@ -1,8 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { type Dispatch, type SetStateAction, useCallback, useState } from 'react';
+import { type Dispatch, type SetStateAction, useCallback, useRef, useState } from 'react';
 import { Alert, Image, Pressable, Text, TextInput, View } from 'react-native';
 
+import {
+  EstimateRatingLine,
+  type EstimateRatingStep,
+} from '@/components/nutrition/estimate-rating';
 import { KeyMicroTail } from '@/components/nutrition/key-micro-tail';
 import { UndoRow } from '@/components/nutrition/undo-row';
 import { UsualAddOns } from '@/components/nutrition/usual-add-ons';
@@ -18,6 +22,13 @@ import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { addUsualAddOn, mealAddOns } from '@/lib/db/repositories/food-history';
+import {
+  getMealRating,
+  type MealRating,
+  rateMeal,
+  setRatingIssue,
+  settleMealRating,
+} from '@/lib/db/repositories/food-log-ratings';
 import { getFood } from '@/lib/db/repositories/foods';
 import { saveMealAsTemplate } from '@/lib/db/repositories/meal-templates';
 import { saveMealAsRecipe } from '@/lib/db/repositories/recipes';
@@ -59,6 +70,7 @@ import {
 import { keyMicroLabel, partsAsItem } from '@/lib/nutrition/key-micro';
 import { mealDayLabel, parseClockParts, partsFromClock, shiftDay } from '@/lib/nutrition/meal-time';
 import { amountForQty, rescaleLoggedItem } from '@/lib/nutrition/servings';
+import type { EstimateRating, RatingIssue } from '@/lib/nutrition/ratings';
 import type { UsualAddOn } from '@/lib/nutrition/repeats';
 import type { AmountUnit, FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/types';
 
@@ -212,6 +224,8 @@ type MealState = {
   /** A logged drink's usual add-ons, by item id — only drinks that have any
    *  (2026-10-21, item 64; src/lib/db/repositories/food-history.ts). */
   addOns: Record<string, UsualAddOn[]>;
+  /** Was this estimate right? (0066, item 86) — undefined until he says. */
+  rating: MealRating | undefined;
 };
 
 /** The inline portion-editor's state for one item. `food` is the catalog food
@@ -278,6 +292,7 @@ function readMeal(id: string): MealState {
     // screen simply has no photo section.
     photos: mealPhotoViews(db, id),
     addOns: mealAddOns(db, id),
+    rating: getMealRating(db, id),
   };
 }
 
@@ -383,12 +398,31 @@ export default function MealDetailScreen() {
   // The whole-dish amount editor's draft for one composite, or null
   // (2026-10-21). `text` null is a field opened and not yet typed in.
   const [dishEdit, setDishEdit] = useState<DishEdit | null>(null);
+  // Was this right? (0066, item 86). The step is where the line is: Good /
+  // Off asked again after Change, or the one question after Off. The
+  // CORRECTION WINDOW is the ref: while it is open, every re-read records what
+  // the meal has become as the rating's `after`. It opens
+  // when he answers the one question, and stays open for the rest of the visit
+  // — so the fix he makes, here or on Adjust with AI and back, is what is
+  // kept. A later visit reopens it only while nothing has been corrected yet,
+  // so an unrelated edit a week on does not rewrite an example.
+  const [ratingStep, setRatingStep] = useState<EstimateRatingStep>('idle');
+  const correcting = useRef(
+    state.rating?.rating === 'bad' && state.rating.issue !== null && state.rating.after === null
+  );
 
   // Re-read the meal and reset every draft — everything a reload does except
   // closing the item Undo. The Undo's own two moments (an item just removed,
   // an Undo just tried) re-read through this, so the offer they just made, or
   // the refusal they just drew, survives the re-read.
   const reread = useCallback(() => {
+    if (correcting.current) {
+      try {
+        settleMealRating(getDb(), mealId);
+      } catch (error) {
+        console.warn('[meal-detail] could not record the correction', error);
+      }
+    }
     setState(readMeal(mealId));
     // Regaining focus disarms a pending delete — a confirm must be two taps in
     // a row, not one tap now and a fatal one after a detour through Add food.
@@ -419,7 +453,7 @@ export default function MealDetailScreen() {
   // screen is left (src/hooks/use-undo-offer.ts).
   const undo = useUndoOffer('meal', mealId);
 
-  const { meal, items, photos, addOns } = state;
+  const { meal, items, photos, addOns, rating } = state;
   const today = todayISODate();
 
   /** Open the inline portion editor for a logged item, prefilled from its
@@ -557,6 +591,54 @@ export default function MealDetailScreen() {
 
   /** The one-level tree the plate draws (0058). */
   const nodes = assembleMealItems(items);
+
+  /** Good, or Off (0066). Off records the items as they stand as the `before`
+   *  and asks the one question; Good closes the window — nothing to learn. */
+  const rate = (verdict: EstimateRating) => {
+    try {
+      rateMeal(getDb(), mealId, verdict);
+    } catch (error) {
+      console.warn('[meal-detail] rating failed', error);
+    }
+    if (verdict === 'good') correcting.current = false;
+    setRatingStep(verdict === 'bad' ? 'issue' : 'idle');
+    reload();
+  };
+
+  /**
+   * The one question, answered — then the path that fixes it. **Portion** is
+   * fixed by hand, on the item: with one row the editor opens on it (a dish
+   * opens to its parts and its whole-dish amount); with several, the line says
+   * to tap the one that was off. **Item** and **Macros** go to Adjust with AI,
+   * where a correction is a sentence ("it was olive oil", "the label says 20 g
+   * protein"). Either way the window is open, so what changes is kept.
+   */
+  const answerIssue = (issue: RatingIssue) => {
+    try {
+      setRatingIssue(getDb(), mealId, issue);
+    } catch (error) {
+      console.warn('[meal-detail] rating failed', error);
+      return;
+    }
+    correcting.current = true;
+    setRatingStep('idle');
+    reload();
+    if (issue !== 'portion') {
+      router.push({ pathname: '/meal-revise', params: { id: mealId, issue } });
+      return;
+    }
+    const only = nodes.length === 1 ? nodes[0]! : null;
+    if (only?.kind === 'composite') {
+      setOpenParts((prev) => new Set(prev).add(only.item.id));
+    } else if (only) {
+      const item = only.item;
+      if (loggedPlainPieces(item) !== null && item.food_id == null && item.amount == null) {
+        openCountEdit(item, false);
+      } else {
+        beginEdit(item);
+      }
+    }
+  };
 
   const toggleParts = (id: string) => {
     setOpenParts((prev) => {
@@ -1223,6 +1305,29 @@ export default function MealDetailScreen() {
           </View>
         </Block>
       </View>
+
+      {/* Was this right? (0066, item 86) — only on a meal that came from an
+          estimate and holds items: the verdict is on the estimate, and a meal
+          still waiting on its queued estimate has nothing to rate yet. */}
+      {meal.source === 'ai_suggested' && items.length > 0 ? (
+        <View className="mt-3">
+          <EstimateRatingLine
+            view={
+              rating
+                ? {
+                    rating: rating.rating,
+                    issue: rating.issue,
+                    corrected: rating.after !== null,
+                  }
+                : null
+            }
+            step={ratingStep}
+            onRate={rate}
+            onIssue={answerIssue}
+            onChange={() => setRatingStep((prev) => (prev === 'verdict' ? 'idle' : 'verdict'))}
+          />
+        </View>
+      ) : null}
 
       {/* Actions */}
       <View className="mt-8">

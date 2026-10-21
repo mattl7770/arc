@@ -824,7 +824,8 @@ console.log('4d. removal: parity with the screens, behind a card that names what
   };
   const OWN_PARTS = {
     // the items and photos (both counted on the card) and its pending estimate
-    meals: ['meal_items', 'meal_photos', 'pending_estimates'],
+    // …and its "was this right?" verdict (0066), an annotation of that one log
+    meals: ['meal_items', 'meal_photos', 'pending_estimates', 'food_log_ratings'],
     // the sets (counted) and the pairing link — the watch's session itself stays
     workouts: ['workout_sets', 'workout_ingest_links'],
     meal_templates: ['meal_template_items'],
@@ -2614,6 +2615,46 @@ console.log('9. 2026-09-26 — a Log-tab capture corrected from chat, behind the
   tab.includes('capturePatchFrom(')
     ? ok('the captures domain and the Log tab correct through editLogCapture, converting units by one rule')
     : bad('captures edit parity');
+}
+
+// ---------------------------------------------------------------------------
+// 10. 2026-10-21 (0066, item 86) — "was this estimate right?", read-only. The
+//     Coach reads the same `listMealRatings` the estimator's examples come
+//     from, so the two cannot disagree; it cannot rate, edit or delete one.
+// ---------------------------------------------------------------------------
+console.log('10. 2026-10-21 — estimate ratings, read through the estimator’s own read');
+{
+  const { db } = freshDb();
+  const ratings = await import('../src/lib/db/repositories/food-log-ratings.ts');
+  const { updateMealItemPortion, listMealItems: items } = await import(
+    '../src/lib/db/repositories/nutrition.ts'
+  );
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '12:30',
+    name: 'Lunch',
+    source: 'ai_suggested',
+    items: [{ name: 'Chicken salad', amount: 350, kcal: 520, protein_g: 40, carbs_g: 10, fat_g: 30, confidence: 'medium' }],
+  });
+  ratings.rateMeal(db, mealId, 'bad');
+  ratings.setRatingIssue(db, mealId, 'portion');
+  const [item] = items(db, mealId);
+  updateMealItemPortion(db, item.id, { amount: 250, kcal: 371, protein_g: 29, carbs_g: 7, fat_g: 21 });
+  ratings.settleMealRating(db, mealId);
+  const listed = JSON.parse(queryRecords.execute(db, { domain: 'estimate_ratings' }, { now: NOW }));
+  const row = (listed.rows ?? listed.records ?? listed.results ?? [])[0];
+  row?.mealId === mealId &&
+  row.rating === 'bad' &&
+  row.issue === 'portion' &&
+  row.correction === ratings.listMealRatings(db)[0].correction &&
+  row.correction.includes('350 g · 520 kcal → 250 g · 371 kcal')
+    ? ok(`query_records { domain: "estimate_ratings" } reads the estimator's own line ("${row.correction}")`)
+    : bad('estimate ratings read', JSON.stringify(listed));
+  !EDIT_DOMAIN_KEYS.includes('estimate_ratings') &&
+  !REMOVABLE_DOMAIN_KEYS.includes('estimate_ratings') &&
+  domainByKey('estimate_ratings').remove.mode === 'refuse'
+    ? ok('…and it is read-only: not editable, not removable, its refusal names the meal screen')
+    : bad('estimate ratings writable');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

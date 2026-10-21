@@ -58,6 +58,7 @@ import {
   setFoodFavorite,
   updateFood,
 } from '@/lib/db/repositories/foods';
+import { listMealRatings } from '@/lib/db/repositories/food-log-ratings';
 import { listLabReports } from '@/lib/db/repositories/labs';
 import {
   captureTitleFor,
@@ -418,6 +419,42 @@ const mealsDomain: CoachDomainEntry = {
       ),
   },
   createVia: 'log_meal',
+};
+
+// --- was this estimate right? (0066, item 86) --------------------------------
+
+const estimateRatingsDomain: CoachDomainEntry = {
+  key: 'estimate_ratings',
+  label: 'estimate rating',
+  fields: {
+    mealId: ro('the meal rated — query meals with this id for its items'),
+    rating: ro('good, or bad (the estimate was off)'),
+    issue: ro('what was off: portion, item or macros; null until answered'),
+    correction: ro('what he changed, estimated → actual — the line the estimator sees'),
+  },
+  // Read-only, and through the ESTIMATOR's own read: `listMealRatings` is what
+  // its examples are built from (src/lib/db/repositories/food-log-ratings.ts),
+  // so the Coach is told exactly what the estimator learns. The verdict is the
+  // user's own, given on the meal screen; the Coach does not rate for him.
+  remove: {
+    mode: 'refuse',
+    because:
+      'No screen deletes an estimate rating: it is changed on its meal (Eat › the meal › ' +
+      'Was this right?), and it goes when the meal does.',
+  },
+  read: {
+    kind: 'list',
+    run: (db, args) =>
+      listMealRatings(db, { limit: args.limit }).map((r) => ({
+        id: r.id,
+        mealId: r.mealId,
+        date: r.date,
+        meal: r.mealName,
+        rating: r.rating,
+        issue: r.issue,
+        ...(r.correction ? { correction: r.correction } : {}),
+      })),
+  },
 };
 
 // --- the food catalog --------------------------------------------------------
@@ -1401,6 +1438,7 @@ const reportsDomain: CoachDomainEntry = {
 
 export const READ_DOMAINS: CoachDomainEntry[] = [
   mealsDomain,
+  estimateRatingsDomain,
   foodCatalogDomain,
   mealTemplatesDomain,
   micronutrientsDomain,

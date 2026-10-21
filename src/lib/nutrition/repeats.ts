@@ -233,7 +233,7 @@ export function rankUsualFoods(
 }
 
 /** A food's name as one plain line: no line breaks, no list marker, capped. */
-function oneLine(name: string): string {
+export function oneLine(name: string): string {
   return name
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/\s+/g, ' ')

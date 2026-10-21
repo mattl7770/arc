@@ -19,6 +19,7 @@ import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { findFoodByBarcode } from '@/lib/db/repositories/foods';
 import { usualFoodsContextFor } from '@/lib/db/repositories/food-history';
+import { correctionsContextFor } from '@/lib/db/repositories/food-log-ratings';
 import { logMealWithItems } from '@/lib/db/repositories/nutrition';
 import { placeholderMealName, queueNewMealEstimate } from '@/lib/db/repositories/pending-estimates';
 import { writePendingEstimatePhoto } from '@/lib/media/pending-estimate-store';
@@ -219,11 +220,13 @@ export default function MealEstimateScreen() {
     setPhase({ kind: 'estimating' });
     try {
       // His most-logged foods ride the USER turn (item 73), so "my usual latte"
-      // resolves; the queue keeps the bare input and adds them at drain time.
+      // resolves, and so do his last corrections of past estimates (item 86);
+      // the queue keeps the bare input and adds both at drain time.
       const usual = usualFoodsContextFor(getDb());
+      const corrections = correctionsContextFor(getDb());
       const grounded = groundMealEstimate(
         getDb(),
-        await estimateMeal({ ...input, usual }, controller.signal)
+        await estimateMeal({ ...input, usual, corrections }, controller.signal)
       );
       toReview(grounded);
     } catch (error) {

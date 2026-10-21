@@ -9454,5 +9454,136 @@ console.log('\n39. 2026-10-21 — a food joins its meal, saved and past meals in
     : bad('eat tab wiring');
 }
 
+console.log('\n40. Item 86 — was this estimate right? Good / Off, the one question, the correction kept');
+{
+  const ratings = await import('../src/lib/db/repositories/food-log-ratings.ts');
+  const { EstimateRatingLine } = await import('../src/components/nutrition/estimate-rating.tsx');
+  const noop = () => {};
+  const today = todayISODate();
+  const estimatedMeal = (name) =>
+    logMealWithItems(db, {
+      date: today,
+      time: '12:30',
+      name,
+      source: 'ai_suggested',
+      items: [{ name: 'Chicken salad', amount: 350, kcal: 520, protein_g: 40, carbs_g: 10, fat_g: 30, confidence: 'medium' }],
+    }).mealId;
+
+  // UNRATED, on an estimated meal: the question, quiet, under the items.
+  const fresh = estimatedMeal('Rated lunch test');
+  const unrated = render('meal-detail (estimate unrated)', MealDetailScreen, { id: fresh });
+  expect('meal-detail (estimate unrated)', unrated, [
+    'Was this right?',
+    '>Good<',
+    '>Off<',
+    'This estimate was right',
+    'This estimate was off',
+  ]);
+  unrated !== null &&
+  unrated.indexOf('Was this right?') > unrated.indexOf('Add food to this meal') &&
+  unrated.indexOf('Was this right?') < unrated.indexOf('Adjust with AI')
+    ? ok('one place: between the Items plate and the Actions — never a modal')
+    : bad('rating line placement');
+
+  // A meal logged by hand, and one still waiting on its estimate, draw nothing.
+  const manual = logMealWithItems(db, {
+    date: today,
+    time: '13:00',
+    name: 'Typed lunch test',
+    items: [{ name: 'Rice', amount: 200, kcal: 260 }],
+  }).mealId;
+  refute('meal-detail (logged by hand)', render('meal-detail (logged by hand)', MealDetailScreen, { id: manual }), [
+    'Was this right?',
+  ]);
+  const { mealId: pendingId } = queueNewMealEstimate(
+    db,
+    { date: today, time: '13:30', name: placeholderMealName('a bowl of pho') },
+    { kind: 'text', description: 'a bowl of pho' }
+  );
+  refute('meal-detail (estimate pending)', render('meal-detail (estimate pending)', MealDetailScreen, { id: pendingId }), [
+    'Was this right?',
+  ]);
+
+  // OFF — the one question, three answers.
+  ratings.rateMeal(db, fresh, 'bad');
+  const asking = render('meal-detail (rated off)', MealDetailScreen, { id: fresh });
+  expect('meal-detail (rated off)', asking, [
+    'What was off?',
+    '>Portion<',
+    '>Item<',
+    '>Macros<',
+    'The portion was off',
+    'The item was off',
+    'The macros were off',
+  ]);
+  refute('meal-detail (rated off)', asking, ['Was this right?']);
+
+  // ANSWERED, not yet fixed: what was said, and what to do.
+  ratings.setRatingIssue(db, fresh, 'portion');
+  const answered = render('meal-detail (off · portion)', MealDetailScreen, { id: fresh });
+  expect('meal-detail (off · portion)', answered, [
+    'Off · Portion',
+    'Set the portion on the item above.',
+    'What you change is kept as an example for the next estimate.',
+    'Change the rating of this estimate',
+  ]);
+
+  // FIXED: the correction is the example.
+  const [salad] = listMealItems(db, fresh);
+  const { updateMealItemPortion } = await import('../src/lib/db/repositories/nutrition.ts');
+  updateMealItemPortion(db, salad.id, { amount: 250, kcal: 371, protein_g: 29, carbs_g: 7, fat_g: 21 });
+  ratings.settleMealRating(db, fresh);
+  expect('meal-detail (corrected)', render('meal-detail (corrected)', MealDetailScreen, { id: fresh }), [
+    'Off · Portion · corrected',
+    'Kept as an example for the next estimate.',
+  ]);
+
+  // GOOD: one line read back.
+  const goodMeal = estimatedMeal('Good lunch test');
+  ratings.rateMeal(db, goodMeal, 'good');
+  const goodHtml = render('meal-detail (rated good)', MealDetailScreen, { id: goodMeal });
+  expect('meal-detail (rated good)', goodHtml, ['>Estimate<', '>Good<', 'Change the rating of this estimate']);
+  refute('meal-detail (rated good)', goodHtml, ['Was this right?', 'What was off?', 'kept as an example']);
+
+  // THE LINE ON ITS OWN: Change asks again with a Cancel; Off over an answer
+  // asks the question again; never the accent, never a signal colour.
+  const line = (view, step) =>
+    render(`rating line (${step})`, EstimateRatingLine, {}, {
+      view,
+      step,
+      onRate: noop,
+      onIssue: noop,
+      onChange: noop,
+    });
+  const changing = line({ rating: 'good', issue: null, corrected: false }, 'verdict');
+  expect('rating line (verdict)', changing, ['Was this right?', '>Cancel<', 'Keep the rating as it was']);
+  const reasked = line({ rating: 'bad', issue: 'portion', corrected: true }, 'issue');
+  expect('rating line (issue)', reasked, ['What was off?', '>Macros<']);
+  refute('rating line (unrated)', line(null, 'idle'), ['Cancel']);
+  for (const [name, html] of [
+    ['verdict', changing],
+    ['issue', reasked],
+    ['answered', line({ rating: 'bad', issue: 'item', corrected: false }, 'idle')],
+  ]) {
+    refute(`rating line (${name})`, html, ['pine', 'signal-', 'accent']);
+  }
+  expect('rating line (answered, item)', line({ rating: 'bad', issue: 'item', corrected: false }, 'idle'), [
+    'Off · Item',
+    'Say what it was in Adjust with AI, or change the items above.',
+  ]);
+
+  // WIRING, as source: the window writes only while open; Item and Macros go
+  // to Adjust with AI with the answer; the revise screen reads it.
+  const mdSrc = readFileSync(new URL('../app/meal-detail.tsx', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const mrSrc = readFileSync(new URL('../app/meal-revise.tsx', import.meta.url), 'utf8');
+  mdSrc.includes('if (correcting.current) { try { settleMealRating(getDb(), mealId);') &&
+  mdSrc.includes("router.push({ pathname: '/meal-revise', params: { id: mealId, issue } });") &&
+  mdSrc.includes("meal.source === 'ai_suggested' && items.length > 0 ?") &&
+  mrSrc.includes("issue === 'macros'") &&
+  !readFileSync(new URL('../app/meal-estimate.tsx', import.meta.url), 'utf8').includes('EstimateRatingLine')
+    ? ok('the correction window settles on re-read; Item / Macros push Adjust with AI with the answer; the review screen draws no rating')
+    : bad('rating wiring');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

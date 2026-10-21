@@ -98,7 +98,9 @@ type Phase =
 
 export default function MealReviseScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id?: string }>();
+  // `issue` is the meal screen's one question, answered (0066, item 86): a
+  // macros correction is usually read off a label, so the example says so.
+  const { id, issue } = useLocalSearchParams<{ id?: string; issue?: string }>();
   const mealId = typeof id === 'string' ? id : '';
 
   // Read once in the initializer (op-sqlite is synchronous). The meal cannot
@@ -281,7 +283,11 @@ export default function MealReviseScreen() {
               <TextInput
                 value={instruction}
                 onChangeText={setInstruction}
-                placeholder="e.g. that was cooked in olive oil, not butter"
+                placeholder={
+                  issue === 'macros'
+                    ? 'e.g. the label says 20 g protein and 210 kcal'
+                    : 'e.g. that was cooked in olive oil, not butter'
+                }
                 placeholderTextColor={palette.inkMuted}
                 multiline
                 editable={phase.kind === 'input'}
