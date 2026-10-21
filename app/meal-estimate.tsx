@@ -17,6 +17,7 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import { findFoodByBarcode } from '@/lib/db/repositories/foods';
+import { usualFoodsContextFor } from '@/lib/db/repositories/food-history';
 import { logMealWithItems } from '@/lib/db/repositories/nutrition';
 import { placeholderMealName, queueNewMealEstimate } from '@/lib/db/repositories/pending-estimates';
 import { writePendingEstimatePhoto } from '@/lib/media/pending-estimate-store';
@@ -46,6 +47,7 @@ import {
 } from '@/lib/media/meal-photo-store';
 import { downscaleJpeg, pickPhotoBase64 } from '@/lib/media/photo-library';
 import type { NewMealItem } from '@/lib/nutrition/types';
+import { joinNearbyMealWithUndo } from '@/lib/nutrition/undo-offers';
 
 /**
  * AI meal estimation → editable review (docs/nutrition-subapp.md §6). Describe a
@@ -205,7 +207,13 @@ export default function MealEstimateScreen() {
     setPhoto(captured);
     setPhase({ kind: 'estimating' });
     try {
-      const grounded = groundMealEstimate(getDb(), await estimateMeal(input, controller.signal));
+      // His most-logged foods ride the USER turn (item 73), so "my usual latte"
+      // resolves; the queue keeps the bare input and adds them at drain time.
+      const usual = usualFoodsContextFor(getDb());
+      const grounded = groundMealEstimate(
+        getDb(),
+        await estimateMeal({ ...input, usual }, controller.signal)
+      );
       toReview(grounded);
     } catch (error) {
       // A cancel is not a failure and gets no message — the screen is gone.
@@ -370,6 +378,10 @@ export default function MealEstimateScreen() {
       // disk) leaves a saved meal with no photo, which is a state the meal
       // screen already draws — nothing.
       if (photo) attachMealPhoto(getDb(), mealId, photo);
+      // Near a meal already logged, it joins it (item 58) — AFTER the photo, so
+      // the photo moves with it and an Undo brings both back. The receipt is
+      // drawn on the Eat tab this returns to.
+      joinNearbyMealWithUndo(getDb(), mealId);
       router.back();
     } catch (error) {
       console.warn('[meal-estimate] save failed', error);

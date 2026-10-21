@@ -5,6 +5,7 @@ import { Alert, Image, Pressable, Text, TextInput, View } from 'react-native';
 
 import { KeyMicroTail } from '@/components/nutrition/key-micro-tail';
 import { UndoRow } from '@/components/nutrition/undo-row';
+import { UsualAddOns } from '@/components/nutrition/usual-add-ons';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
@@ -16,6 +17,7 @@ import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
+import { addUsualAddOn, mealAddOns } from '@/lib/db/repositories/food-history';
 import { getFood } from '@/lib/db/repositories/foods';
 import { saveMealAsTemplate } from '@/lib/db/repositories/meal-templates';
 import { saveMealAsRecipe } from '@/lib/db/repositories/recipes';
@@ -57,6 +59,7 @@ import {
 import { keyMicroLabel, partsAsItem } from '@/lib/nutrition/key-micro';
 import { mealDayLabel, parseClockParts, partsFromClock, shiftDay } from '@/lib/nutrition/meal-time';
 import { amountForQty, rescaleLoggedItem } from '@/lib/nutrition/servings';
+import type { UsualAddOn } from '@/lib/nutrition/repeats';
 import type { AmountUnit, FoodRow, MealItemWithServing, MealRow } from '@/lib/nutrition/types';
 
 /** The fractions a person actually says, for "I ate half the pizza" (C4). */
@@ -206,6 +209,9 @@ type MealState = {
    *  "the file is gone", because a broken frame is worse than no frame (0033).
    *  One, except on a meal combined from photographed meals (2026-09-23). */
   photos: MealPhotoView[];
+  /** A logged drink's usual add-ons, by item id — only drinks that have any
+   *  (2026-10-21, item 64; src/lib/db/repositories/food-history.ts). */
+  addOns: Record<string, UsualAddOn[]>;
 };
 
 /** The inline portion-editor's state for one item. `food` is the catalog food
@@ -271,6 +277,7 @@ function readMeal(id: string): MealState {
     // web logic-check preview, the headless render suite) this is empty and the
     // screen simply has no photo section.
     photos: mealPhotoViews(db, id),
+    addOns: mealAddOns(db, id),
   };
 }
 
@@ -412,7 +419,7 @@ export default function MealDetailScreen() {
   // screen is left (src/hooks/use-undo-offer.ts).
   const undo = useUndoOffer('meal', mealId);
 
-  const { meal, items, photos } = state;
+  const { meal, items, photos, addOns } = state;
   const today = todayISODate();
 
   /** Open the inline portion editor for a logged item, prefilled from its
@@ -528,6 +535,17 @@ export default function MealDetailScreen() {
     // close `reload` makes, which would shut the offer just made.
     removeItemWithUndo(getDb(), itemId);
     reread();
+  };
+
+  /** One tap on a drink's usual add-on: logged into this meal as last time. A
+   *  write like any other here, so it re-reads and closes an item Undo. */
+  const addAddOn = (addOn: UsualAddOn) => {
+    try {
+      addUsualAddOn(getDb(), mealId, addOn);
+    } catch (error) {
+      console.warn('[meal-detail] add-on failed', error);
+    }
+    reload();
   };
 
   /** Put back the last removal; the repository did the work, so re-read. A
@@ -723,6 +741,15 @@ export default function MealDetailScreen() {
             <Ionicons name="close" size={16} color={palette.inkMuted} />
           </Pressable>
         </View>
+        {/* A drink's usual add-ons (item 64) — top-level rows only. */}
+        {item.parent_item_id === null ? (
+          <UsualAddOns
+            drink={item.name}
+            addOns={addOns[item.id] ?? []}
+            volume={units.volume}
+            onAdd={addAddOn}
+          />
+        ) : null}
         {counted && (gramsOpen || countOpen) ? (
           <LoggedCountRow
             item={item}
@@ -1099,6 +1126,15 @@ export default function MealDetailScreen() {
                         <Ionicons name="close" size={16} color={palette.inkMuted} />
                       </Pressable>
                     </View>
+                    {/* A dish that is a drink — every part in ml — has
+                        usual add-ons too (item 64): a latte logged as
+                        espresso and milk. */}
+                    <UsualAddOns
+                      drink={node.item.name}
+                      addOns={addOns[node.item.id] ?? []}
+                      volume={units.volume}
+                      onAdd={addAddOn}
+                    />
                     {openParts.has(node.item.id) ? (
                       <View>
                         {node.components.map((part) => (

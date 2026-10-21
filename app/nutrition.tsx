@@ -6,6 +6,7 @@ import { Pressable, Text, View } from 'react-native';
 import { CombineFooter, CombineMark, CombineToggle } from '@/components/nutrition/combine-meals';
 import { DayMicrosRow } from '@/components/nutrition/day-micros';
 import { LogSheet } from '@/components/nutrition/log-sheet';
+import { RepeatFoodRow, useRepeatFoodOffer } from '@/components/nutrition/repeat-food-offer';
 import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider, GridCell } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
@@ -821,6 +822,9 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
   // and the plan it draws is the one `combineMeals` runs. The same hook runs a
   // past day's combine in History (2026-09-25), so the two cannot drift.
   const combine = useCombineMeals(today, meals, pendingEstimates, reload);
+  // A food logged the same way a third time (items 73/74): offered as a
+  // catalog food once, for this visit, at the foot of Eaten today.
+  const repeat = useRepeatFoodOffer(today);
 
   const targetFor = (metric: DayMetric): number | null => {
     if (targets === null) return null;
@@ -1135,6 +1139,9 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
               />
             ) : null}
             {undo ? <UndoRow offer={undo} onUndo={undoLast} /> : null}
+            {repeat.offer ? (
+              <RepeatFoodRow offer={repeat.offer} onSave={repeat.save} onDismiss={repeat.dismiss} />
+            ) : null}
           </Block>
         )}
       </View>

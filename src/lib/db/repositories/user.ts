@@ -352,3 +352,32 @@ export function setAppLockEnabled(db: Database, enabled: boolean): Preferences {
   db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
   return { units: readUnits(obj), appLock: readAppLock(obj) };
 }
+
+/** How many offered keys are remembered — the oldest drop off past this. */
+const REPEAT_OFFERS_KEPT = 500;
+
+/**
+ * The repeat foods already offered *Save as a food* (device round 3, items
+ * 73/74; docs/nutrition-subapp.md §21) — their keys (`foodKey`,
+ * src/lib/nutrition/repeats.ts). The offer is made ONCE, so the fact that it was
+ * made has to outlive the screen. It sits in the preferences blob beside the
+ * other cursors (the timezone one is the precedent): a short list of keys, no
+ * migration, and nothing about a day. Junk reads as "none offered".
+ */
+export function repeatOffersMade(db: Database): Set<string> {
+  const raw = readSection(parseObject(getOrCreateUser(db).preferences), 'foodRepeats').offered;
+  return new Set(Array.isArray(raw) ? raw.filter((k): k is string => typeof k === 'string') : []);
+}
+
+/** Record that `key` has been offered, preserving unrelated preference keys. */
+export function recordRepeatOffer(db: Database, key: string): void {
+  const user = getOrCreateUser(db);
+  const obj = parseObject(user.preferences);
+  const section = readSection(obj, 'foodRepeats');
+  const offered = Array.isArray(section.offered)
+    ? section.offered.filter((k): k is string => typeof k === 'string' && k !== key)
+    : [];
+  offered.push(key);
+  obj.foodRepeats = { ...section, offered: offered.slice(-REPEAT_OFFERS_KEPT) };
+  db.run('UPDATE users SET preferences = ? WHERE id = ?', [JSON.stringify(obj), user.id]);
+}

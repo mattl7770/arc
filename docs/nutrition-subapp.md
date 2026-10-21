@@ -2021,3 +2021,78 @@ The portion sheet prints the food **per 100 and per serving** (`foodLabelRows`),
 - **Whether the heal is seen, and his row actually heals** — that needs a scan of the bottle online. The sheet can redraw under the thumb a second after it opens; something already added keeps the old figures.
 - **The micro fields' density** — twelve fields, three to a row, at 375 pt.
 - **Whether `name · brand` reads right for catalog foods** on the Eat tab.
+
+## 21. Round 14 — repeat foods: a food joins its meal, a repeat becomes a food, a drink's usual add-ons (2026-10-21, device round 3 items 58, 64, 73, 74, no migration)
+
+*(§20 is the charts round on main; this section was written beside it.)* Four notes, verbatim: *"Smart combine for food logs in the same meal"* (58), *"faster button for add milk"* (64), *"automatically recognize repeat foods in photo or describe"* (73), *"save repeats as a food item; search for when logged again?"* (74). No migration: head stays `0065`. The one new piece of durable state — which repeats have been offered — is a key list in the `users.preferences` blob, beside the timezone cursor.
+
+### 58 — a food logged near a meal joins it, and says so
+
+**The rule** (`src/lib/nutrition/auto-join.ts`, pure). A food logged as a NEW meal joins the meal logged nearest it on the same day when the two are within **45 minutes, inclusive**, either side (44 and 45 join, 46 does not). The gap is measured in minutes since the day began at his `dayStartsAt`, so with a 04:00 boundary 23:50 and 00:20 are thirty minutes apart on one day, while 03:50 (yesterday, logically) and 04:10 (today) never meet. Two candidates: the closer. A tie: the earlier. An untimed meal is never a candidate, and neither is a meal waiting on its queued estimate (the combine plan refuses it).
+
+**The mechanism is round 8's** (`joinNearbyMealWithUndo`, `src/lib/nutrition/undo-offers.ts`). The new meal is logged as it always was, then `combineMeals([existing, new], { name: existing.name })` merges the two, keeping **the existing meal's name**. The Undo is `uncombineMeals`, so it is exact by the same proof §14 gives: the new meal comes back with its own id, row, items and photo, and the joined meal's columns as they stood. It refuses (*Could not split Greek yogurt back out — Lunch has changed since.*) when the joined meal changed meanwhile. A combine the plan refuses (a recipe on each) or a write that fails leaves the food its own meal, offers nothing, and never throws into a save that already succeeded.
+
+**Never silently.** The receipt is the Undo row on today's list: *Added to Lunch · 12:20 · Undo* (the meal's time, in mono). Add food and the scanner draw it **under the search field / the running count**, where the eye is, and do not close it on leaving (`useUndoOffer(…, { closeOnLeave: false })`), so the Eat tab they return to draws the same offer and closes it by its own rule. The estimate and the manual entry return straight to the Eat tab, which draws it.
+
+**Every path that creates a new meal, and what it does now:**
+
+| path | creates a meal via | joins? |
+| --- | --- | --- |
+| Add food (`app/food-search.tsx`) — a catalog food, a recent's +, and (new) a saved or past meal from search | `logMealWithItems` on the first add | **yes** — every later add this visit goes to the joined meal; the session's name field is not offered (the meal is not one this visit made); Undo hands the visit back to the meal it made |
+| Scan a barcode (`app/barcode-scan.tsx`) | `logMealWithItems` on the first scan | **yes**, the same way |
+| Describe or photograph (`app/meal-estimate.tsx`), Save | `logMealWithItems`, then the photo | **yes** — after `attachMealPhoto`, so the photo moves with it and comes back with the Undo |
+| Enter it manually (`src/components/nutrition/log-sheet.tsx`) | `logMeal` (typed totals) at the TYPED time | **yes** — it becomes a `<name> (as logged)` item, `addMealItem`'s rule; a free-form existing meal does the same |
+| any add into a meal opened by `mealId` (meal-detail's Add food, its scan) | `addMealItem` | **no** — the meal is already chosen: today's behaviour |
+| the offline estimate queue (0057) | placeholder meal + queue row | **no** — a pending meal is refused by the plan; it stays its own meal when its numbers land |
+| From a template (`app/meal-templates.tsx`), Log again, Cook a recipe | `logMealFromTemplate`, `relogMeal`, `logRecipe` | **no** — these log a *meal* he chose as a whole, not a food; a recipe's `recipe_id` counts times cooked |
+| the Coach's logging tools | its own repository calls, behind its card | **no** — the card says what it logs; joining behind it would make the card wrong |
+
+**After the join, in the same visit.** A second food goes to the joined meal (it is this visit's meal now). The receipt stays; its Undo then refuses with its sentence, because splitting the first food out would rebuild a meal nobody logged. That is the round-8 rule, not a new one.
+
+**One quirk, inherited and stated.** The meal a combine keeps is the day list's first by clock (`mealListOrder`), which ignores `dayStartsAt`: a 00:20 food joined to a 23:50 dinner keeps the 00:20 row (and its time), still named Dinner. The day list orders those two the same way, so the two agree; making the list day-start-aware is its own change.
+
+### 73/74 — a repeat becomes a food, offered once
+
+**The same food** (`foodKey`, `src/lib/nutrition/repeats.ts`): a catalog food is its `food_id` (the portion is a fact about the day; the name is a snapshot that can be stale); an estimated or typed food is its name, normalized as the catalog normalizes one (case, runs of whitespace) — never fuzzy, the labs rule.
+
+**Identical**, for the offer, needs the figures too (`figuresClose`): the same unit, energy within 15 % (or 15 kcal) and each macro within 20 % (or 3 g) of the latest log. The model names what it sees, so "Latte" covers a flat white and a 16 oz; saving one figure for both would put a wrong food in the catalog. The band is the estimator's run-to-run spread on one drink, well short of a size step (+40 % or more). Name alone would merge sizes; figures alone would merge foods.
+
+**The offer** (`pickRepeatFood`, `takeRepeatFoodOffer`): plain items with no catalog food, not a combine's stand-in, with an amount; the **third** identical log within 90 days; the latest of them logged **today** (the offer follows the third log, not a browse of old history); never a name already in the catalog. It is drawn at the foot of Eaten today as a ruled row — *Oat latte · logged 3× · Save as a food · Not now* — and **recorded as offered at the moment it is taken** (on the tab's focus), so it is made once, ever, whether or not it is answered. It stays for the rest of that visit. No migration: the keys live at `preferences.foodRepeats.offered` (the last 500).
+
+**Save as a food** is `createFood` — the Create a food screen's writer — per 100 of the item's own unit, with one serving of the portion he keeps logging (so adding it from search defaults to exactly that), micros scaled the same way, and `source = 'ai'` for an estimate (the `est` mark stays) or `user` for a typed food. History keeps its snapshots.
+
+**Search** (74's second half). A query in Add food now also finds **saved meals** (templates, by `name_norm`) and **past meals** (by name; only meals with items; one per name, the latest; never the meal being added to), each in its own ruled plate after Results. One tap adds its items — through `templateItemsToLog` and `copyMealItems`, extracted unchanged from `logMealFromTemplate` and `relogMeal` so the three cannot drift — into this visit's meal, or as a meal of its own named after it, which then follows the join rule.
+
+### 73 — the estimators see his usual foods
+
+His **30 most-logged foods** over the last 90 days (`listUsualFoods`): grouped by `foodKey`, logged at least twice (a food eaten once is not usual, and every line is paid for on every call), most-logged first, ties to the more recent. A dish reads as its parts' sum. Each line carries the **latest** log's portion and figures — the usual latte is the one he has now:
+
+```
+Foods this person logs often (usual portion · kcal · protein/carbs/fat g). Not part of this meal unless it shows or names one; when it does ("my usual …"), use those figures:
+- Oat latte: 350 ml · 180 kcal · 3/20/9
+```
+
+**Food names and figures only** — no dates, times, meal names, notes or brands. Names are flattened to one line and capped at 60 characters, so a name cannot add a line of its own to the block.
+
+**Where it goes, and what it costs.** It is a text block appended to the **user** turn (`EstimateInput.usual`), for the photo and describe paths and for the offline queue's drain. **The system prompt is untouched**: `ESTIMATOR_PROMPT_CEILING` stays 1,000, the estimation prompt still measures **~998**, and the named cut (*"Most meals need no question at all;"*) was **not** taken — the block's own heading carries its one instruction, scoped so a listed food is never added to a meal that does not show or name it. Thirty lines cost **~471 tokens per call** (chars/3.6, the suite's measure), uncached; a cold start costs nothing. The changes to `estimate.ts` are exactly two, both additive: the optional `usual` field on `EstimateInput`, and one `content.push` of it in `buildMealEstimationRequest`.
+
+### 64 — a drink's usual add-ons
+
+**Where:** under a logged drink on the meal screen (`app/meal-detail.tsx`), a line of at most **three** chips — `USUAL  + Oat milk 60 ml  + Vanilla syrup 10 ml` (`src/components/nutrition/usual-add-ons.tsx`): no device of its own (a line of the Items plate, indented like the ½ ⅓ ¼ chips), hairline outline, label voice, the 44 pt floor, never the accent. One tap logs the add-on into the same meal **as it was last logged**, through `addMealItem`, and the meal re-reads.
+
+**A drink** is a top-level row measured in ml (0047), or a dish whose parts all are. **Learned** (`usualAddOnsFor`, `rankAddOns`): from the drink's earlier logs (same `foodKey`, the latest 50), the plain items logged **in the same meal within 15 minutes** of it; counted once per earlier log; kept when it went with the drink **at least twice** (once is a coincidence); never the drink itself, never something the meal already holds; most frequent first. **Cold start: nothing is drawn.**
+
+**The drink is the bigger pour.** Milk and syrup are ml too, and co-occurrence is symmetric (the flat white went with the milk as often as the reverse), so history cannot say which is the drink. Volume can: an ml row with a larger ml row logged within 15 minutes of it in the meal is an add-on there and draws no chips; a chip is drawn once per meal, under the first drink that offers it.
+
+### Verification
+
+- `db/nutrition-v2.test.mjs` **§93** — the window (44/45 join, 46 does not, either side), the nearest and the tie, untimed / other-day / pending / itself excluded, minutes from a 04:00 start, and over SQLite the 03:50 → 04:10 boundary kept apart and 23:50 + 00:20 joined. **§94** — the join over a real database: Lunch keeps its name and row, the day's total unchanged; the receipt's words, figure and scope; **Undo returns every row of meals, items and photos exactly**; a meal timed after the food; a typed meal's stand-in and a photo moved and returned; a later add refusing the Undo, writing nothing, with its sentence; 46 minutes and a refused plan writing nothing; source pins that Add food and the scanner join only in the creating branch, the estimate after its photo, the sheet by its typed time. **§95** — `figuresClose` and `foodKey`; two logs offer nothing, a different size does not count, the third identical does, only on its day; **offered once** (recorded, other preferences kept, a fourth log silent); Save as a food's per-100 figures, serving, micros, `ai` mark and search hit; never a catalog food or a catalogued name. **§96** — ranking, ties, singletons and stand-ins out, the cap of 30, the 90-day window, a dish as its sum, the block holding no dates, times, meal names or notes and one line per food, a cold start adding nothing, the block as a user text block with the system prompt byte-identical and inside the unmoved ceiling, the photo order, the ~471-token measure, and both callers. **§97** — template and past-meal hits (one per name, never a typed total, never the target), their items (a dish whole), the two extracted writers unchanged; add-ons: cold start, three at most by frequency, once and 40 minutes later excluded, present excluded, one tap logging the snapshot and moving the total, a non-drink with none, the milk in a flat white drawing no chips of its own. §90's naming pin follows the code to `saveItems`.
+- `db/screens-render.test.mjs` **§35** — a real join drawn on the Eat tab (*Added to Brunch test · 05:10*, the Undo's label, no second meal row), under Add food's field and the scanner's count, and gone after Undo with the meal back; the meal-hit plate and its absence; the add-on chips (and nothing on a cold start); a meal screen drawing *+ Macadamia milk* from real history; the repeat row offered and saved.
+
+### What only the phone can settle
+
+- **Whether 45 minutes is right.** A coffee at 10:00 and a snack at 10:40 are now one meal. Whether he Undoes that more often than he keeps it is the measure.
+- **Whether the receipt is seen** under Add food's field and the scanner's count, and on the Eat tab after the estimate's Save — and whether the second add of a visit going to the same joined meal reads as expected.
+- **The Save-as-a-food offer's moment** — the first Eat-tab visit after the third identical log — and whether one sighting is enough for "once".
+- **Whether the model uses the usual foods well** — "my usual latte" resolving to his figures, and NOT pulling a listed food into a meal that does not show it. Mock-harness tested only.
+- **The add-on chips' density** under a drink, and whether "the bigger pour is the drink" ever picks wrong (a large glass of water logged with a latte).
