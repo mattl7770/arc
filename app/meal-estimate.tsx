@@ -324,7 +324,8 @@ export default function MealEstimateScreen() {
   const followBarcode = (code: string) => {
     setSeen(null);
     setPhase({ kind: 'input' });
-    router.push({ pathname: '/barcode-scan', params: { code } });
+    // `via` lets the scanner's Done close this screen too (2026-10-21).
+    router.push({ pathname: '/barcode-scan', params: { code, via: 'camera' } });
   };
 
   const capturePhoto = async () => {

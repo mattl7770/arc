@@ -120,7 +120,7 @@ import {
   runUndo,
   subscribeUndo,
 } from '../src/lib/nutrition/undo-store.ts';
-import { assembleMealItems } from '../src/lib/nutrition/composite.ts';
+import { assembleMealItems, planDishAmount } from '../src/lib/nutrition/composite.ts';
 import {
   applyAnswer,
   beginCompositeScale,
@@ -169,7 +169,7 @@ import * as estimateModule from '../src/lib/nutrition/estimate.ts';
 import * as keyMicroModule from '../src/lib/nutrition/key-micro.ts';
 import * as nutritionRepoModule from '../src/lib/db/repositories/nutrition.ts';
 import * as formatModule from '../src/lib/nutrition/format.ts';
-import { portionLabel } from '../src/lib/nutrition/format.ts';
+import { mealNameForProduct, portionLabel } from '../src/lib/nutrition/format.ts';
 import {
   microsForAmount,
   MICROS,
@@ -6892,8 +6892,9 @@ console.log('76. a described food asks for the shortlist the estimator asks for,
   format.microsLine('{}') === null
     ? ok('food-new reads them out: “Sodium 61 mg · Vitamin D 13.1 mcg · …”, nothing when none')
     : bad('microsLine', String(format.microsLine?.(salmon.micros)));
-  src2('app/food-new.tsx').includes('microsLine(micros)')
-    ? ok('…and the screen draws that line from the micros it will save')
+  src2('app/food-new.tsx').includes('micros: microsText(entry.micros)') &&
+  src2('app/food-new.tsx').includes('rowsOf(MICROS, 3)')
+    ? ok('…and the screen opens them as fields (2026-10-21), the figures it will save')
     : bad('food-new readout');
 }
 
@@ -7272,6 +7273,114 @@ console.log('77. a plain item counted in pieces: `2 eggs` from the estimate to e
   review.includes('{row.pieces ? <CountRow row={row} handlers={handlers} /> : null}')
     ? ok('meal-detail, the offline drain and the review sheet each read the plain count')
     : bad('reader pins');
+}
+
+// ---------------------------------------------------------------------------
+// Item 92 (owner, 2026-10-21): "update gram amount for a full 'pizza' after
+// logged". A logged composite's whole amount, typed: every part scales by
+// new / the parts' sum, through scaleCompositeItem — the chips' own writer.
+console.log('92. a logged composite’s whole amount, typed — every part scales');
+{
+  const { db } = freshDb();
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:30',
+    name: 'Pizza night',
+    items: [
+      {
+        name: 'Pepperoni pizza',
+        components: [
+          { name: 'Pizza crust', amount: 300, kcal: 800, protein_g: 26, carbs_g: 160, fat_g: 6 },
+          { name: 'Mozzarella', amount: 150, kcal: 450, protein_g: 33, carbs_g: 5, fat_g: 33 },
+          { name: 'Pepperoni', amount: 60, kcal: 300, protein_g: 12, carbs_g: 2, fat_g: 27 },
+        ],
+      },
+    ],
+  });
+  const node = () => assembleMealItems(listMealItems(db, mealId))[0];
+  const before = node();
+  const plan = planDishAmount('255', before.rolled);
+  before.kind === 'composite' &&
+  before.rolled.amount === 510 &&
+  plan.kind === 'scale' &&
+  near(plan.factor, 0.5) &&
+  plan.amount === 255
+    ? ok('typing 255 g on a 510 g pizza plans × 0.5')
+    : bad('dish plan', JSON.stringify(plan));
+  scaleCompositeItem(db, before.item.id, plan.factor);
+  const after = node();
+  const parts = after.components.map((c) => c.amount);
+  near(after.rolled.amount, 255) &&
+  near(parts[0], 150) &&
+  near(parts[1], 75) &&
+  near(parts[2], 30) &&
+  near(after.rolled.kcal, 775) &&
+  near(getMeal(db, mealId).kcal, 775)
+    ? ok('every part halves (150 / 75 / 30 g), the dish reads 255 g, and the meal 775 kcal')
+    : bad('dish scaled', JSON.stringify({ parts, rolled: after.rolled }));
+
+  // What the field refuses, and what is no change at all.
+  const r = after.rolled;
+  planDishAmount(null, r).kind === 'none' &&
+  planDishAmount('255', r).kind === 'none' &&
+  planDishAmount('0', r).kind === 'invalid' &&
+  planDishAmount('', r).kind === 'invalid' &&
+  planDishAmount('6000', r).kind === 'invalid' &&
+  planDishAmount('abc', r).kind === 'invalid'
+    ? ok('untouched or unchanged is no write; 0, blank, past 5,000 and words are refused')
+    : bad('dish refusals');
+  // Parts with no shared amount have nothing to scale FROM: not offered.
+  planDishAmount('300', { ...r, amount: null }).kind === 'unavailable'
+    ? ok('a dish whose parts share no amount (a part without one, or mixed units) is not offered')
+    : bad('unavailable');
+
+  // THE SCREEN: it stages, and Save writes through scaleCompositeItem alone.
+  const screen = src2('app/meal-detail.tsx');
+  const saveAt = screen.indexOf('const saveDish = ');
+  const saveBody = screen.slice(saveAt, screen.indexOf('\n  };', saveAt));
+  saveBody.includes('planDishAmount(dishEdit.text, rolled)') &&
+  saveBody.includes('scaleCompositeItem(getDb(), parentId, plan.factor)') &&
+  !saveBody.includes('updateMealItemPortion') &&
+  screen.includes("planDishAmount(null, node.rolled).kind !== 'unavailable'")
+    ? ok('meal-detail: the whole-dish Save plans with planDishAmount and writes only through scaleCompositeItem')
+    : bad('dish wiring');
+}
+
+// ---------------------------------------------------------------------------
+// Item 90 (owner, 2026-10-21): "adding a saved food on its own should give
+// proper name for meal." Add food names the meal it creates after the food,
+// by the scanner's own rules.
+console.log('90. a meal Add food creates is named after the food');
+{
+  const { db } = freshDb();
+  const food = {
+    name: 'Greek Yogurt',
+    brand: 'Fage',
+  };
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '08:10',
+    name: mealNameForProduct(food, 'Breakfast'),
+    items: [{ name: 'Greek Yogurt', amount: 170, kcal: 165 }],
+  });
+  getMeal(db, mealId).name === 'Greek Yogurt · Fage'
+    ? ok('one catalog food makes a meal called “Greek Yogurt · Fage”, not “Breakfast”')
+    : bad('named meal', getMeal(db, mealId).name);
+
+  const screen = src2('app/food-search.tsx');
+  const saveAt = screen.indexOf('const saveItem = ');
+  const saveBody = screen.slice(saveAt, screen.indexOf('\n  };', saveAt));
+  saveBody.includes('const name = mealNameForProduct(food, daypartName(now));') &&
+  saveBody.includes('setCreatedName(name);') &&
+  !saveBody.includes('name: daypartName(now)') &&
+  // Every add passes its food, so the first one can name the meal.
+  (screen.match(/saveItem\(itemForPortion\(food, \{[^}]*\}\), food\)/g) || []).length === 4 &&
+  screen.includes('offersScanMealName(createdName, added)') &&
+  screen.includes('commitScanMealName(getDb(), targetMealId, nameDraft)') &&
+  screen.includes('useEffect(() => () => commitNameRef.current(), [])') &&
+  !screen.includes('updateMealName(')
+    ? ok('food-search: the creating add names the meal from its food; two in, the scanner’s name field and commit')
+    : bad('food-search naming wiring');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

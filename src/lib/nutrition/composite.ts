@@ -132,3 +132,40 @@ export function assembleMealItems(rows: MealItemWithServing[]): MealItemNode[] {
 export function leafMealItems(rows: MealItemWithServing[]): MealItemWithServing[] {
   return rows.filter((row) => row.is_composite !== 1);
 }
+
+/**
+ * What typing a whole dish's new amount on a LOGGED composite does (owner,
+ * 2026-10-21: *"update gram amount for a full 'pizza' after logged"*).
+ *
+ * The dish has no amount of its own (invariant 2) — what the row prints is the
+ * parts' sum, `rolled`. So a new whole-dish amount can only mean "every part,
+ * scaled by new / rolled", which is `scaleCompositeItem`'s one operation, the
+ * same one the ½ ⅓ ¼ chips call. Nothing else is honest: moving one part
+ * would be a claim about WHICH part, which nothing knows.
+ *
+ * - `unavailable` — the parts have no shared amount (a part with none, or parts
+ *   in different units: invariant 5). There is nothing to scale FROM, and the
+ *   field is not offered.
+ * - `none` — untouched, or the same amount: Save closes, writes nothing.
+ * - `invalid` — not a positive number at most 5,000 (the ceiling every amount
+ *   field in food logging uses).
+ * - `scale` — the factor Save hands to `scaleCompositeItem`.
+ *
+ * `text` null is an untouched field.
+ */
+export type DishAmountPlan =
+  | { kind: 'unavailable' }
+  | { kind: 'none' }
+  | { kind: 'invalid' }
+  | { kind: 'scale'; amount: number; factor: number };
+
+export function planDishAmount(text: string | null, rolled: CompositeRollup): DishAmountPlan {
+  if (rolled.amount == null || !(rolled.amount > 0)) return { kind: 'unavailable' };
+  if (text === null) return { kind: 'none' };
+  const t = text.trim();
+  if (t === '') return { kind: 'invalid' };
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0 || n > 5000) return { kind: 'invalid' };
+  if (Math.abs(n - rolled.amount) < 1e-9) return { kind: 'none' };
+  return { kind: 'scale', amount: n, factor: n / rolled.amount };
+}
