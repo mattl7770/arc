@@ -322,6 +322,59 @@ export function weekdayIndex(date: string): number {
 }
 
 /**
+ * The pieces a screen prints a day from — weekday, day of month, month, year —
+ * as `Date`'s own indexes, so a hand-rolled name table (Hermes has no `Intl`)
+ * reads them directly.
+ */
+export interface DayParts {
+  /** The day itself, `YYYY-MM-DD`. */
+  date: string;
+  year: number;
+  /** 0 = January … 11 = December, as `getMonth()`. */
+  month: number;
+  /** Day of the month, 1–31. */
+  day: number;
+  /** 0 = Sunday … 6 = Saturday, as {@link weekdayIndex}. */
+  weekday: number;
+}
+
+/**
+ * A `YYYY-MM-DD` that has ALREADY been attributed → its printable parts. Pure
+ * calendar arithmetic; the boundary has no say (it already had it).
+ *
+ * This is how a header prints "today" — `dayParts(todayISODate(now))` — and
+ * the reason it is a function of the DAY rather than of a `Date`: the Home,
+ * Log and Data headers each read `new Date().getDate()` and so printed the
+ * CALENDAR date, which under a 04:00 boundary turns over at midnight while the
+ * mission, the log and every write underneath it are still on yesterday (owner,
+ * round 3: *"date is on the next day when just past midnight"*). A label built
+ * from the attributed day cannot disagree with the rows under it.
+ */
+export function dayParts(date: string): DayParts {
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  return { date, year: y, month: m - 1, day: d, weekday: weekdayIndex(date) };
+}
+
+/**
+ * The instant the logical day containing `now` ENDS — the next boundary, which
+ * is when a "today" label has to change. Under the default `"00:00"` that is
+ * the next local midnight, exactly what Home's folio used to wait for; under
+ * `"04:00"` it is the next local 04:00, so 00:30 and 03:59 still wait for the
+ * coming 04:00 and 04:00 itself waits a full day.
+ *
+ * Computed in the device's CURRENT zone (it is {@link logicalDayUtcRange}'s
+ * end), so a zone change makes an already-armed timer stale. That is why the
+ * caller re-arms on every foreground: the boundary moves with the zone (the
+ * B3 × D4 rule in this file's header) and the next answer is in the new zone.
+ */
+export function nextDayRollover(
+  now: Date = new Date(),
+  dayStartsAt: string = installedDayStartsAt
+): Date {
+  return new Date(logicalDayUtcRange(logicalDate(now, dayStartsAt), dayStartsAt).endUtc);
+}
+
+/**
  * The UTC instant range `[startUtc, endUtc)` covering the LOGICAL day `now`
  * falls in — from the boundary on that day to the boundary on the next. Tables
  * keyed by a `date` column (daily_logs, wearable_data) filter on that column

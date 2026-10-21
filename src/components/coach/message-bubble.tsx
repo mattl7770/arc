@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { palette } from '@/constants/theme';
-import { clockFromISO, todayISODate } from '@/lib/db/date';
+import { clockFromISO, dayParts, logicalDate, todayISODate } from '@/lib/db/date';
 import type { AiTurnOutcome } from '@/lib/db/types';
 import { isRetryableOutcome, type CoachChatView } from '@/hooks/use-coach-chat';
 
@@ -136,25 +136,31 @@ type TurnDate = {
  * run for decades. Within the current year the year would be noise, so it is
  * absent (§5: no number that isn't carrying information).
  *
- * `todayISODate` on both sides is deliberate: it is the app's single definition
- * of a LOCAL calendar day, the same one `daily_logs.date` is keyed by, so a turn
- * at 23:40 belongs to the day the wall clock says it does.
+ * `logicalDate` / `todayISODate` on both sides is deliberate: they are the
+ * app's single definition of a day, boundary included, the same one
+ * `daily_logs.date` is keyed by. The printed date is that LOGICAL day too, not
+ * the turn's calendar date (round 3, item 76): under a 04:00 boundary a turn at
+ * 01:00 on the 22nd belongs to the 21st, and stamping it "22 OCT" would both
+ * contradict the day the rest of ARC files it under and — read later that same
+ * morning — print today's date on a turn this function has just decided was
+ * not today's.
  */
 function turnDate(createdAt: number, now: Date = new Date()): TurnDate | null {
   // Same guard as turnClock, same reason: a malformed stamp renders as no date
   // rather than as a plausible-looking wrong one (§5).
   if (!Number.isFinite(createdAt)) return null;
-  const at = new Date(createdAt);
-  if (todayISODate(at) === todayISODate(now)) return null;
+  const turnDay = logicalDate(new Date(createdAt));
+  const today = todayISODate(now);
+  if (turnDay === today) return null;
 
-  const day = at.getDate();
-  const month = MONTHS[at.getMonth()] ?? '';
-  const monthSpoken = MONTHS_SPOKEN[at.getMonth()] ?? '';
-  const sameYear = at.getFullYear() === now.getFullYear();
+  const { day, month: monthIndex, year } = dayParts(turnDay);
+  const month = MONTHS[monthIndex] ?? '';
+  const monthSpoken = MONTHS_SPOKEN[monthIndex] ?? '';
+  const sameYear = year === dayParts(today).year;
   return {
     printed: `${day} ${month}`,
-    year: sameYear ? null : String(at.getFullYear()),
-    spoken: sameYear ? `${day} ${monthSpoken}` : `${day} ${monthSpoken} ${at.getFullYear()}`,
+    year: sameYear ? null : String(year),
+    spoken: sameYear ? `${day} ${monthSpoken}` : `${day} ${monthSpoken} ${year}`,
   };
 }
 
