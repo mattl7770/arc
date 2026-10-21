@@ -322,8 +322,7 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '  "pieces": the singular noun and the count; else null.',
   '- Estimate each portion from visual cues (glass and plate size, utensils) and any text,',
   '  as "amount" plus the "unit" it is measured in: "ml" for anything DRUNK (coffee, beer,',
-  '  a smoothie), "g" for everything eaten. Estimate a drink in millilitres directly;',
-  '  never convert it to grams.',
+  '  a smoothie; never convert it to grams), "g" for everything eaten.',
   '- Give kcal and protein/carbs/fat grams per item; fiber grams when inferable, else null.',
   '  Always grams, whatever the portion unit.',
   '- Set per-item confidence: "high" for clearly identified packaged/simple foods, "low" when',
@@ -343,8 +342,9 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
   '- Ask only what the person was there for — how many shots, how big the glass, how much was',
   "  left. Never what happened in a kitchen they did not stand in (a restaurant's oil, the",
   '  butter under a steak). Never what the photo already answers.',
-  '- At most 3, biggest change first; one good question beats three weak ones. Each carries',
-  '  2-4 button answers, and each answer carries the EFFECT of choosing it, as one of:',
+  '- At most 3, biggest change first; one good question beats three weak ones. ONE decision',
+  '  each ("which kind and how many?" is two), with 2-4 short, common answers, each',
+  '  carrying the EFFECT of choosing it, as one of:',
   '  {"scale_item": name, "factor": n} · {"set_amount": name, "amount": n} ·',
   '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g,',
   '  micros}}',
@@ -491,13 +491,37 @@ export const MEAL_ESTIMATION_SYSTEM_PROMPT = [
  * The next addition to the estimation prompt therefore takes one of the cuts
  * below first.
  *
- * What is left to cut, when that runs out and it is genuinely needed: "Estimate
- * a drink in millilitres directly;" (~−12 — the unit rule before it and "never
- * convert it to grams" after it, which a test pins, already carry it), then
- * "Most meals need no question at all;" (~−10 — "USUALLY ABSENT" and "an empty
- * list is the norm" would still say it twice, but it is the guard the shots
- * round leaned on when it widened the bar, so it goes last). Neither is free —
- * which is the point of a ceiling.
+ * THE ONE-DECISION ROUND (device round 3, item 60, 2026-10-21) — paid inside
+ * the ceiling, which was NOT raised. The owner: "Questions are being combined,
+ * make sure separate questions are separated. and answer choices should be
+ * improved". A question carries ONE effect per answer, so "what milk and how
+ * many shots?" cannot be answered by any chip it offers.
+ *
+ *   998  where the gap round left it
+ *   +13  "ONE decision each", with a compound as the example ("which kind and
+ *        how many?" — the owner's latte in shape only: the question block
+ *        names figures, never foods, and a test holds it to that), and
+ *        "2-4 short, common answers" for "2-4 button answers" — the chips are
+ *        the answers people actually give, not vague ones. The sentence was
+ *        rebuilt around one subject, so the "and each answer carries" clause
+ *        it replaced paid for most of the example
+ *   −12  TRIMMED, the cut this note named first: "Estimate a drink in
+ *        millilitres directly;" is gone, and "never convert it to grams" (a
+ *        test pins it) moved inside the drink parenthesis, where "it" can only
+ *        mean the drink
+ *   ---
+ *   998 (3,591 → 3,593 chars; the two rounded deltas net to two
+ *   characters), against 1,000. **2 tokens of headroom** — the next
+ *   addition takes the cut below first. The parser refuses a compound that
+ *   slips past the prompt (`isCompoundAsk`), so the rule is not the prompt's
+ *   alone.
+ *
+ * The revision prompt takes the same clause: 928 → **940**.
+ *
+ * What is left to cut, when it is genuinely needed: "Most meals need no
+ * question at all;" (~−10 — "USUALLY ABSENT" and "an empty list is the norm"
+ * would still say it twice, but it is the guard the shots round leaned on when
+ * it widened the bar). It is not free — which is the point of a ceiling.
  */
 export const ESTIMATOR_PROMPT_CEILING = 1000;
 
@@ -683,6 +707,38 @@ function parseEffect(raw: unknown, known: Set<string>): QuestionEffect | null {
 }
 
 /**
+ * A second question, joined on: "and how", "and was", "plus what". A bare
+ * "and" is not one — "how much rice and beans?" is one decision — and neither
+ * is "or", which is how a single choice is spoken ("whole, or was it oat?").
+ */
+const JOINED_QUESTION =
+  /\b(?:and|also|plus)\s+(?:how|what|which|whose|who|when|where|whether|was|were|is|are|did|do|does|had|has|have|any)\b/i;
+
+/**
+ * True when `ask` is two questions in one (device round 3, item 60): the
+ * owner's "what milk and how many shots?".
+ *
+ * **Refused, not split.** Each answer carries exactly ONE effect, so a
+ * compound question cannot be answered properly by any chip it offers — "Oat"
+ * says nothing about the shots, "2 shots" nothing about the milk. And it cannot
+ * be split here either: the options are one list written for the joined
+ * sentence, and nothing says which half each belongs to. Dropping it is safe
+ * by construction, because the items already assume the most likely answer to
+ * both halves (the prompt's last question rule); what is lost is the chance to
+ * correct it, which the prompt's "ONE decision each" exists to keep.
+ *
+ * Two signals, both about the SENTENCE, because judgment about what to ask
+ * lives in the model and this is only a shape check:
+ * - more than one question mark ("What milk? How many shots?");
+ * - a second interrogative joined on by "and" / "also" / "plus"
+ *   ({@link JOINED_QUESTION}).
+ */
+export function isCompoundAsk(ask: string): boolean {
+  if ((ask.match(/\?+/g) ?? []).length > 1) return true;
+  return JOINED_QUESTION.test(ask);
+}
+
+/**
  * The model's `questions`, put through the three gates (backlog C5 §3.5).
  *
  * 1. **The prompt** is the judgment gate, and the only one that can be smart.
@@ -712,25 +768,33 @@ function parseQuestions(raw: unknown, items: MealEstimateItem[]): EstimateQuesti
     const q = entry as Record<string, unknown>;
     const ask = typeof q.ask === 'string' ? q.ask.trim() : '';
     if (ask === '') continue;
+    // Two questions in one cannot be answered by one effect — refused, and
+    // the next question takes its slot (see isCompoundAsk).
+    if (isCompoundAsk(ask)) continue;
     const options: QuestionOption[] = [];
+    const labels = new Set<string>();
     for (const rawOption of Array.isArray(q.options) ? q.options : []) {
       if (options.length >= 4) break;
       if (typeof rawOption !== 'object' || rawOption === null) continue;
       const o = rawOption as Record<string, unknown>;
       const label = typeof o.label === 'string' ? o.label.trim() : '';
-      if (label === '') continue;
+      // Two chips reading the same are one answer offered twice — and the
+      // plate keys its chips by label. The first, likeliest, one stands.
+      if (label === '' || labels.has(label.toLowerCase())) continue;
       const effect = parseEffect(o.effect, known);
       if (effect === null) continue;
+      labels.add(label.toLowerCase());
       options.push({ label, effect });
     }
     // One button is not a question.
     if (options.length < 2) continue;
-    questions.push({
-      id: typeof q.id === 'string' && q.id.trim() !== '' ? q.id.trim() : `q${questions.length}`,
-      ask,
-      options,
-      allowOther: q.allow_other === true,
-    });
+    // Ids key the answer trail and the plate's rows, so two questions must
+    // never share one — a repeated or missing id gets the next free `qN`.
+    let id = typeof q.id === 'string' ? q.id.trim() : '';
+    for (let n = questions.length; id === '' || questions.some((x) => x.id === id); n++) {
+      id = `q${n}`;
+    }
+    questions.push({ id, ask, options, allowOther: q.allow_other === true });
   }
   return questions;
 }
@@ -987,8 +1051,8 @@ export const MEAL_REVISION_SYSTEM_PROMPT = [
   "  just a name (the meal's energy, caffeine or sodium by ~15%), and only what the person was",
   '  there for — never what happened in a kitchen they did not stand in.',
   '  An empty list is the norm.',
-  '- At most 3, biggest change first, each with 2-4 button answers, and each answer carrying',
-  '  the EFFECT of choosing it:',
+  '- At most 3, biggest change first, ONE decision each ("which kind and how many?" is',
+  '  two), with 2-4 short, common answers, each carrying the EFFECT of choosing it:',
   '  {"scale_item": name, "factor": n} · {"set_amount": name, "amount": n} ·',
   '  {"remove_item": name} · {"add_item": {name, amount, unit, kcal, protein_g, carbs_g, fat_g,',
   '  micros}}',

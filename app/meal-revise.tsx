@@ -401,6 +401,7 @@ export default function MealReviseScreen() {
                 questions={asking.questions}
                 answers={asking.answers}
                 otherFor={asking.otherFor}
+                typed={asking.typed}
                 otherText={asking.otherText}
                 otherBusy={asking.otherBusy}
                 handlers={asking.handlers}

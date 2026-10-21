@@ -7274,5 +7274,188 @@ console.log('77. a plain item counted in pieces: `2 eggs` from the estimate to e
     : bad('reader pins');
 }
 
+// ===========================================================================
+// 78. One decision per question (device round 3, item 60). The owner:
+// "Questions are being combined, make sure separate questions are separated."
+// Each answer carries ONE effect, so "what milk and how many shots?" cannot be
+// answered by any chip it offers. The prompt forbids it; the parser refuses
+// one that slips past (isCompoundAsk), and the next question takes its slot.
+// ===========================================================================
+console.log('78. one decision per question — the prompt forbids a compound, the parser refuses one');
+{
+  const { isCompoundAsk } = estimateModule;
+  const E = MEAL_ESTIMATION_SYSTEM_PROMPT;
+  const R = MEAL_REVISION_SYSTEM_PROMPT;
+  // The example is the owner's compound's SHAPE, not his latte: §53 holds the
+  // question block to criteria, and a drink named there would be a rule.
+  E.includes('ONE decision\n  each ("which kind and how many?" is two)') &&
+  R.includes('ONE decision each ("which kind and how many?" is\n  two)')
+    ? ok('both prompts say ONE decision per question, with a compound as the example')
+    : bad('one-decision rule missing', E.slice(E.indexOf('At most 3'), E.indexOf('At most 3') + 200));
+  E.includes('2-4 short, common answers') && R.includes('2-4 short, common answers')
+    ? ok('…and ask for the short, common answers people actually give')
+    : bad('answer-quality clause missing');
+  // The cut the ceiling note named first, taken; its pinned rule survives.
+  !E.includes('Estimate a drink in millilitres directly') &&
+  E.includes('"ml" for anything DRUNK (coffee, beer,\n  a smoothie; never convert it to grams)')
+    ? ok('the named drink cut is taken, and "never convert it to grams" now sits on the drink')
+    : bad('drink cut', E.slice(E.indexOf('"ml" for'), E.indexOf('"ml" for') + 120));
+  const proseTok = (s) => Math.round(s.length / 3.6);
+  proseTok(E) < ESTIMATOR_PROMPT_CEILING &&
+  proseTok(R) < ESTIMATOR_PROMPT_CEILING &&
+  ESTIMATOR_PROMPT_CEILING === 1000
+    ? ok(`paid inside the unmoved ceiling (~${proseTok(E)} and ~${proseTok(R)} of 1,000)`)
+    : bad('over the ceiling', `${proseTok(E)} / ${proseTok(R)}`);
+
+  // The shape check, both ways. Compounds:
+  const compound = [
+    'What milk and how many shots?',
+    'How many shots, and what milk?',
+    'What milk? How many shots?',
+    'How big was the glass and was it full?',
+    'Which bread, also how thick?',
+    'How much rice plus what sauce?',
+    'Did you eat the bun and did you have fries?',
+  ];
+  const offenders = compound.filter((ask) => !isCompoundAsk(ask));
+  offenders.length === 0
+    ? ok(`${compound.length} compound questions are recognised as two`)
+    : bad('compounds missed', offenders.join(' | '));
+  // …and single decisions, including the ones a bare "and" / "or" reads like.
+  const single = [
+    'How many shots?',
+    'What milk was in it?',
+    'Small, medium or large?',
+    'Whole milk, or was it oat?',
+    'How much rice and beans?',
+    'Did you have cream and sugar?',
+    'If it was iced, what size?',
+    'How much was left??',
+    'Was there dressing?',
+    'Sandwich and soup — how much of the soup did you finish?',
+  ];
+  const wrongly = single.filter((ask) => isCompoundAsk(ask));
+  wrongly.length === 0
+    ? ok(`${single.length} single-decision questions pass, "and" / "or" / "??" included`)
+    : bad('single questions refused', wrongly.join(' | '));
+
+  // Through the parser: the compound is refused, the next question takes its
+  // slot, and the cap still counts only what survived.
+  const items = [
+    { name: 'Espresso', amount: 60, unit: 'ml', kcal: 5, protein_g: 0, carbs_g: 1, fat_g: 0, confidence: 'medium', micros: { caffeine_mg: 126 } },
+    { name: 'Whole milk', amount: 250, unit: 'ml', kcal: 155, protein_g: 8, carbs_g: 12, fat_g: 8, confidence: 'medium' },
+    { name: 'Croissant', amount: 60, kcal: 240, protein_g: 5, carbs_g: 26, fat_g: 12, confidence: 'medium' },
+  ];
+  const scale = (name, factor) => ({ scale_item: name, factor });
+  const reply = JSON.stringify({
+    title: 'Latte and a croissant',
+    items,
+    notes: null,
+    questions: [
+      {
+        id: 'combo',
+        ask: 'What milk and how many shots?',
+        allow_other: true,
+        options: [
+          { label: 'Whole, 2', effect: scale('Espresso', 1) },
+          { label: 'Oat, 3', effect: scale('Espresso', 1.5) },
+        ],
+      },
+      {
+        id: 'shots',
+        ask: 'How many shots?',
+        allow_other: true,
+        options: [
+          { label: '2', effect: scale('Espresso', 1) },
+          { label: '1', effect: scale('Espresso', 0.5) },
+          { label: '3', effect: scale('Espresso', 1.5) },
+          { label: '4', effect: scale('Espresso', 2) },
+        ],
+      },
+      {
+        id: 'milk',
+        ask: 'What milk was in it?',
+        allow_other: true,
+        options: [
+          { label: 'Whole', effect: scale('Whole milk', 1) },
+          { label: 'Oat', effect: scale('Whole milk', 0.85) },
+          { label: 'Skim', effect: scale('Whole milk', 0.55) },
+        ],
+      },
+      {
+        id: 'ate',
+        ask: 'How much of the croissant did you eat?',
+        options: [
+          { label: 'All', effect: scale('Croissant', 1) },
+          { label: 'Half', effect: scale('Croissant', 0.5) },
+        ],
+      },
+    ],
+  });
+  const parsed = parseMealEstimate(reply);
+  const ids = parsed.questions.map((q) => q.id).join(',');
+  ids === 'shots,milk,ate'
+    ? ok('the compound is refused and the three single questions behind it all fit under the cap')
+    : bad('compound through the parser', ids);
+  parsed.questions[0]?.options.map((o) => o.label).join(' ') === '2 1 3 4'
+    ? ok('…a single question keeps all four of its answers, likeliest first, in order')
+    : bad('options', JSON.stringify(parsed.questions[0]?.options));
+
+  // The same compound in the REVISION path: one parser, one rule.
+  const revisedReply = JSON.stringify({
+    title: 'Latte',
+    items: items.slice(0, 2),
+    notes: 'Swapped the milk.',
+    questions: [
+      {
+        id: 'q',
+        ask: 'How many shots? And was it iced?',
+        options: [
+          { label: '2', effect: scale('Espresso', 1) },
+          { label: '3', effect: scale('Espresso', 1.5) },
+        ],
+      },
+    ],
+  });
+  parseMealEstimate(revisedReply).questions.length === 0
+    ? ok('a two-question-mark compound is refused too, leaving no question rather than a bad one')
+    : bad('two question marks', JSON.stringify(parseMealEstimate(revisedReply).questions));
+
+  // Two chips reading the same are one answer offered twice (and the plate keys
+  // its chips by label): the first, likeliest one stands.
+  const dupe = parseMealEstimate(
+    JSON.stringify({
+      title: 'Latte',
+      items: items.slice(0, 2),
+      questions: [
+        {
+          id: 'shots',
+          ask: 'How many shots?',
+          options: [
+            { label: 'Two', effect: scale('Espresso', 1) },
+            { label: 'two ', effect: scale('Espresso', 3) },
+            { label: 'Three', effect: scale('Espresso', 1.5) },
+          ],
+        },
+        // A repeated id would share an answer-trail slot with the first.
+        {
+          id: 'shots',
+          ask: 'What milk was in it?',
+          options: [
+            { label: 'Whole', effect: scale('Whole milk', 1) },
+            { label: 'Skim', effect: scale('Whole milk', 0.55) },
+          ],
+        },
+      ],
+    })
+  ).questions;
+  dupe[0]?.options.map((o) => `${o.label}×${o.effect.factor}`).join(' ') === 'Two×1 Three×1.5'
+    ? ok('a repeated answer label is dropped, case-blind — the first one stands')
+    : bad('duplicate label', JSON.stringify(dupe[0]?.options));
+  dupe.length === 2 && dupe[0].id === 'shots' && dupe[1].id !== 'shots' && dupe[1].id !== ''
+    ? ok(`…and a repeated question id is given a free one (${dupe[1]?.id}), so no two share a trail slot`)
+    : bad('duplicate id', JSON.stringify(dupe.map((q) => q.id)));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

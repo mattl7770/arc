@@ -1923,3 +1923,48 @@ Add food's Undo re-links the items, so the count comes back with it; the Coach's
 
 - **Whether the bin is found, and not hit by accident.** It sits beside the star at the same size. Arming is the guard against a stray tap; whether it is enough is a thumb question.
 - **Whether the Undo row is seen.** It is the first row of the closing plate, below the lists; after a delete from a long Results list, it may be below the fold.
+
+## 18. Round 12 — one decision per question, and Other is the field (2026-10-21, device round 3 item 60, no migration)
+
+The owner, on device:
+
+> *"Questions are being combined, make sure separate questions are separated. and answer choices should be improved including the other box, clicking on other should instantly bring up typing and type directly into the other box"*
+
+**Why a combined question is a defect, not a style.** Every answer carries exactly **one** effect (§12l). "What milk and how many shots?" offers chips like `Oat, 3`, and no single `scale_item` / `set_amount` can say both halves. Whatever he taps, one half is lost, and the chip says it was answered.
+
+### One decision per question: the prompt forbids it, the parser refuses it
+
+- **The prompt.** Both question blocks now say *"ONE decision each ("which kind and how many?" is two)"*. The example is the owner's compound **in shape only**. §53 holds the question block to criteria and fails on a food word in it, so his latte stays out of the prompt.
+- **The parser.** `isCompoundAsk` (`src/lib/nutrition/estimate.ts`) refuses a question that is two in one. It has two signals, both about the sentence: more than one `?` group (`"What milk? How many shots?"`), or a second interrogative joined on by *and / also / plus* (`"…and how many…"`, `"…and was it…"`). A bare *and* (`"rice and beans?"`), *or* (`"whole, or was it oat?"`), a leading condition (`"If it was iced, what size?"`) and `"??"` all pass. It **refuses rather than splits**: the options are one list written for the joined sentence, and nothing says which half each chip belongs to. Refusing is safe by construction, because the items already assume the likeliest answer to both halves. The next question takes the refused one's slot under the cap of three.
+- **Two parser guards came with it.** A repeated answer label is dropped case-blind (first one stands; the plate keys chips by label, so two `Two`s were also a React key collision). A repeated or missing question id gets the next free `qN`, since ids key the answer trail.
+
+### Better answers
+
+The answer clause went from *"2-4 button answers"* to *"2-4 short, common answers"*: the chips are the answers people actually give, likeliest first (the existing "Name the most likely answer first"). The cap stays 2–4, because a yes/no question is honestly two. Whether the model's chips are now the right ones is a phone question (below).
+
+### Other is the field
+
+Tapping **Other** turns that chip into the text field **in its own slot**. It is chip-height, outlined in ink, and grows to fill the rest of the row. It has `autoFocus`, so the keyboard is up in the same tap. **Return answers it** (`returnKeyType="done"` + `onSubmitEditing`, the commit-and-dismiss every field here uses). The trailing control reads **Apply**, **Cancel** while there is nothing new to apply, and **Working…** during the call. A field blurred empty, or still showing the answer it was reopened on, closes back to the chip, so a stray tap never costs a model call. A chip tapped for the same question closes it too.
+
+Two drawing consequences:
+
+- **The well is gone.** The old field sat in a `Block device="well"` *inside* the questions plate. That was a second device nested in a block, which the Conformed Set forbids. The field is now a chip-shaped control inside the plate's own rows.
+- **A typed answer stays visible.** Answered by typing, the Other chip fills with ink like any answered chip and **carries the typed text** (`typed` on `useEstimateQuestions`). Before this, the answer vanished and only the tally and *Undo* showed it existed. Tapping the filled chip reopens the field on that text.
+
+Q2 of the spike is unchanged: a typed answer is still the one text-only second call, and the photo is never resent. The one-line disclosure under the open field still says so.
+
+### Paid inside the ceiling
+
+`ESTIMATOR_PROMPT_CEILING` stays 1,000. The rule is +13. The cut the constant named first paid for it (−12): *"Estimate a drink in millilitres directly;"* is gone, and the pinned *"never convert it to grams"* moved into the drink parenthesis. The net is two characters (3,591 → 3,593), so it still measures **998**, with 2 of headroom. The revision prompt goes 928 → **940**. The next addition takes the remaining named cut first.
+
+### Verification
+
+- `db/nutrition-v2.test.mjs` **§78**: both prompts carry the rule and the answers clause; the drink cut is taken with its pinned rule intact; both prompts are inside the unmoved ceiling. Seven compound shapes are recognised and ten single-decision shapes pass. Through `parseMealEstimate`, a compound is refused and the three questions behind it all fit under the cap, with a four-answer question keeping its order. A two-`?` compound on the revision path leaves no question. A repeated label is dropped, and a repeated id is re-keyed.
+- `db/screens-render.test.mjs` **§22**: closed, Other is a chip and no field is drawn. Open, the field is drawn with `autofocus` and `enterKeyHint="done"`, and the Other chip is gone from the row while the option chips stay. The trailing control reads Cancel / Apply / Working… (read-only while working). A typed answer fills the chip with its text and counts in the tally. Source pins cover `onSubmitEditing` on the field and no `Block device="well"` in the file.
+
+### What only the phone can settle
+
+- **Whether the model actually stops combining.** Everything here is tested against a mock harness. The first coffee is the test: two questions, or one.
+- **Whether the chips are the right ones.** "Short, common answers" is a criterion. Whether his latte now offers `1 · 2 · 3` shots and `Whole · Oat · Skim` is the model's call.
+- **The keyboard.** That `autoFocus` raises the keyboard on mount inside the review's scroll view, and the field stays visible above it, holds in the render. Only iOS can prove it. The questions sit at the top of the review, so it should never be covered.
+- **The in-place field's width.** At `min-w-[180px]` with `grow`, it shares a row with short chips and wraps under long ones. Whether that reads as "the chip became a box" or as a jump is a thumb-and-eye question.

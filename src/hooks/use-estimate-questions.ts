@@ -9,6 +9,7 @@ import {
   reviseMeal,
 } from '@/lib/nutrition/estimate';
 import {
+  ANSWERED_BY_TYPING,
   type AnsweredQuestion,
   answerQuestion,
   answersOf,
@@ -52,6 +53,9 @@ export type EstimateQuestionsState = {
   /** Install the questions a fresh estimate came back with (and clear the rest). */
   begin: (questions: EstimateQuestion[]) => void;
   answers: QuestionAnswers;
+  /** What was typed for each question a typed answer was applied to — drawn on
+   *  its Other chip while that answer stands (device round 3, item 60). */
+  typed: Record<string, string>;
   otherFor: string | null;
   otherText: string;
   otherBusy: boolean;
@@ -72,6 +76,7 @@ export function useEstimateQuestions(opts: {
 }): EstimateQuestionsState {
   const [questions, setQuestions] = useState<EstimateQuestion[]>([]);
   const [answers, setAnswers] = useState<QuestionAnswers>({});
+  const [typed, setTyped] = useState<Record<string, string>>({});
   const [otherFor, setOtherFor] = useState<string | null>(null);
   const [otherText, setOtherText] = useState('');
   const [otherBusy, setOtherBusy] = useState(false);
@@ -90,6 +95,7 @@ export function useEstimateQuestions(opts: {
     trailRef.current = [];
     setQuestions(next);
     setAnswers({});
+    setTyped({});
     setOtherFor(null);
     setOtherText('');
     setOtherBusy(false);
@@ -118,7 +124,9 @@ export function useEstimateQuestions(opts: {
         option && index !== null ? { kind: 'option', index, effect: option.effect } : null
       )
     );
-    if (index === null && otherFor === id) {
+    // Any answer to the question whose field is open closes the field: a chip
+    // tapped over it IS the answer, and Skip is "not this, after all".
+    if (otherFor === id) {
       setOtherFor(null);
       setOtherText('');
     }
@@ -160,6 +168,7 @@ export function useEstimateQuestions(opts: {
       const back = rowsFromEstimate(getDb(), revised, { countIsEaten: opts.countIsEaten });
       const rows = carryWholes(base, back);
       settle(answerQuestion(trailRef.current, rowsRef.current, id, { kind: 'typed', rows }));
+      setTyped((prev) => ({ ...prev, [id]: said }));
       setOtherFor(null);
       setOtherText('');
     } catch (error) {
@@ -178,14 +187,19 @@ export function useEstimateQuestions(opts: {
     questions,
     begin,
     answers,
+    typed,
     otherFor,
     otherText,
     otherBusy,
     handlers: {
       onAnswer: answer,
       onOpenOther: (id) => {
+        // Never while a typed answer is in flight: the field it would open is
+        // the one whose reply is still coming back.
+        if (otherBusy) return;
         setOtherFor(id);
-        setOtherText('');
+        // Reopening a question answered by typing edits what was typed.
+        setOtherText(answers[id] === ANSWERED_BY_TYPING ? (typed[id] ?? '') : '');
       },
       onOtherText: setOtherText,
       onApplyOther: (id) => void applyOther(id),

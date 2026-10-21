@@ -5995,6 +5995,113 @@ console.log('\n18. D4 — the timezone line reaches Home, and only on the day it
   expect('questions plate', plate, ['Questions', 'How many shots?']);
   refute('questions plate', plate, ['A few things']);
 
+  // OTHER, IN PLACE (device round 3, item 60): "clicking on other should
+  // instantly bring up typing and type directly into the other box". Open, the
+  // chip IS the field — focused on arrival, Return answers it — and the chip it
+  // replaced is gone from the row rather than drawn beside a well below.
+  const shotsQ = {
+    id: 'shots',
+    ask: 'How many shots?',
+    allowOther: true,
+    options: [
+      { label: 'Two', effect: { kind: 'scale_item', name: 'Latte', factor: 1 } },
+      { label: 'Three', effect: { kind: 'scale_item', name: 'Latte', factor: 1.5 } },
+    ],
+  };
+  const noop = () => {};
+  const quietHandlers = {
+    onAnswer: noop,
+    onOpenOther: noop,
+    onOtherText: noop,
+    onApplyOther: noop,
+    onCancelOther: noop,
+  };
+  const plateWith = (name, props) =>
+    render(name, QuestionsPlate, {}, {
+      questions: [shotsQ],
+      answers: {},
+      otherFor: null,
+      otherText: '',
+      otherBusy: false,
+      handlers: quietHandlers,
+      ...props,
+    });
+  const field = (html) => html?.match(/<input[^>]*aria-label="Your answer to: How many shots\?"[^>]*>/)?.[0] ?? '';
+
+  const closed = plateWith('questions plate (Other closed)', {});
+  expect('questions plate (Other closed)', closed, ['Type another answer to: How many shots?', '>Other<']);
+  field(closed) === ''
+    ? ok('closed, Other is a chip and there is no field')
+    : bad('closed Other drew a field', field(closed));
+
+  const open = plateWith('questions plate (Other open)', { otherFor: 'shots' });
+  const input = field(open);
+  input !== ''
+    ? ok('open, the answer field is drawn')
+    : bad('open Other drew no field', open?.slice(0, 400));
+  /\bautofocus\b/i.test(input)
+    ? ok('…focused on arrival, so the keyboard is up in the same tap that opened it')
+    : bad('the Other field does not autofocus', input);
+  /enterkeyhint="done"/i.test(input)
+    ? ok('…and Return is Done, which commits the answer (onSubmitEditing)')
+    : bad('no Done key on the Other field', input);
+  !/\bautofocus\b/i.test(closed ?? '')
+    ? ok('…and nothing on the closed plate grabs focus')
+    : bad('the closed plate autofocuses something');
+  refute('questions plate (Other open)', open, [
+    'Type another answer to: How many shots?', // the chip became the field
+    '>Other<',
+  ]);
+  expect('questions plate (Other open, empty)', open, ['Cancel this typed answer', '>Cancel<']);
+  // Two shots are still offered beside it — the field takes Other's slot only.
+  expect('questions plate (Other open)', open, ['How many shots? Two', 'How many shots? Three']);
+
+  const typing = plateWith('questions plate (Other typed into)', {
+    otherFor: 'shots',
+    otherText: 'a triple, iced',
+  });
+  expect('questions plate (Other typed into)', typing, ['Apply this answer', '>Apply<', 'a triple, iced']);
+  const busy = plateWith('questions plate (Other applying)', {
+    otherFor: 'shots',
+    otherText: 'a triple, iced',
+    otherBusy: true,
+  });
+  expect('questions plate (Other applying)', busy, ['Working…']);
+  /readonly/i.test(field(busy))
+    ? ok('…and the field is read-only while the answer is applied')
+    : bad('field editable while busy', field(busy));
+
+  // Answered by typing, the chip comes back filled with what was typed.
+  const answeredTyped = plateWith('questions plate (answered by typing)', {
+    answers: { shots: -1 },
+    typed: { shots: 'a triple, iced' },
+  });
+  expect('questions plate (answered by typing)', answeredTyped, [
+    'Change your typed answer to: How many shots?',
+    'a triple, iced',
+    '1 of 1',
+  ]);
+
+  // The markup shows autofocus and Done; that Return actually CALLS the apply
+  // (onSubmitEditing) is a handler, invisible to a server render — so it is
+  // pinned at the source, on the field itself.
+  const reviewSrc = readFileSync(
+    new URL('../src/components/nutrition/estimate-review.tsx', import.meta.url),
+    'utf8'
+  );
+  const fieldSrc = reviewSrc.slice(
+    reviewSrc.indexOf('function OtherField('),
+    reviewSrc.indexOf('function QuestionsPlate(') > 0
+      ? reviewSrc.indexOf('function QuestionsPlate(')
+      : undefined
+  );
+  /<TextInput\s+autoFocus\b/.test(fieldSrc) &&
+  fieldSrc.includes('onSubmitEditing=') &&
+  fieldSrc.includes('returnKeyType="done"') &&
+  !reviewSrc.includes('<Block device="well">')
+    ? ok('the Other field focuses on arrival, submits on Return, and no well nests in the plate')
+    : bad('Other field source pins', fieldSrc.slice(0, 300));
+
   // Everything else, by source. Each pattern is the CODE form of the line, so a
   // docblock that quotes a retired sentence (several do, as history) is not a
   // hit — and each target must exist and be read, or the scan fails loudly
