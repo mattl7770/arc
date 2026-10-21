@@ -325,6 +325,9 @@ export function MessageBubble({ message, onRetry }: Props) {
   // there is no incomplete reply to explain, just a record of what changed.
   const showReceipt = !message.streaming && !unfinished && writes.length > 0;
   const showPhantom = !message.streaming && (message.phantomWrite ?? false);
+  // What the owner refused at the card. Without it a declined card left no
+  // trace once answered, beside the draft it was offered for (2026-10-21).
+  const declined = message.streaming ? [] : (message.declined ?? []);
   const canRetry = !message.streaming && !message.superseded && isRetryableOutcome(outcome);
 
   return (
@@ -427,6 +430,25 @@ export function MessageBubble({ message, onRetry }: Props) {
               <Text
                 key={`${line}-${index}`}
                 className="mt-0.5 font-mono text-[11px] leading-4 text-ink">
+                {line}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
+        {/*
+          THE DECLINE, in the card's own words. Same voice as the receipt, a
+          different heading: this is a record of a decision, not a change.
+        */}
+        {declined.length > 0 ? (
+          <View className="mt-1.5">
+            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+              Declined, not saved
+            </Text>
+            {declined.map((line, index) => (
+              <Text
+                key={`${line}-${index}`}
+                className="mt-0.5 font-mono text-[11px] leading-4 text-ink-secondary">
                 {line}
               </Text>
             ))}

@@ -243,6 +243,9 @@ export async function streamCoachReply(
                 'The decline is about this one write, NOT about their whole request: ' +
                 'carry on with any other part of it that does not depend on what they refused.',
               declined: true,
+              // What the card said, so the thread can show what was refused
+              // once the card is gone (CoachToolCall.declinedSummary).
+              declinedSummary: summary,
             };
           }
           approvedSummary = summary;
@@ -279,7 +282,8 @@ export async function streamCoachReply(
   if (result.stopReason === 'refusal' && result.text.trim().length === 0) {
     const line = 'I can’t help with that request.';
     options.onToken(line);
-    return { ...result, text: line };
+    // Both: the transcript is empty exactly when the settled text is.
+    return { ...result, text: line, transcript: line };
   }
   return result;
 }
@@ -327,7 +331,7 @@ async function mockTurn(history: ChatMessage[], options: StreamOptions): Promise
     await delay(18 + token.length * 6, options.signal);
   }
 
-  return { text: reply, toolCalls: [], stopReason: 'end_turn' };
+  return { text: reply, transcript: reply, toolCalls: [], stopReason: 'end_turn' };
 }
 
 /**

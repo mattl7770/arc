@@ -11,6 +11,7 @@ import { updateRollingSummary } from '@/lib/ai/thread-summary';
 import { getDb } from '@/lib/db/client';
 import {
   appendMessage,
+  declinedWriteLines,
   getConversationSummary,
   getOrCreateActiveConversation,
   keepUnsentTail,
@@ -51,6 +52,11 @@ export type CoachChatMessage = ChatMessage & {
    * visibly a change and prose alone can never look like one.
    */
   writes?: string[];
+  /**
+   * The card lines of the writes the user DECLINED this turn — so a refused
+   * card leaves the same trace in the thread an approved one does (2026-10-21).
+   */
+  declined?: string[];
   /**
    * The turn's prose claims it changed the record, and NOTHING was written.
    *
@@ -143,10 +149,11 @@ function landedWrites(toolCalls: CoachToolCall[]): string[] {
 function writeFidelity(
   content: string,
   toolCalls: CoachToolCall[]
-): { writes: string[]; phantomWrite: boolean } {
+): { writes: string[]; declined: string[]; phantomWrite: boolean } {
   const writes = landedWrites(toolCalls);
   return {
     writes,
+    declined: declinedWriteLines(toolCalls, humanizeToolName),
     phantomWrite: writes.length === 0 && claimsCompletedWrite(content),
   };
 }
@@ -166,7 +173,7 @@ function loadThread(conversationId: string): CoachChatMessage[] {
     .map((row) => {
       const calls = parseToolCalls(row.tool_calls);
       const tools = calls.map((call) => humanizeToolName(call.name));
-      const { writes, phantomWrite } = writeFidelity(row.content, calls);
+      const { writes, declined, phantomWrite } = writeFidelity(row.content, calls);
       return {
         id: row.id,
         role: row.role as ChatMessage['role'],
@@ -176,6 +183,7 @@ function loadThread(conversationId: string): CoachChatMessage[] {
         persisted: true,
         ...(tools.length > 0 ? { tools } : {}),
         ...(writes.length > 0 ? { writes } : {}),
+        ...(declined.length > 0 ? { declined } : {}),
         ...(row.role === 'assistant' && phantomWrite ? { phantomWrite } : {}),
         // The raw record, kept so the NEXT turn can replay this turn's tool
         // digest (src/lib/ai/history-window.ts) without re-reading the thread.
@@ -323,8 +331,22 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // finished one — least of all when it already wrote to the record.
           const outcome = outcomeForStopReason(result.stopReason);
           const tools = result.toolCalls.map((call: CoachToolCall) => humanizeToolName(call.name));
-          const { writes, phantomWrite } = writeFidelity(result.text, result.toolCalls);
-          const persisted = result.text.trim().length > 0 || result.toolCalls.length > 0;
+          // THE WHOLE TURN, not its settled answer (owner report, 2026-10-21:
+          // *"after you approve something coach's message gets overridden, can
+          // lose info"*). This used to be `result.text`, which is only what the
+          // model said after its LAST tool call. The prompt has the Coach
+          // present a draft in full before calling the write, so on approval
+          // the bubble was swapped from draft + card to a bare "Saved.", and
+          // the row, the rolling summary and every later turn's history lost
+          // the draft with it. The transcript is exactly what `onToken`
+          // already streamed into this bubble, so settling on it changes
+          // nothing the reader can see: the text they read while deciding is
+          // the text that stays. One bubble, not one per round: an
+          // `ai_messages` row is a turn, and two assistant rows in a row are
+          // what `markSupersededTurns` reads as a retried fragment.
+          const content = result.transcript;
+          const { writes, declined, phantomWrite } = writeFidelity(content, result.toolCalls);
+          const persisted = content.trim().length > 0 || result.toolCalls.length > 0;
           // What the turn cost, broken into cache writes / cache reads / output
           // (src/lib/ai/cost.ts). A single lump token total cannot distinguish a
           // warm prefix re-read from paying full price for it, and those differ
@@ -337,11 +359,12 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           patch((m) => ({
             ...m,
             streaming: false,
-            content: result.text.length > 0 ? result.text : m.content,
+            content: content.length > 0 ? content : m.content,
             outcome,
             persisted,
             ...(tools.length > 0 ? { tools } : {}),
             ...(writes.length > 0 ? { writes } : {}),
+            ...(declined.length > 0 ? { declined } : {}),
             ...(phantomWrite ? { phantomWrite } : {}),
             ...(result.toolCalls.length > 0 ? { toolCalls: result.toolCalls } : {}),
             ...(caption ? { usageCaption: caption } : {}),
@@ -351,7 +374,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
               getDb(),
               conversationId,
               'assistant',
-              result.text,
+              content,
               result.toolCalls.length > 0 ? result.toolCalls : null,
               outcome
             );
@@ -367,7 +390,10 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // Retry appends alongside this row; it is never deleted.
           if (err instanceof CoachTurnError) {
             const tools = err.toolCalls.map((call) => humanizeToolName(call.name));
-            const { writes, phantomWrite } = writeFidelity(err.partialText, err.toolCalls);
+            const { writes, declined, phantomWrite } = writeFidelity(
+              err.partialText,
+              err.toolCalls
+            );
             appendMessage(
               getDb(),
               conversationId,
@@ -384,6 +410,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
               persisted: true,
               tools,
               ...(writes.length > 0 ? { writes } : {}),
+              ...(declined.length > 0 ? { declined } : {}),
               ...(phantomWrite ? { phantomWrite } : {}),
             }));
             return;

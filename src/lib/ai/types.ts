@@ -65,6 +65,18 @@ export type CoachToolCall = {
    * and old rows simply have none.
    */
   receipt?: string;
+  /**
+   * The line the confirmation card showed for a write the user DECLINED: the
+   * mirror of {@link receipt}, set only alongside `declined` (coach-service.ts).
+   *
+   * Added 2026-10-21 with the whole-turn fix (owner: *"after you approve
+   * something coach's message gets overridden, can lose info"*). The card is
+   * docked above the composer and vanishes the moment it is answered, so an
+   * approved write left its line in the thread as the receipt while a declined
+   * one left nothing but a tool chip. Rides the `tool_calls` JSON like the
+   * receipt; rows written before it fall back to the tool's name.
+   */
+  declinedSummary?: string;
 };
 
 /** Why a Coach turn stopped — the subset of wire stop reasons callers act on. */
@@ -92,8 +104,24 @@ export type CoachUsage = {
 
 /** The full outcome of one Coach turn (possibly many model round-trips). */
 export type CoachTurnResult = {
-  /** The final assistant text, as streamed. */
+  /**
+   * The SETTLED text: what the model said after its last tool result, falling
+   * back to the earlier text when that is empty (model-client.ts
+   * `settledText`). The answer only, for the callers that PARSE it: the coach
+   * pass's sentinel, and every extraction that rides `runCoachTurn`.
+   */
   text: string;
+  /**
+   * EVERYTHING the model wrote this turn, every round in order, joined by the
+   * same seam the live stream used: what `onToken` delivered, minus trailing
+   * whitespace.
+   *
+   * This is what the Coach THREAD keeps (use-coach-chat.ts): the bubble, the
+   * `ai_messages` row, and so the history replayed to the model on later
+   * turns. Settling the thread on `text` instead replaced a drafted entry with
+   * "Saved." the moment it was approved (owner report, 2026-10-21).
+   */
+  transcript: string;
   /** Every tool call the turn made, in execution order. */
   toolCalls: CoachToolCall[];
   stopReason: CoachStopReason;

@@ -360,6 +360,33 @@ console.log('4. runCoachTurn: full tool loop — execute, echo, continue');
   tokens.join('') === 'Checking.\n\nTraining is trending up 12%.'
     ? ok('…while onToken still streamed narration + separator + answer, in order')
     : bad('token stream', JSON.stringify(tokens.join('')));
+  // …and the TRANSCRIPT is that stream, verbatim (2026-10-21). The Coach thread
+  // settles on it, because the pre-tool text of a write is the draft being
+  // approved (owner: "after you approve something coach's message gets
+  // overridden, can lose info"). `text` above stays the answer for parsers.
+  result.transcript === tokens.join('')
+    ? ok('the transcript is exactly what streamed: every round, with the seam')
+    : bad('transcript', JSON.stringify(result.transcript));
+}
+
+console.log('4a. two tool rounds: the transcript keeps both, the settled text keeps the answer');
+{
+  const fetchImpl = scriptedFetch([
+    streamResponse([sseText(toolUseReplyEvents({}))]),
+    streamResponse([sseText(toolUseReplyEvents({}))]),
+    streamResponse([sseText(textReplyEvents('Both saved.'))]),
+  ]);
+  const tokens = [];
+  const result = await runCoachTurn(CONFIG(fetchImpl), REQUEST, {
+    onToken: (t) => tokens.push(t),
+    executeTool: async () => ({ content: '{"ok":true}' }),
+  });
+  result.transcript === 'Checking.\n\nChecking.\n\nBoth saved.' &&
+  result.transcript === tokens.join('') &&
+  result.text === 'Both saved.' &&
+  result.toolCalls.length === 2
+    ? ok('round one, round two and the answer, in order; `text` is still the answer alone')
+    : bad('two rounds', JSON.stringify({ transcript: result.transcript, text: result.text }));
 }
 
 console.log('4b. …but narration is kept when nothing follows it');
@@ -380,6 +407,11 @@ console.log('4b. …but narration is kept when nothing follows it');
   result.text.startsWith('Checking.')
     ? ok('…and the turn falls back to what it did say rather than settling on nothing')
     : bad('lost narration', JSON.stringify(result.text));
+  // Eight rounds of "Checking." with the loop's seam after each; the trailing
+  // seam is the loop's, not the model's, so it is trimmed off the transcript.
+  result.transcript === Array.from({ length: 8 }, () => 'Checking.').join('\n\n')
+    ? ok('…and the transcript holds every round, without a dangling seam')
+    : bad('capped transcript', JSON.stringify(result.transcript));
 }
 
 console.log('5. tool failures and declines round-trip honestly');
@@ -408,12 +440,21 @@ console.log('5. tool failures and declines round-trip honestly');
   ]);
   const declined = await runCoachTurn(CONFIG(fetchImpl2), REQUEST, {
     onToken: () => {},
-    executeTool: async () => ({ content: 'The user declined this action.', declined: true }),
+    executeTool: async () => ({
+      content: 'The user declined this action.',
+      declined: true,
+      declinedSummary: 'Log weight 178 lb',
+    }),
   });
   const declinedBlock = fetchImpl2.calls[1].payload.messages.at(-1).content[0];
   declined.toolCalls[0].declined === true && declinedBlock.is_error === undefined
     ? ok('a decline is recorded but NOT an error (the model must not retry)')
     : bad('declined', JSON.stringify(declined.toolCalls));
+  declined.toolCalls[0].declinedSummary === 'Log weight 178 lb' &&
+  declined.toolCalls[0].receipt === undefined &&
+  !JSON.stringify(declinedBlock).includes('178')
+    ? ok('…its card line rides the record for the thread, and never the wire')
+    : bad('declined summary', JSON.stringify(declined.toolCalls[0]));
 }
 
 console.log('6. HTTP errors, refusal, and the runaway-loop guard');

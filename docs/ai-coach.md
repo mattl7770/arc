@@ -365,6 +365,18 @@ This is the worst failure the app has, because it is silent. The owner learns ab
 
 The prompt rule is the weakest of the four and is stated last on purpose. The receipt is what actually holds, because it is not advice.
 
+### The thread keeps the whole turn (2026-10-21)
+
+Owner report: *"after you approve something coach's message gets overridden, can lose info"*.
+
+**Cause.** A turn's `text` is `settledText`: only what the model said after its **last** tool call (the 2026-08-11 fix, which assumed pre-tool text is narration by construction). `use-coach-chat.ts` replaced the streamed bubble with it and persisted it. But the system prompt's Memory-and-knowledge rule (`system-prompt.ts`) tells the Coach to *"Present the drafted entry in full BEFORE calling"*, so for a write the pre-tool text **is** the content: on Approve the bubble went from the full draft to "Saved.", and the `ai_messages` row, the rolling summary and every later turn's history lost the draft with it. Reproduced in `db/coach-fidelity.test.mjs` §7 (9 of its assertions fail against the old line).
+
+**Fix.** `runCoachTurn` returns both: `text` (unchanged — the answer, which the coach pass's sentinel and every JSON extraction parse) and **`transcript`** — every round in order, joined by the same seam the live stream used, i.e. exactly what `onToken` delivered. The chat hook settles, persists and replays the transcript. Settling on it changes nothing the reader can see: the draft they read while deciding is the text that stays.
+
+- **One bubble, not one per round.** An `ai_messages` row is a turn, and two assistant rows in a row are exactly what `markSupersededTurns` reads as a retried fragment, so separate bubbles would have marked the draft "Superseded". It would also have broken the retry walk-back and the user/assistant alternation the wire history relies on. The card is docked above the composer, so the order the owner sees is: draft in the bubble → card below → answer appended under the draft → receipt under the bubble.
+- **Read-only turns keep their pre-tool text too.** A plan written and then checked against one number is still the plan, and no heuristic separates it from "let me check". Keeping a narration line costs a sentence; dropping content is unrecoverable. The unattended coach pass is unaffected: it reads `text`.
+- **A declined card leaves a line.** The card vanishes when answered; an approval already left its words as the receipt, a decline left only a tool chip. `CoachToolCall.declinedSummary` (set in `coach-service.ts` beside `declined`) carries the card's line, and the bubble prints it under **"Declined, not saved"**. No migration: it rides `tool_calls`, and older rows fall back to the tool name.
+
 ---
 
 ## 6. Personality & voice

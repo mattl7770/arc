@@ -375,3 +375,21 @@ export function landedWriteReceipts(
     (call) => call.receipt?.trim() || fallback(call.name)
   );
 }
+
+/**
+ * The lines for a turn's DECLINED writes — the mirror of
+ * {@link landedWriteReceipts}, printed under a reply so a refused card does
+ * not vanish from the thread the moment it is answered (2026-10-21).
+ *
+ * Each is the summary the card showed (`CoachToolCall.declinedSummary`); rows
+ * written before that field existed fall back to the tool name. Only a decline
+ * at the gate counts: `declined` is set nowhere else.
+ */
+export function declinedWriteLines(
+  toolCalls: CoachToolCall[],
+  fallback: (name: string) => string
+): string[] {
+  return toolCalls
+    .filter((call) => call.declined === true)
+    .map((call) => call.declinedSummary?.trim() || fallback(call.name));
+}
