@@ -22,6 +22,8 @@
  * actually fires on device is still the owner's to confirm.
  */
 
+import { dismissDelivered, NATIVE_DELIVERED_DEPS, type DeliveredDeps } from './delivered';
+
 /** A one-shot time-interval trigger (SchedulableTriggerInputTypes.TIME_INTERVAL). */
 export type RestTrigger = { type: 'timeInterval'; seconds: number; repeats: false };
 
@@ -91,13 +93,44 @@ export async function scheduleRestAlert(seconds: number): Promise<string | null>
   }
 }
 
-/** Cancel a previously scheduled rest alert. No-op on null / absent module. */
+/**
+ * Cancel a previously scheduled rest alert, and take any "Rest complete" that
+ * already fired off the lock screen. No-op on an absent module.
+ *
+ * Every caller is a moment the rest is over or replaced — the next set's rest
+ * arming, the bar dismissed, the workout finished, discarded or ended from
+ * another screen — so a delivered alert is stale at each of them (round 3,
+ * item 89). The sweep runs even with a null id: the id is gone by then in the
+ * cases that matter most (a resumed session whose alert had already fired, or
+ * an alert whose id arrived after the screen left).
+ */
 export async function cancelRestAlert(id: string | null): Promise<void> {
   const mod = notifications;
-  if (!id || !mod || typeof mod.cancelScheduledNotificationAsync !== 'function') return;
-  try {
-    await mod.cancelScheduledNotificationAsync(id);
-  } catch {
-    // best-effort
+  if (id && mod && typeof mod.cancelScheduledNotificationAsync === 'function') {
+    try {
+      await mod.cancelScheduledNotificationAsync(id);
+    } catch {
+      // best-effort
+    }
   }
+  await clearDeliveredRestAlerts();
+}
+
+/** Is this payload a rest alert's? The tag {@link buildRestAlert} writes. */
+export function isRestAlert(data: Record<string, unknown> | undefined): boolean {
+  return data?.kind === 'rest-timer';
+}
+
+/**
+ * Dismiss every delivered rest alert; returns the identifiers removed. There
+ * is one workout at a time, so any "Rest complete" in Notification Centre is
+ * about the rest that just ended. The pending alert is not touched: it is
+ * scheduled, not presented, until it fires.
+ */
+export function clearDeliveredRestAlerts(
+  deps: DeliveredDeps | null = NATIVE_DELIVERED_DEPS
+): Promise<string[]> {
+  return dismissDelivered(deps, (presented) =>
+    presented.filter((n) => isRestAlert(n.data)).map((n) => n.identifier)
+  );
 }

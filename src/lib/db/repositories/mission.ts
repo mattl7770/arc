@@ -557,6 +557,35 @@ export function settledPlannedItems(
 }
 
 /**
+ * Every PLANNED protocol row on `date`, each with whether it is still OPEN —
+ * pending and not removed from the day.
+ *
+ * What clears a delivered protocol nudge from Notification Centre
+ * (`settledDeliveries`, src/lib/notifications/reminders.ts). An item is done
+ * with for that day when it has rows there and none of them is open: ticked,
+ * skipped, partial, or taken off the day. A day with no rows for the item says
+ * nothing — the day may simply not have been committed yet — so the caller
+ * leaves that notification alone.
+ */
+export function plannedItemRowsOn(
+  db: Database,
+  date: string
+): { protocolId: string; itemId: string; open: number }[] {
+  return db.all<{ protocolId: string; itemId: string; open: number }>(
+    `SELECT e.protocol_id AS protocolId,
+            json_extract(e.value, '$.item') AS itemId,
+            CASE WHEN e.status = 'pending' AND ${NOT_REMOVED_SQL} THEN 1 ELSE 0 END AS open
+       FROM log_entries e
+       JOIN daily_logs d ON d.id = e.daily_log_id
+      WHERE d.date = ?
+        AND e.protocol_id IS NOT NULL
+        AND json_extract(e.value, '$.item') IS NOT NULL
+        AND ${PLANNED_ROW_SQL}`,
+    [date]
+  );
+}
+
+/**
  * Every COMPLETED row sitting on a day AFTER `today` — what the user has
  * already ticked off days that have not happened.
  *

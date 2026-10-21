@@ -10,28 +10,50 @@
  * it — a recorder injected as `ReminderSyncDeps` — and reads the schedule back:
  * the Coach's nudges, the morning check-in, the check-in bit on a reminder,
  * quiet hours applying to the Coach alone, and the 64-notification budget.
+ *
+ * Round 3 (items 59, 75, 89) adds the two halves the scheduler never had: a
+ * tapped notification held until the app can show it (./taps.ts, driven with
+ * a fake source and a fake gate), and delivered notifications cleared once
+ * what they were about is settled (a fake Notification Centre injected as the
+ * pass's `delivered` seam).
  */
 import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import { setDayStartsAt, shiftISODate } from '../src/lib/db/date.ts';
-import { createReminder } from '../src/lib/db/repositories/reminders.ts';
+import { completeReminder, createReminder } from '../src/lib/db/repositories/reminders.ts';
 import {
   applyNudgeReply,
   cancelNudge,
+  markNudgeDelivered,
   saveNudgeSettings,
   upcomingNudges,
 } from '../src/lib/db/repositories/coach-nudges.ts';
+import { removeMissionItem, setMissionStatus } from '../src/lib/db/repositories/mission.ts';
+import { generateMissionForDay } from '../src/lib/db/repositories/mission-generate.ts';
+import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.ts';
+import { checkinKey, recordCheckin } from '../src/lib/ai/pass-schedule.ts';
+import { deliveredInstant, dismissDelivered } from '../src/lib/notifications/delivered.ts';
 import { parseNudgeReply } from '../src/lib/notifications/nudge-plan.ts';
+import { protocolReminderKey } from '../src/lib/notifications/protocol-reminders.ts';
 import {
   CHECKIN_TITLE,
   getLastNotificationSync,
   NOTIFICATION_BUDGET,
   NUDGE_TITLE,
   reminderTrigger,
+  routeForNotification,
+  settledDeliveries,
   syncReminderNotifications,
 } from '../src/lib/notifications/reminders.ts';
+import { clearDeliveredRestAlerts } from '../src/lib/notifications/rest-timer.ts';
+import {
+  appNavigatorMounted,
+  createTapLedger,
+  restTapTarget,
+  routeNotificationTaps,
+} from '../src/lib/notifications/taps.ts';
 
 let pass = 0;
 let fail = 0;
@@ -427,6 +449,456 @@ console.log('9. a late day boundary: the small-hours nudge is scheduled for the 
   } finally {
     setDayStartsAt('00:00');
   }
+}
+
+// --- Round 3 (items 59, 75, 89): taps held until the app can show them, and
+// --- delivered notifications cleared once what they were about is settled.
+
+/** A fake Notification Centre: `presented` is what has fired; `dismiss` removes it. */
+function centre(items, { failOn = null, readFails = false } = {}) {
+  const log = { dismissed: [], items: [...items] };
+  log.deps = {
+    presented: async () => {
+      if (readFails) throw new Error('read failed');
+      return [...log.items];
+    },
+    dismiss: async (identifier) => {
+      if (identifier === failOn) throw new Error('dismiss failed');
+      log.dismissed.push(identifier);
+      log.items = log.items.filter((n) => n.identifier !== identifier);
+    },
+  };
+  return log;
+}
+
+/** Seconds since the epoch, as iOS reports a delivery. */
+const secs = (date) => date.getTime() / 1000;
+
+const protocolDoc = (items) => ({
+  schema: 2,
+  phases: [{ id: 'p1', title: null, duration_days: null, items }],
+});
+const protocolItem = (over) => ({
+  id: over.id,
+  title: over.title,
+  scheduled_time: over.time,
+  dose: null,
+  notes: null,
+  cadence: { kind: 'daily' },
+  remind: true,
+});
+
+console.log('10. a ticked protocol item’s delivered notification comes off the lock screen');
+{
+  const { db } = freshDb();
+  const pid = createProtocolWithVersion(
+    db,
+    { name: 'Morning stack', type: 'supplement_stack', startedOn: TODAY },
+    protocolDoc([
+      protocolItem({ id: 'cr', title: 'Creatine', time: '07:00' }),
+      protocolItem({ id: 'd3', title: 'Vitamin D3', time: '08:00' }),
+    ])
+  );
+  generateMissionForDay(db, TODAY);
+  const fired = new Date(2026, 6, 27, 7, 0);
+  const presented = [
+    // With the payload's own day (scheduled since round 3)…
+    {
+      identifier: 'n-cr',
+      date: secs(fired),
+      data: { protocolItem: protocolReminderKey(pid, 'cr'), protocolId: pid, day: TODAY },
+    },
+    // …and without it (scheduled before): the day comes from the delivery time.
+    {
+      identifier: 'n-d3',
+      date: secs(new Date(2026, 6, 27, 8, 0)),
+      data: { protocolItem: protocolReminderKey(pid, 'd3'), protocolId: pid },
+    },
+    // A day with no rows yet says nothing — it stays.
+    {
+      identifier: 'n-tomorrow',
+      date: secs(new Date(2026, 6, 28, 7, 0)),
+      data: { protocolItem: protocolReminderKey(pid, 'cr'), protocolId: pid, day: TOMORROW },
+    },
+  ];
+  settledDeliveries(db, presented, '00:00').length === 0
+    ? ok('nothing is cleared while the items are still pending')
+    : bad('cleared a pending item', JSON.stringify(settledDeliveries(db, presented, '00:00')));
+  // An item no longer on a COMMITTED day — edited out, or its protocol deleted.
+  const goneItem = {
+    identifier: 'n-gone',
+    date: secs(fired),
+    data: { protocolItem: protocolReminderKey(pid, 'edited-out'), protocolId: pid, day: TODAY },
+  };
+  settledDeliveries(db, [goneItem], '00:00').includes('n-gone')
+    ? ok('an item the committed day no longer has is cleared')
+    : bad('edited-out item kept');
+
+  const rowOf = (title) =>
+    db.get(
+      `SELECT e.id FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+        WHERE d.date = ? AND e.title = ?`,
+      [TODAY, title]
+    ).id;
+  setMissionStatus(db, rowOf('Creatine'), 'completed');
+  const dl = db.get(`SELECT id FROM daily_logs WHERE date = ?`, [TODAY]).id;
+  removeMissionItem(db, dl, rowOf('Vitamin D3'));
+  const settled = settledDeliveries(db, presented, '00:00');
+  settled.includes('n-cr')
+    ? ok('ticked: its delivered notification is picked, matched by the payload’s day')
+    : bad('ticked item not picked', JSON.stringify(settled));
+  settled.includes('n-d3')
+    ? ok('taken off the day: picked too, its day read from the delivery time (seconds)')
+    : bad('removed item not picked', JSON.stringify(settled));
+  !settled.includes('n-tomorrow')
+    ? ok('a delivery for a day with no rows is left alone')
+    : bad('cleared on no evidence');
+
+  // The whole pass: the tick's resync clears it, with permission REFUSED — an
+  // early return from scheduling must not skip the clearing.
+  const os = recorder({ granted: false });
+  const nc = centre([
+    ...presented,
+    { identifier: 'rest', date: secs(fired), data: { kind: 'rest-timer' } },
+  ]);
+  os.deps.delivered = nc.deps;
+  const result = await syncReminderNotifications(db, NOW, os.deps);
+  nc.dismissed.includes('n-cr') && nc.dismissed.includes('n-d3') && nc.dismissed.length === 2
+    ? ok('the sync dismisses exactly the settled two, even with nothing it may schedule')
+    : bad('sync dismissals', JSON.stringify(nc.dismissed));
+  result.cleared.length === 2 && result.failed === false
+    ? ok('…reports them in `cleared`, and clearing is not a scheduling failure')
+    : bad('sync result', JSON.stringify(result));
+  nc.items.some((n) => n.identifier === 'rest')
+    ? ok('a rest alert is not the sync’s to clear')
+    : bad('sync cleared a rest alert');
+
+  const withoutDelivered = recorder();
+  const plain = await syncReminderNotifications(db, NOW, withoutDelivered.deps);
+  Array.isArray(plain.cleared) && plain.cleared.length === 0
+    ? ok('a recorder with no delivered seam (every older suite) clears nothing')
+    : bad('cleared with no seam', JSON.stringify(plain.cleared));
+
+  // What is scheduled from now on carries the day it is for.
+  const sched = recorder();
+  await syncReminderNotifications(db, NOW, sched.deps);
+  const tomorrowCr = sched.scheduled.find(
+    (r) => r.content.data?.protocolItem === protocolReminderKey(pid, 'cr')
+  );
+  tomorrowCr && tomorrowCr.content.data.day === TOMORROW
+    ? ok('a protocol notification now carries its logical day in the payload')
+    : bad('payload day', JSON.stringify(tomorrowCr?.content.data));
+}
+
+console.log('11. reminders, check-ins and nudges: cleared once settled, kept until then');
+{
+  const { db } = freshDb();
+  const plainId = createReminder(db, { title: 'Take creatine', time: '15:00' }, NOW);
+  const kneeId = createReminder(
+    db,
+    { title: 'The knee', time: '20:00', repeat: 'daily', checkin: true },
+    NOW
+  );
+  plan(
+    db,
+    `NUDGE ${TOMORROW} 07:30 Leg day. Eat before you lift.\nNUDGE ${TOMORROW} 18:30 Walk after dinner.`
+  );
+  const [first, second] = upcomingNudges(db, NOW, '00:00');
+  const at = secs(new Date(2026, 6, 27, 9, 0));
+  const presented = [
+    { identifier: 'r-plain', date: at, data: { reminderId: plainId } },
+    { identifier: 'r-knee', date: at, data: { reminderId: kneeId, checkin: true } },
+    { identifier: 'r-gone', date: at, data: { reminderId: 'deleted-long-ago' } },
+    { identifier: 'c-morning', date: at, data: { kind: 'checkin' } },
+    { identifier: 'n-first', date: at, data: { kind: 'nudge', nudgeId: first.id } },
+    { identifier: 'n-second', date: at, data: { kind: 'nudge', nudgeId: second.id } },
+    { identifier: 'n-gone', date: at, data: { kind: 'nudge', nudgeId: 'no-such-row' } },
+    { identifier: 'junk', date: at, data: undefined },
+  ];
+  const before = settledDeliveries(db, presented, '00:00');
+  before.length === 2 && before.includes('r-gone') && before.includes('n-gone')
+    ? ok('only what no longer exists is cleared before anything is done')
+    : bad('before', JSON.stringify(before));
+
+  completeReminder(db, plainId);
+  recordCheckin(db, checkinKey({ reminderId: kneeId }, TODAY), NOW);
+  recordCheckin(db, checkinKey('morning', TODAY), NOW);
+  markNudgeDelivered(db, first.id);
+  cancelNudge(db, second.id);
+  const after = settledDeliveries(db, presented, '00:00');
+  for (const [id, what] of [
+    ['r-plain', 'a completed reminder'],
+    ['r-knee', 'a check-in reminder the Coach answered today'],
+    ['c-morning', 'the morning check-in once answered'],
+    ['n-first', 'a nudge delivered to the thread'],
+    ['n-second', 'a cancelled nudge'],
+  ]) {
+    after.includes(id) ? ok(`cleared: ${what}`) : bad(`kept: ${what}`, JSON.stringify(after));
+  }
+  !after.includes('junk')
+    ? ok('a notification ARC cannot place is never cleared')
+    : bad('cleared junk');
+
+  // An answer recorded for TODAY does not settle yesterday's delivery.
+  const yesterday = [
+    {
+      identifier: 'c-yesterday',
+      date: secs(new Date(2026, 6, 26, 7, 5)),
+      data: { kind: 'checkin' },
+    },
+  ];
+  settledDeliveries(db, yesterday, '00:00').length === 0
+    ? ok('a check-in is answered for the day it fired, not any day')
+    : bad('yesterday cleared by today');
+
+  const failing = centre(presented, { failOn: 'r-plain' });
+  const done = await dismissDelivered(failing.deps, (p) => settledDeliveries(db, p, '00:00'));
+  !done.includes('r-plain') && done.includes('r-knee')
+    ? ok('one dismissal that throws does not stop the rest')
+    : bad('dismiss chain', JSON.stringify(done));
+  const unreadable = centre(presented, { readFails: true });
+  (await dismissDelivered(unreadable.deps, () => ['r-plain'])).length === 0
+    ? ok('an unreadable Notification Centre clears nothing and throws nothing')
+    : bad('unreadable centre');
+}
+
+console.log('12. delivery instants: iOS seconds and Android milliseconds');
+{
+  const when = new Date(2026, 6, 27, 7, 0);
+  deliveredInstant(when.getTime() / 1000)?.getTime() === when.getTime() &&
+  deliveredInstant(when.getTime())?.getTime() === when.getTime()
+    ? ok('both units read as the same instant')
+    : bad('instant units');
+  deliveredInstant(undefined) === null && deliveredInstant(NaN) === null
+    ? ok('a missing date is null, never the epoch')
+    : bad('missing date');
+}
+
+console.log('13. the rest alert clears its own delivered notification');
+{
+  const nc = centre([
+    { identifier: 'rest-1', data: { kind: 'rest-timer' } },
+    { identifier: 'mag', data: { reminderId: 'r1' } },
+  ]);
+  const removed = await clearDeliveredRestAlerts(nc.deps);
+  removed.length === 1 && removed[0] === 'rest-1' && nc.items.length === 1
+    ? ok('only "Rest complete" goes; nothing else in Notification Centre is touched')
+    : bad('rest clear', JSON.stringify(removed));
+  (await clearDeliveredRestAlerts(null)).length === 0
+    ? ok('a binary without the calls is a no-op')
+    : bad('null deps');
+  routeForNotification({ kind: 'rest-timer' })?.kind === 'rest'
+    ? ok('a tapped rest alert now has somewhere to go')
+    : bad('rest route');
+}
+
+/** A tap as expo-notifications hands it over. */
+const tap = (identifier, data, date = 1785140000) => ({
+  notification: { date, request: { identifier, content: { data } } },
+});
+
+/** A fake source: a launching tap (or none), and a listener the test fires. */
+function tapSource(launching = null) {
+  const s = { cleared: 0, listener: null, removed: false };
+  s.source = {
+    lastResponse: async () => launching,
+    clearLastResponse: () => {
+      s.cleared += 1;
+    },
+    onResponse: (listener) => {
+      s.listener = listener;
+      return () => {
+        s.removed = true;
+      };
+    },
+  };
+  return s;
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+console.log('14. a tap on a locked cold start is held, then delivered once after Face ID');
+{
+  const launching = tap('morning-req', { kind: 'checkin' });
+  const src = tapSource(launching);
+  const ledger = createTapLedger();
+  let open = false;
+  const delivered = [];
+  const routing = routeNotificationTaps(
+    src.source,
+    { isReady: () => open, deliver: (route) => delivered.push(route) },
+    ledger
+  );
+  await settle();
+  // The listener hands over the SAME delivery too — the cold start's double.
+  src.listener(launching);
+  delivered.length === 0 && ledger.waiting.length === 1
+    ? ok('locked: nothing is routed, and the tap waits — once, not twice')
+    : bad('locked delivery', JSON.stringify({ delivered, waiting: ledger.waiting }));
+  src.cleared === 0
+    ? ok('…and the launching response is NOT cleared while it waits')
+    : bad('cleared before delivery');
+  routing.flush();
+  delivered.length === 0
+    ? ok('a flush while the gate is still shut delivers nothing (the Face ID prompt)')
+    : bad('delivered through a shut gate');
+
+  open = true;
+  routing.flush();
+  delivered.length === 1 && delivered[0].kind === 'checkin'
+    ? ok('the gate opens: the tap lands, as the check-in it was')
+    : bad('after unlock', JSON.stringify(delivered));
+  src.cleared === 1
+    ? ok('…and only now is the launching response forgotten')
+    : bad('clear count', String(src.cleared));
+  routing.flush();
+  src.listener(launching);
+  delivered.length === 1
+    ? ok('handled exactly once: a later flush or a repeat hand-off adds nothing')
+    : bad('double delivery', JSON.stringify(delivered));
+}
+
+console.log('15. warm taps, repeating requests, failures and remounts');
+{
+  const src = tapSource(null);
+  const ledger = createTapLedger();
+  const delivered = [];
+  let throwOnce = true;
+  const routing = routeNotificationTaps(
+    src.source,
+    {
+      isReady: () => true,
+      deliver: (route) => {
+        delivered.push(route);
+        if (route.kind === 'nudge' && throwOnce) {
+          throwOnce = false;
+          throw new Error('navigation failed');
+        }
+      },
+    },
+    ledger
+  );
+  await settle();
+  src.listener(tap('a', { kind: 'nudge', nudgeId: 'n1' }));
+  src.listener(tap('b', { reminderId: 'r1' }));
+  delivered.length === 2 && delivered[1].kind === 'reminder'
+    ? ok('unlocked: each tap lands at once, and one that throws does not block the next')
+    : bad('warm', JSON.stringify(delivered));
+  routing.flush();
+  delivered.filter((r) => r.kind === 'nudge').length === 1
+    ? ok('a tap whose delivery threw is not retried — its side effects already ran')
+    : bad('retried a failed delivery');
+
+  // A daily request keeps its identifier; tomorrow's firing is a new tap.
+  src.listener(tap('daily', { kind: 'checkin' }, 1785140000));
+  src.listener(tap('daily', { kind: 'checkin' }, 1785226400));
+  delivered.filter((r) => r.kind === 'checkin').length === 2
+    ? ok('two firings of one repeating request are two taps')
+    : bad('repeating request swallowed');
+
+  src.listener(tap('nothing', {}));
+  delivered.length === 4
+    ? ok('a tap ARC has no route for is dropped quietly')
+    : bad('unroutable', JSON.stringify(delivered));
+
+  routing.stop();
+  src.removed ? ok('stop removes the listener') : bad('listener left behind');
+}
+{
+  // The layout remounts with a tap still waiting: the new registration takes it.
+  const ledger = createTapLedger();
+  const launching = tap('rest-req', { kind: 'rest-timer' });
+  const first = tapSource(launching);
+  const gone = routeNotificationTaps(
+    first.source,
+    { isReady: () => false, deliver: () => {} },
+    ledger
+  );
+  await settle();
+  gone.stop();
+  const delivered = [];
+  const second = tapSource(launching);
+  routeNotificationTaps(
+    second.source,
+    { isReady: () => true, deliver: (route) => delivered.push(route) },
+    ledger
+  ).flush();
+  await settle();
+  delivered.length === 1 && delivered[0].kind === 'rest' && second.cleared >= 1
+    ? ok('a waiting tap survives a remount and is delivered once by the new layout')
+    : bad('remount', JSON.stringify({ delivered, cleared: second.cleared }));
+}
+{
+  const src = tapSource(null);
+  const routing = routeNotificationTaps(
+    src.source,
+    {
+      isReady: () => {
+        throw new Error('navigation not ready');
+      },
+      deliver: () => {},
+    },
+    createTapLedger()
+  );
+  await settle();
+  let threw = false;
+  try {
+    src.listener(tap('x', { kind: 'checkin' }));
+    routing.flush();
+  } catch {
+    threw = true;
+  }
+  !threw ? ok('a gate that throws reads as shut, never as a crash') : bad('gate threw');
+  const none = routeNotificationTaps(null, { isReady: () => true, deliver: () => {} });
+  none.flush();
+  none.stop();
+  ok('no native module: an empty router, nothing thrown');
+}
+
+console.log('16. the gate reads the app’s own Stack, not expo-router’s __root');
+{
+  const stack = (routes, index = routes.length - 1) => ({ stale: false, index, routes });
+  const root = (inner) => ({ stale: false, index: 0, routes: [{ name: '__root', state: inner }] });
+  !appNavigatorMounted(root(undefined))
+    ? ok('lock screen only: __root exists, the Stack does not — shut')
+    : bad('__root alone counted as mounted');
+  !appNavigatorMounted(root({ routes: [{ name: '(tabs)' }] }))
+    ? ok('a deep link’s partial state before the Stack renders — shut')
+    : bad('partial state counted');
+  appNavigatorMounted(root(stack([{ name: '(tabs)' }])))
+    ? ok('the Stack mounted — open')
+    : bad('mounted Stack not seen');
+  !appNavigatorMounted(undefined) ? ok('no state at all — shut') : bad('undefined state');
+
+  const t = (inner, stored) => restTapTarget(root(inner), stored);
+  t(stack([{ name: '(tabs)' }, { name: 'workout-live', params: { resume: '1' } }]), true).kind ===
+  'stay'
+    ? ok('rest tap on the logger itself: stay')
+    : bad('on logger');
+  const back = t(
+    stack([
+      { name: '(tabs)' },
+      { name: 'workout-live', params: { routineId: 'r9' } },
+      { name: 'exercise-detail', params: { id: 'e1' } },
+    ]),
+    true
+  );
+  back.kind === 'return' && back.params.routineId === 'r9'
+    ? ok('logger under another screen: return to it, its params intact')
+    : bad('return', JSON.stringify(back));
+  t(stack([{ name: '(tabs)' }, { name: 'workout-live', params: { workoutId: 'w1' } }]), true)
+    .kind === 'resume'
+    ? ok('a logger correcting a SAVED session is not the live one: resume the live one')
+    : bad('editing logger taken for live');
+  t(stack([{ name: '(tabs)' }]), true).kind === 'resume'
+    ? ok('session stored but not on screen: resume it')
+    : bad('resume');
+  t(stack([{ name: '(tabs)' }]), false).kind === 'stay'
+    ? ok('no session left (finished or discarded): stay where the app is')
+    : bad('no session');
+  restTapTarget(root(undefined), true).kind === 'resume'
+    ? ok('no Stack to read: the stored session decides')
+    : bad('no stack');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

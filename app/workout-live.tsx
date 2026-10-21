@@ -97,7 +97,11 @@ import {
   shiftSessionStart,
 } from '@/lib/exercise/session-time';
 import type { PairedIngest, SetType, WorkoutDetail } from '@/lib/exercise/types';
-import { cancelRestAlert, scheduleRestAlert } from '@/lib/notifications/rest-timer';
+import {
+  cancelRestAlert,
+  clearDeliveredRestAlerts,
+  scheduleRestAlert,
+} from '@/lib/notifications/rest-timer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import type { UnitPreferences } from '@/lib/user/types';
 
@@ -1374,6 +1378,10 @@ function WorkoutLive({
     if (done && !editing && block.restSec && block.restSec > 0) {
       setRestEndsAt(Date.now() + block.restSec * 1000);
       armRestAlert(block.restSec);
+    } else if (done && !editing) {
+      // A set with no rest of its own still means the last rest is over: its
+      // "Rest complete" comes off the lock screen (arming does this too).
+      void clearDeliveredRestAlerts();
     }
   };
 

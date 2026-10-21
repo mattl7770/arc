@@ -40,13 +40,22 @@
  * pass fits {@link NOTIFICATION_BUDGET}; see `runReminderSyncPass` for the
  * order in which the budget is spent.
  */
+import { checkinKey, getPassState } from '@/lib/ai/pass-schedule';
 import type { Database } from '@/lib/db/database';
-import { getDayStartsAt } from '@/lib/db/date';
-import { getNudgeSettings, upcomingNudges } from '@/lib/db/repositories/coach-nudges';
+import { getDayStartsAt, todayISODate } from '@/lib/db/date';
+import { getNudge, getNudgeSettings, upcomingNudges } from '@/lib/db/repositories/coach-nudges';
+import { plannedItemRowsOn } from '@/lib/db/repositories/mission';
 import { listActiveReminders } from '@/lib/db/repositories/reminders';
 import type { ReminderRow } from '@/lib/reminders/types';
 
-import { protocolRemindersDue } from './protocol-reminders';
+import {
+  deliveredInstant,
+  dismissDelivered,
+  NATIVE_DELIVERED_DEPS,
+  type DeliveredDeps,
+  type PresentedNotification,
+} from './delivered';
+import { protocolReminderKey, protocolRemindersDue } from './protocol-reminders';
 
 /**
  * How many notifications one sync will leave pending. iOS keeps 64 and drops
@@ -161,7 +170,6 @@ export type NotificationResponse = {
     request: { identifier?: string; content: { data?: Record<string, unknown> } };
   };
 };
-type Subscription = { remove(): void };
 
 /**
  * What ARC puts in a notification. `interruptionLevel` is set on the Coach's
@@ -194,12 +202,6 @@ type NotificationsModule = {
       shouldSetBadge: boolean;
     }>;
   }): void;
-  addNotificationResponseReceivedListener(
-    listener: (response: NotificationResponse) => void
-  ): Subscription;
-  getLastNotificationResponseAsync(): Promise<NotificationResponse | null>;
-  /** Forget the launching tap once it is handled (optional: older builds lack it). */
-  clearLastNotificationResponse?(): void;
 };
 
 let notifications: NotificationsModule | null = null;
@@ -235,6 +237,12 @@ export type ReminderSyncDeps = {
   cancelAll(): Promise<void>;
   ensurePermission(): Promise<boolean>;
   schedule(request: { content: NotificationContent; trigger: ReminderTrigger }): Promise<void>;
+  /**
+   * What has already fired, and how to take it off the lock screen. Optional:
+   * a recorder without it (every suite written before round 3) simply skips
+   * the clearing step, exactly as a binary without the calls does.
+   */
+  delivered?: DeliveredDeps | null;
 };
 
 /** The real thing: a no-op on every count when the module is absent. */
@@ -247,6 +255,7 @@ export const NATIVE_REMINDER_DEPS: ReminderSyncDeps = {
   schedule: async (request) => {
     await notifications?.scheduleNotificationAsync(request);
   },
+  delivered: NATIVE_DELIVERED_DEPS,
 };
 
 /** Ask for notification permission once; returns whether it's granted. */
@@ -293,6 +302,9 @@ export function configureNotificationPresentation(): void {
  *             note already exists, in which case the thread shows it.
  *   nudge     the nudge's own line is added to the thread as the Coach's
  *             latest message, so his reply has context.
+ *
+ * Two kinds land elsewhere: a protocol item on Home, and the rest timer on
+ * the workout it belongs to (./taps.ts, `restTapTarget`).
  */
 export type NotificationRoute =
   | { kind: 'reminder'; id: string; checkin: boolean }
@@ -300,13 +312,17 @@ export type NotificationRoute =
   | { kind: 'nudge'; id: string }
   /** A protocol item's own nudge (C10) — the tap belongs on the mission, where
    *  the item can actually be ticked, not on the protocol's reference screen. */
-  | { kind: 'mission' };
+  | { kind: 'mission' }
+  /** "Rest complete" (./rest-timer.ts) — back to the live workout. Until round
+   *  3 this mapped to nothing, so the tap opened ARC wherever it last was. */
+  | { kind: 'rest' };
 
 /** Map a notification's data payload to where the tap should land. */
 export function routeForNotification(
   data: Record<string, unknown> | undefined
 ): NotificationRoute | null {
   if (!data) return null;
+  if (data.kind === 'rest-timer') return { kind: 'rest' };
   if (data.kind === 'nudge') {
     return typeof data.nudgeId === 'string' ? { kind: 'nudge', id: data.nudgeId } : null;
   }
@@ -335,6 +351,7 @@ export function coachTapParams(route: NotificationRoute): Record<string, string>
     case 'checkin':
       return { latest: '1' };
     case 'mission':
+    case 'rest':
       return {};
   }
 }
@@ -376,56 +393,8 @@ export function tapKey(response: NotificationResponse): string | null {
   return `${id}@${response.notification.date ?? ''}`;
 }
 
-/**
- * Route notification taps. Handles both a tap that opened the app cold (the
- * response is waiting) and taps while it runs. Returns an unsubscribe.
- *
- * Before this, `data.reminderId` was attached to every scheduled notification
- * and read by nothing: tapping a reminder dumped the user on Home with no idea
- * why the phone had buzzed.
- *
- * **Each tap is routed once (0064).** A cold start can hand the same response
- * to both the waiting-response read and the listener, and the waiting response
- * outlives a JS reload. That was a double navigation before; now a tap can
- * start a paid check-in pass, so a delivery is remembered by {@link tapKey}
- * and the launching one is cleared once handled. The check-in and nudge paths
- * are idempotent underneath as well (pass-store.ts) — this is the first of two
- * locks, not the only one.
- */
-export function registerNotificationRouting(
-  onRoute: (route: NotificationRoute) => void
-): () => void {
-  const mod = notifications;
-  if (!mod || typeof mod.addNotificationResponseReceivedListener !== 'function') return () => {};
-  const handle = (response: NotificationResponse | null | undefined): void => {
-    if (!response) return;
-    const key = tapKey(response);
-    if (key !== null) {
-      if (routedResponses.has(key)) return;
-      routedResponses.add(key);
-    }
-    const route = routeForNotification(response.notification.request.content.data);
-    if (route) onRoute(route);
-  };
-  try {
-    // A cold start FROM a tap: the response is already waiting.
-    void mod.getLastNotificationResponseAsync?.().then((response) => {
-      handle(response);
-      try {
-        mod.clearLastNotificationResponse?.();
-      } catch {
-        // Older builds: the identifier set above is the lock.
-      }
-    });
-    const subscription = mod.addNotificationResponseReceivedListener(handle);
-    return () => subscription.remove();
-  } catch {
-    return () => {};
-  }
-}
-
-/** Deliveries ({@link tapKey}) already routed in this JS session. */
-const routedResponses = new Set<string>();
+// Routing a tap — the queue that holds it until the app can show it — lives in
+// ./taps.ts. It used to live here, and route the moment the response arrived.
 
 /**
  * What one sync actually managed to do. Returned rather than logged because the
@@ -461,6 +430,12 @@ export type NotificationSyncResult = {
   overBudget: number;
   /** A native call threw; scheduling was abandoned mid-way. */
   failed: boolean;
+  /**
+   * Delivered notifications this pass took off the lock screen because what
+   * they were about is settled (round 3, item 89) — see
+   * {@link settledDeliveries}. Request identifiers.
+   */
+  cleared: string[];
 };
 
 /**
@@ -568,11 +543,141 @@ function startReminderSyncPass(
   now: Date,
   deps: ReminderSyncDeps
 ): Promise<NotificationSyncResult> {
-  const pass = runReminderSyncPass(db, now, deps).finally(() => {
+  const pass = runReminderSyncAndClear(db, now, deps).finally(() => {
     if (inFlight === pass) inFlight = null;
   });
   inFlight = pass;
   return pass;
+}
+
+/**
+ * One sync, then the lock screen: after the schedule is rebuilt, any
+ * notification that already FIRED about something now settled is dismissed.
+ *
+ * Here, and not at each call site, because every write that can settle a
+ * delivered notification already ends in this pass — a mission tick or skip
+ * (use-today-mission, mission-item, mission-day), a reminder completed or
+ * dismissed on the Coach tab, every Coach turn, a cancelled nudge — and so do
+ * boot and the day's rollover. The pending notification for the same thing is
+ * cancelled by the rebuild in the same pass.
+ *
+ * Runs on every path out of the schedule, including "nothing left to
+ * schedule" and "permission refused": ticking the LAST item of the day leaves
+ * an empty schedule, and that is exactly when its notification must go. It
+ * never changes `failed`; a lock-screen leftover is not a scheduling failure.
+ */
+async function runReminderSyncAndClear(
+  db: Database,
+  now: Date,
+  deps: ReminderSyncDeps
+): Promise<NotificationSyncResult> {
+  const result = await runReminderSyncPass(db, now, deps);
+  if (result.moduleAvailable && deps.delivered) {
+    result.cleared = await dismissDelivered(deps.delivered, (presented) =>
+      settledDeliveries(db, presented)
+    );
+  }
+  return result;
+}
+
+/**
+ * Which delivered notifications are about something already settled — their
+ * request identifiers, for {@link runReminderSyncAndClear} to dismiss. Pure
+ * over the database, and conservative: it clears on positive evidence only, so
+ * a notification it cannot place stays where it is.
+ *
+ *   protocol item  its rows on the day it was for all closed — ticked,
+ *                  skipped, partial, or taken off the day — or that day is
+ *                  committed and the item is no longer on it (edited out, or
+ *                  its protocol deleted). A day with no planned rows at all is
+ *                  not evidence: it may not be committed yet.
+ *   reminder       no longer active (done, dismissed or deleted); or a
+ *                  CHECK-IN reminder the Coach has answered on the day it fired.
+ *   morning check-in  answered on the day it fired.
+ *   Coach nudge    no longer pending: tapped (and so delivered to the thread),
+ *                  cancelled, or gone. A nudge that fired and was not tapped
+ *                  stays pending, and stays on the lock screen.
+ *   rest timer     not this function's — ./rest-timer.ts clears its own.
+ *
+ * "The day it fired" is the payload's own `day` where it has one (protocol
+ * items, since round 3), else the LOGICAL day of the delivery instant under
+ * the day boundary — the inverse of `fireInstant`, so it names the same day.
+ */
+export function settledDeliveries(
+  db: Database,
+  presented: readonly PresentedNotification[],
+  dayStartsAt: string = getDayStartsAt()
+): string[] {
+  let active: Set<string> | null = null;
+  const isActive = (id: string): boolean => {
+    active ??= new Set(listActiveReminders(db).map((r) => r.id));
+    return active.has(id);
+  };
+  let answered: Set<string> | null = null;
+  const isAnswered = (key: string): boolean => {
+    answered ??= new Set(getPassState(db).checkins);
+    return answered.has(key);
+  };
+  const rowsByDay = new Map<string, Map<string, boolean>>();
+  /** For each item key on `day`: true when some row of it is still open. */
+  const itemsOn = (day: string): Map<string, boolean> => {
+    let items = rowsByDay.get(day);
+    if (!items) {
+      items = new Map();
+      for (const row of plannedItemRowsOn(db, day)) {
+        const key = protocolReminderKey(row.protocolId, row.itemId);
+        items.set(key, items.get(key) === true || row.open === 1);
+      }
+      rowsByDay.set(day, items);
+    }
+    return items;
+  };
+  /**
+   * Is a delivered protocol nudge done with? Its rows on the day all closed;
+   * or the day IS committed (it has planned rows) and the item is not among
+   * them — an edit dropped it, or its protocol was deleted (its rows keep the
+   * history with `protocol_id` set to NULL, so they no longer name it).
+   */
+  const protocolItemSettled = (day: string, key: string): boolean => {
+    const items = itemsOn(day);
+    const open = items.get(key);
+    return open === false || (open === undefined && items.size > 0);
+  };
+
+  const out: string[] = [];
+  for (const n of presented) {
+    const data = n.data;
+    if (!data) continue;
+    const at = deliveredInstant(n.date);
+    const firedOn = at ? todayISODate(at, dayStartsAt) : null;
+
+    if (data.kind === 'nudge') {
+      if (typeof data.nudgeId !== 'string') continue;
+      const row = getNudge(db, data.nudgeId);
+      if (!row || row.status !== 'pending') out.push(n.identifier);
+    } else if (data.kind === 'checkin') {
+      if (firedOn && isAnswered(checkinKey('morning', firedOn))) out.push(n.identifier);
+    } else if (typeof data.protocolItem === 'string') {
+      const day = isISODay(data.day) ? data.day : firedOn;
+      if (day === null) continue;
+      if (protocolItemSettled(day, data.protocolItem)) out.push(n.identifier);
+    } else if (typeof data.reminderId === 'string') {
+      if (!isActive(data.reminderId)) {
+        out.push(n.identifier);
+      } else if (
+        data.checkin === true &&
+        firedOn &&
+        isAnswered(checkinKey({ reminderId: data.reminderId }, firedOn))
+      ) {
+        out.push(n.identifier);
+      }
+    }
+  }
+  return out;
+}
+
+function isISODay(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
 /**
@@ -613,6 +718,7 @@ async function runReminderSyncPass(
     checkinScheduled: false,
     overBudget: 0,
     failed: false,
+    cleared: [],
   };
   if (!result.moduleAvailable) {
     lastSync = result;
@@ -697,7 +803,10 @@ async function runReminderSyncPass(
             title: item.title,
             body: item.body ?? undefined,
             sound: 'default',
-            data: { protocolItem: item.key, protocolId: item.protocolId },
+            // `day` is the LOGICAL day this occurrence belongs to, so a
+            // delivered one can be matched to its row once ticked
+            // (`settledDeliveries`) without re-deriving the day from the clock.
+            data: { protocolItem: item.key, protocolId: item.protocolId, day: item.day },
           },
           // One dated moment, never a repeating trigger: a repeat would keep
           // firing on days the item was already done, and nothing about a
