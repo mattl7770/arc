@@ -1533,7 +1533,11 @@ function WorkoutLive({
         // figure — the span rule's end moved, and the day rule's closest-
         // duration test compares this number. An EXISTING link is not
         // re-judged: the Unpair line above is the owner's door out of one.
-        if (durationEdit?.ok && durationEdit.changed) pairIngestedWorkouts(db);
+        // Run on EVERY save since round 3 (owner item 94, "fully automatic"),
+        // not only when the figure moved: the pass is idempotent and cheap, and
+        // a session that never paired — a twinned day the old pass refused —
+        // pairs the moment it is opened and saved rather than at the next sync.
+        pairIngestedWorkouts(db);
       } else if (savedId) {
         if (draftRoutineId) touchRoutineStarted(db, draftRoutineId, new Date().toISOString());
         if (ingest) {

@@ -38,6 +38,7 @@
  */
 import { clockFromISO, formatLocalDate, todayISODate } from '@/lib/db/date';
 import { deleteWorkout, getWorkoutDetail, replaceWorkout } from '@/lib/db/repositories/exercise';
+import { pairIngestedWorkouts } from '@/lib/db/repositories/workout-ingest';
 import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import {
   checkGroceryItem,
@@ -175,7 +176,7 @@ const workoutsDomain: CoachDomainEntry = {
    * that said "duration 45 → 50". So the sets are re-sent from the row, every
    * time, and `sets` is not a field the model can send at all.
    */
-  edit: (db, row, patch) => {
+  edit: (db, row, patch, context) => {
     const workout = row.raw as ReturnType<typeof getWorkoutDetail> & object;
     const next = { ...row.values, ...patch } as {
       kind: string;
@@ -207,6 +208,16 @@ const workoutsDomain: CoachDomainEntry = {
         supersetGroup: s.supersetGroup,
       }))
     );
+    // Pair-on-save, as the session screen does after the same `replaceWorkout`
+    // (round 3, owner item 94): a corrected day or duration can settle a pair
+    // that failed on the old figure. An EXISTING link is not re-judged — the
+    // screen's Unpair line is the door out of one. Bookkeeping after a
+    // committed write, so a pairing problem is swallowed; the next sync retries.
+    try {
+      pairIngestedWorkouts(db, context.now);
+    } catch {
+      // The next Health sync runs the same pass.
+    }
   },
   // HARD, through the session screen's own Delete (app/workout-live.tsx). A
   // record of a day, removable because the user can remove it by hand — the

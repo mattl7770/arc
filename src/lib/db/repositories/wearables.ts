@@ -578,6 +578,151 @@ export function sourcePriorityOf(device: string): number {
   return priorityOf(device);
 }
 
+// --- One session, however many recorders wrote it (round 3, items 82/83/94) ---
+
+/**
+ * One real workout session: every `wearable_data` row that recorded it, and
+ * the one that speaks for it.
+ *
+ * A single session written to Apple Health by two writers — Garmin Connect and
+ * the iPhone, Garmin Connect and Strava, or Garmin Connect twice — is two
+ * HealthKit objects with two UUIDs, so it is two rows here, and the 0042 UUID
+ * key is right to keep them both: each is a true record of a real object. What
+ * is NOT true is that they are two sessions. Until round 3 only the Data tab's
+ * list knew that; the blank inbox, the pairing pass, the Coach's minutes and the
+ * freshness ledger all read each copy as a session of its own, which is the
+ * owner's *"many duplicates"* and *"more keep appearing for the same workout"*.
+ *
+ * Nothing is deleted to fix it. Both rows stay (a delete would be undone by the
+ * next sync, because the loser's UUID is still in HealthKit), and every reader
+ * asks this instead of reading rows.
+ */
+export type WorkoutSession<R extends WearableDataRow = WearableDataRow> = {
+  /** The copy that represents the session — {@link preferredTwin}'s winner. */
+  primary: R;
+  /** Every copy, the primary included, in the order they were handed in. */
+  members: R[];
+};
+
+/**
+ * How much a workout row says beyond its clock: calories, distance and heart
+ * rate, one point each. The tie-break between two copies of ONE session from
+ * equally-ranked sources (Garmin Connect writing the same run twice), so the
+ * copy that speaks for the session is the one with something on it.
+ */
+export function workoutRichness(row: WearableDataRow): number {
+  try {
+    const meta = JSON.parse(row.metadata) as Record<string, unknown>;
+    const has = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+    const hr = readWorkoutHr(meta);
+    return (has(meta.kcal) ? 1 : 0) + (has(meta.distance_km) ? 1 : 0) + (hr.avgHr ? 1 : 0);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Does `challenger` beat `incumbent` as the copy that speaks for one session?
+ *
+ *   1. {@link SOURCE_PRIORITY} — the arbitration every other metric gets, and
+ *      the app's standing answer to "which recorder measured best";
+ *   2. then the RICHER copy ({@link workoutRichness}) — between equally-ranked
+ *      sources, the one carrying calories, distance and heart rate;
+ *   3. then the LONGER span — a truncated copy tells you less about the session;
+ *   4. then `created_at`, then `id` — 0042's own ordering, so the answer is
+ *      total and the same on every pass.
+ */
+export function preferredTwin(challenger: WearableDataRow, incumbent: WearableDataRow): boolean {
+  const cp = priorityOf(challenger.source_device);
+  const ip = priorityOf(incumbent.source_device);
+  if (cp !== ip) return cp < ip;
+  const cr = workoutRichness(challenger);
+  const ir = workoutRichness(incumbent);
+  if (cr !== ir) return cr > ir;
+  const cs = workoutSpan(challenger);
+  const is = workoutSpan(incumbent);
+  const cl = cs ? cs.end - cs.start : 0;
+  const il = is ? is.end - is.start : 0;
+  if (cl !== il) return cl > il;
+  if (challenger.created_at !== incumbent.created_at) {
+    return challenger.created_at < incumbent.created_at;
+  }
+  return challenger.id < incumbent.id;
+}
+
+/**
+ * Group workout rows into SESSIONS — the app's one definition of "the same
+ * workout", now applied everywhere a workout row is read rather than on one
+ * screen.
+ *
+ * Two rows are one session when their spans share at least
+ * {@link SAME_SESSION_OVERLAP} of the SHORTER one ({@link overlapFraction}),
+ * whatever wrote them. Deliberately NOT also "similar duration": a phone that
+ * caught the last 20 minutes of a 62-minute run shares all of its clock with
+ * the run, and one person does not do two sessions in the same 20 minutes — the
+ * shorter-span measure was chosen for exactly that case. Sessions that merely
+ * abut share no time and stay apart.
+ *
+ * Grouping is transitive (connected components, not a greedy first match), so
+ * the answer does not depend on the order the rows arrive in, and three copies
+ * of one session are one session even if the shortest overlaps only one of the
+ * others. A row whose span cannot be read is its own session — kept, never
+ * silently dropped and never guessed into someone else's.
+ *
+ * Output order is the order of each session's FIRST member in `rows`, so a
+ * caller that read newest-first gets sessions newest-first.
+ */
+export function collapseWorkoutTwins<R extends WearableDataRow>(
+  rows: readonly R[]
+): WorkoutSession<R>[] {
+  const parent = rows.map((_, i) => i);
+  const find = (i: number): number => {
+    let root = i;
+    while (parent[root] !== root) root = parent[root]!;
+    while (parent[i] !== root) {
+      const next = parent[i]!;
+      parent[i] = root;
+      i = next;
+    }
+    return root;
+  };
+
+  // A sweep over start times: once a later row starts at or after this one's
+  // end, no row after it can overlap this one either.
+  const spanned = rows
+    .map((row, index) => ({ index, span: workoutSpan(row) }))
+    .filter((r): r is { index: number; span: TimeSpan } => r.span !== null)
+    .sort((a, b) => a.span.start - b.span.start || a.index - b.index);
+  for (let i = 0; i < spanned.length; i++) {
+    const a = spanned[i]!;
+    for (let j = i + 1; j < spanned.length; j++) {
+      const b = spanned[j]!;
+      if (b.span.start >= a.span.end) break;
+      if (overlapFraction(a.span, b.span) >= SAME_SESSION_OVERLAP) {
+        const ra = find(a.index);
+        const rb = find(b.index);
+        if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+      }
+    }
+  }
+
+  const byRoot = new Map<number, WorkoutSession<R>>();
+  const ordered: WorkoutSession<R>[] = [];
+  rows.forEach((row, index) => {
+    const root = find(index);
+    const session = byRoot.get(root);
+    if (!session) {
+      const fresh: WorkoutSession<R> = { primary: row, members: [row] };
+      byRoot.set(root, fresh);
+      ordered.push(fresh);
+      return;
+    }
+    session.members.push(row);
+    if (preferredTwin(row, session.primary)) session.primary = row;
+  });
+  return ordered;
+}
+
 /**
  * Recent HealthKit-ingested workouts, newest first, with **same-session
  * duplicates collapsed**.
@@ -594,6 +739,11 @@ export function sourcePriorityOf(device: string): number {
  * a bare SELECT with no arbitration at all, which is why it was the only one
  * that looked duplicated. Rows whose span cannot be read are never collapsed:
  * an unreasonable row is kept, never silently dropped.
+ *
+ * Since round 3 the collapse is {@link collapseWorkoutTwins} — the same one the
+ * pairing pass, the blank inbox and the Coach's minutes read — and a session is
+ * "logged in ARC" when ANY of its copies is linked, not only the copy shown: a
+ * link made to the phone's copy is still a link to the run.
  */
 export function recentWearableWorkouts(db: Database, limit: number): WearableWorkout[] {
   // Over-fetch, because collapsing happens after the read — a straight
@@ -604,48 +754,26 @@ export function recentWearableWorkouts(db: Database, limit: number): WearableWor
     [Math.max(limit * 4, 40)]
   );
 
-  const kept: { row: WearableDataRow; span: { start: number; end: number } | null }[] = [];
-  for (const row of pool) {
-    const span = workoutSpan(row);
-    if (span) {
-      const twin = kept.find(
-        (k) => k.span !== null && overlapFraction(k.span, span) >= SAME_SESSION_OVERLAP
-      );
-      if (twin) {
-        // Same session, two recorders: keep the better source, and on a tie the
-        // longer record (a truncated copy tells you less about the session).
-        const incumbent = priorityOf(twin.row.source_device);
-        const challenger = priorityOf(row.source_device);
-        const longer = span.end - span.start > twin.span!.end - twin.span!.start;
-        if (challenger < incumbent || (challenger === incumbent && longer)) {
-          twin.row = row;
-          twin.span = span;
-        }
-        continue;
-      }
-    }
-    kept.push({ row, span });
-  }
-
-  const shown = kept.slice(0, limit);
+  const shown = collapseWorkoutTwins(pool).slice(0, limit);
+  const memberIds = shown.flatMap((s) => s.members.map((m) => m.id));
   // One statement for the whole page rather than one per row: the ids are known
   // by now, and the alternative is the N+1 every other read in this layer
   // refuses. A device with no links reads an empty set and the join costs
   // nothing.
   const linked = new Set(
-    shown.length === 0
+    memberIds.length === 0
       ? []
       : db
           .all<{ wearable_id: string }>(
-            `SELECT wearable_id FROM workout_ingest_links WHERE wearable_id IN (${shown
+            `SELECT wearable_id FROM workout_ingest_links WHERE wearable_id IN (${memberIds
               .map(() => '?')
               .join(',')})`,
-            shown.map(({ row }) => row.id)
+            memberIds
           )
           .map((r) => r.wearable_id)
   );
 
-  return shown.map(({ row }) => {
+  return shown.map(({ primary: row, members }) => {
     let activity: string | null = null;
     let kcal: number | null = null;
     // Read through the SAME helper the pairing decoder uses, so the two
@@ -669,7 +797,7 @@ export function recentWearableWorkouts(db: Database, limit: number): WearableWor
       kcal,
       avgHr: hr.avgHr,
       maxHr: hr.maxHr,
-      loggedInArc: linked.has(row.id),
+      loggedInArc: members.some((m) => linked.has(m.id)),
     };
   });
 }

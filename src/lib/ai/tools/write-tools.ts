@@ -30,6 +30,7 @@ import { shiftISODate, todayISODate } from '@/lib/db/date';
 import { logCapture, logNote } from '@/lib/db/repositories/logs';
 import { logMetricCapture } from '@/lib/health/publish';
 import { exerciseMeasures, logWorkout } from '@/lib/db/repositories/exercise';
+import { pairIngestedWorkouts } from '@/lib/db/repositories/workout-ingest';
 import { exerciseLoadBases, resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
 import {
   activeNutritionTargets,
@@ -513,6 +514,17 @@ const logWorkoutTool: CoachTool = {
         distanceM,
       }))
     );
+    // Pair-on-save, exactly as the free-form logger does after the same
+    // `logWorkout` (round 3, owner item 94: "fully automatic, no manual
+    // syncing"). Without it a session the Coach logged waited for the next
+    // Health sync to meet the watch's copy of it. Bookkeeping, not part of the
+    // write the card described: the session is committed, so a pairing problem
+    // must not turn this receipt into an error.
+    try {
+      pairIngestedWorkouts(db, context.now);
+    } catch {
+      // The next sync runs the same pass.
+    }
     // Unmatched names still log (free-text sets are valid) but stay invisible
     // to e1RM/freshness/progression — tell the model so it can tell the user.
     const unmatched = [...new Set(sets.filter((s) => !s.exerciseId).map((s) => s.exercise))];

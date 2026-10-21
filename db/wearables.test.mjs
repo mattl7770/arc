@@ -16,6 +16,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { migrate, pendingMigrations } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
 import {
+  collapseWorkoutTwins,
   dailyMetricSeries,
   deviceLabel,
   getHealthPublishState,
@@ -49,10 +50,12 @@ import {
 } from '../src/lib/db/repositories/water.ts';
 import { logWorkout, replaceWorkout } from '../src/lib/db/repositories/exercise.ts';
 import {
+  ingestedMuscleLoads,
   linkIngestedWorkout,
   pairedIngestFor,
   pairIngestedWorkouts,
   pairingRefusals,
+  pendingIngestedStrength,
   unlinkIngestedWorkout,
   unpairedIngestedSessions,
   unpairedWorkoutDailyMinutes,
@@ -3663,6 +3666,377 @@ console.log('28. a weight corrected before, after and during its save ends as on
   getHealthPublishState(db).cursorId === 'body-landed'
     ? ok('…and the cursor moves past it as it would have')
     : bad('cursor after landed-first correction', JSON.stringify(getHealthPublishState(db)));
+}
+
+// ---------------------------------------------------------------------------
+// Round 3, owner items 82/83/94: *"Apple health workout import for linking has
+// many duplicates"*, *"more keep appearing for the same workout"*, *"auto
+// matching garmin workout info with recorded workouts should be fully
+// automatic"*. One session written to Apple Health by two writers is two rows
+// with two UUIDs; every read now treats it as ONE session.
+console.log('29. one session, two writers — one session everywhere (round 3, items 82/83/94)');
+{
+  const NOW = new Date('2026-07-26T20:00:00.000Z');
+  const DAY = todayISODate(NOW);
+
+  /** A LOCAL wall-clock instant on `day` — the §23 trick, for the day rule. */
+  const at = (day, hour, minute = 0) => {
+    const [y, m, d] = day.split('-').map(Number);
+    return new Date(y, m - 1, d, hour, minute, 0, 0).toISOString();
+  };
+
+  /**
+   * One HealthKit workout object through the real ingest path. `date` defaults
+   * to `day` but can be set apart from the clock, the way two writers a minute
+   * apart around midnight file one session under two calendar days.
+   */
+  const ingest = (
+    db,
+    {
+      uuid,
+      device = 'garmin',
+      day = DAY,
+      date = day,
+      hour = 17,
+      minute = 0,
+      minutes = 55,
+      raw = 50,
+      kcal = 300,
+      hr = null,
+      distanceKm = null,
+    }
+  ) => {
+    const start = at(day, hour, minute);
+    upsertWearableRows(db, [
+      {
+        date,
+        metricType: 'workout',
+        value: minutes,
+        unit: 'min',
+        sourceDevice: device,
+        sourceRawId: uuid,
+        startTime: start,
+        endTime: new Date(Date.parse(start) + minutes * 60_000).toISOString(),
+        metadata: {
+          activity: raw === 52 ? 'Walking' : 'Strength training',
+          activity_type_raw: raw,
+          kcal,
+          distance_km: distanceKm,
+          ...(hr ? { hr: { avg: hr, max: hr + 30, method: 'workout' } } : {}),
+        },
+      },
+    ]);
+    return db.get('SELECT id FROM wearable_data WHERE source_raw_id = ?', [uuid]).id;
+  };
+
+  const linkCount = (db) => db.all('SELECT id FROM workout_ingest_links').length;
+  const rowCount = (db) =>
+    db.get(`SELECT count(*) AS n FROM wearable_data WHERE metric_type = 'workout'`).n;
+
+  // --- the inbox asks ONCE per session ---------------------------------------
+  {
+    const { db } = freshDb();
+    // The owner's case: Garmin Connect wrote the lift, and so did a second app
+    // (an unparsed bundle lands in 'other'), a couple of minutes apart.
+    const garmin = ingest(db, { uuid: 'G-1', device: 'garmin', minutes: 55, hr: 120 });
+    ingest(db, { uuid: 'P-1', device: 'other', minute: 2, minutes: 52, kcal: null });
+    rowCount(db) === 2
+      ? ok('both HealthKit objects are kept — each is a true record of a real object')
+      : bad('rows', rowCount(db));
+    const blanks = pendingIngestedStrength(db, NOW);
+    blanks.length === 1
+      ? ok('…but the blank inbox asks about the session ONCE (was twice: item 82)')
+      : bad('inbox duplicates', JSON.stringify(blanks.map((b) => b.id)));
+    blanks[0]?.id === garmin
+      ? ok('…through the best copy: Garmin outranks an unparsed source, and carries kcal + HR')
+      : bad('inbox representative', JSON.stringify(blanks[0]));
+    unpairedIngestedSessions(db, DAY, 10).length === 1
+      ? ok('the Coach’s session list holds it once')
+      : bad('coach session list');
+    const minutes = unpairedWorkoutDailyMinutes(db, DAY, DAY);
+    minutes.length === 1 && minutes[0].value === 55
+      ? ok('…and its minutes count once — 55, not 55 + 52')
+      : bad('double-counted minutes', JSON.stringify(minutes));
+    const shown = recentWearableWorkouts(db, 10);
+    shown.length === 1 && shown[0].sourceDevice === 'garmin'
+      ? ok('the Data tab’s list agrees — one row, the same representative')
+      : bad('data tab', JSON.stringify(shown));
+  }
+
+  // --- filling the blank in retires the WHOLE session (item 83) -------------
+  {
+    const { db } = freshDb();
+    const garmin = ingest(db, { uuid: 'G-2', device: 'garmin' });
+    ingest(db, { uuid: 'P-2', device: 'other', minute: 1 });
+    // What app/workout-live.tsx does when the owner fills the blank in.
+    const workoutId = logWorkout(db, {
+      date: DAY,
+      kind: 'strength',
+      durationMin: 55,
+      startedAt: at(DAY, 17),
+    });
+    linkIngestedWorkout(db, workoutId, garmin);
+    pendingIngestedStrength(db, NOW).length === 0
+      ? ok('once one copy is answered, the twin does NOT come back asking (item 83)')
+      : bad('twin still in inbox', JSON.stringify(pendingIngestedStrength(db, NOW)));
+    unpairedWorkoutDailyMinutes(db, DAY, DAY).length === 0 &&
+    unpairedIngestedSessions(db, DAY, 10).length === 0
+      ? ok('…and the twin is not counted as a session ARC has no log for')
+      : bad('twin counted', JSON.stringify(unpairedWorkoutDailyMinutes(db, DAY, DAY)));
+    ingestedMuscleLoads(db, 14, NOW).length === 0
+      ? ok('…nor inferred into the freshness ledger as a second session')
+      : bad('twin inferred');
+    pairIngestedWorkouts(db, NOW) === 0 && linkCount(db) === 1
+      ? ok('the next pass makes no second link to the twin')
+      : bad('twin re-linked', linkCount(db));
+    const shown = recentWearableWorkouts(db, 10);
+    shown.length === 1 && shown[0].loggedInArc
+      ? ok('the Data tab shows one session, marked logged in ARC')
+      : bad('data tab after fill', JSON.stringify(shown));
+  }
+
+  // --- the state ALREADY on the phone cleans up with no write ---------------
+  {
+    const { db } = freshDb();
+    // The old pass could link the POORER copy (a hand fill from the inbox could
+    // pick either twin). That link is left exactly where it is.
+    ingest(db, { uuid: 'G-3', device: 'garmin', hour: 7, minutes: 45 });
+    const poorer = ingest(db, { uuid: 'P-3', device: 'other', hour: 7, minutes: 44, kcal: null });
+    const workoutId = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 45 });
+    linkIngestedWorkout(db, workoutId, poorer);
+    // A second, unrelated session the same evening, logged without a clock.
+    const evening = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 60 });
+    ingest(db, { uuid: 'G-4', device: 'garmin', hour: 18, minutes: 58 });
+    pendingIngestedStrength(db, NOW).map((b) => b.durationMin).join() === '58'
+      ? ok('a session linked through its POORER copy is still paired — its twin is shadowed')
+      : bad('shadowing', JSON.stringify(pendingIngestedStrength(db, NOW)));
+    pairIngestedWorkouts(db, NOW) === 1 && pairedIngestFor(db, evening)?.durationMin === 58
+      ? ok('…and the day rule sees ONE open session on the day, so the evening log pairs')
+      : bad('evening pair', JSON.stringify(pairedIngestFor(db, evening)));
+    pairedIngestFor(db, workoutId)?.wearableId === poorer
+      ? ok('…while the existing link is never re-judged or moved')
+      : bad('existing link moved');
+    pendingIngestedStrength(db, NOW).length === 0
+      ? ok('…leaving an empty inbox: only true orphans ever ask')
+      : bad('inbox not empty', JSON.stringify(pendingIngestedStrength(db, NOW)));
+  }
+
+  // --- the day rule is no longer blocked by a twin (item 94) -----------------
+  {
+    const { db } = freshDb();
+    const workoutId = logWorkout(db, { date: DAY, kind: 'strength', durationMin: null });
+    const garmin = ingest(db, { uuid: 'G-5', device: 'garmin', minutes: 50 });
+    ingest(db, { uuid: 'P-5', device: 'other', minute: 1, minutes: 49 });
+    // Before round 3 this was "several on the day, and the log has no
+    // duration → nothing is linked", forever: the owner's sessions never paired.
+    pairIngestedWorkouts(db, NOW) === 1 && pairedIngestFor(db, workoutId)?.wearableId === garmin
+      ? ok('a log with NO duration pairs on a day holding one session written twice')
+      : bad('day rule blocked by twin', JSON.stringify(pairedIngestFor(db, workoutId)));
+  }
+  {
+    const { db } = freshDb();
+    // …while two genuinely different sessions still refuse, exactly as before.
+    logWorkout(db, { date: DAY, kind: 'strength', durationMin: null });
+    ingest(db, { uuid: 'A-6', hour: 7, minutes: 30 });
+    ingest(db, { uuid: 'B-6', hour: 17, minutes: 55 });
+    ingest(db, { uuid: 'B-6-twin', device: 'other', hour: 17, minute: 1, minutes: 54 });
+    pairIngestedWorkouts(db, NOW) === 0
+      ? ok('two DIFFERENT sessions (one of them twinned) still give a duration-less log nothing')
+      : bad('guessed between two sessions', linkCount(db));
+  }
+
+  // --- the span rule links the session once, to its best copy ----------------
+  {
+    const { db } = freshDb();
+    const live = logWorkout(db, {
+      date: DAY,
+      kind: 'strength',
+      durationMin: 60,
+      startedAt: at(DAY, 17),
+    });
+    const second = logWorkout(db, {
+      date: DAY,
+      kind: 'strength',
+      durationMin: 60,
+      startedAt: at(DAY, 17, 5),
+    });
+    ingest(db, { uuid: 'P-7', device: 'other', minutes: 60, kcal: null });
+    const garmin = ingest(db, { uuid: 'G-7', device: 'garmin', minute: 2, minutes: 56 });
+    pairIngestedWorkouts(db, NOW) === 1 && pairedIngestFor(db, live)?.wearableId === garmin
+      ? ok('a live session links to the Garmin copy, not to whichever row came first')
+      : bad('span representative', JSON.stringify(pairedIngestFor(db, live)));
+    pairedIngestFor(db, second) === null
+      ? ok('…and a second overlapping log cannot claim the twin as a session of its own')
+      : bad('twin claimed by a second log');
+  }
+
+  // --- REPEATED syncs, and a writer that re-writes under a new UUID ---------
+  {
+    const { db } = freshDb();
+    const workoutId = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 55 });
+    const garmin = ingest(db, { uuid: 'G-8', device: 'garmin', minutes: 55 });
+    ingest(db, { uuid: 'P-8', device: 'other', minute: 1, minutes: 54 });
+    pairIngestedWorkouts(db, NOW);
+    // Three more foreground syncs: the same two UUIDs come back each time, one
+    // with a revised calorie figure. The 0042 key makes each an UPDATE.
+    for (let i = 0; i < 3; i++) {
+      ingest(db, { uuid: 'G-8', device: 'garmin', minutes: 55, kcal: 300 + i });
+      ingest(db, { uuid: 'P-8', device: 'other', minute: 1, minutes: 54 });
+      pairIngestedWorkouts(db, NOW);
+    }
+    rowCount(db) === 2 && linkCount(db) === 1
+      ? ok('three re-syncs: still two rows and one link — a re-sync never re-inserts')
+      : bad('re-sync', JSON.stringify({ rows: rowCount(db), links: linkCount(db) }));
+    // Then the writer deletes and re-writes the session (a new UUID for the same
+    // hour). ARC keeps the old object — a deletion is not visible to this read
+    // (docs §4) — so this is a THIRD row for one session.
+    ingest(db, { uuid: 'G-8-rewritten', device: 'garmin', minutes: 55 });
+    pairIngestedWorkouts(db, NOW);
+    rowCount(db) === 3 &&
+    linkCount(db) === 1 &&
+    pairedIngestFor(db, workoutId)?.wearableId === garmin &&
+    pendingIngestedStrength(db, NOW).length === 0 &&
+    unpairedWorkoutDailyMinutes(db, DAY, DAY).length === 0 &&
+    recentWearableWorkouts(db, 10).length === 1
+      ? ok('a third copy of the same hour joins the session: no new link, no inbox entry, no minutes')
+      : bad(
+          'rewritten copy surfaced',
+          JSON.stringify({
+            links: linkCount(db),
+            inbox: pendingIngestedStrength(db, NOW).length,
+            minutes: unpairedWorkoutDailyMinutes(db, DAY, DAY),
+          })
+        );
+  }
+
+  // --- the unpair refusal is a refusal of the SESSION ------------------------
+  {
+    const { db } = freshDb();
+    const workoutId = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 55 });
+    ingest(db, { uuid: 'G-9', device: 'garmin' });
+    const poorer = ingest(db, { uuid: 'P-9', device: 'other', minute: 1, kcal: null });
+    // The pair the owner breaks was made to the POORER copy (as a link made
+    // before round 3 could be), so the refusal names that copy — and the copy
+    // the pass would now offer is the OTHER one, the Garmin's.
+    linkIngestedWorkout(db, workoutId, poorer);
+    unlinkIngestedWorkout(db, workoutId);
+    pairingRefusals(db).map((r) => r.wearableId).join() === poorer
+      ? ok('the refusal records the copy that was actually linked')
+      : bad('refusal target', JSON.stringify(pairingRefusals(db)));
+    pairIngestedWorkouts(db, NOW) === 0 && linkCount(db) === 0
+      ? ok('unpairing holds: the next pass does not hand the owner the TWIN of what he refused')
+      : bad('refusal bypassed through the twin', JSON.stringify(pairedIngestFor(db, workoutId)));
+    pendingIngestedStrength(db, NOW).length === 1
+      ? ok('…and the session goes back to the inbox once, as a session of its own')
+      : bad('inbox after unpair', pendingIngestedStrength(db, NOW).length);
+  }
+
+  // --- a walk written twice fatigues the legs once ---------------------------
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'G-10', device: 'garmin', raw: 52, minutes: 40, hour: 8 });
+    const one = ingestedMuscleLoads(db, 14, NOW).length;
+    ingest(db, { uuid: 'P-10', device: 'other', raw: 52, minutes: 40, hour: 8, minute: 1 });
+    one > 0 && ingestedMuscleLoads(db, 14, NOW).length === one
+      ? ok('the freshness ledger infers one session’s load from two copies')
+      : bad('double inferred load', `${one} → ${ingestedMuscleLoads(db, 14, NOW).length}`);
+  }
+
+  // --- which copy speaks: same source, the RICHER one ------------------------
+  {
+    const { db } = freshDb();
+    // Garmin Connect writing one run twice: equal priority, so the copy that
+    // carries calories, distance and heart rate represents it, whichever
+    // arrived first.
+    ingest(db, { uuid: 'bare', device: 'garmin', raw: 52, minutes: 40, kcal: null });
+    const rich = ingest(db, {
+      uuid: 'rich',
+      device: 'garmin',
+      raw: 52,
+      minutes: 40,
+      kcal: 250,
+      hr: 140,
+      distanceKm: 4.2,
+    });
+    const listed = unpairedIngestedSessions(db, DAY, 10);
+    listed.length === 1 && listed[0].id === rich && listed[0].avgHr === 140
+      ? ok('between equally-ranked copies, the one with kcal, distance and HR represents the session')
+      : bad('richness tie-break', JSON.stringify(listed));
+  }
+
+  // --- what must stay apart, and what must not depend on order --------------
+  {
+    const { db } = freshDb();
+    ingest(db, { uuid: 'lift', hour: 17, minutes: 60 });
+    ingest(db, { uuid: 'cooldown', device: 'other', hour: 18, minutes: 20, raw: 52 });
+    recentWearableWorkouts(db, 10).length === 2 && unpairedIngestedSessions(db, DAY, 10).length === 2
+      ? ok('a session that merely ABUTS another is still a session of its own')
+      : bad('abutting sessions merged');
+  }
+  {
+    // Three copies where the shortest overlaps only the middle one: one session
+    // whichever order the rows are handed in.
+    // `from` / `to` in minutes after midnight UTC.
+    const mk = (id, device, from, to) => ({
+      id,
+      date: DAY,
+      metric_type: 'workout',
+      value: to - from,
+      unit: 'min',
+      source_device: device,
+      source_raw_id: id,
+      start_time: new Date(Date.UTC(2026, 6, 26, 0, from)).toISOString(),
+      end_time: new Date(Date.UTC(2026, 6, 26, 0, to)).toISOString(),
+      metadata: '{}',
+      created_at: '2026-07-26T20:00:00.000Z',
+      updated_at: '2026-07-26T20:00:00.000Z',
+    });
+    // a 10:00–12:00 and c 12:30–13:30 share nothing; b 11:00–13:00 shares
+    // half of each.
+    const rows = [
+      mk('a', 'other', 600, 720),
+      mk('b', 'garmin', 660, 780),
+      mk('c', 'other', 750, 810),
+      mk('z', 'garmin', 1200, 1260),
+    ];
+    const forward = collapseWorkoutTwins(rows);
+    const backward = collapseWorkoutTwins([...rows].reverse());
+    const shape = (sessions) =>
+      sessions
+        .map((s) => `${s.primary.id}:${s.members.map((m) => m.id).sort().join('')}`)
+        .sort()
+        .join(' ');
+    shape(forward) === 'b:abc z:z' && shape(backward) === shape(forward)
+      ? ok('grouping is transitive and order-independent, and the Garmin copy speaks for it')
+      : bad('collapse shape', `${shape(forward)} | ${shape(backward)}`);
+    forward.map((s) => s.primary.id).join() === 'b,z' &&
+    backward.map((s) => s.primary.id).join() === 'z,b'
+      ? ok('…and sessions come back in the order their first copy was handed in')
+      : bad('collapse order');
+  }
+
+  // --- twins filed under two calendar days are still one session -------------
+  {
+    const { db } = freshDb();
+    const next = shiftISODate(DAY, 1);
+    // A session ending at midnight: one writer files it under DAY, the other,
+    // a minute later, under the next day.
+    ingest(db, { uuid: 'G-11', device: 'garmin', hour: 23, minutes: 59, raw: 52 });
+    ingest(db, {
+      uuid: 'P-11',
+      device: 'other',
+      date: next,
+      hour: 23,
+      minute: 2,
+      minutes: 58,
+      raw: 52,
+    });
+    const onDay = unpairedWorkoutDailyMinutes(db, DAY, DAY);
+    const onNext = unpairedWorkoutDailyMinutes(db, next, next);
+    onDay.length === 1 && onDay[0].value === 59 && onNext.length === 0
+      ? ok('a twin filed under the NEXT day is still seen and shadowed — the day counts it once')
+      : bad('midnight twin', JSON.stringify({ onDay, onNext }));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

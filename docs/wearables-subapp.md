@@ -2372,3 +2372,108 @@ The owner's answer — *"Yes, an edit on the Log tab, and the Coach too"* — ga
 ### What only the phone can settle
 
 - **That delete-then-save by tag leaves one `BodyMass` sample** in the Health app at the reading's time, as it does for water. Same calls, not yet run on a device for body.
+
+## 25. One session, however many apps wrote it (round 3, owner items 82/83/94, **no migration**)
+
+Owner, from the device: *"Apple health workout import for linking has many duplicates"*,
+*"more keep appearing for the same workout"*, and *"auto matching garmin workout info with
+recorded workouts should be fully automatic, no manual syncing at all"*.
+
+### 25.1 The causes, confirmed in code
+
+- **One session written by two writers is two rows, read as two sessions.** Garmin Connect plus
+  a second writer (the iPhone, Strava, or Garmin Connect writing the activity twice) produces two
+  HealthKit objects with two UUIDs. The 0042 key is right to keep both (§13b), and the Data tab's
+  list already collapsed them, but nothing else did: the blank inbox (`pendingIngestedStrength`),
+  the pairing pass, the Coach's `workout` minutes and session list, and the freshness ledger all
+  read rows through a bare *"no link on this row"* predicate.
+- **That is why more kept appearing.** Pairing links ONE row to a logged session. The twin had no
+  link of its own, so it stayed in the inbox after its sibling was paired or filled in. Filling it
+  in as well made a second logged session for the same hour.
+- **And why the matching was not automatic.** The day rule (§17.7) pairs outright only when the
+  day holds exactly one ingested session, and refuses a log with no duration when it holds
+  several. A twin made every such day "several", so a session logged without a start time never
+  paired on a twinned day.
+- **Not the cause: re-syncs and the lookback.** A HealthKit UUID is stable, and since 0042 the
+  same UUID is an UPDATE on every pass. `db/wearables.test.mjs` §29 runs three re-syncs and finds
+  the same two rows and one link. The 90-day lookback re-reads; it does not re-insert. One real
+  way for a further copy to appear over time remains outside ARC's reach: a writer that deletes
+  and re-writes an activity under a new UUID. ARC does not see deletions (§4, "a workout deleted
+  in Health lingers"), so the old object stays. Under this section that third copy joins the same
+  session and asks nothing. Whether Garmin Connect does this on his phone is a device question
+  (25.4).
+
+### 25.2 The fix: every read is over sessions
+
+`collapseWorkoutTwins` (`repositories/wearables.ts`) is now the app's one grouping. Two rows are
+one session when their spans share at least `SAME_SESSION_OVERLAP` of the shorter one, whichever
+apps wrote them. The grouping is transitive (connected components), so it does not depend on row
+order. A row with no readable span is its own session. The copy that speaks for a session is
+`preferredTwin`: source priority, then the richer record (kcal, distance and heart rate, one point
+each), then the longer span, then `created_at`, then `id`.
+
+**No "similar duration" test, on purpose.** A phone that caught the last 20 minutes of a
+62-minute run shares all of its clock with the run, and one person does not do two sessions in
+the same 20 minutes. The shorter-span overlap measure was chosen for exactly that case.
+
+`workout-ingest.ts` reads everything through `ingestedSessions`. A session is **paired when any
+copy is linked**. An unpaired one is offered, counted and asked about once, through its best copy:
+
+| Reader | Before | Now |
+| --- | --- | --- |
+| Blank inbox (`pendingIngestedStrength`) | one question per row; a twin of a paired copy stayed | one per unpaired session |
+| Pairing pass, span rule | candidates were rows | candidates are sessions; the link goes to the best copy |
+| Pairing pass, day rule | "exactly one on the day" counted rows | counts sessions, so a twin no longer blocks it |
+| Coach `workout` minutes, `ingestedSessions` | summed every row | each unpaired session once |
+| Freshness ledger (`ingestedMuscleLoads`) | a load per row | a load per unpaired session |
+| Data tab (`recentWearableWorkouts`) | collapsed; "logged in ARC" only if the shown copy was linked | the same collapse; "logged in ARC" if any copy is linked |
+
+Rows are read with a day of margin on each side before grouping, because two copies of one
+session ending near midnight can carry two calendar days. A session is then kept or dropped
+whole, on its best copy's day.
+
+**Nothing is deleted and nothing is stored.** Deleting the losing copy would be undone by the
+next sync, because its UUID is still in HealthKit. The grouping is a pure function of the rows,
+so the duplicates already on his phone collapse the first time the new code reads them. An
+existing link stays where it was made, even on the poorer copy, and shadows its twin. The pass
+never re-judges a link (§17.7), and moving one would mean recomputing a span overlap it was
+never asked about. The cost: an old pair made to the poorer copy (by hand, or by the day rule
+choosing the copy one minute closer in duration) keeps showing that copy's kcal and heart rate
+on the session line. It is not counted twice, only shown from the weaker record.
+
+**The refusal is a refusal of the session.** Unpairing records the copy that was linked. The pass
+then refuses any copy of that session for that log. Otherwise the next sync would offer the
+twin of the record the owner had just rejected.
+
+### 25.3 Automatic on every save, not only at the next sync
+
+Pairing already ran at the end of every Health sync (foreground, throttled to 15 minutes) and on
+save in the live and free-form loggers. It now also runs after every other write of a logged
+session: the Coach's `log_workout`, the Coach's `edit_record` on a workout, the photo import,
+and every save in the session editor (until now only when the duration changed). Each call sits
+after the committed write, in its own `try`, for the reason `app/workout-log.tsx` gives: a
+pairing problem must not report a failed save about a saved workout.
+
+### 25.4 Verification, and what only the phone can settle
+
+`db/wearables.test.mjs` §29 uses realistic two-writer fixtures (Garmin plus an unparsed second
+app, same-source double writes, a third copy under a new UUID, three repeated re-syncs, a
+midnight-straddling pair). It checks that each surface sees one session and that the inbox asks
+once and never again after a fill. It checks that a link already made to the poorer copy shadows
+its twin and the day rule then pairs the day's other session. It checks that a duration-less log
+pairs on a twinned day while two genuinely different sessions still refuse. It also checks that
+a refusal of one copy holds against its twin, that the ledger infers one load, the richness
+tie-break, and that grouping is transitive and order-independent. With the grouping disabled,
+16 of these assertions fail. With the refusal check disabled, 4 fail.
+
+Only the phone can settle:
+
+- **What the second writer is.** The sync log's per-metric `returned` count for `workout` against
+  the number of sessions trained shows how many copies arrive. The Data tab's source chip shows
+  which writer won.
+- **Whether Garmin Connect re-writes activities under new UUIDs.** If it does, the stale objects
+  accumulate in `wearable_data` but stay inside their session. Pruning them would take the
+  HKAnchoredObjectQuery refinement §4 names. It is not built here, because a delete that
+  cascades a hand link away needs its own care.
+- **The two logged sessions some days may already hold** if he filled in both twins before this
+  build. Those are his records and are never touched. Each stays paired to its own copy.

@@ -24,6 +24,20 @@
  * ({@link pairByDay}) for exactly those sessions, and a refusal
  * ({@link unlinkIngestedWorkout}) so that a pair broken by hand stays broken.
  *
+ * **Every read here is over SESSIONS, not rows (round 3, owner items 82/83/94).**
+ * One workout written to Apple Health by two writers is two rows with two
+ * UUIDs. Read as rows, the copy pairing did not take stayed in the blank inbox
+ * after its twin was linked (*"more keep appearing for the same workout"*), was
+ * counted again in the Coach's minutes and the freshness ledger, and made a day
+ * with one session look like a day with two, so the day rule — which pairs
+ * outright only when the day holds exactly one — refused to pair at all.
+ * {@link ingestedSessions} groups the rows through `collapseWorkoutTwins` (the
+ * Data tab's collapse, now the only one); a session is PAIRED when any copy is
+ * linked, and an unpaired one is offered, counted and asked about once, through
+ * its best copy. Nothing is deleted and nothing is stored: the grouping is a
+ * pure function of the rows, so the duplicates already on a phone collapse the
+ * first time the new code reads them.
+ *
  * Depends only on the {@link Database} interface — never op-sqlite — so the same
  * code runs on device and against node:sqlite in db/wearables.test.mjs.
  */
@@ -33,6 +47,7 @@ import { newId } from '../id';
 import type { WearableDataRow, WearableDevice } from '../types';
 import { attributedInstant, recentMuscleLoads } from './training-stats';
 import {
+  collapseWorkoutTwins,
   overlapFraction,
   parseSpan,
   readWorkoutHr,
@@ -40,6 +55,7 @@ import {
   sourcePriorityOf,
   workoutSpan,
   type TimeSpan,
+  type WorkoutSession,
 } from './wearables';
 import { activityLoad, INFERRED_MIN_MINUTES } from '@/lib/exercise/activity-load';
 import type { MuscleLoad, PairedIngest } from '@/lib/exercise/types';
@@ -136,6 +152,60 @@ function sinceDay(now: Date, days: number): string {
   return shiftISODate(todayISODate(now), -days);
 }
 
+// --- Sessions: the copies of one workout, read as one ------------------------
+
+/** A workout row plus whether a link already claims it. */
+type LinkedRow = WearableDataRow & { linked: number };
+
+/** One ingested session (every copy of it), and whether ANY copy is paired. */
+type IngestedSession = WorkoutSession<LinkedRow> & { paired: boolean };
+
+/**
+ * The ingested workout SESSIONS whose representative copy falls in
+ * `[sinceDate, untilDate]`, newest first — the one read every function below
+ * builds on (see the module header).
+ *
+ * Rows are read with a day of margin on each side and grouped BEFORE the range
+ * is applied, because two copies of one session can carry two day strings (a
+ * session ending near midnight, two writers' clocks a minute apart): a copy
+ * just outside the range still has to be seen to shadow its twin inside it.
+ * The session is then kept or dropped as a whole, by its primary's day — the
+ * day every reader attributes it to.
+ *
+ * A session is `paired` when ANY copy is linked. That is what keeps the twin of
+ * a paired copy out of the inbox, the Coach's minutes and the ledger, without
+ * writing anything: the link stays where it was made, and the other copy is
+ * shadowed by it on every read.
+ */
+function ingestedSessions(db: Database, sinceDate: string, untilDate?: string): IngestedSession[] {
+  const rows = db.all<LinkedRow>(
+    `SELECT wd.*,
+            EXISTS (SELECT 1 FROM workout_ingest_links l WHERE l.wearable_id = wd.id) AS linked
+       FROM wearable_data wd
+      WHERE wd.metric_type = ? AND wd.date >= ?${untilDate ? ' AND wd.date <= ?' : ''}
+      ORDER BY wd.date DESC, wd.start_time DESC, wd.created_at, wd.id`,
+    untilDate
+      ? [WORKOUT_METRIC, shiftISODate(sinceDate, -1), shiftISODate(untilDate, 1)]
+      : [WORKOUT_METRIC, shiftISODate(sinceDate, -1)]
+  );
+  return collapseWorkoutTwins(rows)
+    .filter(
+      (s) => s.primary.date >= sinceDate && (untilDate === undefined || s.primary.date <= untilDate)
+    )
+    .map((s) => ({ ...s, paired: s.members.some((m) => m.linked === 1) }));
+}
+
+/** The representative copy of every UNPAIRED session in the range, newest first. */
+function unpairedSessionRows(
+  db: Database,
+  sinceDate: string,
+  untilDate?: string
+): WearableDataRow[] {
+  return ingestedSessions(db, sinceDate, untilDate)
+    .filter((s) => !s.paired)
+    .map((s) => s.primary);
+}
+
 // --- Pairing -----------------------------------------------------------------
 
 /** A manual session with a readable span — the left-hand side of a span pair. */
@@ -143,9 +213,27 @@ type PairableWorkout = { id: string; date: string; span: TimeSpan };
 
 /** An ingested session with a readable span — the right-hand side of a span pair. */
 type PairableIngest = {
+  /** The session's representative copy — what a link made here points at. */
   row: WearableDataRow;
   span: TimeSpan;
+  /** Every copy, for the refusal check ({@link isRefused}). */
+  members: readonly WearableDataRow[];
 };
+
+/**
+ * Has the owner refused this pair? Asked of the SESSION, not of one copy: the
+ * owner who unpaired a log from the Garmin copy said those two are not one
+ * session, and the iPhone copy of the same hour IS that session. Asking only of
+ * the copy offered would let the next pass hand him the twin of the record he
+ * just rejected, which is the refusal undone by the back door.
+ */
+function isRefused(
+  refused: ReadonlySet<string>,
+  workoutId: string,
+  members: readonly WearableDataRow[]
+): boolean {
+  return members.some((m) => refused.has(refusalKey(workoutId, m.id)));
+}
 
 /**
  * One link a pass has decided to make, before it is written.
@@ -290,8 +378,12 @@ function writePairingRefusals(db: Database, refusals: readonly PairRefusal[]): v
  *
  * ## Ties, resolved deterministically and stated
  *
- * Two ingested rows overlapping one manual session (a run recorded by both the
- * watch and the phone) resolve by:
+ * A run recorded by both the watch and the phone never reaches this tie: since
+ * round 3 its two rows are one SESSION before the pass sees them, offered once
+ * through the copy `preferredTwin` picks (source priority, then the richer
+ * record). What can still tie is two DIFFERENT sessions each overlapping one
+ * manual session (two short recordings inside one long log), and those resolve
+ * by:
  *
  *   1. {@link SOURCE_PRIORITY} — the same arbitration every other metric gets;
  *   2. then the LONGER span — a truncated copy tells you less about the session;
@@ -313,16 +405,14 @@ export function pairIngestedWorkouts(
   const since = sinceDay(now, lookbackDays);
   const refused = prunedRefusalKeys(db, since);
 
-  // Read once, for both rules. The span rule wants only the rows with a readable
-  // span; the day rule wants all of them, because a row whose clock is missing
-  // still knows what day it was.
-  const ingested = db.all<WearableDataRow>(
-    `SELECT * FROM wearable_data wd
-       WHERE wd.metric_type = ? AND wd.date >= ?
-         AND NOT EXISTS (SELECT 1 FROM workout_ingest_links l WHERE l.wearable_id = wd.id)
-       ORDER BY wd.date, wd.start_time, wd.created_at, wd.id`,
-    [WORKOUT_METRIC, since]
-  );
+  // Read once, for both rules, as SESSIONS (round 3): a session any copy of
+  // which is already linked is paired and offers nothing, and an unpaired one
+  // is offered ONCE, through its best copy — so the link lands on the richest
+  // record, and the twin can neither be claimed by a second log nor make a
+  // one-session day look like a two-session one. The span rule wants only the
+  // sessions with a readable span; the day rule wants all of them, because a
+  // row whose clock is missing still knows what day it was.
+  const ingested = ingestedSessions(db, since).filter((s) => !s.paired);
   if (ingested.length === 0) return 0;
 
   const taken = new Set<string>();
@@ -348,7 +438,7 @@ export function pairIngestedWorkouts(
 function pairBySpan(
   db: Database,
   since: string,
-  ingested: readonly WearableDataRow[],
+  ingested: readonly IngestedSession[],
   refused: ReadonlySet<string>,
   taken: Set<string>,
   links: PendingLink[]
@@ -380,9 +470,9 @@ function pairBySpan(
   if (manual.length === 0) return;
 
   const candidates = ingested
-    .map((row): PairableIngest | null => {
+    .map(({ primary: row, members }): PairableIngest | null => {
       const span = workoutSpan(row);
-      return span ? { row, span } : null;
+      return span ? { row, span, members } : null;
     })
     .filter((i): i is PairableIngest => i !== null);
 
@@ -392,7 +482,7 @@ function pairBySpan(
     let best: { candidate: PairableIngest; overlap: number } | null = null;
     for (const candidate of candidates) {
       if (taken.has(candidate.row.id)) continue;
-      if (refused.has(refusalKey(w.id, candidate.row.id))) continue;
+      if (isRefused(refused, w.id, candidate.members)) continue;
       if (candidate.row.date < before || candidate.row.date > after) continue;
       const shared = overlapFraction(w.span, candidate.span);
       if (shared < SAME_SESSION_OVERLAP) continue;
@@ -456,7 +546,7 @@ function pairBySpan(
 function pairByDay(
   db: Database,
   since: string,
-  ingested: readonly WearableDataRow[],
+  ingested: readonly IngestedSession[],
   refused: ReadonlySet<string>,
   taken: Set<string>,
   links: PendingLink[]
@@ -472,18 +562,22 @@ function pairByDay(
   );
   if (manual.length === 0) return;
 
-  const byDay = new Map<string, MeasuredIngest[]>();
-  for (const row of ingested) {
-    const day = ingestedLogicalDay(row);
+  // One entry per SESSION, not per copy: "the day holds exactly one" is a
+  // statement about sessions, and two writers' copies of one run are one. This
+  // is the half of round 3 that un-blocks the day rule on a twinned day.
+  const byDay = new Map<string, DayCandidate[]>();
+  for (const { primary, members } of ingested) {
+    const day = ingestedLogicalDay(primary);
+    const entry: DayCandidate = { ...measuredRow(primary), members };
     const bucket = byDay.get(day);
-    if (bucket) bucket.push(measuredRow(row));
-    else byDay.set(day, [measuredRow(row)]);
+    if (bucket) bucket.push(entry);
+    else byDay.set(day, [entry]);
   }
 
   for (const w of manual) {
     const onTheDay = byDay.get(w.date) ?? [];
     const candidates = onTheDay.filter(
-      (c) => !taken.has(c.row.id) && !refused.has(refusalKey(w.id, c.row.id))
+      (c) => !taken.has(c.row.id) && !isRefused(refused, w.id, c.members)
     );
     if (candidates.length === 0) continue;
     const chosen =
@@ -509,12 +603,12 @@ function ingestedLogicalDay(row: WearableDataRow): string {
  * The closest candidate by duration, or null when the log has no duration to
  * compare or the closest one still fails {@link DAY_PAIR_MIN_RATIO}.
  */
-function closestByDuration(
-  candidates: readonly MeasuredIngest[],
+function closestByDuration<C extends MeasuredIngest>(
+  candidates: readonly C[],
   durationMin: number | null
-): MeasuredIngest | null {
+): C | null {
   if (durationMin === null || !(durationMin > 0)) return null;
-  let best: MeasuredIngest | null = null;
+  let best: C | null = null;
   let bestGap = Infinity;
   for (const candidate of candidates) {
     const gap = Math.abs(candidate.row.value - durationMin);
@@ -536,6 +630,9 @@ function closestByDuration(
  * own (pauses excluded) and the more honest of the two anyway.
  */
 type MeasuredIngest = { row: WearableDataRow; lengthMs: number };
+
+/** A day-rule candidate: one session's representative copy, plus every copy. */
+type DayCandidate = MeasuredIngest & { members: readonly WearableDataRow[] };
 
 const measured = (c: PairableIngest): MeasuredIngest => ({
   row: c.row,
@@ -719,17 +816,13 @@ export function pairedIngestForMany(
 
 // --- The de-duplicated ingested reads (the double-count fix) -----------------
 
-/**
- * `wearable_data` workout rows that are NOT paired to an ARC session — the ONE
- * predicate behind every "ingested minutes" read.
- *
- * This is the whole double-count fix, and it is a predicate rather than a rule
- * in each reader for the reason 0045's header gives about draft contamination:
- * a rule every future reader must remember is a rule that will be forgotten
- * once, silently, in a number the owner then acts on.
- */
-const UNPAIRED_WORKOUT = `metric_type = '${WORKOUT_METRIC}'
-     AND NOT EXISTS (SELECT 1 FROM workout_ingest_links l WHERE l.wearable_id = wearable_data.id)`;
+// Every read below goes through {@link unpairedSessionRows} — the ONE source of
+// "ingested sessions ARC has no log for". Until round 3 that was a SQL predicate
+// (`UNPAIRED_WORKOUT`, "no link on this ROW"), and a predicate over rows is
+// exactly what let a paired session's twin through. It is one function rather
+// than a rule in each reader for the reason 0045's header gives about draft
+// contamination: a rule every future reader must remember is a rule that will
+// be forgotten once, silently, in a number the owner then acts on.
 
 /**
  * Daily ingested workout MINUTES with paired sessions removed — what the Coach
@@ -742,21 +835,26 @@ const UNPAIRED_WORKOUT = `metric_type = '${WORKOUT_METRIC}'
  * them. Pairing is what makes the subtraction possible, and this is where it
  * happens.
  *
- * Summed across sources by definition — a workout row is per-object, and the
- * same-session collapse `recentWearableWorkouts` performs is a DISPLAY rule that
- * a total cannot borrow without arbitrating rows it never looked at.
+ * Summed over SESSIONS, not rows (round 3). This used to be summed across
+ * every row "by definition", on the ground that the same-session collapse was a
+ * display rule; but a run written to Apple Health by Garmin Connect and by a
+ * second app is one hour of training, and summing both copies reported two. The
+ * collapse is now the app's one reading of what a session is, so the total
+ * borrows it: each unpaired session counts once, through its best copy's
+ * duration, on that copy's day.
  */
 export function unpairedWorkoutDailyMinutes(
   db: Database,
   sinceDate: string,
   untilDate?: string
 ): { date: string; value: number }[] {
-  return db.all<{ date: string; value: number }>(
-    `SELECT date, sum(value) AS value FROM wearable_data
-     WHERE ${UNPAIRED_WORKOUT} AND date >= ?${untilDate ? ' AND date <= ?' : ''}
-     GROUP BY date ORDER BY date`,
-    untilDate ? [sinceDate, untilDate] : [sinceDate]
-  );
+  const byDate = new Map<string, number>();
+  for (const row of unpairedSessionRows(db, sinceDate, untilDate)) {
+    byDate.set(row.date, (byDate.get(row.date) ?? 0) + row.value);
+  }
+  return [...byDate.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([date, value]) => ({ date, value }));
 }
 
 /**
@@ -770,14 +868,7 @@ export function unpairedIngestedSessions(
   sinceDate: string,
   limit: number
 ): IngestedWorkout[] {
-  return db
-    .all<WearableDataRow>(
-      `SELECT * FROM wearable_data
-       WHERE ${UNPAIRED_WORKOUT} AND date >= ?
-       ORDER BY date DESC, start_time DESC LIMIT ?`,
-      [sinceDate, limit]
-    )
-    .map(decodeIngested);
+  return unpairedSessionRows(db, sinceDate).slice(0, limit).map(decodeIngested);
 }
 
 // --- The blank: strength-coded sessions ARC will not guess at ----------------
@@ -801,19 +892,20 @@ export function getIngestedWorkout(db: Database, wearableId: string): IngestedWo
  * workouts *"leave a blank for the user"*). A REFUSED type — yoga, HIIT,
  * "Other" — never appears here: it contributes zero load and never asks, because
  * a question ARC cannot frame is worse than no question at all.
+ *
+ * **One question per SESSION** (round 3, owner items 82/83). A session two apps
+ * wrote to Apple Health asks once, through its best copy, and once either copy
+ * is paired — by the pass, or by the owner filling the blank in — neither asks
+ * again. Before this the twin stayed here after its sibling was answered, which
+ * is the *"more keep appearing for the same workout"* the owner reported, and
+ * filling it in made a second logged session for the same hour.
  */
 export function pendingIngestedStrength(
   db: Database,
   now: Date = new Date(),
   days: number = BLANK_HORIZON_DAYS
 ): IngestedWorkout[] {
-  return db
-    .all<WearableDataRow>(
-      `SELECT * FROM wearable_data
-       WHERE ${UNPAIRED_WORKOUT} AND date >= ?
-       ORDER BY date DESC, start_time DESC`,
-      [sinceDay(now, days)]
-    )
+  return unpairedSessionRows(db, sinceDay(now, days))
     .map(decodeIngested)
     .filter((w) => w.activityTypeRaw != null && activityLoad(w.activityTypeRaw).kind === 'blank');
 }
@@ -894,11 +986,9 @@ export function ingestedMuscleLoads(
   now: Date = new Date()
 ): MuscleLoad[] {
   const cutoffMs = now.getTime() - days * 86_400_000;
-  const rows = db.all<WearableDataRow>(
-    `SELECT * FROM wearable_data
-     WHERE ${UNPAIRED_WORKOUT} AND date >= ?`,
-    [sinceDay(now, days + 1)]
-  );
+  // One load per SESSION (round 3): a run two apps wrote to Apple Health
+  // fatigues the legs once, not twice.
+  const rows = unpairedSessionRows(db, sinceDay(now, days + 1));
   const loads: MuscleLoad[] = [];
   for (const row of rows) {
     const session = decodeIngested(row);

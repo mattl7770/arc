@@ -531,6 +531,12 @@ typing would be the wrong number. On Finish it writes the `workouts` row and the
 `linked_by = 'user'`. The id rides in the live draft (`LiveDraft.ingestId`) for the same reason
 `routineId` does — an app kill mid-fill must not forget which session the sets belong to.
 
+**One question per session, not per HealthKit object** (round 3, owner items 82/83). A
+session two apps wrote to Apple Health (Garmin Connect and a second writer) is two rows; the
+inbox reads them as one session, asks once through the best copy, and stops asking when either
+copy is paired. Before that the twin stayed here after its sibling was filled in, and filling
+it in too made a second logged session for the same hour. `docs/wearables-subapp.md` §25.
+
 Two bounds keep it from becoming an inbox nobody opens: a **14-day horizon** (switching this on
 against the 90-day backfill would otherwise produce forty questions on day one), and the plate
 renders **only when there is something to ask** — unlike Saved workouts and Recent sessions, an
@@ -796,7 +802,7 @@ The **Train hub's** Session in progress card is unchanged and stays the full sur
 
 `workouts` stores `duration_min` (a figure) and, for a timed session, `started_at` (an instant); there is no end column. So nothing new is stored:
 
-- **A logged session edits the figure.** The editor's clock line is now `Today [ 47 ] MIN` — a number pad in the recessed stock every entry field here uses. Blank stores NULL ("no duration"); a figure the owner types must be whole minutes 1–999 (`parseDurationField`), with Save held and the margin saying why. **An untouched field never holds Save** and writes back the stored figure exactly, whatever it is — the Coach and imports can store 0, 0.3 or 1,200 minutes, and none of those round-trips through a whole-minutes field (`editedDuration`; until the review round a stored 0 held Save over a field nobody had touched). `started_at` is left alone: correcting "60, not 20" moves the end, the fact that was wrong. A changed figure (`editedDuration(…).changed`) runs a pairing pass after the save.
+- **A logged session edits the figure.** The editor's clock line is now `Today [ 47 ] MIN` — a number pad in the recessed stock every entry field here uses. Blank stores NULL ("no duration"); a figure the owner types must be whole minutes 1–999 (`parseDurationField`), with Save held and the margin saying why. **An untouched field never holds Save** and writes back the stored figure exactly, whatever it is — the Coach and imports can store 0, 0.3 or 1,200 minutes, and none of those round-trips through a whole-minutes field (`editedDuration`; until the review round a stored 0 held Save over a field nobody had touched). `started_at` is left alone: correcting "60, not 20" moves the end, the fact that was wrong. Every save of a logged session runs a pairing pass afterwards (until round 3 only a changed figure did — `docs/wearables-subapp.md` §25).
 - **A live session edits the START**, never the elapsed number: `started 14:02  [−5 min] [+5 min]` under the clock (`shiftSessionStart`) — the smallest honest version of "I forgot to press start", in the step people misremember by. Bounded to `[now − 6 h, now]`, the same six hours Finish's clamp records at all; a stepper that cannot move is drawn off. Finish derives both the duration and `started_at` from the start, so the correction reaches both.
 
 Every reader of a duration reads the column at query time, so the edit reaches each with nothing to invalidate — checked one by one:
@@ -807,7 +813,7 @@ Every reader of a duration reads the column at query time, so the edit reaches e
 | The week's cardio minutes (`weekSummary`) | yes — pinned, §13 |
 | Coach daily series (`trainingDailyTotals`) | yes — pinned, §13 |
 | Coach payload (`get_training_summary`, `get_today_snapshot`) | yes — `get_training_summary` pinned, `db/coach-tools.test.mjs` §46; the snapshot selects the same column |
-| Watch pairing — the span rule (`started_at + duration_min`) and the day rule's closest-duration / `DAY_PAIR_MIN_RATIO` test | yes, on the next pass, and the editor runs one when the figure changed — pinned, `db/wearables.test.mjs` §26. An **existing** link is not re-judged: the Unpair line on the same screen is the door out of one. |
+| Watch pairing — the span rule (`started_at + duration_min`) and the day rule's closest-duration / `DAY_PAIR_MIN_RATIO` test | yes, on the next pass, and the editor runs one on every save — pinned, `db/wearables.test.mjs` §26. An **existing** link is not re-judged: the Unpair line on the same screen is the door out of one. |
 | Readiness strain | does not read a duration at all — it grades logged SETS (and active energy); unchanged by design |
 | Calories | ARC computes none from a duration; kcal only comes from a paired watch record, joined, never copied |
 

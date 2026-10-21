@@ -20,6 +20,7 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { logWorkout } from '@/lib/db/repositories/exercise';
+import { pairIngestedWorkouts } from '@/lib/db/repositories/workout-ingest';
 import { formatClock, formatDistance, lbToKg } from '@/lib/exercise/format';
 import { pickPhotoBase64 } from '@/lib/media/photo-library';
 import {
@@ -285,12 +286,23 @@ export default function WorkoutImportScreen() {
         },
         sets
       );
-      router.back();
     } catch (error) {
       inFlight.current = false;
       console.warn('[exercise] photo import save failed', error);
       Alert.alert('Save failed', 'Nothing was changed. Try again.');
+      return;
     }
+    // Pair-on-save (round 3, owner item 94: "fully automatic, no manual
+    // syncing"): an imported session meets the watch's copy of it now rather
+    // than at the next Health sync. In its own try, after the save's, for the
+    // reason app/workout-log.tsx gives — the session is committed, and a
+    // pairing problem must not report "Save failed" about a saved workout.
+    try {
+      pairIngestedWorkouts(getDb());
+    } catch (error) {
+      console.warn('[exercise] pair-on-save failed', error);
+    }
+    router.back();
   };
 
   return (
