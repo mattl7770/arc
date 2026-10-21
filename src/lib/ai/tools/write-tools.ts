@@ -31,6 +31,7 @@ import { logCapture, logNote } from '@/lib/db/repositories/logs';
 import { logMetricCapture } from '@/lib/health/publish';
 import { exerciseMeasures, logWorkout } from '@/lib/db/repositories/exercise';
 import { pairIngestedWorkouts } from '@/lib/db/repositories/workout-ingest';
+import { tickTrainingForWorkout, trainingRowFor } from '@/lib/db/repositories/training-tick';
 import { exerciseLoadBases, resolveExerciseByName } from '@/lib/db/repositories/exercise-catalog';
 import {
   activeNutritionTargets,
@@ -487,10 +488,22 @@ const logWorkoutTool: CoachTool = {
     reqEnum(args, 'kind', WORKOUT_KINDS);
     const duration = optNumber(args, 'duration_min');
     const sets = parseSets(args, db);
+    const now = context?.now ?? new Date();
+    // Item 70: the card names the Training row the save will tick, so the
+    // approve covers it. Read-only; execute re-chooses, and reports what it
+    // actually ticked. No routine — the Coach logs free sessions — so only a
+    // row that names no saved workout can be meant.
+    const today = todayISODate(now);
+    const row = trainingRowFor(
+      db,
+      { date: logDate(args, now), routineId: null, away: false },
+      today
+    );
     const parts = [
       'Log workout',
       ...(duration != null ? [`${Math.round(duration)} min`] : []),
       ...sets.map((s) => s.displayLine),
+      ...(row ? [`ticks Training: ${row.title}`] : []),
     ];
     return parts.join(' · ') + pastDateSuffix(args, context?.now);
   },
@@ -525,12 +538,22 @@ const logWorkoutTool: CoachTool = {
     } catch {
       // The next sync runs the same pass.
     }
+    // Item 70: today's earliest open Training row, as every finish path ticks
+    // it — after the commit, in its own try, for the pairing's reason. The
+    // reminder re-sync is the Coach tab's, after every turn.
+    let ticked: string | null = null;
+    try {
+      ticked = tickTrainingForWorkout(db, id, todayISODate(context.now))?.title ?? null;
+    } catch {
+      // A row left open is one tap on Home.
+    }
     // Unmatched names still log (free-text sets are valid) but stay invisible
     // to e1RM/freshness/progression — tell the model so it can tell the user.
     const unmatched = [...new Set(sets.filter((s) => !s.exerciseId).map((s) => s.exercise))];
     return json({
       logged: true,
       id,
+      ...(ticked !== null ? { tickedTraining: ticked } : {}),
       ...(unmatched.length > 0
         ? {
             unmatchedExercises: unmatched,

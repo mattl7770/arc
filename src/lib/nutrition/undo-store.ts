@@ -67,7 +67,11 @@ export type UndoScope =
   | { on: 'catalog' }
   /** The Log tab's record of one day — a capture deleted from it (2026-09-25).
    *  Keyed by the logical day, like a meal list. */
-  | { on: 'log'; date: string };
+  | { on: 'log'; date: string }
+  /** A Training row a finished session ticked (item 70, 2026-10-21) — drawn
+   *  on the two screens a logger returns to, Home and the Train hub. Keyed by
+   *  the row's day, which is always today's. */
+  | { on: 'training'; date: string };
 
 export type UndoOffer = {
   scope: UndoScope;
@@ -83,9 +87,10 @@ export type UndoOffer = {
     | 'thermometer-outline'
     | 'pulse-outline'
     | 'reader-outline'
-    /** The live logger's deleted set (round 3, 2026-10-21) — words only: it
-     *  holds its Undo in the screen's own state, as the estimate review does
-     *  (src/lib/exercise/set-hints.ts), and never enters this slot. */
+    /** The live logger's deleted set (round 3, 2026-10-21), which holds its
+     *  Undo in the screen's own state (src/lib/exercise/set-hints.ts) — and
+     *  the Training row a finished session ticked, which does enter this slot
+     *  (src/lib/exercise/training-tick-offer.ts). */
     | 'barbell-outline';
   /** What was done, as the row says it: "Removed Greek yogurt". */
   said: string;
@@ -224,6 +229,7 @@ export function offerDrawnOn(
   switch (scope.on) {
     case 'list':
     case 'log':
+    case 'training':
       return scope.date === key ? offer : null;
     case 'meal':
       return scope.mealId === key ? offer : null;

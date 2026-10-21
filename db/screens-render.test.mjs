@@ -8784,6 +8784,83 @@ console.log('\n35. Round 3 — set targets, Prev, swipe-to-delete, Resume first,
   deleteWorkout(db, lastOhp);
 }
 
+console.log('\n36. Item 70 — a finished session’s tick, and its Undo on Home and the Train hub');
+{
+  const { tickTrainingAfterSave } = await import('../src/lib/exercise/training-tick-offer.ts');
+  const today = todayISODate();
+  const findEl = (node, match) => {
+    if (node === null || node === undefined || typeof node !== 'object') return null;
+    if (match(node)) return node;
+    for (const child of React.Children.toArray(node.props?.children ?? [])) {
+      const hit = findEl(child, match);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const rowStatus = () =>
+    db.get(
+      `SELECT e.status AS status FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+        WHERE d.date = ? AND e.title = 'Sled push'`,
+      [today]
+    )?.status;
+  closeUndo();
+  refute('home (no tick)', render('home (no tick)', HomeScreen), ['Ticked Training']);
+
+  createProtocolWithVersion(
+    db,
+    { name: 'Render block', type: 'training_block' },
+    { items: [{ title: 'Sled push', scheduled_time: '00:01', dose: null, notes: null }] }
+  );
+  // Today is already committed in this database, so the new protocol reaches
+  // it the way a protocol save does.
+  const { rederiveMissionFromToday } = await import(
+    '../src/lib/db/repositories/mission-generate.ts'
+  );
+  rederiveMissionFromToday(db, today);
+  const w = logWorkout(db, { date: today, kind: 'strength' });
+  const tick = tickTrainingAfterSave(db, w, () => {});
+  tick?.title === 'Sled push' && rowStatus() === 'completed'
+    ? ok('the finished session ticked the day’s Training row')
+    : bad('render tick', JSON.stringify(tick));
+
+  for (const [name, Screen] of [
+    ['home (a session ticked a row)', HomeScreen],
+    ['exercise hub (a session ticked a row)', ExerciseScreen],
+  ]) {
+    expect(name, render(name, Screen), [
+      'Ticked Training: Sled push',
+      'aria-label="Undo ticking Sled push"',
+      '>Undo<',
+    ]);
+  }
+
+  // The row's own Undo, pressed through its element tree: it unticks exactly
+  // that row, and both screens stop drawing it.
+  const tree = UndoRow({ offer: currentUndo(), onUndo: runUndo, first: true });
+  findEl(tree, (el) => el.props?.accessibilityLabel === 'Undo ticking Sled push')?.props.onPress();
+  rowStatus() === 'pending' && currentUndo() === null
+    ? ok('Undo puts the row back to open and closes the offer')
+    : bad('render undo', rowStatus());
+  refute('home (after Undo)', render('home (after Undo)', HomeScreen), ['Ticked Training']);
+  refute('exercise hub (after Undo)', render('exercise hub (after Undo)', ExerciseScreen), [
+    'Ticked Training',
+  ]);
+
+  // Home's handler reloads the mission after the Undo; the hub needs nothing
+  // but the store's re-render.
+  const homeSource = readFileSync(new URL('../app/(tabs)/index.tsx', import.meta.url), 'utf8');
+  homeSource.includes("useUndoOffer('training', todayISODate())") &&
+  homeSource.includes('runUndo();\n    reloadMission();')
+    ? ok('Home draws the training offer for today and re-reads the mission after its Undo')
+    : bad('home wiring');
+  readFileSync(new URL('../app/exercise.tsx', import.meta.url), 'utf8').includes(
+    "useUndoOffer('training', today)"
+  )
+    ? ok('the Train hub draws the same offer')
+    : bad('hub wiring');
+
+  deleteWorkout(db, w);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

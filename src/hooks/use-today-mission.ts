@@ -30,6 +30,9 @@ export type TodayMission = MissionView & {
   setStatus: (id: string, status: MissionStatus) => void;
   toggle: (id: string) => void;
   snooze: (id: string) => void;
+  /** Re-read the day after a write made elsewhere — the Undo of a Training row
+   *  a finished session ticked (item 70), taken on Home. */
+  reload: () => void;
 };
 
 type DayState = {
@@ -190,5 +193,6 @@ export function useTodayMission(): TodayMission {
     setStatus,
     toggle,
     snooze,
+    reload,
   };
 }

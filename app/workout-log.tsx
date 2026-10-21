@@ -36,6 +36,7 @@ import {
   toCanonicalMetres,
 } from '@/lib/exercise/format';
 import { DEFAULT_MEASURES, hasMeasure, type Measures } from '@/lib/exercise/measures';
+import { tickTrainingAfterSave } from '@/lib/exercise/training-tick-offer';
 import type { WorkoutKind } from '@/lib/exercise/types';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import type { UnitPreferences } from '@/lib/user/types';
@@ -485,7 +486,7 @@ export default function WorkoutLogScreen() {
     const liveDuration = elapsedMin > 0 && elapsedMin <= MAX_SESSION_MIN ? elapsedMin : null;
     const durationMin = mode === 'live' ? liveDuration : duration;
     try {
-      logWorkout(
+      const savedId = logWorkout(
         getDb(),
         // No name — workouts don't have them (owner, 2026-08-14). The
         // repository writes '' into the dormant NOT NULL column.
@@ -517,6 +518,10 @@ export default function WorkoutLogScreen() {
       } catch (error) {
         console.warn('[exercise] pair-on-save failed', error);
       }
+      // Item 70: tick today's earliest open Training row, with its Undo on the
+      // screen this returns to. Guarded inside, for the same reason as the
+      // pairing above: it must never reach this save's catch.
+      tickTrainingAfterSave(getDb(), savedId);
       // The draft has become a workout — but only clear it once the write has
       // actually succeeded; on a throw it is the only copy of what was typed.
       discardDraft();

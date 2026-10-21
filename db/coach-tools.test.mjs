@@ -3897,5 +3897,47 @@ console.log('48. screen time reaches the Coach — payload only, no schema moved
     : bad('log_metric grew screen_time');
 }
 
+console.log('49. item 70 — log_workout ticks today’s Training row; delete_record takes it back');
+{
+  const { arriveDay } = await import('../src/lib/db/seed.ts');
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Strength block', type: 'training_block' },
+    { items: [{ title: 'Zone 2', scheduled_time: '07:00', dose: null, notes: null }] }
+  );
+  arriveDay(db, TODAY);
+  const status = () =>
+    raw
+      .prepare(
+        `SELECT e.status FROM log_entries e JOIN daily_logs d ON d.id = e.daily_log_id
+          WHERE d.date = ? AND e.title = 'Zone 2'`
+      )
+      .get(TODAY)?.status;
+  const logCard = (input) => toolByName('log_workout').confirmSummary(input, db, CTX);
+  const card = logCard({ kind: 'cardio', duration_min: 40 });
+  card === 'Log workout · 40 min · ticks Training: Zone 2'
+    ? ok(`the card names the row the save will tick ("${card}")`)
+    : bad('card', card);
+  !logCard({ kind: 'cardio', duration_min: 40, date: shiftISODate(TODAY, -1) }).includes('ticks')
+    ? ok('…and a session for yesterday names none')
+    : bad('yesterday card');
+  const result = run('log_workout', db, { kind: 'cardio', duration_min: 40 });
+  result.tickedTraining === 'Zone 2' && status() === 'completed'
+    ? ok('execute ticks it and says so in the receipt')
+    : bad('execute', JSON.stringify(result));
+  const second = run('log_workout', db, { kind: 'cardio', duration_min: 20 });
+  second.tickedTraining === undefined && !logCard({ kind: 'cardio' }).includes('ticks')
+    ? ok('with no open Training row left, the card and the receipt say nothing')
+    : bad('second', JSON.stringify(second));
+  const del = toolByName('delete_record');
+  const context = { now: NOW };
+  del.confirmSummary({ domain: 'workouts', id: result.id }, db, context);
+  del.execute(db, { domain: 'workouts', id: result.id }, context);
+  status() === 'pending'
+    ? ok('delete_record on that session re-opens the row it ticked')
+    : bad('delete_record', status());
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

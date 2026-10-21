@@ -41,8 +41,11 @@ import type { MuscleVolume, Recommendation, RoutineListItem } from '@/lib/exerci
 import type { IngestedWorkout } from '@/lib/db/repositories/workout-ingest';
 import { deviceLabel } from '@/lib/db/repositories/wearables';
 import { useTrainingHub, useWorkoutDrafts } from '@/hooks/use-training';
+import { useUndoOffer } from '@/hooks/use-undo-offer';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 import { cancelRestAlert } from '@/lib/notifications/rest-timer';
+import { runUndo } from '@/lib/nutrition/undo-store';
+import { UndoRow } from '@/components/nutrition/undo-row';
 
 /**
  * Exercise sub-app hub (docs/exercise-subapp.md). It renders at two routes: as
@@ -118,6 +121,7 @@ export default function ExerciseScreen() {
   const [showAllExercises, setShowAllExercises] = useState(false);
   const { units } = useUnitPreferences();
   const today = todayISODate();
+  const tickUndo = useUndoOffer('training', today);
 
   const stats: { label: string; value: string; unit: string; sub?: string }[] = [
     { label: 'Zone 2', value: String(Math.round(week.zone2Min)), unit: 'min' },
@@ -255,6 +259,12 @@ export default function ExerciseScreen() {
           <StackHeader title="Exercise" />
         )}
       </View>
+
+      {/* Item 70 — the session just finished ticked a Training row on today's
+          mission; this is where the logger returned to, so its Undo is drawn
+          here, unruled, above everything (src/lib/exercise/training-tick-offer.ts).
+          No accent and no timer; leaving the hub closes it. */}
+      {tickUndo ? <UndoRow offer={tickUndo} onUndo={runUndo} first /> : null}
 
       {/*
         Session in progress — the unfinished workout, offered back.

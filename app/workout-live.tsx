@@ -125,8 +125,10 @@ import {
   editedDuration,
   shiftSessionStart,
 } from '@/lib/exercise/session-time';
+import { tickTrainingAfterSave } from '@/lib/exercise/training-tick-offer';
 import type { PairedIngest, SetType, WorkoutDetail } from '@/lib/exercise/types';
 import type { UndoWords } from '@/lib/nutrition/undo-store';
+import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import {
   cancelRestAlert,
   clearDeliveredRestAlerts,
@@ -1721,6 +1723,12 @@ function WorkoutLive({
     } catch (error) {
       console.warn('[exercise] post-save bookkeeping failed', error);
     }
+    // Item 70: a NEW session ticks today's earliest open Training row, and the
+    // screen this returns to offers its Undo. Never on an edit — the tick
+    // belongs to the save that made the session. A filled-in watch session is
+    // his confirmation of it, so it ticks too, if it is today's. Guarded
+    // inside: it never throws.
+    if (!stored && savedId) tickTrainingAfterSave(getDb(), savedId);
     disarmRestAlert();
     savedRef.current = true;
     // The draft has become a workout. Clear it AFTER the write succeeds —
@@ -1747,7 +1755,10 @@ function WorkoutLive({
           style: 'destructive',
           onPress: () => {
             try {
-              deleteWorkout(getDb(), stored.id);
+              // Takes back the Training tick this session made, if it still
+              // stands (item 70) — and then its reminder may fire again.
+              const reopened = deleteWorkout(getDb(), stored.id);
+              if (reopened.length > 0) void syncReminderNotifications(getDb());
               savedRef.current = true;
               router.back();
             } catch (error) {

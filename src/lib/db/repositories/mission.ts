@@ -106,6 +106,19 @@ type MissionExtras = {
    * this key reads the row exactly as it always did.
    */
   moved?: boolean;
+  /**
+   * The `workouts.id` whose save ticked this row (item 70, 2026-10-21, no
+   * migration): finishing a session ticks the earliest open Training row
+   * (./training-tick.ts). It is the whole of the link between the two, and it
+   * has two readers — the Undo the save offers, and `deleteWorkout`, which
+   * re-opens the row its session ticked and no other.
+   *
+   * Present only on a COMPLETED row: {@link setMissionStatus} removes it on any
+   * other status, exactly as it removes `done_on`. So a row he un-ticked and
+   * then ticked again by hand carries no mark, and deleting the session can
+   * never take back a tick he made himself.
+   */
+  by_workout?: string;
 };
 
 /** Fallback display label when an entry has no stored `category`. */
@@ -674,13 +687,15 @@ export function setMissionStatus(
       // re-sync a pending row by comparing `JSON.stringify(plan.extras)` to the
       // stored string, and passing every un-tick through json_remove would
       // re-render the payload of rows that never carried the key. Untouched
-      // means untouched, byte for byte.
+      // means untouched, byte for byte. `by_workout` (the session that ticked
+      // the row, ./training-tick.ts) goes with the tick, as `done_on` does.
       `UPDATE log_entries
           SET status = ?,
               completed_at = NULL,
               value = CASE
-                WHEN json_extract(value, '$.done_on') IS NULL THEN value
-                ELSE json_remove(value, '$.done_on')
+                WHEN json_extract(value, '$.done_on') IS NULL
+                 AND json_extract(value, '$.by_workout') IS NULL THEN value
+                ELSE json_remove(value, '$.done_on', '$.by_workout')
               END
         WHERE id = ?`,
       [status as LogEntryStatus, id]
