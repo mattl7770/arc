@@ -141,3 +141,18 @@ The fourth set buys two PR stamps on a lift that has not moved in four sessions.
 **Q2. May the deload suggestion change so that "Stalled" and "deload" always agree?**
 
 - **Recommended: yes.** This means a zig-zag such as 7, 6, 7 at one load now earns a deload, where it currently earns "add a rep".
+
+## Appendix: a per-set mark against the target (from the logger round, 2026-10-21)
+
+The agent that built the per-set targets (65) studied the same item independently and proposed a complementary mark: each working set compared with **its own grey target** at the tick.
+
+| Mark | When | Example (target 95 × 9) |
+| --- | --- | --- |
+| **▲ ahead** | more reps at the target load, or the target reps at more load | 95 × 10, or 100 × 9 |
+| **● on target** | the target met | 95 × 9 |
+| **▽ short** | under the target | 95 × 7 |
+| (none) | a warm-up, an away session, a row with no target | — |
+
+It needs no new data: the target is already on the row (`src/lib/exercise/set-hints.ts`). It sits beside the session mark above rather than replacing it: the session mark says whether the lift is moving, the per-set mark whether today is going to plan. That study also suggested trimming the live PR line to the three strength records (best e1RM, heaviest, rep max at a weight) rather than removing it; option C above removes the live stamp outright and keeps every record in the Records grid.
+
+The risk it names: a mark on every working set may read as nagging mid-set, and ▽ on a set cut short on purpose may feel like a verdict. Marks are ink, never signal colour. **Recommendation:** not now; build the session mark (option C), use the targets on the phone, and add the per-set mark only if the targets prove useful.
