@@ -33,7 +33,10 @@ import {
   type DayStatusRow,
 } from '@/lib/db/repositories/statuses';
 
+import { nightOutPrompt, type DrinkKind, type DrinksInput } from '@/lib/nutrition/drinks';
+
 import { endPromptFor, promptFor, reaskFor, type RailChip } from './chips';
+import { recordNightOut, recordedDrinks } from './night-out';
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -84,8 +87,12 @@ export type StatusPrompt = {
  * throws from event handlers, so an unguarded DB failure here would take the
  * app down from a tap. Fail quiet: nothing is recorded and nothing is sent,
  * which is strictly better than a half-done gesture.
+ *
+ * With `drinks` — Night out, from the drinks stepper — it is
+ * {@link saveNightOut} instead, which returns null for a re-count too.
  */
-export function toggleStatus(chip: RailChip): StatusPrompt | null {
+export function toggleStatus(chip: RailChip, drinks?: DrinksInput): StatusPrompt | null {
+  if (drinks !== undefined) return saveNightOut(drinks);
   if (chip.openId !== null) return { prompt: reaskFor(chip.label), send: true };
   try {
     const today = todayISODate();
@@ -118,4 +125,42 @@ export function endOpenStatus(chip: RailChip & { openId: string }): StatusPrompt
   }
   emit();
   return { prompt: endPromptFor(chip.label), send: false };
+}
+
+/**
+ * Night out with its count (items 61/80, 2026-10-21) — the drinks stepper's
+ * Save. Writes the status (if it is not already on) and the drinks as a meal on
+ * the day, through `recordNightOut`, which touches nothing else.
+ *
+ * The FIRST save returns the sentence to send — a fact with the count
+ * (`nightOutPrompt`), the same order as every chip: the row lands, then the
+ * turn. A re-count later that evening returns null: the record changes and the
+ * Coach reads the new count in its state block on its next turn, but a
+ * correction is not a reason to start one. Null too when a write threw, for
+ * toggleStatus's reason — fail quiet, never half a gesture from a tap.
+ *
+ * Emits either way, so the door and anything reading the day's nutrition
+ * (Home's readiness pillars) re-read without losing focus.
+ */
+function saveNightOut(drinks: DrinksInput): StatusPrompt | null {
+  let started = false;
+  try {
+    started = recordNightOut(getDb(), todayISODate(), drinks).started;
+  } catch (error) {
+    console.warn('[status] could not record night out', error);
+    emit();
+    return null;
+  }
+  emit();
+  return started ? { prompt: nightOutPrompt(drinks), send: true } : null;
+}
+
+/** What the drinks stepper opens on today — the recorded count, or null. */
+export function currentNightOutDrinks(): { count: number; kind: DrinkKind } | null {
+  try {
+    return recordedDrinks(getDb(), todayISODate());
+  } catch (error) {
+    console.warn('[status] could not read the night out drinks', error);
+    return null;
+  }
 }

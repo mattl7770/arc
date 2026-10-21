@@ -55,9 +55,15 @@ export function StatusChip({
       onPress={() => onToggle(chip)}
       accessibilityLabel={displayStatus(chip.label)}
       accessibilityHint={
-        on
-          ? 'On. Asks the Coach to re-check today.'
-          : 'Off. Records it and asks the Coach to adjust today.'
+        // Night out asks for a count before it writes, and its re-tap re-counts
+        // rather than re-asking (items 61/80).
+        chip.asksDrinks
+          ? on
+            ? 'On. Opens the drinks count to change it.'
+            : 'Off. Asks how many drinks, then records it and tells the Coach.'
+          : on
+            ? 'On. Asks the Coach to re-check today.'
+            : 'Off. Records it and asks the Coach to adjust today.'
       }
       trailing={
         canEnd ? (

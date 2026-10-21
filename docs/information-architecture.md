@@ -500,6 +500,46 @@ excluded"*) is now met through Home's door rather than on its face. That is a
 reading of his note — it names the button, not the count — and worth
 confirming with him on the device.
 
+### Night out counts drinks (2026-10-21, items 61/80, no migration)
+
+The owner's notes, *"social drinking status rework"* and *"social mode
+rework"*, and his decision: Night out asks **how many drinks**, logs them as
+alcohol on the day, and tells the Coach and the next morning's readiness —
+**no automatic plan changes**. The governing sentence above is unchanged and is
+what shaped every piece of it: the count is a fact he states, and the only
+things that read it are a record and two surfaces that print it.
+
+- **The gesture.** Night out is the one chip whose tap does not write at once:
+  the sheet swaps the rail for a **stepper** — standard drinks, 0–20, opening on
+  2 — and four kinds (beer · wine · spirits · cocktail) that change only the kcal
+  and carbs. **Save** writes the status (bounded at today, as before) and then
+  the drinks, and the first save SENDS one sentence, a fact with the count —
+  *"Night out tonight — 4 drinks (wine) so far."* — without the other chips'
+  *"adjust accordingly"*: a count is not a request to rework the day. Tapping
+  Night out while it is on opens the stepper on the recorded count: a
+  **re-count** replaces the re-ask, rewrites the record and sends nothing
+  (`src/components/status/status-control.tsx` `DrinksPanel`;
+  `src/lib/status/night-out.ts` `recordNightOut`).
+- **The record is a meal**, the fewest new concepts: *"Night out · 4 drinks"*,
+  one item counted in drinks (0059's `piece_name`), in ml, with its ethanol under
+  `alcohol_g` in the item's micros JSON — 14 g a standard drink. So kcal and
+  carbs reach the day's totals with no new sum, and meal-detail can re-count it
+  like `2 eggs`. `alcohol_g` rides the micros vocabulary but is deliberately
+  **not** on the micros shortlist (no reference value that is not a verdict; no
+  estimator ask). Figures and their sources (NIAAA's 14 g; USDA FDC per kind) are
+  in `src/lib/nutrition/drinks.ts`.
+- **The Coach** reads an `Alcohol:` line in its per-turn state block — today's
+  and last night's count and grams — only on days that have some. Uncached, so
+  neither Coach ceiling moves.
+- **The next morning**, `deriveReadiness` exposes `alcoholLastNight`, and Home
+  prints *"Alcohol last night — 4 standard drinks · 56 g"* under the pillars, in
+  their notes' register. It **grades nothing**: Recovery, Sleep and the verdict
+  are what they would be without it, and what it means is the model's call.
+
+Nothing on the mission, a protocol or a reminder moves because of it —
+`db/statuses.test.mjs` §13 snapshots those tables across set, re-count and zero
+and requires them byte-identical.
+
 ### Excusal is per status, not uniform
 
 The owner's **Q2(b)**: the Coach decides, through an `excuses` flag on

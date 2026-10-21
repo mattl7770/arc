@@ -37,7 +37,34 @@ import { createProtocolWithVersion } from '../src/lib/db/repositories/protocols.
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 import { deriveReadiness } from '../src/lib/home/readiness.ts';
 import { baselineExclusionsIn, hasExclusionSource } from '../src/lib/home/baseline-exclusions.ts';
-import { endPromptFor, promptFor, reaskFor } from '../src/lib/status/chips.ts';
+import { endPromptFor, promptFor, railChips, reaskFor } from '../src/lib/status/chips.ts';
+import {
+  addMealItem,
+  dayAlcohol,
+  dayMicroTotals,
+  getMeal,
+  listMealItems,
+  listTodayMeals,
+  logMealWithItems,
+  nightOutDrinks,
+  setItemCount,
+  todayTotals,
+  updateMealName,
+} from '../src/lib/db/repositories/nutrition.ts';
+import {
+  DRINK_KINDS,
+  DRINKS_DEFAULT,
+  DRINKS_MAX,
+  ETHANOL_KCAL_PER_G,
+  STANDARD_DRINK_G,
+  alcoholLastNightLine,
+  clampDrinks,
+  drinksItem,
+  nightOutPrompt,
+} from '../src/lib/nutrition/drinks.ts';
+import { MICROS, parseMicros, scaleMicros, serializeMicros } from '../src/lib/nutrition/micros.ts';
+import { recordNightOut, recordedDrinks } from '../src/lib/status/night-out.ts';
+import { buildTurnContext } from '../src/lib/ai/turn-context.ts';
 import {
   composerKey,
   NO_SEED,
@@ -873,6 +900,359 @@ console.log('\n8. the seeded prompt: from either screen, it reaches the composer
   /setParams\(\{\s*prompt:\s*undefined\s*\}\)/.test(coach)
     ? ok('coach.tsx routes both sources through the seed and drops the param it consumed')
     : bad('coach.tsx no longer wires the seed handoff');
+}
+
+// ===========================================================================
+// Items 61/80 (2026-10-21) — Night out asks "how many drinks?", logs them as
+// alcohol on the day, and tells the Coach and the next morning's readiness.
+// NO automatic plan changes (§13 pins it).
+// ===========================================================================
+const near = (a, b) => Math.abs(a - b) < 1e-9;
+const NIGHT = (db) => openStatuses(db, TODAY).filter((row) => row.label === 'night out');
+
+console.log('\n9. the drinks figures: 14 g a standard drink, every kind, and the words are facts');
+{
+  STANDARD_DRINK_G === 14 && STANDARD_DRINK_G * ETHANOL_KCAL_PER_G === 98
+    ? ok('a standard drink is 14 g of ethanol — 98 kcal from the ethanol alone')
+    : bad('standard drink constants');
+  DRINKS_DEFAULT === 2 && DRINKS_MAX === 20 && clampDrinks(-3) === 0 && clampDrinks(99) === 20
+    ? ok('the stepper holds 0–20 and opens on 2')
+    : bad('stepper bounds');
+  DRINK_KINDS.map((k) => k.kind).join() === 'beer,wine,spirits,cocktail'
+    ? ok('four kinds, in a fixed order: beer · wine · spirits · cocktail')
+    : bad('kinds', DRINK_KINDS.map((k) => k.kind).join());
+  // Every kind records 14 g a drink; only the kcal and carbs differ, and each
+  // is at least the ethanol's own energy (the glass cannot carry less than the
+  // alcohol in it) — at SR Legacy's own 6.93 kcal/g, 97, which is why spirits
+  // read 97 rather than the Atwater 98.
+  const all = DRINK_KINDS.every((spec) => {
+    const item = drinksItem({ count: 3, kind: spec.kind });
+    const micros = parseMicros(item.micros);
+    return (
+      near(micros.alcohol_g, 42) &&
+      item.serving_qty === 3 &&
+      item.piece_name === 'drink' &&
+      item.unit === 'ml' &&
+      item.kcal === spec.kcal * 3 &&
+      spec.kcal >= Math.floor(14 * 6.93)
+    );
+  });
+  all
+    ? ok('3 drinks of any kind: 42 g alcohol, counted in drinks, in ml, kcal ≥ the ethanol’s')
+    : bad('drinks item');
+  const beer = drinksItem({ count: 4, kind: 'beer' });
+  beer.kcal === 612 && near(beer.carbs_g, 50.4)
+    ? ok('4 beers: 612 kcal, 50.4 g carbs (FDC 14003, 12 fl oz)')
+    : bad('beer figures', JSON.stringify(beer));
+
+  // The words. A fact, with the count — and NOT the other chips' "adjust
+  // accordingly": a count of drinks is not a request to rework the day.
+  const sent = nightOutPrompt({ count: 4, kind: 'wine' });
+  sent === 'Night out tonight — 4 drinks (wine) so far.'
+    ? ok(`the sentence Night out sends is a fact: "${sent}"`)
+    : bad('night out prompt', sent);
+  !/adjust|should|too many|limit|careful|heavy/i.test(sent) &&
+  !/adjust|should|too many|limit|careful|heavy/i.test(
+    alcoholLastNightLine({ grams: 56, drinks: 4 })
+  )
+    ? ok('…and neither it nor the morning line carries a verdict or an ask')
+    : bad('judgement words in the drinks copy');
+  nightOutPrompt({ count: 0, kind: 'beer' }) === 'Night out tonight — not drinking.'
+    ? ok('zero drinks is a fact too: "not drinking"')
+    : bad('zero prompt', nightOutPrompt({ count: 0, kind: 'beer' }));
+}
+
+console.log('\n10. the stepper → the record: the status, then the drinks as a meal on the day');
+{
+  const { db } = freshDb();
+  // Only Night out asks first.
+  const chips = railChips([]);
+  chips.filter((c) => c.asksDrinks).map((c) => c.label).join() === 'night out'
+    ? ok('only the Night out chip asks for a count before it writes')
+    : bad('asksDrinks', JSON.stringify(chips.map((c) => [c.label, c.asksDrinks])));
+
+  const first = recordNightOut(db, TODAY, { count: DRINKS_DEFAULT, kind: 'beer' });
+  const rows = NIGHT(db);
+  first.started && rows.length === 1 && rows[0].end_date === TODAY && rows[0].source === 'user'
+    ? ok('Save writes Night out, bounded at today, set by the user — and says it started it')
+    : bad('night out status', JSON.stringify([first, rows]));
+  const meals = listTodayMeals(db, TODAY);
+  const items = meals.length === 1 ? listMealItems(db, meals[0].id) : [];
+  meals.length === 1 &&
+  meals[0].name === 'Night out · 2 drinks' &&
+  meals[0].time === null &&
+  items.length === 1 &&
+  items[0].name === 'Beer' &&
+  items[0].serving_qty === 2 &&
+  items[0].piece_name === 'drink' &&
+  near(parseMicros(items[0].micros).alcohol_g, 28)
+    ? ok('…and the drinks as ONE meal, "Night out · 2 drinks": 2 × Beer, 28 g alcohol')
+    : bad('night out meal', JSON.stringify([meals, items]));
+  near(meals[0].kcal, 306) && near(meals[0].carbs_g, 25.2)
+    ? ok('the meal carries the drinks’ kcal and carbs (306 kcal, 25.2 g)')
+    : bad('meal totals', JSON.stringify(meals[0]));
+  const read = recordedDrinks(db, TODAY);
+  read && read.count === 2 && read.kind === 'beer'
+    ? ok('the stepper re-opens on what it recorded: 2, beer')
+    : bad('recorded drinks', JSON.stringify(read));
+  recordedDrinks(db, daysAgo(1)) === null
+    ? ok('a day with no Night out drinks opens on nothing recorded')
+    : bad('empty day read');
+}
+
+console.log('\n11. editing the count later that day — one status, one meal, re-counted');
+{
+  const { db } = freshDb();
+  recordNightOut(db, TODAY, { count: 2, kind: 'beer' });
+  const again = recordNightOut(db, TODAY, { count: 4, kind: 'wine' });
+  const meals = listTodayMeals(db, TODAY);
+  const items = listMealItems(db, meals[0].id);
+  !again.started && NIGHT(db).length === 1
+    ? ok('a re-count starts nothing: still one Night out row (and nothing to send)')
+    : bad('recount status', JSON.stringify([again, NIGHT(db)]));
+  meals.length === 1 &&
+  meals[0].name === 'Night out · 4 drinks' &&
+  items.length === 1 &&
+  items[0].name === 'Wine' &&
+  items[0].serving_qty === 4 &&
+  near(parseMicros(items[0].micros).alcohol_g, 56) &&
+  near(meals[0].kcal, 500)
+    ? ok('…the same meal, renamed "Night out · 4 drinks": 4 × Wine, 56 g, 500 kcal')
+    : bad('recount meal', JSON.stringify([meals, items]));
+
+  // Re-counted on meal-detail instead (0059's count control): the alcohol
+  // scales WITH the kcal, because the micros vocabulary carries alcohol_g.
+  setItemCount(db, items[0].id, 3);
+  const scaled = listMealItems(db, meals[0].id)[0];
+  near(parseMicros(scaled.micros).alcohol_g, 42) && near(scaled.kcal, 375)
+    ? ok('a re-count on meal-detail scales the alcohol with the kcal (3 → 42 g, 375 kcal)')
+    : bad('meal-detail rescale', JSON.stringify(scaled));
+  recordedDrinks(db, TODAY)?.count === 3
+    ? ok('…and the stepper reads that count back')
+    : bad('read after meal-detail', JSON.stringify(recordedDrinks(db, TODAY)));
+  serializeMicros(scaleMicros(parseMicros('{"alcohol_g":14,"sodium_mg":10}'), 2)) ===
+  '{"sodium_mg":20,"alcohol_g":28}'
+    ? ok('parse → scale → serialize keeps alcohol_g (it is not dropped as an unknown key)')
+    : bad('micros round trip');
+
+  // A renamed meal is the user's: a re-count leaves the name alone.
+  updateMealName(db, meals[0].id, 'Sam’s birthday');
+  recordNightOut(db, TODAY, { count: 5, kind: 'wine' });
+  getMeal(db, meals[0].id).name === 'Sam’s birthday'
+    ? ok('a meal the user renamed keeps his name through a re-count')
+    : bad('rename kept', getMeal(db, meals[0].id).name);
+
+  // Something else added to that meal survives the count going to 0; the
+  // stepper's row goes, and the meal stays with what is left.
+  addMealItem(db, meals[0].id, { name: 'Fries', kcal: 400, carbs_g: 50 });
+  recordNightOut(db, TODAY, { count: 0, kind: 'wine' });
+  const left = listMealItems(db, meals[0].id);
+  left.length === 1 && left[0].name === 'Fries' && near(getMeal(db, meals[0].id).kcal, 400)
+    ? ok('count 0 removes only the drinks row; the fries the user added stay, totals follow')
+    : bad('zero with other items', JSON.stringify(left));
+  dayAlcohol(db, TODAY) === null && recordedDrinks(db, TODAY) === null
+    ? ok('…and the day records no alcohol')
+    : bad('zero alcohol', JSON.stringify(dayAlcohol(db, TODAY)));
+
+  // On its own, count 0 takes the meal with it — an empty meal reads as an
+  // unpriced one.
+  const solo = freshDb().db;
+  recordNightOut(solo, TODAY, { count: 3, kind: 'spirits' });
+  recordNightOut(solo, TODAY, { count: 0, kind: 'spirits' });
+  listTodayMeals(solo, TODAY).length === 0 && NIGHT(solo).length === 1
+    ? ok('count 0 on its own deletes the drinks meal; the Night out status stays')
+    : bad('zero solo', JSON.stringify(listTodayMeals(solo, TODAY)));
+
+  // A drink the stepper did not write — a described pint with the model's
+  // alcohol figure — is never rewritten by it, and still counts in the day.
+  const other = freshDb().db;
+  logMealWithItems(other, {
+    date: TODAY,
+    time: '19:00',
+    name: 'Pub',
+    source: 'ai_suggested',
+    items: [{ name: 'IPA', amount: 568, unit: 'ml', kcal: 250, micros: '{"alcohol_g":28}' }],
+  });
+  recordNightOut(other, TODAY, { count: 1, kind: 'beer' });
+  const pub = listTodayMeals(other, TODAY).find((m) => m.name === 'Pub');
+  listTodayMeals(other, TODAY).length === 2 &&
+  listMealItems(other, pub.id)[0].name === 'IPA' &&
+  near(dayAlcohol(other, TODAY).grams, 42) &&
+  dayAlcohol(other, TODAY).drinks === 3
+    ? ok('another alcohol row is left alone by the stepper, and the day sums both (42 g, 3)')
+    : bad('foreign alcohol', JSON.stringify(dayAlcohol(other, TODAY)));
+  nightOutDrinks(other, TODAY)?.count === 1
+    ? ok('…while the stepper reads back only its own count')
+    : bad('stepper count with foreign row');
+}
+
+console.log('\n12. the day’s totals include the drinks');
+{
+  const { db } = freshDb();
+  logMealWithItems(db, {
+    date: TODAY,
+    time: '12:30',
+    name: 'Lunch',
+    items: [{ name: 'Chicken salad', kcal: 550, protein_g: 45, carbs_g: 20, fat_g: 30 }],
+  });
+  const before = todayTotals(db, TODAY);
+  recordNightOut(db, TODAY, { count: 3, kind: 'cocktail' });
+  const after = todayTotals(db, TODAY);
+  near(after.kcal - before.kcal, 441) &&
+  near(after.carbs_g - before.carbs_g, 38.1) &&
+  near(after.protein_g, before.protein_g) &&
+  after.mealCount === 2
+    ? ok('3 cocktails add 441 kcal and 38.1 g carbs to the day, and nothing to protein')
+    : bad('day totals', JSON.stringify([before, after]));
+  near(dayMicroTotals(db, TODAY).alcohol_g, 42)
+    ? ok('the day’s micro totals carry 42 g alcohol')
+    : bad('day micros', JSON.stringify(dayMicroTotals(db, TODAY)));
+  !MICROS.some((m) => m.key === 'alcohol_g')
+    ? ok('…but alcohol is NOT on the micros shortlist (no reference value, no estimator ask)')
+    : bad('alcohol leaked onto the shortlist');
+}
+
+console.log('\n13. THE RULE: Night out changes no protocol, mission or reminder row');
+{
+  // A planned day: a protocol, today's mission generated from it.
+  const { raw, db } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Training', type: 'training_block', startedOn: daysAgo(3) },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'p0',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'run',
+              title: 'Zone 2 run',
+              scheduled_time: '07:00',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+            {
+              id: 'lift',
+              title: 'Strength session',
+              scheduled_time: '18:00',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  generateMissionForDay(db, TODAY);
+  generateMissionForDay(db, shiftISODate(TODAY, 1));
+  const TABLES = ['log_entries', 'daily_logs', 'protocols', 'protocol_versions', 'reminders'];
+  const snapshot = () =>
+    JSON.stringify(
+      TABLES.map((t) => {
+        try {
+          return raw.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all();
+        } catch {
+          return `no table ${t}`;
+        }
+      })
+    );
+  const planned = snapshot();
+  planForDay(db, TODAY).length >= 2
+    ? ok('CONTROL: the day is planned (two mission items from the protocol)')
+    : bad('control plan', JSON.stringify(planForDay(db, TODAY)));
+  recordNightOut(db, TODAY, { count: 6, kind: 'spirits' });
+  recordNightOut(db, TODAY, { count: 9, kind: 'beer' });
+  recordNightOut(db, TODAY, { count: 0, kind: 'beer' });
+  recordNightOut(db, TODAY, { count: 4, kind: 'wine' });
+  snapshot() === planned
+    ? ok('set, re-count ×2 and zero: every mission, protocol and reminder row is byte-identical')
+    : bad('Night out moved a plan row');
+  // Tomorrow regenerates exactly as planned, with last night's drinks on record.
+  generateMissionForDay(db, shiftISODate(TODAY, 1));
+  snapshot() === planned
+    ? ok('…and regenerating tomorrow after it changes nothing either')
+    : bad('tomorrow regenerated differently after Night out');
+
+  // Pinned by source as well: the write behind the stepper imports no plan
+  // repository, and the store routes the stepper through it.
+  const nightOut = readFileSync(new URL('../src/lib/status/night-out.ts', import.meta.url), 'utf8');
+  const store = readFileSync(new URL('../src/lib/status/store.ts', import.meta.url), 'utf8');
+  !/repositories\/(mission|mission-generate|protocols|reminders)/.test(nightOut) &&
+  !/repositories\/(mission|mission-generate|protocols|reminders)/.test(store) &&
+  /recordNightOut\(getDb\(\)/.test(store)
+    ? ok('night-out.ts and the store import no mission/protocol/reminder repository')
+    : bad('a plan repository is reachable from the Night out write');
+}
+
+console.log('\n14. the Coach’s day context and the next morning’s readiness');
+{
+  const { db } = freshDb();
+  const noon = new Date(2026, 8, 19, 12, 0);
+  const tomorrowMorning = new Date(2026, 8, 20, 8, 0);
+  !buildTurnContext(db, noon).includes('Alcohol:')
+    ? ok('no drinks, no Alcohol line — it costs nothing on an ordinary turn')
+    : bad('alcohol line on a dry day');
+
+  recordNightOut(db, TODAY, { count: 2, kind: 'beer' });
+  const tonight = buildTurnContext(db, noon);
+  tonight.includes(`Alcohol: 2 standard drinks (28 g ethanol) today, ${TODAY}`)
+    ? ok('the Coach sees tonight’s count and grams in its per-turn state block')
+    : bad('coach context today', tonight.split('\n').find((l) => l.startsWith('Alcohol')));
+  /Status: night out — since today/.test(tonight)
+    ? ok('…beside the Night out status line it already printed')
+    : bad('status line missing');
+
+  recordNightOut(db, TODAY, { count: 4, kind: 'beer' });
+  const morning = buildTurnContext(db, tomorrowMorning);
+  morning.includes(`Alcohol: 4 standard drinks (56 g ethanol) last night, ${TODAY}`)
+    ? ok('the next morning it reads "last night", with the re-counted 4 and 56 g')
+    : bad('coach context next morning', morning.split('\n').find((l) => l.startsWith('Alcohol')));
+
+  // Readiness: the fact is exposed, and nothing it grades moves.
+  const NEXT = shiftISODate(TODAY, 1);
+  const plant = (date, value) =>
+    upsertWearableRows(db, [
+      {
+        date,
+        metricType: 'hrv',
+        value,
+        unit: 'ms',
+        sourceDevice: 'apple_watch',
+        sourceRawId: `hk:hrv:${date}`,
+        startTime: null,
+        endTime: null,
+        metadata: {},
+      },
+    ]);
+  for (let i = 0; i <= 30; i++) plant(shiftISODate(NEXT, -i), i === 0 ? 38 : 50);
+  const withDrinks = deriveReadiness(db, NEXT);
+  withDrinks.alcoholLastNight &&
+  near(withDrinks.alcoholLastNight.grams, 56) &&
+  withDrinks.alcoholLastNight.drinks === 4
+    ? ok('the next morning’s readiness exposes alcoholLastNight: 4 drinks, 56 g')
+    : bad('alcoholLastNight', JSON.stringify(withDrinks.alcoholLastNight));
+  alcoholLastNightLine(withDrinks.alcoholLastNight) ===
+  'Alcohol last night — 4 standard drinks · 56 g'
+    ? ok('Home’s line under the pillars: "Alcohol last night — 4 standard drinks · 56 g"')
+    : bad('home line', alcoholLastNightLine(withDrinks.alcoholLastNight));
+  alcoholLastNightLine(null) === null && deriveReadiness(db, TODAY).alcoholLastNight === null
+    ? ok('no drinks the night before: no line at all')
+    : bad('dry morning line');
+
+  // The same night with the count zeroed — same status, no drinks. Every grade
+  // is identical: the drinks are an input for the model, not for the score.
+  recordNightOut(db, TODAY, { count: 0, kind: 'beer' });
+  const dry = deriveReadiness(db, NEXT);
+  const grades = (v) =>
+    JSON.stringify([v.readiness, v.pillars.filter((p) => p.label !== 'Nutrition'), v.metrics]);
+  dry.alcoholLastNight === null && grades(dry) === grades(withDrinks)
+    ? ok('…and the verdict, Recovery, Sleep, Strain and the metrics are identical without them')
+    : bad('readiness moved with the drinks', `${grades(dry)}\n${grades(withDrinks)}`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

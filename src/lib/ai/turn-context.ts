@@ -25,6 +25,7 @@ import { currentTrip, recentTimezoneChange } from '@/lib/db/repositories/day-met
 import { consolidatedOpenList } from '@/lib/db/repositories/grocery';
 import { activeExperiments } from '@/lib/db/repositories/experiments';
 import { listMission } from '@/lib/db/repositories/mission';
+import { dayAlcohol } from '@/lib/db/repositories/nutrition';
 import {
   openStatuses,
   scheduledStatuses,
@@ -35,6 +36,7 @@ import { screenTimeOn } from '@/lib/db/repositories/screen-time';
 import { getGoalDirection, getOrCreateUser, getPreferences } from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
 import { deriveReadiness } from '@/lib/home/readiness';
+import { type DayAlcohol, drinksPhrase } from '@/lib/nutrition/drinks';
 import { formatHm } from '@/lib/screen-time/entry';
 import { formatUtcOffset, offsetShift } from '@/lib/timezone/classify';
 import { awayDayNumber } from '@/lib/timezone/trips';
@@ -180,6 +182,30 @@ export function buildTurnContext(db: Database, now: Date = new Date()): string {
         .map((r) => `${r.label} from ${r.start_date}${r.end_date ? ` through ${r.end_date}` : ''}`)
         .join(' · ')}.`
     );
+  }
+
+  // --- Alcohol (items 61/80, 2026-10-21) — Night out's drinks, or any item
+  // that recorded ethanol, on yesterday and today. Printed only on a day that
+  // has some, so it costs nothing on most turns; uncached, like everything in
+  // this block, so the cached prefix and its ceilings do not move.
+  //
+  // THE FACT, in the status line's register: the count, the grams, the day.
+  // Yesterday's is labelled "last night" because that is the reading the
+  // owner asked for — what this morning's HRV and resting heart rate sit
+  // beside. Nothing here says what it means for today; readiness grades
+  // exactly as it would without it, and the call is the model's.
+  const alcohol: string[] = [];
+  const drinksOn = (fact: DayAlcohol | null, when: string, date: string): void => {
+    if (fact === null) return;
+    alcohol.push(
+      `${drinksPhrase(fact.drinks).replace('drink', 'standard drink')} ` +
+        `(${Math.round(fact.grams)} g ethanol) ${when}, ${date}`
+    );
+  };
+  drinksOn(readiness.alcoholLastNight, 'last night', yesterday);
+  drinksOn(dayAlcohol(db, today), 'today', today);
+  if (alcohol.length > 0) {
+    lines.push(`Alcohol: ${alcohol.join(' · ')} — logged as meals, in each day's kcal and carbs.`);
   }
 
   // --- Timezone (D4) — ONE line, and only when there is something to say.

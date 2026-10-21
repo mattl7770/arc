@@ -22,6 +22,7 @@ import { useTimezoneNote } from '@/hooks/use-timezone-note';
 import { useTodayMission } from '@/hooks/use-today-mission';
 import { useWorkoutDrafts } from '@/hooks/use-training';
 import { openSessionLine } from '@/lib/exercise/draft';
+import { alcoholLastNightLine, type DrinksInput } from '@/lib/nutrition/drinks';
 import type { RailChip } from '@/lib/status/chips';
 import { endOpenStatus, toggleStatus } from '@/lib/status/store';
 
@@ -209,7 +210,9 @@ export default function HomeScreen() {
     [router]
   );
   const onStatusChip = useCallback(
-    (chip: RailChip) => carryToCoach(toggleStatus(chip)),
+    // With drinks it is Night out's stepper: the first save carries its
+    // sentence like any chip; a re-count returns null and stays on Home.
+    (chip: RailChip, drinks?: DrinksInput) => carryToCoach(toggleStatus(chip, drinks)),
     [carryToCoach]
   );
   const onStatusEnd = useCallback(
@@ -318,7 +321,11 @@ export default function HomeScreen() {
       ) : null}
 
       <View className="mt-7">
-        <ReadinessStrip readiness={readiness.readiness} pillars={readiness.pillars} />
+        <ReadinessStrip
+          readiness={readiness.readiness}
+          pillars={readiness.pillars}
+          alcoholLine={alcoholLastNightLine(readiness.alcoholLastNight)}
+        />
       </View>
 
       {planned ? (
