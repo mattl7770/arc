@@ -137,7 +137,16 @@ import MealEstimateScreen from '../app/meal-estimate.tsx';
 import FoodNewScreen from '../app/food-new.tsx';
 import FoodSearchScreen, { PortionEditor } from '../app/food-search.tsx';
 import { foodDeleteConsequence } from '../src/lib/nutrition/food-delete.ts';
-import { listEntriesOn, logCapture, logNote } from '../src/lib/db/repositories/logs.ts';
+import {
+  getCapture,
+  listEntriesOn,
+  logCapture,
+  logMetric,
+  logNote,
+} from '../src/lib/db/repositories/logs.ts';
+import { logSymptom } from '../src/lib/db/repositories/symptoms.ts';
+import { CaptureEditor } from '../src/components/log/capture-editor.tsx';
+import { RecentLogs } from '../src/components/log/recent-logs.tsx';
 import { apiKeyStore } from '../src/lib/ai/api-key-store.ts';
 import ProgressPhotosScreen from '../app/progress-photos.tsx';
 import ProgressPhotoAddScreen from '../app/progress-photo-add.tsx';
@@ -7581,18 +7590,29 @@ console.log('\n29. Screen time — the keypad, the receipt, the link, Data and S
     'Morning check-in',
     'A nudge timed inside quiet hours is dropped, not moved.',
     'set Show Previews to When Unlocked for ARC in iOS Settings',
+    // ON by default since 2026-09-26, just after quiet hours end, following them.
+    'A daily notification; tap it and the Coach speaks first',
+    'Check-in at',
+    '07:05',
+    '5 minutes after quiet hours end, and moves with them',
   ]);
-  refute('settings-coach', settings, ['Check-in at']);
+  refute('settings-coach', settings, ['Follow quiet hours', 'Your time.']);
 
   saveNudgeSettings(db, { checkinTime: '07:15', quietStart: '22:00' });
-  const settingsOn = render('settings-coach (check-in on)', SettingsCoachScreen);
-  expect('settings-coach (check-in on)', settingsOn, [
-    'A daily notification; tap it and the Coach speaks first',
+  const settingsOwn = render('settings-coach (his own time)', SettingsCoachScreen);
+  expect('settings-coach (his own time)', settingsOwn, [
     'Check-in at',
     '07:15',
     '22:00',
+    'Your time. Moving quiet hours leaves it here.',
+    'Follow quiet hours',
   ]);
-  saveNudgeSettings(db, { checkinTime: null, quietStart: '21:30' });
+  refute('settings-coach (his own time)', settingsOwn, ['and moves with them']);
+
+  saveNudgeSettings(db, { checkinTime: null });
+  const settingsOff = render('settings-coach (check-in off)', SettingsCoachScreen);
+  refute('settings-coach (check-in off)', settingsOff, ['Check-in at', 'Follow quiet hours']);
+  saveNudgeSettings(db, { checkinFollowsQuiet: true, quietStart: '21:30' });
 }
 
 console.log('\n31. 2026-09-25 — combine on a past day, and `2 eggs` read as a count');
@@ -7910,6 +7930,119 @@ console.log('\n32. 2026-09-25 — the Log tab’s ×, Add food’s Delete, and t
   ) && !hr.includes('ARC can read the heart rate')
     ? ok('settings-health: the heart-rate ask opens on where the figure shows, rest as it was')
     : bad('heart-rate ask');
+}
+
+// ---------------------------------------------------------------------------
+// 33. A Log-tab capture opens for correction (owner, 2026-09-26: "Yes, an edit
+// on the Log tab, and the Coach too."). A server render taps nothing, so the
+// row's own control is read off the tab as drawn, and each editor is rendered
+// from its own export for each kind of row: its words, its figure in the
+// unit the row prints, or a symptom's name and severity.
+console.log('\n33. 2026-09-26 — a Log-tab capture opens to its words, its figure or its severity');
+{
+  const today = todayISODate();
+  const noop = () => null;
+  const units = getPreferences(db).units;
+  const creatine = logCapture(db, today, 'supplement', 'Creatine · 5 g');
+  const note = logNote(db, today, 'Slept badly, 3am wake');
+  logMetric(db, today, 'weight', 80);
+  const symptom = logSymptom(db, {
+    date: today,
+    time: '14:00',
+    name: 'Headache',
+    severity: 6,
+    bodyArea: null,
+    notes: null,
+  });
+  const feed = listEntriesOn(db, today, units);
+  const weight = feed.find((e) => e.category === 'Weight');
+  const at = (id) => feed.find((e) => e.id === id)?.time;
+
+  // THE ROW IS THE CONTROL: every row says it opens, and keeps its ×.
+  const tab = render('log tab (rows open for correction)', LogScreen);
+  expect('log tab (rows open for correction)', tab, [
+    `Supplements, Creatine · 5 g, logged at ${at(creatine)}. Edit.`,
+    `Note, Slept badly, 3am wake, logged at ${at(note)}. Edit.`,
+    `Weight, 176.4 lb, logged at ${weight.time}. Edit.`,
+    `Remove Supplements, Creatine · 5 g, logged at ${at(creatine)}`,
+  ]);
+
+  // EACH EDITOR, opened to what its row shows.
+  const editorFor = (name, id) =>
+    render(name, CaptureEditor, {}, {
+      capture: getCapture(db, id, units),
+      units,
+      onSave: noop,
+      onCancel: noop,
+    });
+  const line = editorFor('capture editor (a supplement line)', creatine);
+  expect('capture editor (a supplement line)', line, [
+    'value="Creatine · 5 g"',
+    'aria-label="Corrected Creatine · 5 g"',
+    '>Save<',
+    '>Cancel<',
+  ]);
+  const noteEditor = editorFor('capture editor (a note)', note);
+  expect('capture editor (a note)', noteEditor, ['Slept badly, 3am wake', 'Corrected note']);
+  const figure = editorFor('capture editor (a weight)', weight.id);
+  expect('capture editor (a weight)', figure, [
+    'value="176.4"',
+    'aria-label="Corrected weight in lb"',
+    '>lb<',
+  ]);
+  const felt = editorFor('capture editor (a symptom)', symptom);
+  expect('capture editor (a symptom)', felt, [
+    'value="Headache"',
+    'value="6"',
+    'Severity',
+    '/10',
+  ]);
+  // No accent on the Log tab past the command field: Save is ink.
+  [line, noteEditor, figure, felt].every((html) => html && !/bg-pine/.test(html))
+    ? ok('the editors spend no accent: Save is ink, the command field keeps the one')
+    : bad('an editor spends the accent');
+  // The time is not offered: no clock field in any editor.
+  [line, noteEditor, figure, felt].every((html) => html && !/Corrected time|HH:MM/.test(html))
+    ? ok('no editor offers the time — it stays as logged')
+    : bad('an editor offers the time');
+
+  // INSIDE THE PLATE, under its own row: the open editor is part of the row.
+  const open = render('recent logs (the weight open)', RecentLogs, {}, {
+    entries: feed,
+    onRemove: noop,
+    onEdit: noop,
+    editingId: weight.id,
+    editor: React.createElement(CaptureEditor, {
+      capture: getCapture(db, weight.id, units),
+      units,
+      onSave: noop,
+      onCancel: noop,
+    }),
+  });
+  const rowAt = open?.indexOf(`Weight, 176.4 lb, logged at ${weight.time}. Close.`) ?? -1;
+  const editorAt = open?.indexOf('value="176.4"') ?? -1;
+  // The next row's own control, not this row's ×, which also names its time.
+  const nextRowAt = open?.indexOf('. Edit.', rowAt) ?? -1;
+  rowAt >= 0 && editorAt > rowAt && (nextRowAt === -1 || editorAt < nextRowAt)
+    ? ok('the open editor sits beneath its own row, before the next, and the row reads Close')
+    : bad('editor placement', JSON.stringify({ rowAt, editorAt, nextRowAt }));
+
+  // THE UNITS ARE PINNED TO THE OPEN EDITOR (review, 2026-09-26). A server
+  // render cannot switch a unit under an open editor, so the tab's source is
+  // read: the editor is drawn in the units the row was opened in, Save hands
+  // over the opened row whole (db/log.test.mjs §23 proves the read-back), and
+  // the editor closes when the tab is left, as the Undo does.
+  const logTabSource = readFileSync(new URL('../app/(tabs)/log.tsx', import.meta.url), 'utf8');
+  logTabSource.includes('units={editing.units}') &&
+  logTabSource.includes('saveCaptureEdit(getDb(), editing, draft)') &&
+  logTabSource.includes('useFocusEffect(useCallback(() => () => setEditing(null), []))') &&
+  !/getPreferences\(/.test(logTabSource)
+    ? ok('the Log tab draws and saves an open editor in the units it opened in, and closes it on leaving')
+    : bad('log tab units pin');
+
+  db.run('DELETE FROM log_entries WHERE id IN (?, ?)', [creatine, note]);
+  db.run('DELETE FROM symptoms WHERE id = ?', [symptom]);
+  db.run('DELETE FROM body_metrics WHERE id = ?', [weight.id.split(':')[0]]);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

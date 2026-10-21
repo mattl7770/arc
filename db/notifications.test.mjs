@@ -249,7 +249,9 @@ console.log('4. the Coach’s nudges join the one pass, at the ordinary interrup
   cancelNudge(db, nudge.id);
   const after = recorder();
   await syncReminderNotifications(db, NOW, after.deps);
-  after.scheduled.length === 0 && after.cancels === 1
+  // The morning check-in is on by default since 2026-09-26, so the resync
+  // still schedules it; what matters here is that no nudge survives.
+  !after.scheduled.some((r) => r.content.data?.kind === 'nudge') && after.cancels === 1
     ? ok('a cancelled nudge is gone from the phone at the next resync')
     : bad('cancelled nudge scheduled', JSON.stringify(after.scheduled));
 }
@@ -271,9 +273,14 @@ console.log('5. quiet hours bind the Coach, never his own reminders');
   saveNudgeSettings(db, { enabled: false }, NOW, '00:00');
   const off = recorder();
   const result = await syncReminderNotifications(db, NOW, off.deps);
-  result.scheduledNudges.length === 0 && off.scheduled.length === 1
+  result.scheduledNudges.length === 0 &&
+  off.scheduled.filter((r) => r.content.data?.kind !== 'checkin').length === 1 &&
+  off.scheduled.some((r) => r.content.title === 'Magnesium')
     ? ok('nudges off: nothing of the Coach’s is scheduled, his reminder still is')
     : bad('off switch', JSON.stringify(off.scheduled.map((r) => r.content)));
+  result.checkinScheduled
+    ? ok('…and the morning check-in is not a nudge: the nudges switch leaves it on')
+    : bad('nudges off took the check-in');
 }
 
 console.log('6. the morning check-in and the check-in bit ride the payload');
@@ -306,6 +313,45 @@ console.log('6. the morning check-in and the check-in bit ride the payload');
   !off.scheduled.some((r) => r.content.data?.kind === 'checkin')
     ? ok('turned off, the morning check-in is gone at the next resync')
     : bad('doorbell survived');
+}
+
+console.log('6b. the morning check-in is on by default, just after quiet hours end, and follows them');
+{
+  const { db } = freshDb();
+  const bellOf = async () => {
+    const os = recorder();
+    const result = await syncReminderNotifications(db, NOW, os.deps);
+    const bell = os.scheduled.find((r) => r.content.data?.kind === 'checkin');
+    return { result, bell };
+  };
+  // Nothing set at all: a fresh install, the owner's phone at the next build.
+  let { result, bell } = await bellOf();
+  result.checkinScheduled &&
+  bell?.trigger.type === 'daily' &&
+  bell.trigger.hour === 7 &&
+  bell.trigger.minute === 5 &&
+  bell.content.title === CHECKIN_TITLE
+    ? ok('with nothing set, the first resync schedules the check-in daily at 07:05')
+    : bad('default doorbell', JSON.stringify(bell));
+
+  saveNudgeSettings(db, { quietEnd: '06:30' }, NOW, '00:00');
+  ({ bell } = await bellOf());
+  bell?.trigger.hour === 6 && bell.trigger.minute === 35
+    ? ok('quiet hours moved to end at 06:30: the next resync moves it to 06:35')
+    : bad('followed doorbell', JSON.stringify(bell));
+
+  saveNudgeSettings(db, { checkinTime: '07:45' }, NOW, '00:00');
+  saveNudgeSettings(db, { quietEnd: '05:30' }, NOW, '00:00');
+  ({ bell } = await bellOf());
+  bell?.trigger.hour === 7 && bell.trigger.minute === 45
+    ? ok('a time he set stays at 07:45 when quiet hours move again')
+    : bad('pinned doorbell', JSON.stringify(bell));
+
+  saveNudgeSettings(db, { checkinFollowsQuiet: true }, NOW, '00:00');
+  ({ bell } = await bellOf());
+  bell?.trigger.hour === 5 && bell.trigger.minute === 35
+    ? ok('“Follow quiet hours” puts it back at 05:35, five minutes after the new end')
+    : bad('refollowed doorbell', JSON.stringify(bell));
 }
 
 console.log(`7. the 64 cap: every sync fits ${NOTIFICATION_BUDGET}, and says what it left out`);

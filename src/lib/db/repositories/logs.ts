@@ -23,11 +23,12 @@ import { newId } from '../id';
 import { restoreRow, snapshotRows, type SnapshotRow } from '../row-snapshot';
 import { getOrCreateDailyLog } from './mission';
 import { latestScreenTime, recordScreenTime } from './screen-time';
-import { deleteWaterEntry } from './water';
+import { deleteWaterEntry, updateWaterEntry } from './water';
 import type { BodyMetricRow, LogEntryRow, WearableDataRow } from '../types';
 import {
   formatCanonical,
   formatMeasured,
+  isLoggableCanonical,
   metricByBodyColumn,
   metricByKey,
   metricByWearableType,
@@ -397,7 +398,32 @@ export type CaptureRecord = LogFeedItem & {
   metricType: string | null;
   /** A measurement — a number in a unit — rather than a line of words. */
   measure: boolean;
+  /**
+   * What its editor opens to (2026-09-26), or null for a row the Log tab
+   * cannot correct — a manual wearable row whose metric ARC does not know.
+   */
+  edit: CaptureEdit | null;
 };
+
+/**
+ * What a capture's correction reaches, by what the row IS (owner, 2026-09-26:
+ * *"Yes, an edit on the Log tab, and the Coach too."*):
+ *
+ *   text     the words of a note, or a supplement / medication / therapy line
+ *            ("Creatine · 5 g") — the line is the whole record of those;
+ *   measure  a number in its metric's canonical unit: a weight, body fat or
+ *            waist reading, a glass, HRV or resting HR typed by hand, a dose;
+ *   symptom  a symptom's name and its 1–10, the two things its row shows.
+ *
+ * Never the TIME. The time a Log-tab row shows is the moment it was written
+ * (`created_at`), and for a glass that is also the instant its Apple Health
+ * sample carries and the key the water publish walk steps along: moving it
+ * could send a glass twice or never. See correctCapture.
+ */
+export type CaptureEdit =
+  | { kind: 'text'; text: string }
+  | { kind: 'measure'; metric: MetricKey; canonical: number }
+  | { kind: 'symptom'; name: string; severity: number | null };
 
 /**
  * The capture the Log tab lists as `feedId`, drawn exactly as the feed draws it
@@ -421,6 +447,7 @@ export function getCapture(
     );
     if (!r || r[column] == null) return undefined;
     const { sortKey: _s, ...item } = bodyItem(r, column, units);
+    const bodyMetric = metricByBodyColumn(column);
     return {
       ...item,
       date: logicalDate(new Date(r.measured_at)),
@@ -429,6 +456,9 @@ export function getCapture(
       column,
       metricType: null,
       measure: true,
+      edit: bodyMetric
+        ? { kind: 'measure', metric: bodyMetric.key, canonical: r[column] as number }
+        : null,
     };
   }
 
@@ -448,16 +478,21 @@ export function getCapture(
       column: null,
       metricType: null,
       measure: entry.type === 'metric',
+      edit: entryEdit(entry),
     };
   }
 
+  // Not screen time, exactly as the feed leaves it out: a day's total is not
+  // a capture, and it is corrected where it is typed (docs/screen-time.md).
   const wearable = db.get<WearableDataRow>(
     `SELECT * FROM wearable_data
-      WHERE id = ? AND source_device = 'manual' AND source_raw_id IS NULL`,
-    [feedId]
+      WHERE id = ? AND source_device = 'manual' AND source_raw_id IS NULL
+        AND metric_type != ?`,
+    [feedId, SCREEN_TIME_METRIC]
   );
   if (wearable) {
     const { sortKey: _s, ...item } = wearableItem(wearable, units);
+    const wearableMetric = metricByWearableType(wearable.metric_type);
     return {
       ...item,
       date: wearable.date,
@@ -466,6 +501,9 @@ export function getCapture(
       column: null,
       metricType: wearable.metric_type,
       measure: true,
+      edit: wearableMetric
+        ? { kind: 'measure', metric: wearableMetric.key, canonical: wearable.value }
+        : null,
     };
   }
 
@@ -483,9 +521,25 @@ export function getCapture(
       column: null,
       metricType: null,
       measure: false,
+      edit: { kind: 'symptom', name: symptom.name, severity: symptom.severity },
     };
   }
   return undefined;
+}
+
+/** The capture types whose line of words IS the record — what `text` corrects. */
+const WORDED_TYPES = new Set(['note', 'supplement', 'medication', 'therapy']);
+
+/** An ad-hoc entry's editor: its words, or its generic metric's number. */
+function entryEdit(r: LogEntryRow): CaptureEdit | null {
+  if (r.type === 'metric') {
+    const extras = parseValue(r.value);
+    const metric = extras.metricKey ? metricByKey(extras.metricKey) : undefined;
+    return metric && typeof extras.canonical === 'number'
+      ? { kind: 'measure', metric: metric.key, canonical: extras.canonical }
+      : null;
+  }
+  return WORDED_TYPES.has(r.type) ? { kind: 'text', text: r.title } : null;
 }
 
 const CAPTURE_TABLE = {
@@ -576,6 +630,206 @@ export function restoreCapture(db: Database, taken: TakenCapture): void {
     return;
   }
   restoreRow(db, CAPTURE_TABLE[capture.kind], row);
+}
+
+// --- One capture, corrected (2026-09-26) ---------------------------------------
+//
+// Owner, 2026-09-26: *"Yes, an edit on the Log tab, and the Coach too."* The
+// delete above traced every side effect a capture has, and a correction
+// reaches the same ones, no more:
+//
+//   - a NOTE or a SUPPLEMENT / MEDICATION / THERAPY line: the row's title is
+//     the whole record. It ticks no mission item (PLANNED_ROW_SQL) and nothing
+//     derived is stored from it, so nothing else moves;
+//   - a GENERIC METRIC (a dose): its canonical value and the title drawn from
+//     it, both on the row;
+//   - a SYMPTOM: its name and severity. Insights, the trend and the reports
+//     compute from the table when read; no status, readiness figure or score
+//     is stored from one, so there is nothing to recompute;
+//   - HRV / RESTING HR typed by hand: the value. Readiness reads it when it is
+//     computed; neither is ever published;
+//   - WATER: the value, through `updateWaterEntry` — the water screen's own
+//     record half — and its sample in Apple Health, replaced;
+//   - WEIGHT, BODY FAT, WAIST: that one column, and its sample in Apple
+//     Health, replaced by the row's tag the way water's is.
+//
+// The Apple Health halves need the native seam and live in publish.ts
+// (`editLogCapture`, the ONE function the Log tab and the Coach both call).
+// What is here is the record half, which the headless suite drives against
+// real SQLite. The TIME is never corrected (see {@link CaptureEdit}).
+
+/** A correction. Each kind takes only its own keys; see {@link CaptureEdit}. */
+export type CapturePatch = {
+  /** The words: a note, a supplement / medication / therapy line, a symptom's name. */
+  text?: string;
+  /** A measurement, in its metric's CANONICAL unit (kg, cm, ml, ms, bpm, mg, %). */
+  canonical?: number;
+  /** A symptom's 1–10, or null for unrated. */
+  severity?: number | null;
+};
+
+/** What {@link correctCapture} did: the row as the Log tab drew it before, and after. */
+export type CorrectedCapture = {
+  before: CaptureRecord;
+  after: CaptureRecord;
+  /** False when the patch said what the row already said; nothing was written. */
+  changed: boolean;
+};
+
+/**
+ * The line an edit leaves — "178.4 lb", "Creatine · 10 g", "Headache · 4/10" —
+ * drawn exactly as the feed draws the row, so a card can print it before
+ * anything is written.
+ */
+export function captureTitleFor(edit: CaptureEdit, units?: UnitPreferences): string {
+  if (edit.kind === 'text') return edit.text;
+  if (edit.kind === 'symptom') {
+    return `${edit.name}${edit.severity != null ? ` · ${edit.severity}/10` : ''}`;
+  }
+  const metric = metricByKey(edit.metric);
+  return metric ? formatForUnits(metric, edit.canonical, units) : String(edit.canonical);
+}
+
+/** "weight", "body-fat", "resting HR", but "HRV" — a label as it reads inside a sentence. */
+function inSentence(label: string): string {
+  return /^[A-Z][a-z]/.test(label) ? label[0]!.toLowerCase() + label.slice(1) : label;
+}
+
+/**
+ * The capture a patch would leave, PURE, or a plain Error saying why not —
+ * the rules the Log tab's editor and the Coach's card are both held to before
+ * anything is written:
+ *
+ *   - only the keys the row's kind has (a weight has no words to change, a
+ *     note no number);
+ *   - words are trimmed and never empty;
+ *   - a measurement is a number its metric can store (`isLoggableCanonical`,
+ *     the keypad's own guard, in lockstep with the body_metrics CHECKs);
+ *   - a severity is a whole 1–10, or null.
+ *
+ * `changed` is false when the result reads exactly as the row does now.
+ */
+export function planCaptureCorrection(
+  capture: CaptureRecord,
+  patch: CapturePatch
+): { next: CaptureEdit; changed: boolean } {
+  const edit = capture.edit;
+  if (!edit) throw new Error('That entry cannot be corrected here.');
+  const sent = (Object.keys(patch) as (keyof CapturePatch)[]).filter(
+    (key) => patch[key] !== undefined
+  );
+  if (sent.length === 0) throw new Error('Nothing to change: send the new value.');
+  const allowed: (keyof CapturePatch)[] =
+    edit.kind === 'text'
+      ? ['text']
+      : edit.kind === 'measure'
+        ? ['canonical']
+        : ['text', 'severity'];
+  const stray = sent.filter((key) => !allowed.includes(key));
+  if (stray.length > 0) {
+    const has =
+      edit.kind === 'text'
+        ? 'words, not a number'
+        : edit.kind === 'measure'
+          ? 'a number, not words'
+          : 'a name and a severity';
+    throw new Error(`${capture.title} has ${has}.`);
+  }
+  const words = (value: unknown): string => {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    if (trimmed.length === 0) throw new Error('The words cannot be empty.');
+    return trimmed;
+  };
+
+  if (edit.kind === 'text') {
+    const text = words(patch.text);
+    return { next: { kind: 'text', text }, changed: text !== edit.text };
+  }
+  if (edit.kind === 'measure') {
+    const metric = metricByKey(edit.metric);
+    const canonical = patch.canonical;
+    if (!metric || typeof canonical !== 'number' || !isLoggableCanonical(metric, canonical)) {
+      throw new Error(`That ${metric ? inSentence(metric.label) : 'value'} is out of range.`);
+    }
+    return {
+      next: { kind: 'measure', metric: edit.metric, canonical },
+      changed: canonical !== edit.canonical,
+    };
+  }
+  const name = patch.text === undefined ? edit.name : words(patch.text);
+  const severity = patch.severity === undefined ? edit.severity : patch.severity;
+  if (
+    severity !== null &&
+    (typeof severity !== 'number' || !Number.isInteger(severity) || severity < 1 || severity > 10)
+  ) {
+    throw new Error('A severity is a whole number from 1 to 10, or none.');
+  }
+  return {
+    next: { kind: 'symptom', name, severity },
+    changed: name !== edit.name || severity !== edit.severity,
+  };
+}
+
+/**
+ * Correct one capture in the record — read whole first, checked by
+ * {@link planCaptureCorrection}, then written to the one row (and for a body
+ * reading, the one column) the feed lists it under. Null when the feed lists no
+ * such capture; throws, writing nothing, when the patch does not fit it.
+ *
+ * Water goes through `updateWaterEntry`, the water screen's own repository
+ * edit. The Apple Health half is NOT here: `editLogCapture`
+ * (src/lib/health/publish.ts) calls this and then replaces the published
+ * sample, and it is the one function the Log tab and the Coach both call.
+ */
+export function correctCapture(
+  db: Database,
+  feedId: string,
+  patch: CapturePatch,
+  units?: UnitPreferences
+): CorrectedCapture | null {
+  const before = getCapture(db, feedId, units);
+  if (!before) return null;
+  const { next, changed } = planCaptureCorrection(before, patch);
+  if (!changed) return { before, after: before, changed: false };
+
+  if (next.kind === 'text') {
+    db.run('UPDATE log_entries SET title = ? WHERE id = ?', [next.text, before.rowId]);
+  } else if (next.kind === 'symptom') {
+    db.run('UPDATE symptoms SET name = ?, severity = ? WHERE id = ?', [
+      next.name,
+      next.severity,
+      before.rowId,
+    ]);
+  } else if (before.kind === 'body' && before.column !== null) {
+    // The column comes from BODY_COLUMNS, a fixed union, never from input.
+    db.run(`UPDATE body_metrics SET ${before.column} = ? WHERE id = ? AND source = 'manual'`, [
+      next.canonical,
+      before.rowId,
+    ]);
+  } else if (before.kind === 'wearable') {
+    if (metricByWearableType(before.metricType ?? '')?.key === 'water') {
+      updateWaterEntry(db, before.rowId, next.canonical);
+    } else {
+      db.run(
+        `UPDATE wearable_data SET value = ?
+          WHERE id = ? AND source_device = 'manual' AND source_raw_id IS NULL`,
+        [next.canonical, before.rowId]
+      );
+    }
+  } else {
+    // A generic metric: the number and the title drawn from it, as logMetric
+    // wrote them.
+    const metric = metricByKey(next.metric);
+    if (!metric) throw new Error(`correctCapture: unknown metric "${next.metric}"`);
+    db.run(
+      `UPDATE log_entries SET title = ?, value = json_set(value, '$.canonical', ?) WHERE id = ?`,
+      [formatCanonical(metric, next.canonical), next.canonical, before.rowId]
+    );
+  }
+
+  const after = getCapture(db, feedId, units);
+  if (!after) throw new Error('correctCapture: the entry is gone after its correction.');
+  return { before, after, changed: true };
 }
 
 /** Every measurement column of `body_metrics` — what "the row holds more" asks. */

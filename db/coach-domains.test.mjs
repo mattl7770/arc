@@ -18,8 +18,9 @@
  *   §5 retired names still answer as writes, so no receipt is lost
  *   §6 STALENESS: the row moved while the card was open
  *   §7 the owner's 2026-09-25 parity answers
- *   §8 the notification controls (0064) from chat: four settings fields and a
- *      planned nudge's cancel
+ *   §8 the notification controls (0064) from chat: the settings fields and a
+ *      planned nudge's cancel — and the check-in's follow-quiet-hours rule
+ *   §9 a Log-tab capture corrected from chat (2026-09-26)
  *
  * §4d is DELETION BY PARITY (the owner's 2026-09-23 call): whatever a screen
  * deletes, the Coach may delete through that screen's own function, behind a
@@ -87,7 +88,8 @@ import {
   upcomingNudges,
 } from '../src/lib/db/repositories/coach-nudges.ts';
 import { parseNudgeReply } from '../src/lib/notifications/nudge-plan.ts';
-import { removeLogCapture } from '../src/lib/health/publish.ts';
+import { editLogCapture, removeLogCapture } from '../src/lib/health/publish.ts';
+import { logSymptom } from '../src/lib/db/repositories/symptoms.ts';
 import { insertKnowledgeChunk } from '../src/lib/db/repositories/rag.ts';
 import {
   appendMessage,
@@ -1920,18 +1922,25 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
   {
     const { db } = freshDb();
     const discovery = JSON.parse(queryRecords.execute(db, { domain: 'settings' }, at()));
-    const names = ['nudges_enabled', 'quiet_start', 'quiet_end', 'checkin_time'];
+    const names = [
+      'nudges_enabled',
+      'quiet_start',
+      'quiet_end',
+      'checkin_time',
+      'checkin_follows_quiet',
+    ];
     names.every(
       (n) => typeof discovery.fields[n] === 'string' && !/read-only/.test(discovery.fields[n])
     )
-      ? ok('the settings discovery call names the four notification fields, all editable')
+      ? ok('the settings discovery call names the five notification fields, all editable')
       : bad('settings vocabulary', JSON.stringify(discovery.fields));
     const row = discovery.rows[0];
     row.nudges_enabled === true &&
     row.quiet_start === '21:30' &&
     row.quiet_end === '07:00' &&
-    row.checkin_time === null
-      ? ok('…and the one settings row carries their values: on, 21:30–07:00, no check-in')
+    row.checkin_time === '07:05' &&
+    row.checkin_follows_quiet === true
+      ? ok('…and the one settings row carries their values: on, 21:30–07:00, check-in 07:05 following')
       : bad('settings row', JSON.stringify(row));
   }
 
@@ -1939,16 +1948,21 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
   {
     const { db } = freshDb();
     const quiet = cardAt(db, 'settings', 'settings', { quiet_start: '22:00', quiet_end: '06:30' });
-    quiet === 'Quiet hours 21:30–07:00 → 22:00–06:30'
-      ? ok(`quiet hours read as a window, old → new ("${quiet}")`)
+    quiet ===
+    'Quiet hours 21:30–07:00 → 22:00–06:30; Morning check-in 07:05 → 06:35, following quiet hours'
+      ? ok(`quiet hours read as a window, old → new, and the check-in moves with them ("${quiet}")`)
       : bad('quiet hours card', quiet);
     const checkin = cardAt(db, 'settings', 'settings', { checkin_time: '07:30' });
-    checkin === 'Morning check-in off → 07:30'
-      ? ok(`the morning check-in reads off → a time ("${checkin}")`)
+    checkin === 'Morning check-in 07:05 → 07:30, no longer following quiet hours'
+      ? ok(`a time of his own reads old → new, and says it stops following ("${checkin}")`)
       : bad('check-in card', checkin);
+    const checkinOff = cardAt(db, 'settings', 'settings', { checkin_time: null });
+    checkinOff === 'Morning check-in 07:05 → off'
+      ? ok(`…and off reads a time → off ("${checkinOff}")`)
+      : bad('check-in off card', checkinOff);
     const none = cardAt(db, 'settings', 'settings', { quiet_end: '21:30' });
     none === 'Quiet hours 21:30–07:00 → none'
-      ? ok('equal ends read as "none", the rule quiet hours already follow')
+      ? ok('equal ends read as "none"; the check-in, falling back to 07:05, does not move')
       : bad('empty window card', none);
 
     plan(db, `${NEXT} 08:00 Pack the gym bag tonight.`, `${NEXT} 12:30 Walk after lunch.`);
@@ -1957,11 +1971,14 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
       ? ok(`switching nudges off says what it cancels ("${off}")`)
       : bad('off card', off);
     const covering = cardAt(db, 'settings', 'settings', { quiet_end: '08:30' });
-    covering === 'Quiet hours 21:30–07:00 → 21:30–08:30, which holds back 1 planned notification'
+    covering ===
+    'Quiet hours 21:30–07:00 → 21:30–08:30, which holds back 1 planned notification; ' +
+      'Morning check-in 07:05 → 08:35, following quiet hours'
       ? ok(`hours that cover a planned nudge say it is held back, not cancelled ("${covering}")`)
       : bad('covering card', covering);
     const mixed = cardAt(db, 'settings', 'settings', { weight_unit: 'kg', checkin_time: '07:30' });
-    mixed === 'Edit setting "Settings" — weight_unit lb → kg; Morning check-in off → 07:30'
+    mixed ===
+    'Edit setting "Settings" — weight_unit lb → kg; Morning check-in 07:05 → 07:30, no longer following quiet hours'
       ? ok('a patch mixing a unit and a notification control prints both')
       : bad('mixed card', mixed);
     const meta = editRecord.confirmMeta(
@@ -1988,6 +2005,39 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
         )
       : bad('settings refusals', [same, cleared, loose, hour, flag].join(' | '));
 
+    // THE CHECK-IN'S RULE (2026-09-26): on by default, following quiet hours
+    // until a time of his own; the card says which, from the rule the write runs.
+    const { db: own } = freshDb();
+    saveNudgeSettings(own, { checkinTime: '07:30' }, T0);
+    const pinnedMove = cardAt(own, 'settings', 'settings', { quiet_end: '06:00' });
+    pinnedMove === 'Quiet hours 21:30–07:00 → 21:30–06:00'
+      ? ok('with a time of his own, moving quiet hours says nothing of the check-in: it stays')
+      : bad('pinned quiet card', pinnedMove);
+    const refollow = cardAt(own, 'settings', 'settings', { checkin_follows_quiet: true });
+    refollow === 'Morning check-in 07:30 → 07:05, following quiet hours'
+      ? ok(`following quiet hours again reads old → new ("${refollow}")`)
+      : bad('refollow card', refollow);
+    const stays = cardAt(own, 'settings', 'settings', {
+      checkin_follows_quiet: true,
+      quiet_end: '07:25',
+    });
+    stays ===
+    'Quiet hours 21:30–07:00 → 21:30–07:25; Morning check-in stays at 07:30, following quiet hours'
+      ? ok('…and where the followed time equals his, the card says it stays and now follows')
+      : bad('stays card', stays);
+    const both2 = throwText(() =>
+      cardAt(own, 'settings', 'settings', { checkin_follows_quiet: true, checkin_time: '08:00' })
+    );
+    /not both/.test(both2 ?? '')
+      ? ok('a time AND "follow quiet hours" in one patch refuse at card time')
+      : bad('conflicting check-in patch', String(both2));
+    const noop = throwText(() =>
+      cardAt(own, 'settings', 'settings', { checkin_follows_quiet: false })
+    );
+    /Nothing would change/.test(noop ?? '')
+      ? ok('"not following" on a check-in that already has his time changes nothing, and says so')
+      : bad('unfollow no-op', String(noop));
+
     // RELEASED: hours that stop covering a held-back nudge let it go out — a
     // notification the tab was not listing, so the card must say so.
     const { db: narrowed } = freshDb();
@@ -1995,7 +2045,8 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
     saveNudgeSettings(narrowed, { quietEnd: '08:30' }, T0); // 08:00 held back, off the tab
     const release = cardAt(narrowed, 'settings', 'settings', { quiet_end: '07:00' });
     release ===
-      'Quiet hours 21:30–08:30 → 21:30–07:00, which lets 1 held-back notification go out' &&
+      'Quiet hours 21:30–08:30 → 21:30–07:00, which lets 1 held-back notification go out; ' +
+        'Morning check-in 08:35 → 07:05, following quiet hours' &&
     upcomingNudges(narrowed, T0)
       .map((n) => n.time)
       .join() === '12:30'
@@ -2003,7 +2054,9 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
       : bad('release card', release);
     // 08:00 stays covered (nothing new to say of it); 12:30 is newly covered.
     const both = cardAt(narrowed, 'settings', 'settings', { quiet_end: '13:00' });
-    both === 'Quiet hours 21:30–08:30 → 21:30–13:00, which holds back 1 planned notification'
+    both ===
+    'Quiet hours 21:30–08:30 → 21:30–13:00, which holds back 1 planned notification; ' +
+      'Morning check-in 08:35 → 13:05, following quiet hours'
       ? ok('…and one that still covers it says only what it newly holds back')
       : bad('both card', both);
     const swap = cardAt(narrowed, 'settings', 'settings', {
@@ -2012,7 +2065,7 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
     });
     swap ===
     'Quiet hours 21:30–08:30 → 12:00–13:00, which holds back 1 planned notification and ' +
-      'lets 1 held-back notification go out'
+      'lets 1 held-back notification go out; Morning check-in 08:35 → 13:05, following quiet hours'
       ? ok('…and a window that does both says both')
       : bad('swap card', swap);
     approveAt(narrowed, 'settings', 'settings', { quiet_end: '07:00' });
@@ -2027,11 +2080,23 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
   {
     const { db } = freshDb();
     approveAt(db, 'settings', 'settings', { quiet_start: '22:00', quiet_end: '06:30' });
-    approveAt(db, 'settings', 'settings', { checkin_time: '07:30' });
     let s = getNudgeSettings(db);
-    s.quietStart === '22:00' && s.quietEnd === '06:30' && s.checkinTime === '07:30'
+    s.checkinTime === '06:35' && s.checkinFollowsQuiet
+      ? ok('approving new quiet hours moves the following check-in with them, as the card said')
+      : bad('check-in did not follow', JSON.stringify(s));
+    approveAt(db, 'settings', 'settings', { checkin_time: '07:30' });
+    s = getNudgeSettings(db);
+    s.quietStart === '22:00' &&
+    s.quietEnd === '06:30' &&
+    s.checkinTime === '07:30' &&
+    !s.checkinFollowsQuiet
       ? ok('approving writes quiet hours and the check-in through saveNudgeSettings')
       : bad('settings not written', JSON.stringify(s));
+    approveAt(db, 'settings', 'settings', { checkin_follows_quiet: true });
+    s = getNudgeSettings(db);
+    s.checkinTime === '06:35' && s.checkinFollowsQuiet
+      ? ok('…and checkin_follows_quiet: true puts it back after the end of quiet hours')
+      : bad('refollow not written', JSON.stringify(s));
     approveAt(db, 'settings', 'settings', { checkin_time: null });
     getNudgeSettings(db).checkinTime === null
       ? ok('…and null turns the morning check-in off, as the screen’s switch does')
@@ -2363,6 +2428,192 @@ console.log('8. 2026-09-25 — the notification settings and a planned nudge, fr
       ? ok('a nudge a pass replaced while the card was open refuses, and the new plan stands')
       : bad('replaced staleness', JSON.stringify({ call: replaced.call, fresh }));
   }
+}
+
+// ---------------------------------------------------------------------------
+// 9. A capture corrected from chat (owner, 2026-09-26: "Yes, an edit on the Log
+// tab, and the Coach too."). The same three proofs as §7: the card drawn from
+// real rows, old → new in the Log tab's words; the approved write through the
+// Log tab's own `editLogCapture`; and the REAL service seam — a row corrected
+// on the Log tab while the card is open refuses, and a declined card writes
+// nothing. The Apple Health half of `editLogCapture` is proved with a
+// recording seam in db/log.test.mjs §23 and db/wearables.test.mjs §28; here it
+// is proved that the Coach reaches the same function.
+console.log('9. 2026-09-26 — a Log-tab capture corrected from chat, behind the card');
+{
+  const { db } = freshDb();
+  const query = (args) => JSON.parse(queryRecords.execute(db, args, { now: NOW }));
+  const approveEdit = (domain, id, fields) => {
+    const context = { now: NOW };
+    const line = editRecord.confirmSummary({ domain, id, fields }, db, context);
+    return { line, result: JSON.parse(editRecord.execute(db, { domain, id, fields }, context)) };
+  };
+  const serviceTurn = async (name, input, gate) => {
+    globalThis.__ARC_TEST_DB__ = db;
+    const replies = [toolUseReply(name, input), textReply('Understood.')];
+    globalThis.__ARC_TEST_FETCH__ = async () => responseOf(replies.shift());
+    await apiKeyStore.setKey('test-key');
+    let request = null;
+    const result = await streamCoachReply(
+      [{ id: 'u9', role: 'user', content: 'go ahead', createdAt: 0 }],
+      {
+        onToken: () => {},
+        now: () => NOW,
+        confirmWrite: async (req) => {
+          request = req;
+          return gate(req);
+        },
+      }
+    );
+    await apiKeyStore.clearKey();
+    return { request, call: result.toolCalls[0] };
+  };
+  const line = (id) => listEntriesOn(db, TODAY).find((e) => e.id === id);
+
+  logCapture(db, TODAY, 'supplement', 'Creatine · 5 g');
+  logNote(db, TODAY, 'Slept badly');
+  logMetric(db, TODAY, 'weight', 80);
+  const symptomId = logSymptom(db, {
+    date: TODAY,
+    time: '14:00',
+    name: 'Headache',
+    severity: 6,
+    bodyArea: null,
+    notes: null,
+  });
+  const rows = query({ domain: 'captures', limit: 25 }).rows;
+  const creatine = rows.find((r) => r.title === 'Creatine · 5 g');
+  const note = rows.find((r) => r.category === 'Note');
+  const weight = rows.find((r) => r.category === 'Weight');
+
+  // THE VOCABULARY, and the enum.
+  const discovery = query({ domain: 'captures' });
+  discovery.editable === true &&
+  ['text', 'value', 'severity'].every(
+    (f) => typeof discovery.fields[f] === 'string' && !/read-only/.test(discovery.fields[f])
+  ) &&
+  /read-only/.test(discovery.fields.title) &&
+  EDIT_DOMAIN_KEYS.includes('captures') &&
+  !UNCOVERED_DOMAINS.some((l) => /correcting a logged metric or a capture/.test(l))
+    ? ok('captures is editable — text, value, severity — and the CANNOT line is gone from the manifest')
+    : bad('captures vocabulary', JSON.stringify(discovery.fields));
+
+  // THE CARDS, old → new in the Log tab's words.
+  const weightCard = card(db, 'captures', weight.id, { value: 174.8 });
+  weightCard === `Change weight 176.4 lb → 174.8 lb — ${TODAY} ${weight.time}`
+    ? ok(`a weight's card reads old → new in the unit it prints ("${weightCard}")`)
+    : bad('weight card', weightCard);
+  setHealthSyncEnabled(db, true);
+  const syncedCard = card(db, 'captures', weight.id, { value: 174.8 });
+  setHealthSyncEnabled(db, false);
+  syncedCard === `${weightCard} · and any copy in Apple Health`
+    ? ok('…and names its Apple Health copy only while sync is on')
+    : bad('synced weight card', syncedCard);
+  const lineCard = card(db, 'captures', creatine.id, { text: 'Creatine · 10 g' });
+  const noteCard = card(db, 'captures', note.id, { text: 'Slept badly, 3am wake' });
+  const symptomCard = card(db, 'captures', symptomId, { severity: 4 });
+  lineCard === `Change Creatine · 5 g → Creatine · 10 g — ${TODAY} ${creatine.time}` &&
+  noteCard === `Change the note “Slept badly” → “Slept badly, 3am wake” — ${TODAY} ${note.time}` &&
+  symptomCard === `Change Headache · 6/10 → Headache · 4/10 — ${TODAY} ${line(symptomId).time}`
+    ? ok('a supplement line, a note and a symptom each read old → new as their rows print')
+    : bad('word cards', [lineCard, noteCard, symptomCard].join(' | '));
+  const m = meta(db, 'captures', weight.id, { value: 174.8 });
+  m.kind === 'edit' && m.selfEvident === false
+    ? ok('…on the long edit card')
+    : bad('capture edit meta', JSON.stringify(m));
+
+  // REFUSED AT CARD TIME, before an Approve tap is spent.
+  const refusals = [
+    [{ value: 5 }, note.id, /words, not a number/],
+    [{ text: 'heavy' }, weight.id, /a number, not words/],
+    [{ value: 176.4 }, weight.id, /Nothing would change/],
+    [{ value: 5000 }, weight.id, /weight is out of range/],
+    [{ severity: 11 }, symptomId, /at most 10/],
+    [{ severity: 4.5 }, symptomId, /whole number from 1 to 10/],
+    [{ text: '  ' }, note.id, /not empty/],
+    [{ text: null }, note.id, /not empty/],
+  ].map(([fields, id, pattern]) => {
+    const said = throwText(() => card(db, 'captures', id, fields));
+    return pattern.test(said ?? '') ? null : `${JSON.stringify(fields)} → ${said}`;
+  });
+  refusals.every((r) => r === null)
+    ? ok('a number for a note, words for a weight, an unchanged figure, 5000 lb, severity 11 or 4.5 and empty words refuse at card time')
+    : bad('capture refusals', refusals.filter(Boolean).join(' | '));
+
+  // APPROVED: the Log tab's own save, read-modify-write.
+  approveEdit('captures', symptomId, { severity: 4 });
+  approveEdit('captures', weight.id, { value: 174.8 });
+  const kg = db.get('SELECT weight_kg FROM body_metrics WHERE id = ?', [weight.id.split(':')[0]]);
+  line(symptomId).title === 'Headache · 4/10' &&
+  db.get('SELECT name, time FROM symptoms WHERE id = ?', [symptomId]).time === '14:00' &&
+  line(weight.id).title === '174.8 lb' &&
+  Math.abs(kg.weight_kg - 174.8 / 2.2046226218) < 1e-9
+    ? ok('approving writes the severity (the name kept) and the weight, converted from lb')
+    : bad('approved capture edits', JSON.stringify({ s: line(symptomId), w: line(weight.id), kg }));
+
+  // THE SERVICE PATH: approved, moved while open, declined.
+  const yes = await serviceTurn(
+    'edit_record',
+    { domain: 'captures', id: creatine.id, fields: { text: 'Creatine · 10 g' } },
+    () => true
+  );
+  yes.request?.kind === 'edit' &&
+  yes.call?.isError !== true &&
+  typeof yes.call?.receipt === 'string' &&
+  line(creatine.id).title === 'Creatine · 10 g'
+    ? ok('through the real service: the card, the Approve, the receipt, and the row corrected')
+    : bad('service capture edit', JSON.stringify(yes.call));
+  const moved = await serviceTurn(
+    'edit_record',
+    { domain: 'captures', id: note.id, fields: { text: 'Slept badly, 3am wake' } },
+    () => {
+      // Corrected on the Log tab while the card was open.
+      editLogCapture(db, note.id, { text: 'Slept well' });
+      return true;
+    }
+  );
+  moved.call?.isError === true &&
+  /changed while the card was open/.test(moved.call.result) &&
+  /Nothing written/.test(moved.call.result) &&
+  moved.call.receipt === undefined &&
+  line(note.id).title === 'Slept well'
+    ? ok('a capture corrected on the Log tab while the card was open refuses, and the tab’s words stand')
+    : bad('capture edit staleness', JSON.stringify(moved.call));
+  const unit = await serviceTurn(
+    'edit_record',
+    { domain: 'captures', id: weight.id, fields: { value: 170 } },
+    () => {
+      setUnitPreference(db, 'weight', 'kg');
+      return true;
+    }
+  );
+  setUnitPreference(db, 'weight', 'lb');
+  unit.call?.isError === true &&
+  /changed while the card was open/.test(unit.call.result) &&
+  line(weight.id).title === '174.8 lb'
+    ? ok('…and so does one whose unit changed under the card: 170 no longer means pounds')
+    : bad('capture unit staleness', JSON.stringify(unit.call));
+  const no = await serviceTurn(
+    'edit_record',
+    { domain: 'captures', id: weight.id, fields: { value: 170 } },
+    () => false
+  );
+  no.call?.declined === true && no.call.receipt === undefined && line(weight.id).title === '174.8 lb'
+    ? ok('a declined correction card writes nothing')
+    : bad('declined capture edit', JSON.stringify(no.call));
+
+  // PARITY, as source: the Coach and the Log tab correct through ONE function.
+  const src = readFileSync(
+    new URL('../src/lib/ai/domains/read-domains.ts', import.meta.url),
+    'utf8'
+  );
+  const tab = readFileSync(new URL('../src/lib/log/capture-edit.ts', import.meta.url), 'utf8');
+  src.includes('editLogCapture(db, row.id, correction)') &&
+  tab.includes('editLogCapture(db, capture.id, planned.patch, deps)') &&
+  src.includes('capturePatchFrom(') &&
+  tab.includes('capturePatchFrom(')
+    ? ok('the captures domain and the Log tab correct through editLogCapture, converting units by one rule')
+    : bad('captures edit parity');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

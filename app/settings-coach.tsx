@@ -11,7 +11,7 @@ import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { COACH_MODELS } from '@/lib/ai/model-client';
 import { getDb } from '@/lib/db/client';
 import { getNudgeSettings, saveNudgeSettings } from '@/lib/db/repositories/coach-nudges';
-import type { NudgeSettings } from '@/lib/notifications/nudge-plan';
+import { CHECKIN_AFTER_QUIET_MIN, type NudgeSettings } from '@/lib/notifications/nudge-plan';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 
 /**
@@ -46,7 +46,12 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * The owner's answers, as controls: **Coach nudges** on or off (on by
  * default — he said yes to the Coach scheduling up to two a day without
  * asking); **quiet hours**, 21:30–07:00 until he moves them; and the **morning
- * check-in**, off until he picks a time. Every change writes the setting and
+ * check-in**, ON since 2026-09-26 (*"Turn it on, just after quiet hours end"*)
+ * at five minutes after quiet hours end — 07:05 — moving with them when he
+ * moves them, until he sets a time of his own on the wheel. That time then
+ * stays put, and a **Follow quiet hours** control under it puts the check-in
+ * back (nudge-plan.ts `CHECKIN_AFTER_QUIET_MIN`). The switch turns it on to
+ * following, never to a fixed hour. Every change writes the setting and
  * rebuilds the OS schedule at once, through the one resync that owns it.
  * Turning nudges off cancels every one still ahead. Moving quiet hours over a
  * planned nudge HOLDS it back rather than cancelling it — never moved, and
@@ -54,9 +59,6 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * settles and a spin must not destroy anything (coach-nudges.ts).
  * A ruled plate like the model picker: these are settings, a record.
  */
-
-/** Where the morning check-in starts when it is first turned on. */
-const CHECKIN_DEFAULT = '07:30';
 
 /** The notification settings, written through and resynced on every change. */
 function useNudgeSettings(): [NudgeSettings, (patch: Partial<NudgeSettings>) => void] {
@@ -273,7 +275,9 @@ export default function SettingsCoachScreen() {
               <Switch
                 accessibilityLabel="Morning check-in"
                 value={nudges.checkinTime !== null}
-                onValueChange={(on) => saveNudges({ checkinTime: on ? CHECKIN_DEFAULT : null })}
+                onValueChange={(on) =>
+                  saveNudges(on ? { checkinFollowsQuiet: true } : { checkinTime: null })
+                }
                 trackColor={{ true: palette.ink, false: palette.hairlineStrong }}
                 ios_backgroundColor={palette.hairlineStrong}
               />
@@ -286,6 +290,29 @@ export default function SettingsCoachScreen() {
                   value={nudges.checkinTime}
                   onChange={(checkinTime) => saveNudges({ checkinTime })}
                 />
+                {/* Whose time it is, under the time: part of the same row, so
+                    no rule of its own. A time of his own offers the way back. */}
+                {nudges.checkinFollowsQuiet ? (
+                  <Text className="pb-3 font-serif text-[12px] leading-4 text-ink-muted">
+                    {`${CHECKIN_AFTER_QUIET_MIN} minutes after quiet hours end, and moves with them`}
+                  </Text>
+                ) : (
+                  <View className="flex-row items-center gap-3 pb-3">
+                    <Text className="flex-1 font-serif text-[12px] leading-4 text-ink-muted">
+                      Your time. Moving quiet hours leaves it here.
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Follow quiet hours: check in ${CHECKIN_AFTER_QUIET_MIN} minutes after they end`}
+                      hitSlop={8}
+                      onPress={() => saveNudges({ checkinFollowsQuiet: true })}
+                      className="min-h-[32px] items-center justify-center rounded-btn border border-hairline px-3 active:bg-paper-dim">
+                      <Text className="font-label text-[12px] font-semibold text-ink">
+                        Follow quiet hours
+                      </Text>
+                    </Pressable>
+                  </View>
+                )}
               </>
             ) : null}
           </Block>
