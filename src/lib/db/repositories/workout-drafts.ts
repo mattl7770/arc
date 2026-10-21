@@ -21,6 +21,44 @@ import { mayClearLiveSlot, type DraftKey } from '@/lib/exercise/draft';
 
 type DraftRow = { value: string; updated_at: string };
 
+/**
+ * Who hears that a slot changed (item 71). The session bar — above the tab bar,
+ * and at the foot of every pushed screen (src/components/exercise/
+ * session-bar.tsx) — shows the session while the owner is elsewhere in the
+ * app, so it has to learn the moment a session is finished or discarded,
+ * including the clears that land while it is not the focused screen: Finish
+ * clears the slot and THEN pops the logger, and the logger's quiet drop runs
+ * in `beforeRemove`. A bar that only re-read on focus would show a session
+ * that no longer exists for the length of the pop.
+ *
+ * It lives here because every write to the table goes through the functions
+ * below; an announcement made anywhere else would miss one. Listeners are told
+ * THAT a slot changed, never what: they re-read it through
+ * {@link readWorkoutDraft}, so there is still one reading of a draft.
+ */
+type DraftListener = () => void;
+const listeners = new Set<DraftListener>();
+
+/** Hear every write and clear of either slot. Returns the unsubscribe. */
+export function subscribeWorkoutDrafts(listener: DraftListener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function announce(): void {
+  // A copy, so a listener that unsubscribes mid-loop cannot skip its neighbour;
+  // and one that throws must stop neither the others nor the write that called it.
+  for (const listener of [...listeners]) {
+    try {
+      listener();
+    } catch (error) {
+      console.warn('[exercise] draft listener failed', error);
+    }
+  }
+}
+
 /** A stored draft, still as parsed JSON — the caller decides what it is. */
 export type StoredDraft = {
   /** The payload, parsed. `null` when the stored text is not valid JSON. */
@@ -41,6 +79,7 @@ export function saveWorkoutDraft(db: Database, key: DraftKey, value: unknown): v
      ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
     [newId(db), key, JSON.stringify(value)]
   );
+  announce();
 }
 
 /**
@@ -66,6 +105,7 @@ export function readWorkoutDraft(db: Database, key: DraftKey): StoredDraft | nul
  */
 export function clearWorkoutDraft(db: Database, key: DraftKey): void {
   db.run('DELETE FROM workout_drafts WHERE key = ?', [key]);
+  announce();
 }
 
 /**

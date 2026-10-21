@@ -28,7 +28,9 @@ import { selectAllOnFocus } from '../src/components/ui/select-on-focus.ts';
 import { snoozeItem, unsnoozeItem } from '../src/lib/home/snooze-store.ts';
 import { isoWeekday } from '../src/lib/protocols/cadence.ts';
 
-import { __setParams } from './render-stubs/expo-router.mjs';
+import { __router, __setParams, __setRoute } from './render-stubs/expo-router.mjs';
+import { SessionBar, TabSessionBar } from '../src/components/exercise/session-bar.tsx';
+import { readOpenLiveSession, sessionBarView } from '../src/lib/exercise/session-bar.ts';
 import { getDb } from './render-stubs/db-client.mjs';
 
 import { clockFromISO, shiftISODate, todayISODate } from '../src/lib/db/date.ts';
@@ -66,6 +68,7 @@ import {
 
 import { deleteWorkout, logWorkout } from '../src/lib/db/repositories/exercise.ts';
 import {
+  clearOwnLiveDraft,
   clearWorkoutDraft,
   readWorkoutDraft,
   saveWorkoutDraft,
@@ -8150,6 +8153,193 @@ console.log('\n33. 2026-09-26 — a Log-tab capture opens to its words, its figu
   db.run('DELETE FROM log_entries WHERE id IN (?, ?)', [creatine, note]);
   db.run('DELETE FROM symptoms WHERE id = ?', [symptom]);
   db.run('DELETE FROM body_metrics WHERE id = ?', [weight.id.split(':')[0]]);
+}
+
+// ---------------------------------------------------------------------------
+// 34. Item 71 — the session bar. Owner: "should be able to use the rest of the
+// app while in an exercise session." While a live workout is open, a slim bar
+// above the tab bar (TabSessionBar, from app/(tabs)/_layout.tsx) and at the
+// foot of every pushed screen (Screen) carries its name, elapsed clock and rest,
+// and is one tap back to the logger. Never on the logger itself. The decisions
+// are pinned in db/exercise.test.mjs §16; here they are drawn.
+console.log('\n34. item 71 — the workout in progress rides along, and a tap goes back to it');
+{
+  clearWorkoutDraft(db, 'live');
+  const BAR = /aria-label="Workout in progress, \d+:\d\d elapsed/;
+  const barDraft = (over = {}) => ({
+    version: DRAFT_VERSION,
+    sessionId: 'bar-render',
+    startedAt: Date.now() - 12 * 60_000,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [
+      {
+        key: 1,
+        exerciseId: 'barbell-bench-press',
+        name: 'Barbell Bench Press',
+        loggingType: 'weight_reps',
+        measures: 'reps,load',
+        mechanic: 'compound',
+        restSec: 90,
+        prev: [],
+        bestE1rm: null,
+        linkedToNext: false,
+        sets: [
+          {
+            key: 2,
+            weight: '185',
+            reps: '5',
+            rpe: '',
+            time: '',
+            distance: '',
+            setType: 'normal',
+            done: true,
+            pr: false,
+          },
+        ],
+      },
+    ],
+    ...over,
+  });
+
+  // --- no session, no bar ----------------------------------------------------------
+  __setRoute({ name: 'water', navigator: 'stack' });
+  const none = render('water (pushed, no session)', WaterScreen);
+  none !== null && !BAR.test(none) && !none.includes('Return to the workout')
+    ? ok('a pushed screen with no session open draws no bar')
+    : bad('bar without a session');
+  renderToString(React.createElement(TabSessionBar)) === ''
+    ? ok('…and nor does the tab bar')
+    : bad('tab bar without a session');
+
+  // --- an open session: on a pushed screen and above the tab bar ---------------------
+  saveWorkoutDraft(db, 'live', barDraft({ restEndsAt: Date.now() + 75_000 }));
+  const pushed = render('water (pushed, session open, resting)', WaterScreen);
+  pushed !== null && BAR.test(pushed) && /rest 1:1\d left\. Return to the workout"/.test(pushed)
+    ? ok('a pushed screen ends in the bar: the workout, its elapsed clock and the rest left')
+    : bad('pushed bar', pushed?.match(/aria-label="Workout[^"]*"/)?.[0] ?? 'no bar');
+  pushed !== null &&
+  pushed.indexOf('Return to the workout') > pushed.lastIndexOf('Add') &&
+  pushed.indexOf('Return to the workout') > pushed.indexOf('Water')
+    ? ok('…drawn after the screen content, not over it (the scroll view ends above the bar)')
+    : bad('bar order');
+  expect('water (pushed, session open, resting)', pushed, ['Rest', '12:0']);
+  const tabBar = renderToString(React.createElement(TabSessionBar));
+  BAR.test(tabBar) && tabBar.includes('Rest')
+    ? ok('the tab bar carries the same bar above it')
+    : bad('tab bar bar', tabBar.slice(0, 160));
+  // The bar spends no accent and no signal colour: chrome, not a verdict.
+  // Read from source: react-native-web renders NativeWind classes to atomic
+  // CSS, so the class names are not in the markup to be checked there.
+  const barSource = readFileSync(
+    new URL('../src/components/exercise/session-bar.tsx', import.meta.url),
+    'utf8'
+  );
+  barSource.includes('bg-paper-hi') &&
+  !/(bg|text|border)-(pine|signal)|palette\.(pine|signal)/.test(barSource)
+    ? ok('the bar is plate stock and spends no accent and no signal colour')
+    : bad('bar colour budget');
+
+  // A tab root never draws its own copy — the tab bar's is already there.
+  __setRoute({ name: 'index', navigator: 'tab' });
+  const home = render('home (tab root, session open)', HomeScreen);
+  home !== null && !BAR.test(home)
+    ? ok("a tab root's Screen draws no second bar (Home keeps its Resume row)")
+    : bad('tab root drew a bar');
+
+  // Never on the live logger itself.
+  __setRoute({ name: 'workout-live', navigator: 'stack' });
+  const logger = render('workout-live (resumed, with the bar logic live)', WorkoutLiveScreen, {
+    resume: '1',
+  });
+  logger !== null && !BAR.test(logger) && !logger.includes('Return to the workout')
+    ? ok('the live logger draws no bar of its own session')
+    : bad('bar on the logger');
+
+  // --- the rest ends: "Rest done" -----------------------------------------------------
+  saveWorkoutDraft(db, 'live', barDraft({ restEndsAt: Date.now() - 4_000 }));
+  __setRoute({ name: 'water', navigator: 'stack' });
+  const rested = render('water (pushed, rest over)', WaterScreen);
+  rested !== null &&
+  rested.includes('Rest done') &&
+  /rest done\. Return to the workout"/.test(rested)
+    ? ok('a rest that has run out reads "Rest done"')
+    : bad('rest done');
+
+  // --- a tap returns to the logger ------------------------------------------------------
+  // A server render taps nothing, so the bar's own element is built and its
+  // press handler called: it must push the logger, resuming the slot.
+  const view = sessionBarView(readOpenLiveSession(db), Date.now());
+  const element = SessionBar({ view });
+  const press = React.Children.toArray(element.props.children).find(
+    (child) => typeof child?.props?.onPress === 'function'
+  );
+  const pushesBefore = __router.pushes.length;
+  press?.props.onPress();
+  const pushed1 = __router.pushes[pushesBefore];
+  __router.pushes.length === pushesBefore + 1 &&
+  pushed1?.pathname === '/workout-live' &&
+  pushed1?.params?.resume === '1' &&
+  press?.props.accessibilityRole === 'button'
+    ? ok('a tap on the bar pushes the live logger with resume=1 — back into the session')
+    : bad('tap route', JSON.stringify(pushed1));
+
+  // --- finished or discarded: the bar goes ---------------------------------------------
+  clearOwnLiveDraft(db, 'bar-render'); // what Finish and the logger's Discard call
+  const finished = render('water (pushed, session finished)', WaterScreen);
+  finished !== null &&
+  !BAR.test(finished) &&
+  renderToString(React.createElement(TabSessionBar)) === ''
+    ? ok('after Finish/Discard empties the slot, neither host draws the bar')
+    : bad('bar after finish');
+  saveWorkoutDraft(db, 'live', barDraft());
+  clearWorkoutDraft(db, 'live'); // the Train hub's trash
+  renderToString(React.createElement(TabSessionBar)) === ''
+    ? ok('…and the same after a discard from the Train hub')
+    : bad('bar after hub discard');
+
+  // --- one rest, one source -------------------------------------------------------------
+  // The bar computes rest from the draft's `restEndsAt` with the logger's own
+  // expression; if either side changes its rounding, this fails rather than
+  // letting the two read a second apart. And the bar schedules nothing.
+  const loggerSource = readFileSync(new URL('../app/workout-live.tsx', import.meta.url), 'utf8');
+  const barLib = readFileSync(
+    new URL('../src/lib/exercise/session-bar.ts', import.meta.url),
+    'utf8'
+  );
+  const barUi = readFileSync(
+    new URL('../src/components/exercise/session-bar.tsx', import.meta.url),
+    'utf8'
+  );
+  const expr = 'Math.max(0, Math.round((restEndsAt - now) / 1000))';
+  loggerSource.includes(expr) && barLib.includes(expr)
+    ? ok("the bar's rest arithmetic is the logger's, character for character")
+    : bad('rest arithmetic drifted');
+  ![barLib, barUi].some((src) =>
+    /scheduleRestAlert|cancelRestAlert|setRestEndsAt|saveWorkoutDraft\(/.test(src)
+  )
+    ? ok('the bar arms no alert and writes no draft — it only reads the one rest')
+    : bad('bar writes or schedules');
+
+  // --- the layout seams, from source (a server render has no layout) ---------------------
+  const screenSource = readFileSync(
+    new URL('../src/components/ui/screen.tsx', import.meta.url),
+    'utf8'
+  );
+  /<\/SafeAreaView>\s*\{session \? <LiveSessionBar session=\{session\} inset=\{insets\.bottom\} \/> : null\}/.test(
+    screenSource
+  ) && screenSource.includes("edges.filter((edge) => edge !== 'bottom')")
+    ? ok('Screen puts the bar after its safe-area view and hands it the bottom inset')
+    : bad('screen seam');
+  const tabsSource = readFileSync(new URL('../app/(tabs)/_layout.tsx', import.meta.url), 'utf8');
+  /<TabSessionBar \/>\s*<BottomTabBar \{\.\.\.props\} \/>/.test(tabsSource) &&
+  !/position:\s*'absolute'/.test(tabsSource)
+    ? ok('the tab bar draws the session bar directly above itself, in the column, not floated')
+    : bad('tab seam');
+
+  __setRoute({});
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
