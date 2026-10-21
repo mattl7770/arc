@@ -30,7 +30,11 @@ import {
   updateMealName,
   updateMealTime,
 } from '@/lib/db/repositories/nutrition';
-import { assembleMealItems } from '@/lib/nutrition/composite';
+import {
+  assembleMealItems,
+  type CompositeRollup,
+  planDishAmount,
+} from '@/lib/nutrition/composite';
 import {
   type LoggedCountDraft,
   type LoggedCountPlan,
@@ -249,6 +253,9 @@ type NameEdit = string | null;
  * gestures for "change 8 to 6" with opposite effects, the trap the spike's own
  * device list named. Now typing means one thing per field.
  */
+/** The whole-dish amount draft for ONE composite (2026-10-21). */
+type DishEdit = { parentId: string; text: string | null };
+
 type CountEdit = LoggedCountDraft & {
   parentId: string;
   /** The noun's own field is open. */
@@ -366,6 +373,9 @@ export default function MealDetailScreen() {
   const [nameEdit, setNameEdit] = useState<NameEdit>(null);
   // The count-of-pieces editor's draft for one composite, or null (0059).
   const [countEdit, setCountEdit] = useState<CountEdit | null>(null);
+  // The whole-dish amount editor's draft for one composite, or null
+  // (2026-10-21). `text` null is a field opened and not yet typed in.
+  const [dishEdit, setDishEdit] = useState<DishEdit | null>(null);
 
   // Re-read the meal and reset every draft — everything a reload does except
   // closing the item Undo. The Undo's own two moments (an item just removed,
@@ -387,6 +397,7 @@ export default function MealDetailScreen() {
     setTimeEdit(null);
     setNameEdit(null);
     setCountEdit(null);
+    setDishEdit(null);
   }, [mealId]);
   const reload = useCallback(() => {
     reread();
@@ -422,6 +433,7 @@ export default function MealDetailScreen() {
     setTimeEdit(null);
     setNameEdit(null);
     setCountEdit(null);
+    setDishEdit(null);
     // Seed the amount readout from what Save will actually persist, so the field
     // never shows one number while Save writes another. In serving mode Save
     // re-derives the amount from the food's CURRENT serving_amount, so seed from
@@ -546,6 +558,7 @@ export default function MealDetailScreen() {
     // A chip moves the count, so a draft of the old one would Save a stale
     // number over it.
     setCountEdit(null);
+    setDishEdit(null);
     reload();
   };
 
@@ -557,6 +570,7 @@ export default function MealDetailScreen() {
     setEditing(null);
     setTimeEdit(null);
     setNameEdit(null);
+    setDishEdit(null);
     setCountEdit((prev) =>
       prev?.parentId === item.id
         ? { ...prev, naming: prev.naming || naming }
@@ -603,6 +617,28 @@ export default function MealDetailScreen() {
       if (plan.eaten != null) setItemCount(db, item.id, plan.eaten, plan.noun);
     }
     setCountEdit(null);
+    reload();
+  };
+
+  /** Open the whole-dish amount editor on one composite — closing the others,
+   *  the one-editor rule. Already open, it stays as typed. */
+  const openDishEdit = (parentId: string) => {
+    setEditing(null);
+    setTimeEdit(null);
+    setNameEdit(null);
+    setCountEdit(null);
+    setDishEdit((prev) => (prev?.parentId === parentId ? prev : { parentId, text: null }));
+  };
+
+  /** Write the whole dish's new amount: every part scaled by new / what they
+   *  sum to now, through `scaleCompositeItem` — the chips' own writer, so the
+   *  count of pieces moves with them as it does there. */
+  const saveDish = (parentId: string, rolled: CompositeRollup) => {
+    if (!dishEdit || dishEdit.parentId !== parentId) return;
+    const plan = planDishAmount(dishEdit.text, rolled);
+    if (plan.kind === 'invalid' || plan.kind === 'unavailable') return;
+    if (plan.kind === 'scale') scaleCompositeItem(getDb(), parentId, plan.factor);
+    setDishEdit(null);
     reload();
   };
 
@@ -740,6 +776,7 @@ export default function MealDetailScreen() {
     setEditing(null);
     setNameEdit(null);
     setCountEdit(null);
+    setDishEdit(null);
     const parts = partsFromClock(meal.time);
     setTimeEdit({ date: meal.date, hour: parts.hour, minute: parts.minute });
   };
@@ -753,6 +790,7 @@ export default function MealDetailScreen() {
     setEditing(null);
     setTimeEdit(null);
     setCountEdit(null);
+    setDishEdit(null);
     setNameEdit(meal.name);
   };
 
@@ -1106,6 +1144,23 @@ export default function MealDetailScreen() {
                         ) : null}
                         {countEdit?.parentId === node.item.id ? (
                           <CountSaveRow item={node.item} edit={countEdit} onSave={saveCount} />
+                        ) : null}
+                        {/* The whole dish's amount, typed (2026-10-21): every
+                            part scales together. Only where the parts share
+                            an amount to scale from. */}
+                        {planDishAmount(null, node.rolled).kind !== 'unavailable' ? (
+                          <DishAmountRow
+                            name={node.item.name}
+                            rolled={node.rolled}
+                            text={dishEdit?.parentId === node.item.id ? dishEdit.text : null}
+                            open={dishEdit?.parentId === node.item.id}
+                            onOpen={() => openDishEdit(node.item.id)}
+                            onChange={(text) => {
+                              openDishEdit(node.item.id);
+                              setDishEdit({ parentId: node.item.id, text });
+                            }}
+                            onSave={() => saveDish(node.item.id, node.rolled)}
+                          />
                         ) : null}
                       </View>
                     ) : null}
@@ -1809,6 +1864,105 @@ function CountSaveRow({
           {closes ? 'Close' : 'Save'}
         </Text>
       </Pressable>
+    </View>
+  );
+}
+
+/**
+ * A LOGGED composite's whole amount, typed (owner, 2026-10-21: *"update gram
+ * amount for a full 'pizza' after logged"*). The ½ ⅓ ¼ chips said "I ate a
+ * share"; this says "it weighed this much" — the same act, by a number, and
+ * through the same writer (`scaleCompositeItem`): every part scales by
+ * new / the parts' sum now, so the headline and the parts keep agreeing. What
+ * Save will do is `planDishAmount`'s call, read here first and stated above
+ * Save in future tense.
+ *
+ * It STAGES and writes on Save — this screen's rule for anything already in
+ * the day's totals — unlike the chips, which write on the tap. Focusing the
+ * field opens it and closes the other editors. Untouched, Save is a neutral
+ * Close; the accent appears only once Save would write. No device: it is a row
+ * of the items plate, indented with the dish's parts.
+ *
+ * Exported so the render suite can draw it open — the screen only mounts it
+ * inside a disclosure a server render cannot tap.
+ */
+export function DishAmountRow({
+  name,
+  rolled,
+  text,
+  open,
+  onOpen,
+  onChange,
+  onSave,
+}: {
+  name: string;
+  rolled: CompositeRollup;
+  /** The typed text, or null while untouched. */
+  text: string | null;
+  open: boolean;
+  onOpen: () => void;
+  onChange: (text: string) => void;
+  onSave: () => void;
+}) {
+  const plan = planDishAmount(text, rolled);
+  const shown = text ?? (rolled.amount != null ? fmtQty(rolled.amount) : '');
+  const writes = plan.kind === 'scale';
+  const note =
+    plan.kind === 'scale'
+      ? `On save: every part scales by × ${plan.factor.toFixed(2)} — ${fmtQty(rolled.amount ?? 0)} ${rolled.unit} becomes ${fmtQty(plan.amount)} ${rolled.unit}.`
+      : plan.kind === 'invalid'
+        ? 'An amount is more than 0 and at most 5,000.'
+        : 'Type what the whole dish came to.';
+  return (
+    <View className="pb-3 pl-6">
+      <View className="flex-row items-center gap-2">
+        <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+          Whole dish
+        </Text>
+        <View className="ml-auto flex-row items-center gap-2">
+          <TextInput
+            value={shown}
+            onChangeText={onChange}
+            keyboardType="decimal-pad"
+            returnKeyType={KEYPAD_DONE}
+            {...selectAllOnFocus(shown, onOpen)}
+            accessibilityLabel={`${name}, whole dish in ${rolled.unit === 'ml' ? 'millilitres' : 'grams'}`}
+            className="w-20 border border-paper-deep bg-paper-dim px-2 py-1.5 text-right font-mono text-[13px] text-ink"
+          />
+          <Text className="font-mono text-[11px] text-ink-secondary">{rolled.unit}</Text>
+        </View>
+      </View>
+      {open ? (
+        <View className="mt-2 flex-row items-center justify-between gap-3">
+          <Text className="flex-1 font-serif text-[13px] leading-5 text-ink-secondary">{note}</Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              writes ? `Save the whole ${name}` : `Close the whole-dish amount for ${name}`
+            }
+            accessibilityState={{ disabled: plan.kind === 'invalid' }}
+            disabled={plan.kind === 'invalid'}
+            onPress={onSave}
+            className={
+              writes
+                ? 'min-h-[44px] justify-center rounded-btn bg-pine px-5 active:opacity-70'
+                : plan.kind === 'invalid'
+                  ? 'min-h-[44px] justify-center rounded-btn border border-paper-deep px-5'
+                  : 'min-h-[44px] justify-center rounded-btn border border-hairline px-5 active:bg-paper-dim'
+            }>
+            <Text
+              className={
+                writes
+                  ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-pine-on'
+                  : plan.kind === 'invalid'
+                    ? 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+                    : 'font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink'
+              }>
+              {writes ? 'Save' : 'Close'}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }

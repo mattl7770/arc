@@ -1,8 +1,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { type ReactNode, useCallback, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
+import { SessionMealName } from '@/components/nutrition/session-meal-name';
 import { UndoRow } from '@/components/nutrition/undo-row';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
@@ -17,6 +18,7 @@ import { getDb } from '@/lib/db/client';
 import { clockFromISO, todayISODate } from '@/lib/db/date';
 import {
   foodUsage,
+  getFood,
   listFavoriteFoods,
   listRecentFoods,
   searchFoods,
@@ -24,7 +26,8 @@ import {
 } from '@/lib/db/repositories/foods';
 import { addMealItem, logMealWithItems } from '@/lib/db/repositories/nutrition';
 import { foodDeleteConsequence } from '@/lib/nutrition/food-delete';
-import { fmtAmount, fmtInt, fmtQty } from '@/lib/nutrition/format';
+import { fmtAmount, fmtInt, fmtQty, mealNameForProduct } from '@/lib/nutrition/format';
+import { commitScanMealName, offersScanMealName } from '@/lib/nutrition/scan-meal-name';
 import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
 import { deleteFoodWithUndo } from '@/lib/nutrition/undo-offers';
@@ -75,9 +78,37 @@ import type { VolumeUnit } from '@/lib/user/types';
  * catalog plate, puts the food back with its id, its star and every link
  * (`restoreFood`). It closes when this screen is left. The Coach's
  * `food_catalog` removal runs the same `deleteFood`, behind its card.
+ *
+ * ## The meal is named after the food (owner, 2026-10-21)
+ *
+ * *"Adding a saved food on its own should give proper name for meal."* The
+ * first add that CREATES a meal titled it `daypartName(now)` — "Lunch" — which
+ * is the clock's answer to a question the food had already answered, and is
+ * the scanner's A4 complaint over again (docs/nutrition-subapp.md §13, which
+ * left this screen alone at the time). It now titles the meal
+ * `mealNameForProduct(food)`, `name · brand`, exactly as a scan does, with the
+ * day part kept as the fallback for a nameless food. The rules are the
+ * scanner's, so the two capture paths cannot disagree:
+ *
+ * - **The first food only.** A second add leaves the title alone; a meal that
+ *   renames itself under the user is not a record.
+ * - **Two foods in, it can be named here** — the scanner's `SessionMealName`
+ *   field, prefilled, unfocused, committed on Done, on the field losing focus
+ *   and when the screen goes, through the same `updateMealName`.
+ * - **A meal pushed in by `mealId` is never retitled.** It is someone else's
+ *   record, renamed on its own screen.
+ *
+ * ## A catalog food is edited here too (owner, 2026-10-21)
+ *
+ * *"Edit saved foods."* The pencil beside the star opens the food's own entry
+ * (app/food-new.tsx with `id`), which saves through `updateFood` — the function
+ * the Coach's `food_catalog` edit calls (docs/coach-domains.md, parity). Coming
+ * back, the open row re-reads the food so its portion is drawn from what was
+ * just saved.
  */
 
-/** What a from-scratch add names the meal: the day-part, CalAI-slot style. */
+/** What a from-scratch add names the meal when the food has no name to give —
+ *  the day-part, CalAI-slot style. */
 function daypartName(now: Date): string {
   const h = now.getHours();
   if (h < 11) return 'Breakfast';
@@ -153,6 +184,11 @@ export default function FoodSearchScreen() {
   // The meal every add lands in: the pushed-for meal, or the one the first
   // from-scratch add creates. State because it's born mid-session.
   const [targetMealId, setTargetMealId] = useState<string | null>(mealId ?? null);
+  // The name of the meal THIS session created, as it stands — null when the
+  // meal arrived by `mealId` or none exists yet — and the name typed over it,
+  // null while the field is untouched. The scanner's pair, for the same field.
+  const [createdName, setCreatedName] = useState<string | null>(null);
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
   // Which open row's Delete is armed, as `section:id` — cleared whenever a row
   // opens or closes, so an arm never survives into another visit to the row.
   const [armed, setArmed] = useState<string | null>(null);
@@ -167,6 +203,16 @@ export default function FoodSearchScreen() {
   const reload = useCallback(() => {
     setBase(readBase());
     setResults(query.trim() === '' ? [] : searchFoods(getDb(), query));
+    // An open row reads its food again — it may just have been edited — and
+    // starts its portion from the food as saved; a food gone meanwhile closes.
+    setExpanded((prev) => {
+      if (!prev) return prev;
+      const fresh = getFood(getDb(), prev.food.id);
+      if (!fresh) return null;
+      return fresh.updated_at === prev.food.updated_at
+        ? prev
+        : { ...prev, food: fresh, portion: initialPortion(fresh) };
+    });
   }, [query]);
   useFocusEffect(reload);
 
@@ -199,20 +245,24 @@ export default function FoodSearchScreen() {
     reload();
   };
 
-  const saveItem = (item: NewMealItem) => {
+  /** Write one portion. `food` names the meal when this add is the one that
+   *  creates it — see the header; a later add leaves the title alone. */
+  const saveItem = (item: NewMealItem, food: FoodRow) => {
     const db = getDb();
     try {
       if (targetMealId !== null) {
         addMealItem(db, targetMealId, item);
       } else {
         const now = new Date();
+        const name = mealNameForProduct(food, daypartName(now));
         const { mealId: created } = logMealWithItems(db, {
           date: todayISODate(),
           time: clockFromISO(now.toISOString()),
-          name: daypartName(now),
+          name,
           items: [item],
         });
         setTargetMealId(created);
+        setCreatedName(name);
       }
       setAdded((n) => n + 1);
       setExpanded(null);
@@ -228,9 +278,9 @@ export default function FoodSearchScreen() {
   const addRecent = (recent: RecentFood) => {
     const { food, lastServingQty, lastAmount } = recent;
     if (lastServingQty !== null && food.serving_amount !== null) {
-      saveItem(itemForPortion(food, { servingQty: lastServingQty }));
+      saveItem(itemForPortion(food, { servingQty: lastServingQty }), food);
     } else if (lastAmount !== null) {
-      saveItem(itemForPortion(food, { amount: lastAmount }));
+      saveItem(itemForPortion(food, { amount: lastAmount }), food);
     } else {
       expand({ food, portion: initialPortion(food), section: 'recents' });
     }
@@ -241,13 +291,40 @@ export default function FoodSearchScreen() {
     const { food, portion } = expanded;
     if (portion.mode === 'serving') {
       if (portion.qty <= 0) return;
-      saveItem(itemForPortion(food, { servingQty: portion.qty }));
+      saveItem(itemForPortion(food, { servingQty: portion.qty }), food);
     } else {
       const amount = parseAmount(portion.amountText);
       if (amount === null) return;
-      saveItem(itemForPortion(food, { amount }));
+      saveItem(itemForPortion(food, { amount }), food);
     }
   };
+
+  /**
+   * Write the typed meal name when it changes anything, through the meal
+   * screen's own `updateMealName` (`commitScanMealName`) — on Done, when the
+   * field stops being edited, and when the screen goes. The helper compares
+   * with the name the DATABASE holds, so Done and the unmount after it write
+   * once.
+   */
+  const commitName = () => {
+    if (targetMealId === null || createdName === null) return;
+    try {
+      const written = commitScanMealName(getDb(), targetMealId, nameDraft);
+      if (written === null) return;
+      setCreatedName(written);
+      setNameDraft(null);
+    } catch (error) {
+      console.warn('[food-search] rename failed', error);
+    }
+  };
+  // The unmount commit reads the LATEST closure, not the first render's.
+  const commitNameRef = useRef(commitName);
+  useEffect(() => {
+    commitNameRef.current = commitName;
+  });
+  useEffect(() => () => commitNameRef.current(), []);
+  // Two foods in a meal this session made: the field is offered.
+  const nameable = offersScanMealName(createdName, added) ? createdName : null;
 
   const stepQty = (delta: number) => {
     setExpanded((prev) => {
@@ -275,10 +352,11 @@ export default function FoodSearchScreen() {
     setFoodFavorite(getDb(), food.id, food.is_favorite === 0);
     setBase(readBase());
     setResults(query.trim() === '' ? [] : searchFoods(getDb(), query));
+    // The row as stored now (its star, and the stamp the star moved), so the
+    // focus re-read does not mistake a star for an edit and reset the portion.
+    const starred = getFood(getDb(), food.id);
     setExpanded((prev) =>
-      prev && prev.food.id === food.id
-        ? { ...prev, food: { ...prev.food, is_favorite: prev.food.is_favorite === 0 ? 1 : 0 } }
-        : prev
+      prev && starred && prev.food.id === food.id ? { ...prev, food: starred } : prev
     );
   };
 
@@ -331,6 +409,10 @@ export default function FoodSearchScreen() {
         }
         onArmDelete={() => setArmed(isArmed ? null : key)}
         onDelete={() => deleteFood(food)}
+        onEditFood={() => {
+          setArmed(null);
+          router.push({ pathname: '/food-new', params: { id: food.id } });
+        }}
       />
     );
   };
@@ -365,7 +447,10 @@ export default function FoodSearchScreen() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Done, ${added} added`}
-            onPress={() => router.back()}
+            onPress={() => {
+              commitName();
+              router.back();
+            }}
             className="min-h-[44px] items-center justify-center rounded-btn border border-ink px-4 active:opacity-60">
             <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
               Done
@@ -501,13 +586,29 @@ export default function FoodSearchScreen() {
               ruled={undo !== null}
               accessibilityLabel="Scan a barcode into this meal"
               onPress={() =>
-                router.push({ pathname: '/barcode-scan', params: { mealId: targetMealId } })
+                // `via`: the scanner's Done closes this screen too (2026-10-21).
+                router.push({
+                  pathname: '/barcode-scan',
+                  params: { mealId: targetMealId, via: 'search' },
+                })
               }
             />
           ) : null}
           {createFoodRow(targetMealId !== null || undo !== null)}
         </Block>
       </View>
+
+      {/* Two foods in a meal this session made: it can be named before it is
+          left. Prefilled with the name it has; nothing waits on it. */}
+      {nameable !== null ? (
+        <SessionMealName
+          value={nameDraft ?? nameable}
+          current={nameable}
+          count={added}
+          onChange={setNameDraft}
+          onCommit={commitName}
+        />
+      ) : null}
     </Screen>
   );
 }
@@ -641,6 +742,7 @@ export function PortionEditor({
   deleteConsequence,
   onArmDelete,
   onDelete,
+  onEditFood,
 }: {
   expanded: Expanded;
   amountPreview: number | null;
@@ -652,6 +754,8 @@ export function PortionEditor({
   deleteConsequence: string | null;
   onArmDelete: () => void;
   onDelete: () => void;
+  /** Open the food's own entry to correct it (2026-10-21). */
+  onEditFood: () => void;
 }) {
   const { food, portion } = expanded;
   const canAdd = amountPreview !== null && amountPreview > 0;
@@ -704,6 +808,14 @@ export function PortionEditor({
           {kcalPreview !== null ? `≈ ${fmtInt(kcalPreview)} kcal` : 'no energy recorded'}
         </Text>
         <View className="flex-row items-center gap-2">
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Edit ${food.name} in the catalog`}
+            hitSlop={10}
+            onPress={onEditFood}
+            className="h-9 w-9 items-center justify-center rounded-btn active:opacity-60">
+            <Ionicons name="create-outline" size={17} color={palette.inkSecondary} />
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={

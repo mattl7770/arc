@@ -67,12 +67,26 @@ export function createFood(db: Database, food: NewFood): string {
  * That includes `basis` (0047): correcting a food from grams to millilitres
  * governs the next portion added, and leaves every already-logged item saying
  * the unit it was actually logged in.
+ *
+ * **One provenance change, and only one (2026-10-21):** an Open Food Facts
+ * cache entry whose contents an edit actually CHANGES becomes the user's
+ * (`openfoodfacts` → `user`). Its figures are no longer OFF's, and that is the
+ * mark `refreshOffFood` reads to never overwrite a correction with a re-fetch.
+ * It is decided HERE, in the one function the edit screen (app/food-new.tsx)
+ * and the Coach's `food_catalog` edit both call, so the two cannot disagree
+ * about it — and against the stored row, so a write that changes nothing (the
+ * Coach starring a food rewrites it whole) leaves it OFF's. Every other source
+ * is left as it is — an AI-described food stays `ai`, keeping its `est` mark,
+ * because most of its numbers are still the model's.
  */
 export function updateFood(db: Database, id: string, food: NewFood): void {
+  const before = getFood(db, id);
+  const claimed = before?.source === 'openfoodfacts' && foodContentDiffers(before, food);
   db.run(
     `UPDATE foods SET name = ?, name_norm = ?, brand = ?, barcode = ?, serving_name = ?,
        serving_amount = ?, kcal_100g = ?, protein_g_100g = ?, carbs_g_100g = ?,
-       fat_g_100g = ?, fiber_g_100g = ?, micros = ?, basis = ?
+       fat_g_100g = ?, fiber_g_100g = ?, micros = ?, basis = ?,
+       source = CASE WHEN ? = 1 THEN 'user' ELSE source END
      WHERE id = ?`,
     [
       food.name,
@@ -88,8 +102,29 @@ export function updateFood(db: Database, id: string, food: NewFood): void {
       food.fiber_g_100g ?? null,
       food.micros ?? null,
       food.basis ?? 'g',
+      claimed ? 1 : 0,
       id,
     ]
+  );
+}
+
+/** Whether `next` says anything a stored food does not: its name, brand,
+ *  serving, unit, figures or micros. The barcode, star and provenance are not
+ *  content. */
+function foodContentDiffers(row: FoodRow, next: NewFood): boolean {
+  const same = (a: unknown, b: unknown): boolean => (a ?? null) === (b ?? null);
+  return !(
+    same(row.name, next.name) &&
+    same(row.brand, next.brand) &&
+    same(row.serving_name, next.serving_name) &&
+    same(row.serving_amount, next.serving_amount) &&
+    same(row.basis, next.basis ?? 'g') &&
+    same(row.kcal_100g, next.kcal_100g) &&
+    same(row.protein_g_100g, next.protein_g_100g) &&
+    same(row.carbs_g_100g, next.carbs_g_100g) &&
+    same(row.fat_g_100g, next.fat_g_100g) &&
+    same(row.fiber_g_100g, next.fiber_g_100g) &&
+    same(row.micros, next.micros)
   );
 }
 
@@ -343,6 +378,47 @@ export function findFoodByBarcode(db: Database, barcode: string): FoodRow | unde
  * than tripping the partial-unique barcode index. `food.barcode` is normalized
  * to digits so the stored value matches what findFoodByBarcode looks up.
  */
+/**
+ * Heal a cached Open Food Facts row from a fresh read of the same product
+ * (owner, 2026-10-21 — a chocolate milk cached with its per-serving figures in
+ * the per-100 columns logged 1,660 kcal for two glasses, and the cache would
+ * have kept that forever, because a scan resolves locally first).
+ *
+ * Writes only when the row is still OFF's own (`source = 'openfoodfacts'` — an
+ * edit makes it the user's, see `updateFood`) and the fresh read differs in
+ * anything a portion is computed from: the figures, the unit, the serving, the
+ * name. The barcode, the star and the provenance stay. Returns the row as it
+ * now is, or null when nothing was written. Meals already logged keep their
+ * own snapshot, as after any catalog edit.
+ */
+export function refreshOffFood(db: Database, id: string, fresh: NewFood): FoodRow | null {
+  const row = getFood(db, id);
+  if (!row || row.source !== 'openfoodfacts') return null;
+  if (!foodContentDiffers(row, fresh)) return null;
+  db.run(
+    `UPDATE foods SET name = ?, name_norm = ?, brand = ?, serving_name = ?, serving_amount = ?,
+       kcal_100g = ?, protein_g_100g = ?, carbs_g_100g = ?, fat_g_100g = ?, fiber_g_100g = ?,
+       micros = ?, basis = ?
+     WHERE id = ? AND source = 'openfoodfacts'`,
+    [
+      fresh.name,
+      normalizeFoodName(fresh.name),
+      fresh.brand ?? null,
+      fresh.serving_name ?? null,
+      fresh.serving_amount ?? null,
+      fresh.kcal_100g ?? null,
+      fresh.protein_g_100g ?? null,
+      fresh.carbs_g_100g ?? null,
+      fresh.fat_g_100g ?? null,
+      fresh.fiber_g_100g ?? null,
+      fresh.micros ?? null,
+      fresh.basis ?? 'g',
+      id,
+    ]
+  );
+  return getFood(db, id) ?? null;
+}
+
 export function cacheBarcodeFood(db: Database, food: NewFood): FoodRow {
   const raw = food.barcode ? food.barcode.replace(/\D/g, '') : '';
   // The schema requires ≥6 digits; a shorter code is stored as no barcode

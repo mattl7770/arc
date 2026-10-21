@@ -1,8 +1,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
+import { SessionMealName } from '@/components/nutrition/session-meal-name';
 import { Block, Divider } from '@/components/ui/block';
 import { KEYPAD_DONE } from '@/components/ui/keyboard';
 import { Screen } from '@/components/ui/screen';
@@ -16,7 +17,9 @@ import { clockFromISO, todayISODate } from '@/lib/db/date';
 import {
   cacheBarcodeFood,
   findFoodByBarcode,
+  getFood,
   listRecentBarcodeFoods,
+  refreshOffFood,
 } from '@/lib/db/repositories/foods';
 import { addMealItem, logMealWithItems } from '@/lib/db/repositories/nutrition';
 import {
@@ -25,8 +28,20 @@ import {
   isCameraAvailable,
   useCameraPermission,
 } from '@/lib/media/camera';
-import { fmtAmount, fmtInt, fmtQty, mealNameForProduct } from '@/lib/nutrition/format';
-import { lookupOffProduct, normalizeBarcode, OffLookupError } from '@/lib/nutrition/openfoodfacts';
+import {
+  fmtAmount,
+  fmtInt,
+  fmtQty,
+  foodLabelRows,
+  mealNameForProduct,
+} from '@/lib/nutrition/format';
+import {
+  energyLooksWrong,
+  lookupOffProduct,
+  normalizeBarcode,
+  OffLookupError,
+  type OffLabel,
+} from '@/lib/nutrition/openfoodfacts';
 import { commitScanMealName, offersScanMealName } from '@/lib/nutrition/scan-meal-name';
 import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
@@ -85,8 +100,9 @@ import type { VolumeUnit } from '@/lib/user/types';
  * session that logs a second food into the meal it created has stopped being
  * "the oat milk" and become breakfast, and the title A4 gave it is the first
  * product's. So once this screen has put TWO foods into a meal it created, a
- * **Name** field sits above Done, holding the name the meal has — the one it
- * would have kept anyway.
+ * **Name** field sits at the foot of the screen, holding the name the meal has
+ * — the one it would have kept anyway (`SessionMealName`, shared with Add food
+ * since 2026-10-21).
  *
  * - **It never blocks a quick save.** The field is prefilled and not focused;
  *   Done works untouched, and an untouched or emptied field writes nothing
@@ -119,13 +135,58 @@ import type { VolumeUnit } from '@/lib/user/types';
  *
  * **Accent budget: one per phase.** Add (portion), Add manually (miss), Allow
  * camera (permission) — never two at once, because the phases are exclusive.
+ *
+ * ## Done goes back to where the scanning started (owner, 2026-10-21)
+ *
+ * *"Done button after scanning barcode so you don't have to hit back twice."*
+ * Done sat at the foot of the screen, under the viewfinder and the six-row
+ * running list — below the fold on a phone — and it went back ONE screen. From
+ * Add food or from the photo camera that landed on the screen the scan was
+ * started from, which then needed its own back. Now:
+ *
+ * - **Done is the header's trailing control**, once anything has been added,
+ *   so it is on screen the moment the scanner resumes after an Add.
+ * - **It closes the flow, not the screen.** A pusher that is itself part of the
+ *   flow says so with `via` (`search` — Add food's "Scan a barcode"; `camera` —
+ *   the photo logger's barcode offer), and Done dismisses both screens at once
+ *   (`router.dismiss(2)`), landing on the Eat tab or the meal the flow began
+ *   on. From the Eat tab's own Scan row there is no `via`, and Done goes back
+ *   one, as before. The back chevron is untouched: it still goes back one.
+ *
+ * ## Per 100 and per serving, side by side (owner, 2026-10-21)
+ *
+ * The portion plate prints the food's figures per 100 of its unit AND per
+ * serving (`foodLabelRows`), so a per-serving figure can never pass for a
+ * per-100 one. A fresh Open Food Facts reading adds what it had to do: a line
+ * when the figures were read per serving and divided here, and the reason when
+ * the product's serving was left off (src/lib/nutrition/openfoodfacts.ts). A
+ * product whose two sets of figures disagree is not cached at all — it takes
+ * the miss path, with the reason, and Add manually opens with its name and
+ * brand filled. **Edit this food** opens the catalog entry itself
+ * (app/food-new.tsx, `id`), which is how a product cached wrong before this
+ * round is put right.
  */
 
 type Phase =
   | { kind: 'scanning' }
   | { kind: 'resolving'; barcode: string }
-  | { kind: 'portion'; food: FoodRow; fromOff: boolean }
-  | { kind: 'notfound'; barcode: string; reason: string };
+  | {
+      kind: 'portion';
+      food: FoodRow;
+      fromOff: boolean;
+      /** How a fresh Open Food Facts read went; null for a row read locally
+       *  and not (yet) re-read. */
+      label: OffLabel | null;
+      /** A local hit re-read in the background, and the cached row healed. */
+      healed?: boolean;
+    }
+  | {
+      kind: 'notfound';
+      barcode: string;
+      reason: string;
+      /** A product Open Food Facts named but whose figures were refused. */
+      prefill?: { name: string; brand: string | null };
+    };
 
 function daypartName(now: Date): string {
   const h = now.getHours();
@@ -150,10 +211,9 @@ const offFetch = (
 /**
  * One row of the follow-on plate.
  *
- * It is the plate's only row today, so it draws no `border-t` — a hairline
- * between rows needs a row above it. The `first` flag the sweep deleted is not
- * reinstated: a second row would state its own rule at the call site rather
- * than inherit a boolean.
+ * It draws no `border-t` — a hairline between rows needs a row above it. The
+ * `first` flag the sweep deleted is not reinstated: the second row (Edit this
+ * food, 2026-10-21) states its own rule at the call site with a `Divider`.
  */
 function ScanRow({
   icon,
@@ -225,61 +285,89 @@ function RecentBarcodeRow({
 }
 
 /**
- * The name of a meal this session has built from several scans (owner, device,
- * 2026-09-23: *"meal name for scanning multiple foods"*).
- *
- * Form (b) of the capture rule, as the meal screen's rename is: a
- * `SectionLabel` and a field wearing `border-paper-deep bg-paper-dim` itself,
- * no device around it — a form is controls, not content. Serif, because a
- * meal's name is speech. The note is the count it names, in mono.
- *
- * **Not focused, and prefilled with the name the meal has**, so the quick path
- * — scan, scan, Done — never stops here: Done writes nothing unless something
- * was typed. The field commits when editing ends; the screen also commits on
- * Done and when it goes. No Save button of its own, and so no accent: there is
- * nothing to confirm that Done does not already confirm.
- *
- * Exported so the headless render suite can draw it — the screen only mounts
- * it after two adds, which a server render cannot make.
+ * The food's label, both ways (2026-10-21): per 100 of its unit, and per
+ * serving when it names one. Label voice for the head, mono for the figures —
+ * they measure. Exported so the render suite can draw it from a food row.
  */
-export function ScanMealName({
-  value,
-  current,
-  count,
-  onChange,
-  onCommit,
-}: {
-  value: string;
-  /** The name the meal has now — the placeholder once the field is emptied. */
-  current: string;
-  /** How many foods this session has put into the meal. */
-  count: number;
-  onChange: (text: string) => void;
-  onCommit: () => void;
-}) {
+export function LabelRows({ food }: { food: FoodRow }) {
   return (
-    <View className="mt-7">
-      <SectionLabel label="Meal name" note={`${count} foods`} />
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        onEndEditing={onCommit}
-        placeholder={current}
-        placeholderTextColor={palette.inkMuted}
-        autoCapitalize="sentences"
-        returnKeyType="done"
-        accessibilityLabel="Meal name"
-        className="mt-2 border border-paper-deep bg-paper-dim px-3 py-2.5 font-serif text-[15px] text-ink"
-      />
+    <View className="mt-2">
+      {/* Head above figures, not beside them: "Per serving · 250 ml" is
+          longer than any fixed column a 375 pt plate can spare. */}
+      {foodLabelRows(food).map((row) => (
+        <View key={row.head} className="mt-1">
+          <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
+            {row.head}
+          </Text>
+          <Text className="font-mono text-[11px] text-ink-secondary">{row.figures}</Text>
+        </View>
+      ))}
     </View>
   );
 }
 
+/**
+ * What the reading had to do, in quiet serif lines under the label rows — the
+ * margin's voice without a margin device, because they sit inside the plate
+ * and devices never nest. No colour: an inconsistent label is a fact about the
+ * data, not a biological state, so it takes no signal hue and no accent.
+ *
+ * The doubtful line is asked of the ROW too (`energyLooksWrong`), so a food
+ * cached before this round, opened offline, still says so.
+ */
+export function LabelNotes({
+  food,
+  label,
+  healed,
+}: {
+  food: FoodRow;
+  label: OffLabel | null;
+  healed: boolean;
+}) {
+  const lines: string[] = [];
+  if (label?.doubtful || energyLooksWrong(food)) {
+    lines.push(`Label data looks inconsistent — check per 100 ${food.basis}.`);
+  }
+  if (healed) lines.push('Updated from Open Food Facts just now — the saved figures were different.');
+  if (label?.read === 'rescaled') {
+    lines.push(
+      'Open Food Facts had the per-serving figures in its per-100 column; they were divided by the serving’s size.'
+    );
+  } else if (label?.read === 'serving') {
+    lines.push('Read from the per-serving label and divided by the serving’s size.');
+  }
+  if (label?.servingDropped) lines.push(label.servingDropped);
+  return (
+    <>
+      {lines.map((line) => (
+        <Text key={line} className="mt-1.5 font-serif text-[12px] leading-5 text-ink-muted">
+          {line}
+        </Text>
+      ))}
+    </>
+  );
+}
+
+/**
+ * How many screens Done closes: this one, plus the screen that pushed it when
+ * that screen is part of the same logging flow (`via`). Exported for the
+ * render suite, which cannot tap.
+ */
+export function doneDismissCount(via: string | undefined): number {
+  return via === 'search' || via === 'camera' ? 2 : 1;
+}
+
 export default function BarcodeScanScreen() {
   const router = useRouter();
-  const { mealId, code: incomingCode } = useLocalSearchParams<{
+  const {
+    mealId,
+    code: incomingCode,
+    via,
+  } = useLocalSearchParams<{
     mealId?: string;
     code?: string;
+    /** The pusher, when it is part of this logging flow: `search` | `camera`. */
+    via?: string;
   }>();
   const [permission, requestPermission] = useCameraPermission();
   const cameraInstalled = isCameraAvailable();
@@ -340,7 +428,8 @@ export default function BarcodeScanScreen() {
   const openPortion = (
     food: FoodRow,
     fromOff: boolean,
-    last?: { amount: number | null; servingQty: number | null }
+    last?: { amount: number | null; servingQty: number | null },
+    label: OffLabel | null = null
   ) => {
     if (last?.servingQty != null && food.serving_amount != null) {
       setMode('serving');
@@ -357,8 +446,81 @@ export default function BarcodeScanScreen() {
       setMode('amount');
       setAmountText('100');
     }
-    setPhase({ kind: 'portion', food, fromOff });
+    setPhase({ kind: 'portion', food, fromOff, label });
   };
+
+  // The phase as last rendered, for the background re-read below to ask
+  // whether the sheet it would update is still the one on screen.
+  const phaseRef = useRef(phase);
+  useEffect(() => {
+    phaseRef.current = phase;
+  });
+
+  /**
+   * A local hit that is still Open Food Facts' own is re-read in the
+   * background (2026-10-21). The sheet opens at once on the cached row — the
+   * offline-first ladder is unchanged, and offline this fails silently into
+   * exactly what it did before. When OFF now says something different, the
+   * cached row is healed (`refreshOffFood`, which never touches a row the user
+   * edited) and, if the sheet is still on that food, it is redrawn from the
+   * healed row and says so. Something already added keeps its own snapshot.
+   */
+  const refreshFromOff = async (food: FoodRow) => {
+    if (food.source !== 'openfoodfacts' || !food.barcode) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const off = await lookupOffProduct(food.barcode, offFetch, controller.signal);
+      if (!off || off.kind !== 'food') return;
+      const healed = refreshOffFood(getDb(), food.id, off.food);
+      const current = phaseRef.current;
+      if (current.kind !== 'portion' || current.food.id !== food.id) return;
+      if (healed) {
+        if (healed.serving_amount != null) {
+          setMode('serving');
+          setQty(1);
+          setAmountText(fmtQty(healed.serving_amount));
+        } else {
+          setMode('amount');
+          setAmountText('100');
+        }
+      }
+      setPhase({ ...current, food: healed ?? current.food, label: off.label, healed: !!healed });
+    } catch {
+      // Offline, or OFF unreachable: the cached row stands, as it always did.
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  /**
+   * Back from editing the food (Edit this food): the sheet reads the row as it
+   * now is, and its portion starts again from the food's serving — the serving
+   * the old figures were set from may be the thing that was corrected. A food
+   * deleted meanwhile returns the screen to scanning.
+   */
+  useFocusEffect(
+    useCallback(() => {
+      if (phase.kind !== 'portion') return;
+      const fresh = getFood(getDb(), phase.food.id);
+      if (!fresh) {
+        scan.current.busy = false;
+        setPhase({ kind: 'scanning' });
+        return;
+      }
+      // Unchanged (the common case, and every re-run this effect causes).
+      if (fresh.updated_at === phase.food.updated_at) return;
+      if (fresh.serving_amount != null) {
+        setMode('serving');
+        setQty(1);
+        setAmountText(fmtQty(fresh.serving_amount));
+      } else {
+        setMode('amount');
+        setAmountText('100');
+      }
+      setPhase({ ...phase, food: fresh });
+    }, [phase])
+  );
 
   const onScanned = async (raw: string) => {
     const s = scan.current;
@@ -375,7 +537,11 @@ export default function BarcodeScanScreen() {
     setPhase({ kind: 'resolving', barcode: code });
     // Local cache first — instant, offline.
     const local = findFoodByBarcode(getDb(), code);
-    if (local) return openPortion(local, false);
+    if (local) {
+      openPortion(local, false);
+      void refreshFromOff(local);
+      return;
+    }
     // Miss → Open Food Facts (online). A stalled socket must not dead-end the
     // scan, so bound the request and fall into the manual path on timeout.
     const controller = new AbortController();
@@ -390,8 +556,19 @@ export default function BarcodeScanScreen() {
         });
         return;
       }
-      const cached = cacheBarcodeFood(getDb(), off);
-      openPortion(cached, true);
+      // Figures that cannot all be true are not cached — the reason is said,
+      // and the manual form opens with the name OFF did give.
+      if (off.kind === 'refused') {
+        setPhase({
+          kind: 'notfound',
+          barcode: code,
+          reason: off.reason,
+          prefill: { name: off.name, brand: off.brand },
+        });
+        return;
+      }
+      const cached = cacheBarcodeFood(getDb(), off.food);
+      openPortion(cached, true, undefined, off.label);
     } catch (error) {
       const reason =
         error instanceof OffLookupError
@@ -491,9 +668,10 @@ export default function BarcodeScanScreen() {
   });
   useEffect(() => () => commitNameRef.current(), []);
 
+  /** Close the flow back to where it started — see the header. */
   const done = () => {
     commitName();
-    router.back();
+    router.dismiss(doneDismissCount(via));
   };
   // The name the field holds when it is offered — two foods in a meal this
   // session made (`offersScanMealName`) — else null, and no field.
@@ -514,7 +692,26 @@ export default function BarcodeScanScreen() {
   return (
     <Screen scroll>
       <View className="pt-2">
-        <StackHeader title="Scan barcode" />
+        <StackHeader
+          title="Scan barcode"
+          // Done, where the eye already is once a food is in. Label voice and
+          // no accent, like every header control: it leaves, it does not commit
+          // anything Add has not already written.
+          action={
+            added > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Done, ${added} added`}
+                hitSlop={8}
+                onPress={done}
+                className="min-h-[44px] justify-center px-1 active:opacity-60">
+                <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
+                  Done
+                </Text>
+              </Pressable>
+            ) : undefined
+          }
+        />
       </View>
 
       {added > 0 ? (
@@ -593,12 +790,13 @@ export default function BarcodeScanScreen() {
                       recent={recent}
                       first={index === 0}
                       volume={units.volume}
-                      onPress={() =>
+                      onPress={() => {
                         openPortion(recent.food, false, {
                           amount: recent.lastAmount,
                           servingQty: recent.lastServingQty,
-                        })
-                      }
+                        });
+                        void refreshFromOff(recent.food);
+                      }}
                     />
                   ))}
                 </Block>
@@ -633,11 +831,14 @@ export default function BarcodeScanScreen() {
                 <Text className="font-serif text-ink-muted"> · {phase.food.brand}</Text>
               ) : null}
             </Text>
-            <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">
-              {phase.food.kcal_100g != null
-                ? `${fmtInt(phase.food.kcal_100g)} kcal / 100 ${phase.food.basis}`
-                : 'no energy recorded'}
-            </Text>
+            {/* Per 100 and per serving, side by side — and, on a fresh read,
+                what had to be done to get them. */}
+            <LabelRows food={phase.food} />
+            <LabelNotes
+              food={phase.food}
+              label={phase.label}
+              healed={phase.healed === true}
+            />
 
             <View className="mt-3 flex-row items-center gap-2">
               {phase.food.serving_amount != null ? (
@@ -730,6 +931,17 @@ export default function BarcodeScanScreen() {
                 accessibilityLabel="Scan another"
                 onPress={resumeScanning}
               />
+              {/* The catalog entry itself — how figures cached wrong are put
+                  right. Meals already logged keep their own numbers. */}
+              <Divider first={false} />
+              <ScanRow
+                icon="create-outline"
+                label="Edit this food"
+                accessibilityLabel={`Edit ${phase.food.name} in the catalog`}
+                onPress={() =>
+                  router.push({ pathname: '/food-new', params: { id: phase.food.id } })
+                }
+              />
             </Block>
           </View>
         </View>
@@ -749,7 +961,14 @@ export default function BarcodeScanScreen() {
             accessibilityRole="button"
             accessibilityLabel="Add this food manually"
             onPress={() =>
-              router.replace({ pathname: '/food-new', params: { barcode: phase.barcode } })
+              router.replace({
+                pathname: '/food-new',
+                params: {
+                  barcode: phase.barcode,
+                  ...(phase.prefill ? { name: phase.prefill.name } : {}),
+                  ...(phase.prefill?.brand ? { brand: phase.prefill.brand } : {}),
+                },
+              })
             }
             className="mt-4 min-h-[44px] items-center justify-center rounded-btn bg-pine px-4 active:opacity-70">
             <Text className="font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-pine-on">
@@ -773,25 +992,13 @@ export default function BarcodeScanScreen() {
       {/* Two foods in a meal this session made: it can be named before it is
           left. Prefilled with the name it has; nothing waits on it. */}
       {nameable !== null ? (
-        <ScanMealName
+        <SessionMealName
           value={nameDraft ?? nameable}
           current={nameable}
           count={added}
           onChange={setNameDraft}
           onCommit={commitName}
         />
-      ) : null}
-
-      {added > 0 ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Done"
-          onPress={done}
-          className="mt-6 min-h-[44px] items-center justify-center active:opacity-60">
-          <Text className="font-label text-[12px] font-semibold uppercase tracking-[1.2px] text-ink">
-            Done
-          </Text>
-        </Pressable>
       ) : null}
     </Screen>
   );

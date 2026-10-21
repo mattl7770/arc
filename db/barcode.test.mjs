@@ -9,7 +9,14 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
 import { MIGRATIONS } from '../src/lib/db/migrations.generated.ts';
-import { cacheBarcodeFood, findFoodByBarcode } from '../src/lib/db/repositories/foods.ts';
+import {
+  cacheBarcodeFood,
+  createFood,
+  findFoodByBarcode,
+  getFood,
+  refreshOffFood,
+  updateFood,
+} from '../src/lib/db/repositories/foods.ts';
 import {
   addMealItem,
   dayMicroTotals,
@@ -27,6 +34,9 @@ import {
   normalizeBarcode,
   offProductUrl,
   OffLookupError,
+  energyLooksWrong,
+  readOffProduct,
+  servingSizeMeasure,
   parseOffProduct,
 } from '../src/lib/nutrition/openfoodfacts.ts';
 import { parseMicros } from '../src/lib/nutrition/micros.ts';
@@ -236,7 +246,9 @@ console.log('7. lookupOffProduct over a mocked fetch');
   const hit = await lookupOffProduct('0123456789012', async () =>
     mkResponse(true, 200, GREEK_YOGURT)
   );
-  hit && hit.name === 'Greek Yogurt' ? ok('a 200 hit maps to a NewFood') : bad('lookup hit');
+  hit?.kind === 'food' && hit.food.name === 'Greek Yogurt'
+    ? ok('a 200 hit maps to a reading carrying the NewFood')
+    : bad('lookup hit');
   const notInOff = await lookupOffProduct('999', async () => mkResponse(true, 200, { status: 0 }));
   notInOff === null ? ok('status 0 body → null (not found)') : bad('lookup status0');
   const missing = await lookupOffProduct('999', async () => mkResponse(false, 404, {}));
@@ -373,8 +385,9 @@ console.log('9. B2 — a scanned DRINK is cached in millilitres (0047)');
     ? ok('nutrition_data_per "serving" is not an answer — the serving_size still is')
     : bad('per-serving basis', JSON.stringify(perServing));
 
-  // A solid is untouched, and a `cl` product falls back to grams rather than
-  // being converted — there is no unit table in this app, by design.
+  // A solid is untouched. A `cl` product is a VOLUME (2026-10-21; it used to
+  // fall back to grams): recognising a unit is not converting a figure. Its
+  // serving of "33" does not agree with 33 cl (330 ml), so it is left off.
   const solid = parseOffProduct(
     {
       status: 1,
@@ -400,9 +413,9 @@ console.log('9. B2 — a scanned DRINK is cached in millilitres (0047)');
     },
     '5000000000002'
   );
-  solid.basis === 'g' && cl.basis === 'g'
-    ? ok('a solid stays g, and a `cl` product falls back to g rather than converting')
-    : bad('solid/cl basis', `${solid.basis} / ${cl.basis}`);
+  solid.basis === 'g' && cl.basis === 'ml' && cl.serving_amount === null && cl.serving_name === null
+    ? ok('a solid stays g; a `33 cl` product is a volume (ml), and a quantity of 33 that does not agree with 33 cl is left off, not converted')
+    : bad('solid/cl basis', `${solid.basis} / ${cl.basis} / ${cl.serving_amount}`);
 }
 
 console.log('10. 2026-09-23 — a meal of several scans can be named before it is left');
@@ -481,7 +494,7 @@ console.log('10. 2026-09-23 — a meal of several scans can be named before it i
   screen.includes('offersScanMealName(createdName, added)') &&
   screen.includes('commitScanMealName(getDb(), targetMealId, nameDraft)') &&
   doneBody.indexOf('commitName()') > -1 &&
-  doneBody.indexOf('commitName()') < doneBody.indexOf('router.back()') &&
+  doneBody.indexOf('commitName()') < doneBody.indexOf('router.dismiss(doneDismissCount(via))') &&
   screen.includes('useEffect(() => () => commitNameRef.current(), [])') &&
   screen.includes('onPress={done}') &&
   screen.includes('onCommit={commitName}') &&
@@ -583,6 +596,350 @@ console.log('11. 2026-09-23 — a scanned product keeps its caffeine');
   none.every((v) => v === undefined)
     ? ok('no caffeine_100g, a negative one, or a string records nothing — not 0')
     : bad('absent caffeine', JSON.stringify(none));
+}
+
+/**
+ * 12. Item 81 (owner, 2026-10-21): "barcode scanner for food logging
+ * misinterprets per serving and per 100g / other sometimes."
+ *
+ * The case that came with it: Lewis Road Creamery Fresh Chocolate Milk,
+ * 9421903483058, 750 ml. Two 250 ml servings logged 1,660 kcal, because the
+ * cached row's "per 100" figures were the label's per-serving ones (332 kcal,
+ * P 10.8, C 31, F 18.4) in grams. LEWIS_ROAD_LIVE is OFF's response as of
+ * 2026-10-21 (the fields OFF_FIELDS asks for); the others are the shapes the
+ * entry has been in, and the shapes the mapping must refuse or flag. No
+ * network anywhere: every payload is a fixture.
+ */
+const LEWIS_ROAD_LIVE = {
+  status: 1,
+  product: {
+    product_name: 'Fresh Chocolate Milk',
+    brands: 'Lewis Road Creamery',
+    nutrition_data_per: '100ml',
+    serving_size: '0.33 of bottle (250 ml)',
+    serving_quantity: 250,
+    nutriments: {
+      'energy-kcal_100g': 132.887,
+      proteins_100g: 4.32,
+      carbohydrates_100g: 12.4,
+      fat_100g: 7.32,
+      'energy-kcal_serving': 332,
+      proteins_serving: 10.8,
+      carbohydrates_serving: 31,
+      fat_serving: 18.3,
+    },
+  },
+};
+const withNutriments = (base, nutriments, extra = {}) => ({
+  ...base,
+  product: { ...base.product, ...extra, nutriments },
+});
+
+console.log('12. Item 81 — per 100, per serving, and what each is measured in');
+{
+  // (a) TODAY'S ENTRY reads right: per 100 ml, a 250 ml serving, nothing flagged.
+  const live = readOffProduct(LEWIS_ROAD_LIVE, '9421903483058');
+  const f = live?.food;
+  live?.kind === 'food' &&
+  f.basis === 'ml' &&
+  f.serving_amount === 250 &&
+  near(f.kcal_100g, 132.887) &&
+  near(f.fat_g_100g, 7.32) &&
+  live.label.read === 'per100' &&
+  live.label.doubtful === false &&
+  live.label.servingDropped === null
+    ? ok('the live Lewis Road entry: 132.9 kcal per 100 ml, a 250 ml serving, not doubtful')
+    : bad('live entry', JSON.stringify(live));
+  const { db } = freshDb();
+  const cached = cacheBarcodeFood(db, f);
+  const two = itemForPortion(cached, { servingQty: 2 });
+  near(two.amount, 500) && Math.round(two.kcal) === 664 && two.unit === 'ml'
+    ? ok('…and two servings are 500 ml and 664 kcal — not the 1,660 the owner saw')
+    : bad('two servings', JSON.stringify(two));
+
+  // (b) THE BAD ENTRY: the per-serving figures typed into the per-100 column.
+  // `_100g` ≈ `_serving` with a 250 ml serving — rebuilt per 100 from them.
+  const swapped = readOffProduct(
+    withNutriments(LEWIS_ROAD_LIVE, {
+      'energy-kcal_100g': 332,
+      proteins_100g: 10.8,
+      carbohydrates_100g: 31,
+      fat_100g: 18.4,
+      sodium_100g: 0.125,
+      'energy-kcal_serving': 332,
+      proteins_serving: 10.8,
+      carbohydrates_serving: 31,
+      fat_serving: 18.3,
+      sodium_serving: 0.125,
+    }),
+    '9421903483058'
+  );
+  swapped?.kind === 'food' &&
+  near(swapped.food.kcal_100g, 132.8) &&
+  near(swapped.food.protein_g_100g, 4.32) &&
+  near(swapped.food.fat_g_100g, 7.32) &&
+  near(parseMicros(swapped.food.micros).sodium_mg, 50) &&
+  swapped.label.read === 'rescaled' &&
+  swapped.label.doubtful === false
+    ? ok('per-serving figures in the per-100 column are rebuilt per 100 ml (332 → 132.8 kcal), micros too')
+    : bad('swapped columns', JSON.stringify(swapped));
+
+  // (c) NEITHER FITS (the search index's fat_100g 73): keep _100g, flag it.
+  const messy = readOffProduct(
+    withNutriments(LEWIS_ROAD_LIVE, { ...LEWIS_ROAD_LIVE.product.nutriments, fat_100g: 73 }),
+    '9421903483058'
+  );
+  messy?.kind === 'food' && near(messy.food.fat_g_100g, 73) && messy.label.doubtful === true
+    ? ok('two sets that cannot both be true keep OFF’s per-100 figures and are marked doubtful')
+    : bad('conflict', JSON.stringify(messy));
+
+  // (d) PER SERVING ONLY, with a serving in the food's own unit: divided here.
+  const bar = readOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Protein bar',
+        brands: 'Bar Co',
+        nutrition_data_per: 'serving',
+        serving_size: '1 bar (40 g)',
+        serving_quantity: 40,
+        serving_quantity_unit: 'g',
+        nutriments: {
+          'energy-kcal_serving': 156,
+          proteins_serving: 20,
+          carbohydrates_serving: 14,
+          fat_serving: 5,
+        },
+      },
+    },
+    '5000000000040'
+  );
+  bar?.kind === 'food' &&
+  bar.food.basis === 'g' &&
+  near(bar.food.kcal_100g, 390) &&
+  near(bar.food.protein_g_100g, 50) &&
+  bar.label.read === 'serving'
+    ? ok('per-serving-only figures are divided by the 40 g serving (156 → 390 kcal per 100 g)')
+    : bad('per-serving only', JSON.stringify(bar));
+
+  // (e) …and with no serving to divide by, the product is REFUSED, named.
+  const mystery = {
+    status: 1,
+    product: {
+      product_name: 'Mystery bar',
+      brands: 'Somebody, Else',
+      serving_size: '1 bar',
+      nutriments: { 'energy-kcal_serving': 200, proteins_serving: 10 },
+    },
+  };
+  const unplaced = readOffProduct(mystery, '5000000000041');
+  unplaced?.kind === 'refused' &&
+  unplaced.name === 'Mystery bar' &&
+  unplaced.brand === 'Somebody' &&
+  /per serving only/.test(unplaced.reason) &&
+  parseOffProduct(mystery, '5000000000041') === null
+    ? ok('per-serving figures with nothing to read them against are refused (name and brand kept for manual entry)')
+    : bad('unplaced', JSON.stringify(unplaced));
+
+  // (f) A DRINK whose figures OFF holds per 100 g, with a 330 ml serving: the
+  // serving is in a different unit, so it is left off — never a "330 g" can.
+  const can = readOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Sparkling tea',
+        nutrition_data_per: '100g',
+        serving_size: '1 can (330 ml)',
+        serving_quantity: 330,
+        serving_quantity_unit: 'ml',
+        nutriments: { 'energy-kcal_100g': 20, carbohydrates_100g: 5 },
+      },
+    },
+    '5000000000042'
+  );
+  can?.kind === 'food' &&
+  can.food.basis === 'g' &&
+  can.food.serving_amount === null &&
+  can.food.serving_name === null &&
+  /330 ml but its figures are per 100 g/.test(can.label.servingDropped ?? '')
+    ? ok('a 330 ml serving on per-100 g figures is left off, and the review says why')
+    : bad('ml serving on g figures', JSON.stringify(can));
+
+  // (g) "250ml" — no space — is millilitres. The old `\bml\b` never matched it.
+  const tight = parseOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Iced coffee',
+        serving_size: '250ml',
+        serving_quantity: 250,
+        nutriments: { 'energy-kcal_100g': 60 },
+      },
+    },
+    '5000000000043'
+  );
+  const m = (s) => JSON.stringify(servingSizeMeasure(s));
+  tight.basis === 'ml' &&
+  tight.serving_amount === 250 &&
+  m('250ml') === '{"unit":"ml","amount":250}' &&
+  m('(250 ml)') === '{"unit":"ml","amount":250}' &&
+  m('0.33 of bottle (250 ml)') === '{"unit":"ml","amount":250}' &&
+  m('33 cl') === '{"unit":"ml","amount":330}' &&
+  m('30g') === '{"unit":"g","amount":30}' &&
+  servingSizeMeasure('250mlg') === null &&
+  servingSizeMeasure('1 bar') === null
+    ? ok('"250ml", "(250 ml)", "33 cl" and "30g" are measured; "250mlg" and "1 bar" are not')
+    : bad('serving measure', `${tight.basis} ${m('250ml')} ${m('250mlg')}`);
+
+  // (h) Energy given only in kJ is read as kJ ÷ 4.184.
+  const kj = parseOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Crackers',
+        nutrition_data_per: '100g',
+        nutriments: {
+          'energy-kj_100g': 1757.28,
+          proteins_100g: 10,
+          carbohydrates_100g: 70,
+          fat_100g: 12,
+        },
+      },
+    },
+    '5000000000044'
+  );
+  near(kj.kcal_100g, 420)
+    ? ok('kJ only: 1,757 kJ per 100 g reads as 420 kcal')
+    : bad('kJ fallback', String(kj.kcal_100g));
+
+  // (i) ENERGY AGAINST THE MACROS: 4P + 4C + 9F more than 35 % off is doubtful.
+  const odd = readOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Odd',
+        nutrition_data_per: '100g',
+        nutriments: {
+          'energy-kcal_100g': 50,
+          proteins_100g: 10,
+          carbohydrates_100g: 10,
+          fat_100g: 10,
+        },
+      },
+    },
+    '5000000000045'
+  );
+  const row = (kcal, p, c, fat) => ({
+    kcal_100g: kcal,
+    protein_g_100g: p,
+    carbs_g_100g: c,
+    fat_g_100g: fat,
+  });
+  odd?.label.doubtful === true &&
+  energyLooksWrong(row(50, 10, 10, 10)) &&
+  !energyLooksWrong(row(132.887, 4.32, 12.4, 7.32)) &&
+  !energyLooksWrong(row(15, 0, 0, 5)) &&
+  !energyLooksWrong(row(100, null, 10, 2))
+    ? ok('energy 35 % off its macros is doubtful; the live chocolate milk is not; small or partial rows are not judged')
+    : bad('energy plausibility', JSON.stringify(odd?.label));
+
+  // (j) A per-serving figure that divides to more than the food weighs is a
+  // wrong serving size — refused, not cached.
+  const tooDense = readOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Dense',
+        serving_size: '5 g',
+        serving_quantity: 5,
+        nutriments: { 'energy-kcal_serving': 200, proteins_serving: 10 },
+      },
+    },
+    '5000000000046'
+  );
+  tooDense?.kind === 'refused' && /more than the food itself/.test(tooDense.reason)
+    ? ok('per-serving figures that exceed the serving itself are refused')
+    : bad('too dense', JSON.stringify(tooDense));
+
+  // (k) A lookup over a mocked fetch carries the same reading.
+  const looked = await lookupOffProduct('9421903483058', async () => ({
+    ok: true,
+    status: 200,
+    json: async () => LEWIS_ROAD_LIVE,
+  }));
+  looked?.kind === 'food' && looked.food.basis === 'ml' && looked.label.read === 'per100'
+    ? ok('lookupOffProduct returns the reading, label included (mocked fetch)')
+    : bad('lookup reading', JSON.stringify(looked));
+}
+
+console.log('13. Item 81 — the cache heals, and never over a correction');
+{
+  const { db } = freshDb();
+  // HIS ROW, as cached before this round: per-serving figures as per-100, in g.
+  const id = createFood(db, {
+    name: 'Fresh Chocolate Milk',
+    brand: 'Lewis Road Creamery',
+    barcode: '9421903483058',
+    serving_name: '250ml',
+    serving_amount: 250,
+    basis: 'g',
+    kcal_100g: 332,
+    protein_g_100g: 10.8,
+    carbs_g_100g: 31,
+    fat_g_100g: 18.4,
+    source: 'openfoodfacts',
+  });
+  // A meal logged from it before the heal keeps its own snapshot.
+  const before = itemForPortion(getFood(db, id), { servingQty: 2 });
+  const { mealId } = logMealWithItems(db, {
+    date: '2026-10-20',
+    time: '15:00',
+    name: 'Chocolate milk',
+    items: [before],
+  });
+  const fresh = readOffProduct(LEWIS_ROAD_LIVE, '9421903483058').food;
+  const healed = refreshOffFood(db, id, fresh);
+  healed &&
+  healed.basis === 'ml' &&
+  near(healed.kcal_100g, 132.887) &&
+  healed.serving_amount === 250 &&
+  healed.source === 'openfoodfacts' &&
+  healed.barcode === '9421903483058'
+    ? ok('a re-read heals his row: per 100 ml, 132.9 kcal, still OFF’s, same barcode')
+    : bad('heal', JSON.stringify(healed));
+  Math.round(listMealItems(db, mealId)[0].kcal) === 1660
+    ? ok('…and the meal logged before keeps its own figures (1,660), as after any catalog edit')
+    : bad('snapshot', String(listMealItems(db, mealId)[0].kcal));
+  refreshOffFood(db, id, fresh) === null
+    ? ok('a second read that says the same thing writes nothing')
+    : bad('idempotent heal');
+
+  // A CORRECTION IS NEVER OVERWRITTEN. An edit through updateFood — the edit
+  // screen's and the Coach's one writer — makes the row the user's.
+  updateFood(db, id, { ...getFood(db, id), kcal_100g: 140 });
+  const other = readOffProduct(
+    withNutriments(LEWIS_ROAD_LIVE, {
+      ...LEWIS_ROAD_LIVE.product.nutriments,
+      'energy-kcal_100g': 120,
+      'energy-kcal_serving': 300,
+    }),
+    '9421903483058'
+  ).food;
+  getFood(db, id).source === 'user' &&
+  refreshOffFood(db, id, other) === null &&
+  getFood(db, id).kcal_100g === 140
+    ? ok('an edited OFF row becomes the user’s, and a re-read leaves the correction alone')
+    : bad('edited row', JSON.stringify(getFood(db, id)));
+
+  // THE WIRING: a local hit (and a recents tap) opens at once and re-reads in
+  // the background only through refreshOffFood.
+  const screen = readFileSync(new URL('../app/barcode-scan.tsx', import.meta.url), 'utf8');
+  screen.includes("if (food.source !== 'openfoodfacts' || !food.barcode) return;") &&
+  screen.includes('const healed = refreshOffFood(getDb(), food.id, off.food);') &&
+  (screen.match(/void refreshFromOff\(/g) || []).length === 2 &&
+  screen.includes('openPortion(local, false);')
+    ? ok('barcode-scan: a local hit and a recents tap open at once and heal in the background')
+    : bad('refresh wiring');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

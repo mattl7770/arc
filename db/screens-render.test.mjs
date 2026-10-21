@@ -122,14 +122,19 @@ import NutritionScreen, { MACRO_BAR_FILL, MACRO_BAR_OVER } from '../app/nutritio
 import { OVERFLOW_CAP } from '../src/lib/nutrition/bar.ts';
 import NutritionMicrosScreen from '../app/nutrition-micros.tsx';
 import NutritionHistoryScreen from '../app/nutrition-history.tsx';
-import MealDetailScreen from '../app/meal-detail.tsx';
+import MealDetailScreen, { DishAmountRow } from '../app/meal-detail.tsx';
 import MealReviseScreen, { AsLoggedPlate } from '../app/meal-revise.tsx';
 import LabImportScreen from '../app/lab-import.tsx';
 import { QuestionsPlate, ReviewItemsPlate } from '../src/components/nutrition/estimate-review.tsx';
 // The two camera screens. They could not be imported here until `expo-camera`
 // moved behind the guarded seam (src/lib/media/camera.ts) — a static native
 // import is a resolve failure under node, not a render failure.
-import BarcodeScanScreen, { ScanMealName } from '../app/barcode-scan.tsx';
+import BarcodeScanScreen, {
+  doneDismissCount,
+  LabelNotes,
+  LabelRows,
+} from '../app/barcode-scan.tsx';
+import { SessionMealName } from '../src/components/nutrition/session-meal-name.tsx';
 import { CombineFooter } from '../src/components/nutrition/combine-meals.tsx';
 import { planCombine } from '../src/lib/nutrition/combine.ts';
 import { closeUndo, currentUndo, offerUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
@@ -6663,7 +6668,7 @@ console.log('\n24. 2026-09-23 — Undo, Combine, and a multi-scan meal’s name'
   // THE MULTI-SCAN NAME — prefilled, a count in the note, no button of its own.
   const named = render(
     'barcode scan (meal name)',
-    ScanMealName,
+    SessionMealName,
     {},
     {
       value: 'Greek Yogurt · Fage',
@@ -8150,6 +8155,197 @@ console.log('\n33. 2026-09-26 — a Log-tab capture opens to its words, its figu
   db.run('DELETE FROM log_entries WHERE id IN (?, ?)', [creatine, note]);
   db.run('DELETE FROM symptoms WHERE id = ?', [symptom]);
   db.run('DELETE FROM body_metrics WHERE id = ?', [weight.id.split(':')[0]]);
+}
+
+// ---------------------------------------------------------------------------
+// 34. Food-logging quick fixes (owner, 2026-10-21): the scanner's Done and its
+// label rows (79, 81), a catalog food's edit screen (85), and a logged dish's
+// whole amount (92). A server render taps nothing, so each control that only
+// a tap reaches is drawn from its own export.
+console.log('\n34. 2026-10-21 — Done, the label both ways, a food edited, a dish’s whole amount');
+{
+  const noop = () => {};
+
+  // 79 — DONE CLOSES THE FLOW. Nothing added yet: no Done in the header.
+  refute('barcode-scan (nothing added)', render('barcode-scan (nothing added)', BarcodeScanScreen), [
+    '>Done<',
+  ]);
+  doneDismissCount('search') === 2 &&
+  doneDismissCount('camera') === 2 &&
+  doneDismissCount(undefined) === 1 &&
+  doneDismissCount('elsewhere') === 1
+    ? ok('Done closes the scanner and Add food / the camera together, and only the scanner from Eat')
+    : bad('done dismiss count');
+  const flat = (file) =>
+    readFileSync(new URL(`../${file}`, import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  flat('app/food-search.tsx').includes("params: { mealId: targetMealId, via: 'search' }") &&
+  flat('app/meal-estimate.tsx').includes("params: { code, via: 'camera' }") &&
+  flat('app/barcode-scan.tsx').includes('router.dismiss(doneDismissCount(via))') &&
+  !flat('app/barcode-scan.tsx').includes('accessibilityLabel="Done" onPress={done} className="mt-6')
+    ? ok('both in-flow pushers say so with `via`, and the one Done (in the header) dismisses by it')
+    : bad('done wiring');
+
+  // 81 — THE LABEL, BOTH WAYS: per 100 ml and per 250 ml serving.
+  const milk = {
+    id: 'food-milk',
+    name: 'Fresh Chocolate Milk',
+    brand: 'Lewis Road Creamery',
+    basis: 'ml',
+    serving_name: '0.33 of bottle (250 ml)',
+    serving_amount: 250,
+    kcal_100g: 132.887,
+    protein_g_100g: 4.32,
+    carbs_g_100g: 12.4,
+    fat_g_100g: 7.32,
+    source: 'openfoodfacts',
+  };
+  const rows = render('barcode-scan label rows', LabelRows, {}, { food: milk });
+  expect('barcode-scan label rows', rows, [
+    'Per 100 ml',
+    '133 kcal · P 4.3g · C 12.4g · F 7.3g',
+    'Per serving · 250 ml',
+    '332 kcal · P 10.8g · C 31g · F 18.3g',
+  ]);
+  // A doubtful reading says so in ONE quiet line; a clean one says nothing.
+  const doubtful = render('barcode-scan notes (doubtful)', LabelNotes, {}, {
+    food: milk,
+    label: { read: 'rescaled', servingDropped: null, doubtful: true },
+    healed: true,
+  });
+  expect('barcode-scan notes (doubtful)', doubtful, [
+    'Label data looks inconsistent — check per 100 ml.',
+    'Updated from Open Food Facts just now',
+    'per-serving figures in its per-100 column',
+  ]);
+  refute('barcode-scan notes (doubtful)', doubtful, ['role="button"']);
+  refute(
+    'barcode-scan notes (clean)',
+    render('barcode-scan notes (clean)', LabelNotes, {}, {
+      food: milk,
+      label: { read: 'per100', servingDropped: null, doubtful: false },
+      healed: false,
+    }),
+    ['inconsistent', 'Updated from', 'divided']
+  );
+  // A cached row whose energy disagrees with its macros is flagged offline too.
+  expect(
+    'barcode-scan notes (cached, energy off)',
+    render('barcode-scan notes (cached, energy off)', LabelNotes, {}, {
+      food: { ...milk, kcal_100g: 50, protein_g_100g: 10, carbs_g_100g: 10, fat_g_100g: 10 },
+      label: null,
+      healed: false,
+    }),
+    ['Label data looks inconsistent — check per 100 ml.']
+  );
+
+  // 85 — A CATALOG FOOD, EDITED. The form opens on the row; Describe it is
+  // not offered; Save is inert until something changes; micros are fields.
+  const oatsId = createFood(db, {
+    name: 'Edit-me oats',
+    brand: 'Mill',
+    serving_name: '1 cup',
+    serving_amount: 80,
+    kcal_100g: 379,
+    protein_g_100g: 13,
+    carbs_g_100g: 67,
+    fat_g_100g: 6.5,
+    micros: JSON.stringify({ iron_mg: 4.25 }),
+  });
+  const editHtml = render('food-new (edit)', FoodNewScreen, { id: oatsId });
+  expect('food-new (edit)', editHtml, [
+    'Edit food',
+    'value="Edit-me oats"',
+    'value="Mill"',
+    'value="379"',
+    'value="6.5"',
+    'value="4.25"',
+    'aria-label="Iron mg"',
+    'aria-label="Vitamin D mcg"',
+    'Save changes',
+  ]);
+  refute('food-new (edit)', editHtml, ['Describe it', 'Fill from description', 'Changes the catalog entry']);
+  /aria-label="Save changes to this food"[^>]*aria-disabled="true"|aria-disabled="true"[^>]*aria-label="Save changes to this food"/.test(
+    editHtml ?? ''
+  )
+    ? ok('food-new (edit): Save is inert until something changes')
+    : bad('food-new (edit): Save enabled on open');
+  expect('food-new (gone)', render('food-new (gone)', FoodNewScreen, { id: 'no-such-food' }), [
+    'This food is gone',
+  ]);
+  // A refused scan opens Create with OFF's name and brand filled.
+  expect(
+    'food-new (refused scan)',
+    render('food-new (refused scan)', FoodNewScreen, {
+      name: 'Mystery bar',
+      brand: 'Somebody',
+      barcode: '5000000000041',
+    }),
+    ['value="Mystery bar"', 'value="Somebody"', '5000000000041', 'Create a food']
+  );
+  db.run('DELETE FROM foods WHERE id = ?', [oatsId]);
+  // The pencil on Add food's open row.
+  expect(
+    'food-search editor (edit)',
+    render('food-search editor (edit)', PortionEditor, {}, {
+      expanded: {
+        food: { ...milk, is_favorite: 0 },
+        portion: { mode: 'serving', qty: 1, amountText: '250' },
+        section: 'results',
+      },
+      amountPreview: 250,
+      kcalPreview: 332,
+      onStep: noop,
+      onEditAmount: noop,
+      onToggleFavorite: noop,
+      onAdd: noop,
+      deleteConsequence: null,
+      onArmDelete: noop,
+      onDelete: noop,
+      onEditFood: noop,
+    }),
+    ['Edit Fresh Chocolate Milk in the catalog', '>Add<']
+  );
+
+  // 92 — THE WHOLE DISH, typed: at rest it is a field holding the parts' sum;
+  // typed, the consequence and the accent Save.
+  const rolled = {
+    amount: 510,
+    unit: 'g',
+    kcal: 1550,
+    protein_g: 71,
+    carbs_g: 167,
+    fat_g: 66,
+    fiber_g: null,
+  };
+  const dish = (text, open) =>
+    render(`meal-detail dish (${text ?? 'untouched'})`, DishAmountRow, {}, {
+      name: 'Pepperoni pizza',
+      rolled,
+      text,
+      open,
+      onOpen: noop,
+      onChange: noop,
+      onSave: noop,
+    });
+  const rest = dish(null, false);
+  expect('meal-detail dish (at rest)', rest, [
+    'Whole dish',
+    'value="510"',
+    'aria-label="Pepperoni pizza, whole dish in grams"',
+  ]);
+  refute('meal-detail dish (at rest)', rest, ['On save', '>Save<', '>Close<']);
+  const typed = dish('255', true);
+  expect('meal-detail dish (typed)', typed, [
+    'On save: every part scales by × 0.50 — 510 g becomes 255 g.',
+    '>Save<',
+    'aria-label="Save the whole Pepperoni pizza"',
+  ]);
+  const opened = dish(null, true);
+  expect('meal-detail dish (opened, untouched)', opened, [
+    '>Close<',
+    'aria-label="Close the whole-dish amount for Pepperoni pizza"',
+  ]);
+  refute('meal-detail dish (opened, untouched)', opened, ['>Save<']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

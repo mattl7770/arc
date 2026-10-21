@@ -1576,7 +1576,9 @@ product via `mealNameForProduct` (`src/lib/nutrition/format.ts`).
 
 `app/food-search.tsx`'s day-part naming is deliberately **left alone**: the
 owner's report was about the scanner, and a catalog search has no single product
-to name the meal after.
+to name the meal after. *(Superseded 2026-10-21, §19: the owner asked for exactly
+that — "adding a saved food on its own should give proper name for meal" — and a
+single catalog food is one product to name it after.)*
 
 **Tests:** `db/barcode.test.mjs` §8 — the naming table, then the real
 `logMealWithItems` write asserting the row carries the product name and no
@@ -1968,3 +1970,54 @@ Q2 of the spike is unchanged: a typed answer is still the one text-only second c
 - **Whether the chips are the right ones.** "Short, common answers" is a criterion. Whether his latte now offers `1 · 2 · 3` shots and `Whole · Oat · Skim` is the model's call.
 - **The keyboard.** That `autoFocus` raises the keyboard on mount inside the review's scroll view, and the field stays visible above it, holds in the render. Only iOS can prove it. The questions sit at the top of the review, so it should never be covered.
 - **The in-place field's width.** At `min-w-[180px]` with `grow`, it shares a row with short chips and wraps under long ones. Whether that reads as "the chip became a box" or as a jump is a thumb-and-eye question.
+
+## 19. Round 13 — five food-logging fixes (2026-10-21, no migration)
+
+Five notes from the owner's round-three list, verbatim: *"adding a saved food on its own should give proper name for meal"* (90), *"done button after scanning barcode so you don't have to hit back twice"* (79), *"update gram amount for a full 'pizza' after logged"* (92), *"edit saved foods"* (85), *"i think barcode scanner for food logging misinterprets per serving and per 100g / other sometimes"* (81). No migration: head stays `0065`.
+
+### 90 — Add food names the meal after the food
+
+The first add that creates a meal on Add food now titles it `mealNameForProduct(food)` — `name · brand`, the day part only as the fallback — exactly as a scan has since A4 (§13). The scanner's other rules come with it: the first food only; two foods in, the shared **Meal name** field (`src/components/nutrition/session-meal-name.tsx`, moved out of the scanner) is offered, prefilled and unfocused, committed on Done, on leaving the field and on unmount through `commitScanMealName` → `updateMealName`; a meal pushed in by `mealId` is never retitled.
+
+### 79 — one Done closes the scan
+
+Done moved from the foot of the scanner (below the viewfinder and the six-row running list, so off-screen on a phone) to the **header's trailing control**, shown once anything is added. A pusher that is part of the same flow passes `via` — `search` from Add food's *Scan a barcode*, `camera` from the photo logger's barcode offer — and Done dismisses both screens (`router.dismiss(doneDismissCount(via))`), landing where the logging started: the Eat tab, or the meal Add food was opened for. From the Eat tab's own Scan row there is no `via` and Done goes back one, as before. The back chevron is unchanged.
+
+### 92 — a logged dish's whole amount
+
+Inside an expanded composite on `meal-detail`, under the count sentence and the ½ ⅓ ¼ chips, a **Whole dish [510] g** field holds the parts' sum. Typing stages a draft and states the consequence above Save (*On save: every part scales by × 0.50 — 510 g becomes 255 g.*); Save calls `scaleCompositeItem(factor = new / sum)` — the chips' own writer, so the parts, the headline and a count of pieces move together. The plan is `planDishAmount` (`src/lib/nutrition/composite.ts`): not offered when the parts share no amount (invariant 5), a no-op when untouched or unchanged, refused past 5,000. One editor at a time, as everywhere on the screen.
+
+### 85 — a catalog food has an edit screen
+
+`app/food-new.tsx?id=` opens the same form on the row, from Add food's pencil (beside the bin and the star) and from the scanner's **Edit this food**. It saves through **`updateFood`, the Coach's `food_catalog` writer** — parity (docs/coach-domains.md). The form's rules moved into `src/lib/nutrition/food-form.ts` so create and edit share them and the tests read them: untouched figures are written back exactly (not the 2 dp the field printed), Save is inert until something changes, the consequence is stated above Save from `foodUsage` (*Changes the catalog entry only — it is used by 3 meals, which keep their own numbers. What you add from now on uses the new figures.*), and Describe it is not offered when editing. **Micros are fields now**, the whole shortlist in its own units, under the same per-100 / per-serving chip as the macros; a blank is not recorded, never 0. Meals already logged keep their snapshots.
+
+**One provenance change:** an Open Food Facts row whose contents an edit changes becomes `user` inside `updateFood`, from the screen or the Coach alike, so the re-fetch below never overwrites a correction. A rewrite that changes nothing (the Coach starring a food) leaves it OFF's. An AI-described food stays `ai` and keeps its `est` mark.
+
+### 81 — per 100, per serving, and the cache that kept a bad entry
+
+The case: Lewis Road Creamery Fresh Chocolate Milk (9421903483058). Two 250 ml servings logged **1,660 kcal**: the cached row's per-100 figures were the label's per-serving ones, in grams. OFF's entry today is right (132.9 kcal per 100 ml, 332 per 250 ml serving) — it was most likely wrong when first scanned, and the scanner resolves locally first, so it was kept forever. `src/lib/nutrition/openfoodfacts.ts` now:
+
+- **Cross-checks the two sets.** With a known serving, `_serving` must be `_100g × serving / 100` (±10 %, with 5 kcal / 1 g slack for label rounding). If instead `_100g ≈ _serving` and the serving is not ~100, the per-100 figures are rebuilt from the per-serving ones (`read: 'rescaled'`). If neither fits, OFF's per-100 figures are kept and the food is marked **doubtful**.
+- **Checks energy against the macros** (`energyLooksWrong`, pure): 4P + 4C + 9F more than 35 % from the stated kcal, on anything over 20 kcal with all three macros recorded, is doubtful. kJ-only energy is read as kJ ÷ 4.184.
+- **Reads a figure missing per 100 from its per-serving twin**, divided by the serving's size — only when that size is known in the food's own unit. Per-serving figures with no such serving, or ones that divide to more than the food itself, are **refused**: the miss path says why, and *Add manually* opens with the name and brand filled.
+- **Reads the serving's unit** from `serving_quantity_unit` (now fetched), or from the `serving_size` text when its number agrees with `serving_quantity` (`33 cl` ↔ 330). `"250ml"` now reads as ml — the old `\bml\b` never matched it. A `cl` product is a volume now (it used to fall back to grams); a serving in a different unit from the figures is left off, and the review says so.
+- **Heals the cache.** A local hit (or a running-list tap) on a row still `openfoodfacts` opens at once, then re-reads OFF in the background; if the fresh read differs, `refreshOffFood` rewrites the row (never a user-edited one) and the open sheet redraws from it with a line saying so. Offline it fails silently into the old behaviour. Meals already logged keep their snapshots. No new egress class: it is the same user-initiated OFF lookup, on a scan.
+
+The portion sheet prints the food **per 100 and per serving** (`foodLabelRows`), so a 2.5× error is visible before Add, and quiet serif lines say what the reading did: *Label data looks inconsistent — check per 100 ml.* (doubtful, or `energyLooksWrong` on the stored row — so a row cached before this round is flagged offline too), the rescale, a per-serving read, a serving left off, a heal. No signal colour and no accent: an inconsistent label is a fact about the data, not a biological state.
+
+**What none of this can catch:** an entry whose per-100 column holds per-serving figures AND whose per-serving column is that ×2.5 (both consistent, energy consistent). Only the re-fetch heals it, once OFF is corrected.
+
+### Verification
+
+- `db/barcode.test.mjs` §12–13: the live Lewis Road payload as a fixture (per 100 ml, 250 ml serving, two servings = 664 kcal); the swapped-columns entry rebuilt (332 → 132.8, micros too); a conflicting entry kept and flagged; per-serving-only divided, and refused without a serving; a 330 ml serving on per-100 g figures left off with its reason; `"250ml"` / `"(250 ml)"` / `"33 cl"` / `"30g"` measured and `"250mlg"` not; kJ only; energy plausibility; too-dense refused; the mocked lookup. The heal: his old row rewritten to ml / 132.9, the meal logged before keeping 1,660, a second read writing nothing, an edited row never overwritten; the screen's wiring.
+- `db/foods.test.mjs` §18: the edit form's exact write-back, typed edits, cleared micros, per-serving entry, refusals, the consequence line, the OFF→user claim (and no claim on a no-op rewrite), `ai` kept, parity with the Coach's writer.
+- `db/nutrition-v2.test.mjs` §90, §92: the meal named after the food and Add food's naming wiring; the whole-dish plan, the scale (510 → 255 g, 1,550 → 775 kcal), refusals, the screen writing only through `scaleCompositeItem`.
+- `db/screens-render.test.mjs` §34: no Done before an add; `via` wiring; the label rows both ways; the notes (doubtful, clean, a cached row); the edit screen opened on a row (no Describe it, Save inert, micro fields), a gone id, a refused scan's prefill; Add food's pencil; the whole-dish row at rest, typed and opened.
+
+### What only the phone can settle
+
+- **Whether Done in the header is found** after an Add, and whether dismissing two screens from the camera path feels like "done" or like losing the camera.
+- **Whether the doubtful line fires too often.** Alcohol (7 kcal/g) and sugar alcohols are outside 4/4/9, so a beer or a sugar-free sweet will say "inconsistent"; and OFF entries with a wrong `serving_quantity` will now read doubtful where they used to read nothing.
+- **Whether the heal is seen, and his row actually heals** — that needs a scan of the bottle online. The sheet can redraw under the thumb a second after it opens; something already added keeps the old figures.
+- **The micro fields' density** — twelve fields, three to a row, at 375 pt.
+- **Whether `name · brand` reads right for catalog foods** on the Eat tab.

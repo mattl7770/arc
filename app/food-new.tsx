@@ -16,65 +16,94 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
-import { createFood } from '@/lib/db/repositories/foods';
-import type { JsonText } from '@/lib/db/types';
+import { createFood, foodUsage, getFood, updateFood } from '@/lib/db/repositories/foods';
 import {
   estimateFoodEntry,
   isMealEstimationAvailable,
   MealEstimationUnavailableError,
   type FoodEntryEstimate,
 } from '@/lib/nutrition/estimate';
-import { microsLine } from '@/lib/nutrition/format';
-import type { AmountUnit } from '@/lib/nutrition/types';
+import {
+  emptyFoodForm,
+  type FoodForm,
+  foodEditConsequence,
+  foodFormFromRow,
+  microsText,
+  numText,
+  readFoodForm,
+} from '@/lib/nutrition/food-form';
+import { MICROS } from '@/lib/nutrition/micros';
+import type { FoodRow } from '@/lib/nutrition/types';
 
 /**
  * Create a custom catalog food (source='user'), reached from food search with
- * the failed query prefilled. Macros can be typed per serving (the label way)
- * or per 100 (the database way); storage is always canonical per-100
- * (docs/nutrition-subapp.md §3), so the per-serving path converts on save.
+ * the failed query prefilled — or, with `id`, EDIT one (owner, 2026-10-21:
+ * *"edit saved foods"*). Macros can be typed per serving (the label way) or per
+ * 100 (the database way); storage is always canonical per-100
+ * (docs/nutrition-subapp.md §3), so the per-serving path converts on save. The
+ * rules for what a Save writes are src/lib/nutrition/food-form.ts.
  *
  * Per 100 of WHAT is the Solid/Drink toggle (0047): a food is measured in grams
  * or in millilitres, one or the other for life, and nothing in ARC converts
  * between them. Solid is the default and every food created before the toggle
  * existed is one.
  *
+ * ## Editing a food (2026-10-21)
+ *
+ * Reached from the pencil on Add food's open row and from the barcode
+ * scanner's "Edit this food". The same form, opened on the row's own figures
+ * per 100, and it saves through **`updateFood` — the function the Coach's
+ * `food_catalog` edit calls** (docs/coach-domains.md: parity with the screens,
+ * through the repositories). Three things differ from creating:
+ *
+ * - **No Describe it.** An edit corrects a food the user is looking at; a model
+ *   rewriting every field of it is a different act, and creating is where it
+ *   lives.
+ * - **The consequence is stated above Save**, from `foodUsage`: the catalog
+ *   entry changes, and every meal, template and recipe that used it keeps its
+ *   own numbers — only what is added from now on reads the new figures.
+ * - **Untouched figures are written back exactly**, not as the 2 dp the field
+ *   printed (food-form.ts), and Save is inert until something changes. An
+ *   edited Open Food Facts entry becomes the user's (`updateFood`), so a later
+ *   re-fetch never overwrites the correction.
+ *
+ * ## Micros are typed now
+ *
+ * The whole shortlist is a field each, in its own unit, per 100 like the
+ * macros (or per serving, under the same chip). Before this round micros had
+ * no fields and a described food's were only read out; the owner asked to edit
+ * them, and an edit screen that cannot correct a figure it shows is not one.
+ *
  * Conformed Set treatment — **form (b) of the capture-surface rule** in
- * src/components/ui/block.tsx: this is a group of eleven labelled fields, so it
+ * src/components/ui/block.tsx: this is a group of labelled fields, so it
  * carries no block at all. Each `TextInput` wears the well's own tokens
  * (`border-paper-deep bg-paper-dim`) directly, `SectionLabel` names each group
  * and whitespace separates them — the same shape as app/capture.tsx and
  * app/symptom.tsx. Boxing the group in a `<Block device="well">` would put a
  * recess inside a recess and force every field up onto plate stock to stay
- * legible; an input is never `bg-paper-hi`. The closing note is a **margin
- * annotation**, because prose does not belong in a box.
+ * legible; an input is never `bg-paper-hi`.
  *
  * Field labels are the label voice, every numeric field is mono ("mono
  * measures"), and the entry-basis chips are controls, so they are label voice
- * too. **No accent on this screen**: creating a catalog entry is bookkeeping,
- * not the day's directive action — and that survives C2, because *Describe it*
- * fills a form rather than committing a record. It wears the same outlined
- * treatment as Save.
+ * too. **No accent on this screen**: creating or correcting a catalog entry is
+ * bookkeeping, not the day's directive action — and that survives C2, because
+ * *Describe it* fills a form rather than committing a record. It wears the same
+ * outlined treatment as Save.
  *
  * ## Describe it (C2, 2026-09-14)
  *
  * Owner: *"Describe a food in words and AI fills the catalog entry's macros —
  * yes."* Type "Costco rotisserie chicken thigh, skin on" and the model returns
  * one catalog entry — name, brand, basis, a household serving, per-100 macros,
- * sodium/caffeine where they are plausible, and (2026-09-25, *"yes, same rule
- * as the estimator"*) the rest of the micro shortlist where a serving is a
- * notable source — which is **rendered into the fields below for review**. It
- * has its own small prompt, not the meal estimator's, though the shortlist and
- * its bar are the estimator's own constants (src/lib/nutrition/estimate.ts).
- *
- * The micros have no fields (nothing in the app types a micro by hand), so they
- * are READ under the macros — one mono line, `Sodium 380 mg · Iron 2.1 mg` —
- * before Save writes them: a figure that rode to the row unseen would be an
- * inferred number nobody checked.
+ * and the micro shortlist where a serving is a notable source — which is
+ * **rendered into the fields below for review**. It has its own small prompt,
+ * not the meal estimator's, though the shortlist and its bar are the
+ * estimator's own constants (src/lib/nutrition/estimate.ts).
  *
  * **Nothing is written until Save.** The model's reply lands in the same
- * `useState` the keyboard writes to, so every number is editable before it
- * becomes a row, and the row it becomes is stamped `source: 'ai'` — an inferred
- * number must never wear the face of one the user typed (the 0034 rule), and
+ * state the keyboard writes to, so every number is editable before it becomes
+ * a row, and the row it becomes is stamped `source: 'ai'` — an inferred number
+ * must never wear the face of one the user typed (the 0034 rule), and
  * `app/food-search.tsx` prints `est` beside such an entry wherever it appears in
  * the catalog.
  *
@@ -83,18 +112,6 @@ import type { AmountUnit } from '@/lib/nutrition/types';
  * the model says that and leaves every field below it exactly as it was —
  * typing the food in by hand is the path this screen already was.
  */
-
-function validNumber(text: string): boolean {
-  const t = text.trim();
-  if (t === '') return true;
-  const n = Number(t);
-  return Number.isFinite(n) && n >= 0;
-}
-
-function toNumber(text: string): number | null {
-  const t = text.trim();
-  return t === '' ? null : Number(t);
-}
 
 type FieldProps = {
   label: string;
@@ -117,8 +134,8 @@ type FieldProps = {
  *
  * ## `flex-1` in a column is what made this screen paint over itself
  *
- * The wrapper used to be `<View className="flex-1">` unconditionally, and seven
- * of the nine fields here genuinely do share a row — so the flex looked like the
+ * The wrapper used to be `<View className="flex-1">` unconditionally, and most
+ * of the fields here genuinely do share a row — so the flex looked like the
  * house style rather than a per-call-site decision. The two that do not share a
  * row are the first two the user meets: Name inside `<View className="mt-2">`
  * and Brand inside `<View className="mt-3">`, each the only child of its wrapper.
@@ -166,54 +183,69 @@ function FormField({ label, value, onChange, placeholder, keyboardType, mono, fi
   );
 }
 
-/** A model-proposed figure as the form's own text. Rounded to 2 dp — the same
- *  precision the per-serving conversion below rounds to, and more than anyone
- *  needs from an estimate. Null renders as the empty field it is. */
-function numText(value: number | null): string {
-  return value === null ? '' : String(Math.round(value * 100) / 100);
-}
-
-/** Per-100 g schema bounds, checked here so a save never throws a CHECK. */
-function per100Problem(kcal: number | null, macros: (number | null)[]): string | null {
-  if (kcal !== null && kcal > 950) return 'kcal per 100 g can’t exceed 950 (pure fat is ~884).';
-  if (macros.some((m) => m !== null && m > 100)) {
-    return 'A macro can’t exceed 100 g per 100 g of food.';
-  }
-  return null;
+/** Three to a row — the micro fields' grid. */
+function rowsOf<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 export default function FoodNewScreen() {
+  const params = useLocalSearchParams<{
+    name?: string;
+    barcode?: string;
+    brand?: string;
+    /** A catalog food to EDIT (2026-10-21). */
+    id?: string;
+  }>();
+  // Read once: the form is a draft of THIS row as it was opened, and a row
+  // that moved under it is re-read the next time the screen opens.
+  const [editing] = useState<FoodRow | undefined>(() =>
+    params.id ? getFood(getDb(), params.id) : undefined
+  );
+  if (params.id && !editing) {
+    return (
+      <Screen>
+        <View className="pt-2">
+          <StackHeader title="Edit food" />
+        </View>
+        <Text className="mt-6 font-serif text-[14px] leading-6 text-ink-secondary">
+          This food is gone — it may have been deleted.
+        </Text>
+      </Screen>
+    );
+  }
+  return <FoodEntryForm editing={editing} params={params} />;
+}
+
+function FoodEntryForm({
+  editing,
+  params,
+}: {
+  editing: FoodRow | undefined;
+  params: { name?: string; barcode?: string; brand?: string };
+}) {
   const router = useRouter();
-  const params = useLocalSearchParams<{ name?: string; barcode?: string }>();
   // A barcode arrives when this screen is reached from a scan that missed both
   // the local cache and Open Food Facts — storing it means the next scan hits.
   // The schema requires ≥6 digits (a short Code128 payload isn't a product
-  // barcode); a shorter one is dropped so the save never trips the CHECK.
+  // barcode); a shorter one is dropped so the save never trips the CHECK. An
+  // edit keeps the row's own.
   const digits = (params.barcode ?? '').replace(/\D/g, '');
-  const barcode = digits.length >= 6 ? digits : '';
+  const barcode = editing ? editing.barcode : digits.length >= 6 ? digits : null;
 
-  const [name, setName] = useState(params.name ?? '');
-  const [brand, setBrand] = useState('');
-  const [servingName, setServingName] = useState('');
-  const [servingGrams, setServingGrams] = useState('');
-  const [entryBasis, setEntryBasis] = useState<'serving' | 'per100'>('per100');
-  /** What this food is measured in (0047). Solid by default — most foods are,
-   * and every food that existed before this toggle was. Choosing Drink changes
-   * the unit of EVERY amount the food carries: its serving size, its per-100
-   * macros, and every portion logged from it. Nothing converts between the two,
-   * so this is a property of the food, not a display choice. */
-  const [unit, setUnit] = useState<AmountUnit>('g');
-  const [kcal, setKcal] = useState('');
-  const [protein, setProtein] = useState('');
-  const [carbs, setCarbs] = useState('');
-  const [fat, setFat] = useState('');
-  const [fiber, setFiber] = useState('');
-  /** The model's per-100 micros, carried straight to the row and read out under
-   *  the macros. There is no field for these — the shortlist is read-only on
-   *  the micros screen — so they ride in state rather than through the form.
-   *  Null for a typed food, and for a described one the model had nothing
-   *  notable to say about. */
-  const [micros, setMicros] = useState<JsonText | null>(null);
+  // The form as it opened — what an edit compares against to write untouched
+  // figures back exactly, and to know whether anything changed at all.
+  const [opened] = useState<FoodForm>(() =>
+    editing
+      ? foodFormFromRow(editing)
+      : { ...emptyFoodForm(params.name ?? ''), brand: params.brand ?? '' }
+  );
+  const [form, setForm] = useState<FoodForm>(opened);
+  const set = (patch: Partial<FoodForm>) => setForm((prev) => ({ ...prev, ...patch }));
+  const setMicro = (key: (typeof MICROS)[number]['key'], text: string) =>
+    setForm((prev) => ({ ...prev, micros: { ...prev.micros, [key]: text } }));
+  const { unit, entryBasis } = form;
 
   // --- Describe it (C2) ----------------------------------------------------
   const [description, setDescription] = useState('');
@@ -233,22 +265,24 @@ export default function FoodNewScreen() {
 
   /** Render one proposed entry into the form. Every field, including the ones
    *  the model left null — a second description must not leave the first one's
-   *  numbers standing under a name they no longer belong to. */
+   *  numbers standing under a name they no longer belong to. The reply is per
+   *  100 of the basis, which is what the form stores canonically — so the basis
+   *  chip goes to per-100 and nothing is converted. */
   const applyEntry = (entry: FoodEntryEstimate) => {
-    setName(entry.name);
-    setBrand(entry.brand ?? '');
-    setUnit(entry.basis);
-    setServingName(entry.serving_name ?? '');
-    setServingGrams(numText(entry.serving_amount));
-    // The reply is per 100 of the basis, which is what the form stores
-    // canonically — so the basis chip goes to per-100 and nothing is converted.
-    setEntryBasis('per100');
-    setKcal(numText(entry.kcal_100g));
-    setProtein(numText(entry.protein_g_100g));
-    setCarbs(numText(entry.carbs_g_100g));
-    setFat(numText(entry.fat_g_100g));
-    setFiber(numText(entry.fiber_g_100g));
-    setMicros(entry.micros);
+    setForm({
+      name: entry.name,
+      brand: entry.brand ?? '',
+      unit: entry.basis,
+      servingName: entry.serving_name ?? '',
+      servingAmount: numText(entry.serving_amount),
+      entryBasis: 'per100',
+      kcal: numText(entry.kcal_100g),
+      protein: numText(entry.protein_g_100g),
+      carbs: numText(entry.carbs_g_100g),
+      fat: numText(entry.fat_g_100g),
+      fiber: numText(entry.fiber_g_100g),
+      micros: microsText(entry.micros),
+    });
     setDescribed(true);
   };
 
@@ -274,155 +308,128 @@ export default function FoodNewScreen() {
     }
   };
 
-  const numbersValid = [servingGrams, kcal, protein, carbs, fat, fiber].every(validNumber);
-  const servingGramsNum = toNumber(servingGrams);
-  const servingUsable = servingGramsNum !== null && servingGramsNum > 0;
-  // The schema's pair-or-none rule, tightened to USABLE: a named serving needs
-  // grams ABOVE ZERO and vice versa — "1 cup" of 0 g would pass a null-based
-  // pairing check and then trip the DB CHECK into a silent dead end.
-  const servingPaired = (servingName.trim() === '') === !servingUsable;
-  const entryBasisOk = entryBasis === 'per100' || servingUsable;
-
-  // Per-serving entries convert to canonical per-100 g on save. Only that path
-  // multiplies by a non-integer factor, and IEEE-754 overshoots on it: 14 g of
-  // fat in a 14 g serving yields 100.00000000000001, which reads as >100 and
-  // trips both the macro-cap guard below and the DB CHECK — so a 100%-macro
-  // staple (olive oil, sugar, an isolate) could not be saved. Round the
-  // converted value to 2 dp; a per-100 g entry is factor 1 and stored verbatim.
-  const round2 = (v: number): number => Math.round(v * 100) / 100;
-  const factor = entryBasis === 'serving' && servingUsable ? 100 / servingGramsNum : 1;
-  const per100 = (text: string): number | null => {
-    const n = toNumber(text);
-    if (n === null) return null;
-    return entryBasis === 'serving' ? round2(n * factor) : n;
-  };
-  const kcal100 = per100(kcal);
-  const macros100 = [per100(protein), per100(carbs), per100(fat), per100(fiber)];
-  const boundsProblem = numbersValid && entryBasisOk ? per100Problem(kcal100, macros100) : null;
-
-  const canSave =
-    name.trim() !== '' && numbersValid && servingPaired && entryBasisOk && boundsProblem === null;
-
-  const problem = !numbersValid
-    ? 'Numbers only — leave a field blank if you don’t know it.'
-    : !servingPaired
-      ? `A serving needs both a name and its ${unit} above zero (or leave both blank).`
-      : !entryBasisOk
-        ? `Per-serving entry needs the serving ${unit} filled in first.`
-        : boundsProblem;
+  const result = readFoodForm(form, {
+    barcode,
+    // THE STAMP. A described entry is provenance-marked for life: the catalog
+    // prints `est` beside it. An edit keeps the row's own provenance (updateFood
+    // owns the one change it makes to it).
+    source: editing ? editing.source : described ? 'ai' : 'user',
+    original: editing ? { food: editing, form: opened } : undefined,
+  });
+  // A micro typed and cleared again is no change: compare without the blanks.
+  const comparable = (f: FoodForm) =>
+    JSON.stringify({
+      ...f,
+      micros: MICROS.map((m) => (f.micros[m.key] ?? '').trim()),
+    });
+  const changed = comparable(form) !== comparable(opened);
+  const canSave = result.ok && (editing === undefined || changed);
+  const problem = result.ok ? null : result.problem;
 
   const save = () => {
-    if (!canSave) return;
+    if (!result.ok || !canSave) return;
     try {
-      createFood(getDb(), {
-        name: name.trim(),
-        brand: brand.trim() === '' ? null : brand.trim(),
-        barcode: barcode === '' ? null : barcode,
-        serving_name: servingName.trim() === '' ? null : servingName.trim(),
-        serving_amount: servingUsable ? servingGramsNum : null,
-        basis: unit,
-        kcal_100g: kcal100,
-        protein_g_100g: macros100[0] ?? null,
-        carbs_g_100g: macros100[1] ?? null,
-        fat_g_100g: macros100[2] ?? null,
-        fiber_g_100g: macros100[3] ?? null,
-        micros,
-        // THE STAMP. A described entry is provenance-marked for life: the
-        // catalog prints `est` beside it, and nothing downstream has to infer
-        // from the numbers whether a human typed them. A typed food keeps the
-        // repository's own default ('user').
-        source: described ? 'ai' : 'user',
-      });
+      if (editing) updateFood(getDb(), editing.id, result.food);
+      else createFood(getDb(), result.food);
       router.back();
     } catch (error) {
       // canSave gates the known cases; backstop so a write failure never
       // crashes the tap handler or loses the typed food.
-      console.warn('[food-new] create failed', error);
+      console.warn(editing ? '[food-new] update failed' : '[food-new] create failed', error);
     }
   };
+
+  // What an edit does, before it does it — counted once, as it opens.
+  const [usage] = useState(() => (editing ? foodUsage(getDb(), editing.id) : null));
+  const consequence =
+    editing && usage && changed
+      ? foodEditConsequence(usage, form.servingName.trim() !== (editing.serving_name ?? ''))
+      : null;
 
   return (
     <Screen scroll>
       <View className="pt-2">
-        <StackHeader title="Create a food" />
+        <StackHeader title={editing ? 'Edit food' : 'Create a food'} />
       </View>
 
       {/* DESCRIBE IT — the C2 path, above the form it fills. It is first
           because it is the shortcut PAST everything below; putting it under the
-          fields would be offering the shortcut after the walk.
+          fields would be offering the shortcut after the walk. Creating only.
 
           No block: this screen carries none (form (b) of the capture-surface
           rule), so the field wears the well's own tokens like every other input
           here, and the labelled group is separated by whitespace. */}
-      <View className="mt-2">
-        <SectionLabel label="Describe it" note={described ? 'Estimated' : undefined} />
-        {keySet ? (
-          <>
-            <TextInput
-              value={description}
-              onChangeText={setDescription}
-              placeholder="e.g. Costco rotisserie chicken thigh, skin on"
-              placeholderTextColor={palette.inkMuted}
-              multiline
-              accessibilityLabel="Describe the food"
-              className="mt-2 min-h-[64px] border border-paper-deep bg-paper-dim px-3 py-3 font-serif text-[15px] leading-6 text-ink"
-            />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Fill the fields from this description"
-              accessibilityState={{ disabled: description.trim() === '' || describing }}
-              disabled={description.trim() === '' || describing}
-              onPress={() => void describe()}
-              className={
-                description.trim() === '' || describing
-                  ? 'mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-paper-deep py-3'
-                  : 'mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-ink bg-paper-hi py-3 active:opacity-70'
-              }>
-              {describing ? (
-                <ActivityIndicator color={palette.inkSecondary} />
-              ) : (
-                <Ionicons
-                  name="sparkles-outline"
-                  size={17}
-                  color={description.trim() === '' ? palette.inkMuted : palette.inkSecondary}
-                />
-              )}
-              <Text
+      {editing ? null : (
+        <View className="mt-2">
+          <SectionLabel label="Describe it" note={described ? 'Estimated' : undefined} />
+          {keySet ? (
+            <>
+              <TextInput
+                value={description}
+                onChangeText={setDescription}
+                placeholder="e.g. Costco rotisserie chicken thigh, skin on"
+                placeholderTextColor={palette.inkMuted}
+                multiline
+                accessibilityLabel="Describe the food"
+                className="mt-2 min-h-[64px] border border-paper-deep bg-paper-dim px-3 py-3 font-serif text-[15px] leading-6 text-ink"
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Fill the fields from this description"
+                accessibilityState={{ disabled: description.trim() === '' || describing }}
+                disabled={description.trim() === '' || describing}
+                onPress={() => void describe()}
                 className={
                   description.trim() === '' || describing
-                    ? 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
-                    : 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink'
+                    ? 'mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-paper-deep py-3'
+                    : 'mt-3 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn border border-ink bg-paper-hi py-3 active:opacity-70'
                 }>
-                {describing ? 'Describing…' : 'Fill from description'}
-              </Text>
-            </Pressable>
-          </>
-        ) : (
-          /* The honest offline/unconfigured state: a sentence, and what still
-             works. Never a field that looks live and answers nothing. */
-          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-            Describing a food needs a model key — the same one the Coach uses. Add one in the Coach
-            tab; everything below works without it.
-          </Text>
-        )}
-        {describeProblem ? (
-          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
-            {describeProblem}
-          </Text>
-        ) : null}
-        {described ? (
-          /* The 0034 rule, said out loud at the moment it applies: these are
-             inferred numbers, they are editable, and the row will carry the
-             mark. The future tense is deliberate — nothing has been written. */
-          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
-            Estimated by the model — check the numbers below. Nothing is saved until you tap Save
-            food, and the entry will be marked as an estimate in your catalog.
-          </Text>
-        ) : null}
-      </View>
+                {describing ? (
+                  <ActivityIndicator color={palette.inkSecondary} />
+                ) : (
+                  <Ionicons
+                    name="sparkles-outline"
+                    size={17}
+                    color={description.trim() === '' ? palette.inkMuted : palette.inkSecondary}
+                  />
+                )}
+                <Text
+                  className={
+                    description.trim() === '' || describing
+                      ? 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
+                      : 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink'
+                  }>
+                  {describing ? 'Describing…' : 'Fill from description'}
+                </Text>
+              </Pressable>
+            </>
+          ) : (
+            /* The honest offline/unconfigured state: a sentence, and what still
+               works. Never a field that looks live and answers nothing. */
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              Describing a food needs a model key — the same one the Coach uses. Add one in the
+              Coach tab; everything below works without it.
+            </Text>
+          )}
+          {describeProblem ? (
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              {describeProblem}
+            </Text>
+          ) : null}
+          {described ? (
+            /* The 0034 rule, said out loud at the moment it applies: these are
+               inferred numbers, they are editable, and the row will carry the
+               mark. The future tense is deliberate — nothing has been written. */
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-muted">
+              Estimated by the model — check the numbers below. Nothing is saved until you tap Save
+              food, and the entry will be marked as an estimate in your catalog.
+            </Text>
+          ) : null}
+        </View>
+      )}
 
-      <View className="mt-5">
-        <SectionLabel label="Identity" note={barcode !== '' ? barcode : undefined} />
+      <View className={editing ? 'mt-2' : 'mt-5'}>
+        <SectionLabel label="Identity" note={barcode ?? undefined} />
 
         {/* No `fill` on these two: they are alone in a column, and a flexed
             child of a content-height column collapses to nothing — see
@@ -430,13 +437,18 @@ export default function FoodNewScreen() {
         <View className="mt-2">
           <FormField
             label="Name"
-            value={name}
-            onChange={setName}
+            value={form.name}
+            onChange={(name) => set({ name })}
             placeholder="e.g. Overnight oats"
           />
         </View>
         <View className="mt-3">
-          <FormField label="Brand (optional)" value={brand} onChange={setBrand} placeholder="—" />
+          <FormField
+            label="Brand (optional)"
+            value={form.brand}
+            onChange={(brand) => set({ brand })}
+            placeholder="—"
+          />
         </View>
         {/* Solid or drink — the food's unit (0047). It sits ABOVE the serving
             row because it names what that row's number counts, and above the
@@ -454,7 +466,7 @@ export default function FoodNewScreen() {
               accessibilityRole="button"
               accessibilityLabel={key === 'ml' ? 'Measured in millilitres' : 'Measured in grams'}
               accessibilityState={{ selected: unit === key }}
-              onPress={() => setUnit(key)}
+              onPress={() => set({ unit: key })}
               className={
                 unit === key
                   ? 'min-h-[44px] items-center justify-center rounded-btn border border-ink bg-paper-hi px-4'
@@ -476,15 +488,15 @@ export default function FoodNewScreen() {
         <View className="mt-3 flex-row gap-3">
           <FormField
             label="Serving name"
-            value={servingName}
-            onChange={setServingName}
+            value={form.servingName}
+            onChange={(servingName) => set({ servingName })}
             placeholder={unit === 'ml' ? 'e.g. 1 can' : 'e.g. 1 jar'}
             fill
           />
           <FormField
             label={unit === 'ml' ? 'Serving ml' : 'Serving grams'}
-            value={servingGrams}
-            onChange={setServingGrams}
+            value={form.servingAmount}
+            onChange={(servingAmount) => set({ servingAmount })}
             placeholder="—"
             keyboardType="decimal-pad"
             mono
@@ -496,7 +508,8 @@ export default function FoodNewScreen() {
           <SectionLabel label="Macros" note={`Stored per 100 ${unit}`} />
         </View>
 
-        {/* Entry basis — stored per-100 of the food's unit either way. */}
+        {/* Entry basis — stored per-100 of the food's unit either way. It
+            governs the micro fields below too. */}
         <View className="mt-2 flex-row gap-2">
           {(
             [
@@ -507,9 +520,9 @@ export default function FoodNewScreen() {
             <Pressable
               key={key}
               accessibilityRole="button"
-              accessibilityLabel={`Enter macros ${label}`}
+              accessibilityLabel={`Enter figures ${label}`}
               accessibilityState={{ selected: entryBasis === key }}
-              onPress={() => setEntryBasis(key)}
+              onPress={() => set({ entryBasis: key })}
               className={
                 entryBasis === key
                   ? 'min-h-[44px] items-center justify-center rounded-btn border border-ink bg-paper-hi px-4'
@@ -531,8 +544,8 @@ export default function FoodNewScreen() {
         <View className="mt-3 flex-row gap-3">
           <FormField
             label="kcal"
-            value={kcal}
-            onChange={setKcal}
+            value={form.kcal}
+            onChange={(kcal) => set({ kcal })}
             placeholder="—"
             keyboardType="decimal-pad"
             mono
@@ -540,8 +553,8 @@ export default function FoodNewScreen() {
           />
           <FormField
             label="Protein g"
-            value={protein}
-            onChange={setProtein}
+            value={form.protein}
+            onChange={(protein) => set({ protein })}
             placeholder="—"
             keyboardType="decimal-pad"
             mono
@@ -551,8 +564,8 @@ export default function FoodNewScreen() {
         <View className="mt-3 flex-row gap-3">
           <FormField
             label="Carbs g"
-            value={carbs}
-            onChange={setCarbs}
+            value={form.carbs}
+            onChange={(carbs) => set({ carbs })}
             placeholder="—"
             keyboardType="decimal-pad"
             mono
@@ -560,8 +573,8 @@ export default function FoodNewScreen() {
           />
           <FormField
             label="Fat g"
-            value={fat}
-            onChange={setFat}
+            value={form.fat}
+            onChange={(fat) => set({ fat })}
             placeholder="—"
             keyboardType="decimal-pad"
             mono
@@ -569,8 +582,8 @@ export default function FoodNewScreen() {
           />
           <FormField
             label="Fiber g"
-            value={fiber}
-            onChange={setFiber}
+            value={form.fiber}
+            onChange={(fiber) => set({ fiber })}
             placeholder="—"
             keyboardType="decimal-pad"
             mono
@@ -578,30 +591,46 @@ export default function FoodNewScreen() {
           />
         </View>
 
-        {/* The micros the description filled, read before Save writes them.
-            A readout, not fields: nothing in the app types a micro by hand.
-            Mono because it measures; no accent and no signal colour — a figure
-            on a catalog row is not a biological state. */}
-        {microsLine(micros) !== null ? (
-          <View className="mt-3">
-            <Text className="font-label text-[10px] uppercase tracking-[1.2px] text-ink-muted">
-              {`Micros, per 100 ${unit}`}
-            </Text>
-            <Text className="mt-1 font-mono text-[11px] leading-4 text-ink-secondary">
-              {microsLine(micros)}
-            </Text>
+        {/* Micros — the shortlist, a field each in its own unit, under the
+            same per-100 / per-serving chip as the macros. Blank is not
+            recorded, never 0. */}
+        <View className="mt-5">
+          <SectionLabel
+            label="Micros"
+            note={entryBasis === 'serving' ? 'Per serving' : `Per 100 ${unit}`}
+          />
+        </View>
+        {rowsOf(MICROS, 3).map((row) => (
+          <View key={row[0]!.key} className="mt-3 flex-row gap-3">
+            {row.map((m) => (
+              <FormField
+                key={m.key}
+                label={`${m.label} ${m.unit}`}
+                value={form.micros[m.key] ?? ''}
+                onChange={(text) => setMicro(m.key, text)}
+                placeholder="—"
+                keyboardType="decimal-pad"
+                mono
+                fill
+              />
+            ))}
           </View>
-        ) : null}
+        ))}
 
         {problem ? (
-          <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+          <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
             {problem}
+          </Text>
+        ) : null}
+        {consequence && result.ok ? (
+          <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
+            {consequence}
           </Text>
         ) : null}
 
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Save food"
+          accessibilityLabel={editing ? 'Save changes to this food' : 'Save food'}
           accessibilityState={{ disabled: !canSave }}
           disabled={!canSave}
           onPress={save}
@@ -616,10 +645,11 @@ export default function FoodNewScreen() {
                 ? 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink'
                 : 'font-label text-[13px] font-semibold uppercase tracking-[1.2px] text-ink-muted'
             }>
-            Save food
+            {editing ? 'Save changes' : 'Save food'}
           </Text>
         </Pressable>
       </View>
     </Screen>
   );
 }
+

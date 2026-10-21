@@ -263,7 +263,7 @@ are different on purpose.
 | `meals` | name, date, time, notes · **`combine_with`** (2026-09-25) | hard (was **own**) | macros are read-only: an itemized total is the sum of its items and must not disagree with them. A combine is the Eat tab's `combineMeals` (§10b) |
 | `workouts` | kind, date, duration, notes, `away` | hard (was **own**) | `sets` is not a field — `replaceWorkout` deletes and re-inserts them |
 | `water` | ml | hard | manual rows only; a device row refuses at resolve |
-| `food_catalog` | name, brand, per-100 macros, basis, favourite | hard | `meal_items.food_id` is SET NULL and every item carries its own snapshot |
+| `food_catalog` | name, brand, per-100 macros, basis, favourite | hard | `meal_items.food_id` is SET NULL and every item carries its own snapshot. **Parity with a screen since 2026-10-21:** Add food's pencil and the scanner's *Edit this food* open `food-new.tsx?id=`, which saves through the same `updateFood`. An Open Food Facts row whose contents an edit changes becomes `user` inside `updateFood` — from either side — so a background re-fetch (`refreshOffFood`) never overwrites the correction |
 | `meal_templates` | name, notes | hard | a stamp, never a record of a day |
 | `saved_workouts` | name | hard | `workouts.routine_id` is SET NULL |
 | `exercise_catalog` | `status: archived` · **`loadBasis`** (2026-09-25) | refuse | `routine_exercises` CASCADES, so archive is the only safe retirement. The basis is the chooser's `setExerciseLoadBasis` (§10b) |

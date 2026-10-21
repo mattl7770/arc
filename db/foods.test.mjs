@@ -5,6 +5,7 @@
  * via node:sqlite. Mirrors db/nutrition.test.mjs; op-sqlite is never loaded.
  * Run: npm run db:test.
  */
+import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 import { todayISODate } from '../src/lib/db/date.ts';
@@ -46,6 +47,11 @@ import {
 } from '../src/lib/db/repositories/nutrition.ts';
 import { itemForPortion, macrosForAmount } from '../src/lib/nutrition/servings.ts';
 import { foodDeleteConsequence } from '../src/lib/nutrition/food-delete.ts';
+import {
+  foodEditConsequence,
+  foodFormFromRow,
+  readFoodForm,
+} from '../src/lib/nutrition/food-form.ts';
 import { deleteFoodWithUndo } from '../src/lib/nutrition/undo-offers.ts';
 import { closeUndo, currentUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
 import {
@@ -1140,6 +1146,139 @@ console.log('17. a catalog food deleted with its Undo — what stays, and what c
   /^2 × 1 egg/.test(before ?? '') && after === fmtAmount(100, 'g') && counted().kcal === 143
     ? ok(`…which is what happens: "${before}" reads "${after}", and its numbers stay`)
     : bad('counted label after delete', `${before} → ${after}`);
+}
+
+// ---------------------------------------------------------------------------
+// 18. Item 85 (owner, 2026-10-21): "edit saved foods". The edit screen
+// (app/food-new.tsx with `id`) reads and writes through src/lib/nutrition/
+// food-form.ts and saves through `updateFood` — the Coach's food_catalog edit's
+// own writer (docs/coach-domains.md, parity).
+console.log('18. a catalog food edited on its own screen — what changes, and what stays');
+{
+  const { db } = freshDb();
+  const id = createFood(db, {
+    name: 'Chocolate milk',
+    brand: 'Lewis Road',
+    barcode: '9421903483058',
+    serving_name: '1 glass',
+    serving_amount: 250,
+    basis: 'ml',
+    kcal_100g: 132.887,
+    protein_g_100g: 4.32,
+    carbs_g_100g: 12.4,
+    fat_g_100g: 7.32,
+    micros: JSON.stringify({ sodium_mg: 50, calcium_mg: 121.333 }),
+    source: 'openfoodfacts',
+  });
+  const food = getFood(db, id);
+  const opened = foodFormFromRow(food);
+  opened.kcal === '132.89' && opened.micros.calcium_mg === '121.33' && opened.unit === 'ml'
+    ? ok('the form opens on the row, per 100 ml, printed to 2 dp')
+    : bad('opened form', JSON.stringify(opened));
+
+  // UNTOUCHED figures write back EXACTLY, not as the 2 dp the field printed.
+  const original = { food, form: opened };
+  const same = readFoodForm(opened, { barcode: food.barcode, source: food.source, original });
+  same.ok &&
+  same.food.kcal_100g === 132.887 &&
+  JSON.parse(same.food.micros).calcium_mg === 121.333 &&
+  same.food.serving_amount === 250
+    ? ok('an untouched field writes the stored 132.887, not the printed 132.89')
+    : bad('verbatim', JSON.stringify(same));
+
+  // A TYPED change writes what was typed; a cleared micro is not recorded.
+  const typed = readFoodForm(
+    { ...opened, kcal: '140', fat: '8', micros: { ...opened.micros, sodium_mg: '' , iron_mg: '0.4' } },
+    { barcode: food.barcode, source: food.source, original }
+  );
+  const typedMicros = JSON.parse(typed.food.micros);
+  typed.ok &&
+  typed.food.kcal_100g === 140 &&
+  typed.food.fat_g_100g === 8 &&
+  typed.food.protein_g_100g === 4.32 &&
+  typedMicros.sodium_mg === undefined &&
+  typedMicros.iron_mg === 0.4 &&
+  typedMicros.calcium_mg === 121.333
+    ? ok('typed figures are written; a cleared micro is not recorded (never 0); untouched ones stay exact')
+    : bad('typed edit', JSON.stringify(typed));
+
+  // PER SERVING: typed per 250 ml glass, stored per 100 ml — micros too.
+  const perServing = readFoodForm(
+    { ...opened, entryBasis: 'serving', kcal: '332', micros: { calcium_mg: '300' } },
+    { barcode: food.barcode, source: food.source, original }
+  );
+  perServing.ok &&
+  near(perServing.food.kcal_100g, 132.8) &&
+  near(JSON.parse(perServing.food.micros).calcium_mg, 120)
+    ? ok('per-serving entry divides by the 250 ml serving — 332 kcal → 132.8 per 100 ml, the micros with it')
+    : bad('per serving', JSON.stringify(perServing));
+
+  // REFUSALS, in words.
+  const tooMuch = readFoodForm({ ...opened, kcal: '1200' }, { barcode: null, source: 'user', original });
+  const unpaired = readFoodForm({ ...opened, servingName: '' }, { barcode: null, source: 'user', original });
+  const nameless = readFoodForm({ ...opened, name: '  ' }, { barcode: null, source: 'user', original });
+  !tooMuch.ok &&
+  /950/.test(tooMuch.problem) &&
+  !unpaired.ok &&
+  /both a name/.test(unpaired.problem) &&
+  !nameless.ok &&
+  nameless.problem === null
+    ? ok('kcal past 950 and a half serving say why; a blank name only disables Save')
+    : bad('refusals', JSON.stringify([tooMuch, unpaired, nameless]));
+
+  // THE WRITE: a meal logged before keeps its snapshot; OFF's row becomes the
+  // user's, so a re-fetch never overwrites the correction; the barcode stays.
+  const { mealId } = logMealWithItems(db, {
+    date: todayISODate(),
+    time: '15:00',
+    name: 'Chocolate milk',
+    items: [itemForPortion(food, { servingQty: 1 })],
+  });
+  const loggedBefore = listMealItems(db, mealId)[0];
+  updateFood(db, id, typed.food);
+  const after = getFood(db, id);
+  const loggedAfter = listMealItems(db, mealId)[0];
+  after.kcal_100g === 140 &&
+  after.barcode === '9421903483058' &&
+  after.source === 'user' &&
+  loggedAfter.kcal === loggedBefore.kcal &&
+  loggedAfter.amount === loggedBefore.amount
+    ? ok('saved: the catalog row changes, OFF’s row becomes the user’s, the logged meal keeps its numbers')
+    : bad('edit write', JSON.stringify({ after, loggedBefore, loggedAfter }));
+  // Only OFF's provenance moves: a described food keeps `ai`, its `est` mark.
+  const ai = createFood(db, { name: 'Described', kcal_100g: 100, source: 'ai' });
+  updateFood(db, ai, { name: 'Described', kcal_100g: 110, source: 'ai' });
+  getFood(db, ai).source === 'ai'
+    ? ok('an edited AI-described food stays `ai` — most of its numbers are still the model’s')
+    : bad('ai provenance', getFood(db, ai).source);
+  // A write that changes nothing (the Coach starring a food rewrites it whole)
+  // leaves an OFF row OFF's, so it still heals on the next scan.
+  const off = createFood(db, { name: 'Scanned', kcal_100g: 50, source: 'openfoodfacts' });
+  updateFood(db, off, { ...getFood(db, off) });
+  getFood(db, off).source === 'openfoodfacts'
+    ? ok('rewriting an OFF row with its own contents does not claim it')
+    : bad('no-op claim', getFood(db, off).source);
+
+  // THE CONSEQUENCE above Save, from foodUsage.
+  const usage = foodUsage(db, id);
+  foodEditConsequence(usage, false) ===
+    'Changes the catalog entry only — it is used by 1 meal, which keeps its own numbers. What you add from now on uses the new figures.' &&
+  foodEditConsequence({ meals: 0, templates: 0, recipes: 0, counted: 0 }, false) ===
+    'Changes the catalog entry. Nothing logged uses it yet.' &&
+  /2 items counted in its serving will read the new serving name/.test(
+    foodEditConsequence({ meals: 1, templates: 0, recipes: 0, counted: 2 }, true)
+  )
+    ? ok('the consequence names what keeps its numbers, and a renamed serving’s live label')
+    : bad('consequence', foodEditConsequence(usage, false));
+
+  // PARITY: the screen saves through updateFood, as the Coach's edit does.
+  const screen = readFileSync(new URL('../app/food-new.tsx', import.meta.url), 'utf8');
+  const coach = readFileSync(new URL('../src/lib/ai/domains/read-domains.ts', import.meta.url), 'utf8');
+  screen.includes('if (editing) updateFood(getDb(), editing.id, result.food);') &&
+  coach.includes('updateFood(db, row.id, {') &&
+  !/\bdb\.run\(/.test(screen)
+    ? ok('the edit screen and the Coach both write through updateFood, and the screen runs no SQL')
+    : bad('parity');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

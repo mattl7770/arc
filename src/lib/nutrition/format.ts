@@ -33,9 +33,9 @@ export function fmtMicro(value: number, decimals: number): string {
 /**
  * "Sodium 380 mg · Iron 2.1 mg · Omega-3 1.2 g" — every micro a payload
  * records, in the vocabulary's own order and decimals, or null when it records
- * none. What app/food-new.tsx shows under a described food's macros
- * (2026-09-25), so a figure the model filled is read before Save writes it and
- * never rides to the row unseen.
+ * none. It was app/food-new.tsx's readout under a described food's macros
+ * (2026-09-25) until the micros became fields there (2026-10-21); no screen
+ * draws it now.
  */
 export function microsLine(json: string | null | undefined): string | null {
   const micros = parseMicros(json);
@@ -56,6 +56,46 @@ export function macroLine(row: {
   if (row.carbs_g != null) parts.push(`C ${Math.round(row.carbs_g)}g`);
   if (row.fat_g != null) parts.push(`F ${Math.round(row.fat_g)}g`);
   return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/** One row of a food's label as the scanner's review draws it (2026-10-21). */
+export type FoodLabelRow = { head: string; figures: string };
+
+/**
+ * A catalog food's figures twice over — per 100 of its basis, and per serving
+ * when it names one — so the review states both side by side and a per-serving
+ * number can never be mistaken for a per-100 one (owner, 2026-10-21: *"barcode
+ * scanner … misinterprets per serving and per 100g"*). Both rows come from the
+ * stored per-100 columns, so they cannot disagree with what a portion logs.
+ *
+ * In the food's own unit, never the oz/ml preference: these are the label's
+ * numbers, and the label says ml. A figure not recorded is left out of its row;
+ * a row with none reads `—`.
+ */
+export function foodLabelRows(food: {
+  basis: AmountUnit;
+  serving_amount: number | null;
+  kcal_100g: number | null;
+  protein_g_100g: number | null;
+  carbs_g_100g: number | null;
+  fat_g_100g: number | null;
+}): FoodLabelRow[] {
+  const line = (factor: number): string => {
+    const parts: string[] = [];
+    if (food.kcal_100g != null) parts.push(`${fmtInt(food.kcal_100g * factor)} kcal`);
+    if (food.protein_g_100g != null) parts.push(`P ${fmtQty(food.protein_g_100g * factor)}g`);
+    if (food.carbs_g_100g != null) parts.push(`C ${fmtQty(food.carbs_g_100g * factor)}g`);
+    if (food.fat_g_100g != null) parts.push(`F ${fmtQty(food.fat_g_100g * factor)}g`);
+    return parts.length > 0 ? parts.join(' · ') : '—';
+  };
+  const rows: FoodLabelRow[] = [{ head: `Per 100 ${food.basis}`, figures: line(1) }];
+  if (food.serving_amount != null && food.serving_amount > 0) {
+    rows.push({
+      head: `Per serving · ${fmtAmount(food.serving_amount, food.basis)}`,
+      figures: line(food.serving_amount / 100),
+    });
+  }
+  return rows;
 }
 
 /** One macro column on a meal row: the metric it belongs to, and what to print
