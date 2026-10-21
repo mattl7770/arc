@@ -55,6 +55,15 @@ const STUBS = {
   'react-native-reanimated': pathToFileURL(
     path.join(HERE, 'render-stubs', 'react-native-reanimated.mjs')
   ).href,
+  // The set rows' swipe-to-delete (round 3, 2026-10-21). Reanimated worklets
+  // and a native root view underneath; the stub draws the open frame — the row
+  // and the Delete it reveals — so the suite can press the action.
+  'react-native-gesture-handler': pathToFileURL(
+    path.join(HERE, 'render-stubs', 'gesture-handler.mjs')
+  ).href,
+  'react-native-gesture-handler/ReanimatedSwipeable': pathToFileURL(
+    path.join(HERE, 'render-stubs', 'gesture-handler.mjs')
+  ).href,
 };
 
 async function resolveWithExtensions(base, context, nextResolve) {

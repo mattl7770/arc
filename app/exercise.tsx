@@ -95,8 +95,10 @@ import { cancelRestAlert } from '@/lib/notifications/rest-timer';
  * made these conditional; the owner rejected that and they are restored.)
  *
  * **Accent budget: one.** The Train-today stamp, its hatched cap and its Start
- * button are this screen's single primary action. Everything else is neutral
- * ink. The mirror rule holds too: FRESHNESS is a *biological* state, so it is
+ * button are this screen's single primary action — except while a session is
+ * in progress, when the stamp, the cap and the accent move to its **Resume
+ * workout** and Train today becomes a plate (round 3, 2026-10-21; see the
+ * Session in progress card). Everything else is neutral ink. The mirror rule holds too: FRESHNESS is a *biological* state, so it is
  * the one thing here allowed to carry a signal colour, and the accent never
  * touches it — not in the body figure's cells and not in the gauge on the
  * Train-today card, which is the hard case, because that gauge sits a few
@@ -173,7 +175,9 @@ export default function ExerciseScreen() {
       'Starting a new one deletes what you have logged in it.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Resume it', onPress: resume },
+        // The preferred answer (round 3): iOS sets it bold, the way the hub
+        // now draws Resume larger than any start.
+        { text: 'Resume it', onPress: resume, isPreferred: true },
         {
           text: 'Start new',
           style: 'destructive',
@@ -259,36 +263,49 @@ export default function ExerciseScreen() {
         outranks one the engine is suggesting: the question this screen answers
         is "what do I do right now", and the answer is "finish what you started".
 
-        It is drawn as a **ruled plate** and carries no accent. A plate because
-        it is a record — what has been logged so far — and neutral because the
-        screen's one accent belongs to Train today (00-design-spec.md §2), and
-        two stamped cards arguing at the top of a screen is exactly the noise
-        the accent budget exists to prevent.
+        **It takes the accent while it exists** (owner, round 3, 2026-10-21:
+        *"resume in progress workout should be bigger than start a new one when
+        applicable"*). Until then it was a neutral plate with a small Resume in
+        the label voice, and Train today kept the stamp and its full-width pine
+        Start — so the larger, louder control on the screen was the one that
+        would ask to delete the session in progress. The budget is still ONE:
+        the stamp, its cap and the full-width Resume move here, and Train today
+        steps down to a plate with outlined starts (`TrainTodayCard`'s
+        `sessionOpen`). With two sessions open (the set grid and the free-form
+        logger) the set grid's is the primary and the other a row beneath it.
       */}
       {drafts.live || drafts.manual ? (
         <View className="mt-5">
-          <Block device="plate">
+          <Block device="stamp" cap>
             <SectionLabel
               label="Session in progress"
               note={drafts.updatedAt ? draftAgeLabel(drafts.updatedAt) : undefined}
             />
             {drafts.live ? (
-              <DraftRow
-                first
+              <ResumeLead
                 title={liveDraftMovements(drafts.live).slice(0, 3).join(' · ') || 'Workout'}
                 detail={draftDetail(liveDraftSetsDone(drafts.live))}
                 onResume={resumeLive}
                 onDiscard={() => discardDraft('live', liveDraftSetsDone(drafts.live!))}
               />
-            ) : null}
-            {drafts.manual ? (
-              <DraftRow
-                first={!drafts.live}
+            ) : drafts.manual ? (
+              <ResumeLead
                 title={manualDraftTitle(drafts.manual)}
                 detail={draftDetail(drafts.manual.sets.length)}
                 onResume={resumeManual}
                 onDiscard={() => discardDraft('manual', drafts.manual!.sets.length)}
               />
+            ) : null}
+            {drafts.live && drafts.manual ? (
+              <View className="mt-3">
+                <DraftRow
+                  first={false}
+                  title={manualDraftTitle(drafts.manual)}
+                  detail={draftDetail(drafts.manual.sets.length)}
+                  onResume={resumeManual}
+                  onDiscard={() => discardDraft('manual', drafts.manual!.sets.length)}
+                />
+              </View>
             ) : null}
           </Block>
         </View>
@@ -304,6 +321,7 @@ export default function ExerciseScreen() {
         <TrainTodayCard
           recommendation={recommendation}
           hasHistory={sessions.length > 0}
+          sessionOpen={drafts.live !== null || drafts.manual !== null}
           onStart={startRecommended}
           onStartEmpty={startEmpty}
         />
@@ -749,6 +767,55 @@ function manualDraftTitle(draft: ManualDraft): string {
 }
 
 /**
+ * The session in progress, as the screen's one next action (round 3,
+ * 2026-10-21): what it holds, a 44pt discard past the rule, and a full-width
+ * **Resume workout** in the accent — the largest control on the screen, and
+ * the same weight Train today's Start carries when no session is open.
+ */
+function ResumeLead({
+  title,
+  detail,
+  onResume,
+  onDiscard,
+}: {
+  title: string;
+  detail: string;
+  onResume: () => void;
+  onDiscard: () => void;
+}) {
+  return (
+    <View>
+      <View className="mt-2 flex-row items-center">
+        <View className="flex-1 pr-3">
+          <Text
+            className="font-serif text-[18px] font-semibold leading-6 text-ink"
+            numberOfLines={2}>
+            {title}
+          </Text>
+          <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-muted">{detail}</Text>
+        </View>
+        <VerticalDivider />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Discard ${title}`}
+          onPress={onDiscard}
+          className="min-h-[44px] w-11 items-center justify-center self-stretch active:bg-paper-dim">
+          <Ionicons name="trash-outline" size={16} color={palette.inkMuted} />
+        </Pressable>
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Resume workout: ${title}. ${detail}.`}
+        onPress={onResume}
+        className="mt-4 min-h-[52px] flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3.5 active:opacity-70">
+        <Ionicons name="play" size={18} color={palette.pineOn} />
+        <Text className="font-label text-[16px] font-semibold text-pine-on">Resume workout</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+/**
  * One unfinished session. Two controls on one row, exactly as the exercise
  * picker draws its rows: the row proper resumes, and past the rule a 44pt
  * button throws the draft away. The rule is what says they are two things —
@@ -837,12 +904,20 @@ function DraftRow({
 function TrainTodayCard({
   recommendation,
   hasHistory,
+  sessionOpen = false,
   onStart,
   onStartEmpty,
 }: {
   recommendation: Recommendation;
   /** Has the owner ever logged a session? Drives the gauge's qualifier. */
   hasHistory: boolean;
+  /**
+   * A session is in progress (round 3, 2026-10-21). The card steps down: a
+   * plate, not the stamp, and its Start an outline labelled as the second
+   * choice — the accent belongs to Resume above it, and starting anything here
+   * first asks to delete that session.
+   */
+  sessionOpen?: boolean;
   onStart: () => void;
   onStartEmpty: () => void;
 }) {
@@ -887,7 +962,7 @@ function TrainTodayCard({
     // `cap` draws the sheet's accent/ink barber hatch over the stamp's top edge
     // — the mark that separates "a card with a coloured border" from "a drawing
     // that has been stamped" (src/components/ui/block.tsx).
-    <Block device="stamp" cap>
+    <Block device={sessionOpen ? 'plate' : 'stamp'} cap={!sessionOpen}>
       <SectionLabel label="Train today" note="Recommended" />
 
       <Text className="mt-2 font-serif text-[20px] font-semibold leading-7 text-ink">{title}</Text>
@@ -939,9 +1014,23 @@ function TrainTodayCard({
         accessibilityRole="button"
         accessibilityLabel="Start the recommended workout"
         onPress={onStart}
-        className="mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn bg-pine py-3 active:opacity-70">
-        <Ionicons name="play" size={17} color={palette.pineOn} />
-        <Text className="font-label text-[15px] font-semibold text-pine-on">Start recommended</Text>
+        className={`mt-4 min-h-[44px] flex-row items-center justify-center gap-2 rounded-btn py-3 ${
+          sessionOpen ? 'border border-hairline active:bg-paper-dim' : 'bg-pine active:opacity-70'
+        }`}>
+        <Ionicons
+          name="play"
+          size={sessionOpen ? 15 : 17}
+          color={sessionOpen ? palette.inkSecondary : palette.pineOn}
+        />
+        {sessionOpen ? (
+          <Text className="font-label text-[12px] font-semibold uppercase tracking-[1px] text-ink">
+            Start recommended instead
+          </Text>
+        ) : (
+          <Text className="font-label text-[15px] font-semibold text-pine-on">
+            Start recommended
+          </Text>
+        )}
       </Pressable>
       <StartEmptyButton onPress={onStartEmpty} />
     </Block>

@@ -417,6 +417,68 @@ export function offersAiEntry(entries: NameSource[], query: string): boolean {
   return !rankExerciseMatches(entries, query).some((m) => m.tier <= TIER.fuzzy);
 }
 
+/** What the picker's standing AI row says (round 3) — see {@link aiDoorCopy}. */
+export type AiDoorCopy = {
+  /** The sentence above the button. */
+  lead: string;
+  /** VoiceOver's name for the button. */
+  spoken: string;
+  /** False when there is no model key: the row explains, the button is off. */
+  enabled: boolean;
+};
+
+/**
+ * The words of the picker's **Add with AI** row, which since round 3
+ * (2026-10-21) stands at the foot of the catalog on every search, empty or not
+ * — owner: *"add with ai doesn't show up in regular add exercise button"*.
+ *
+ * `offersAiEntry` no longer decides whether the door is DRAWN; it decides what
+ * the row SAYS. Where the catalog has nothing confident the row says so, in the
+ * words C12 wrote; where it has matches the row is a second thought beneath
+ * them ("Not what you're after?"), so catalog-first still holds in the order
+ * the reader meets things; with nothing typed it offers to describe one. With
+ * no model key the row stays and says what it needs, rather than vanishing
+ * and leaving the owner to wonder where it went.
+ */
+export function aiDoorCopy(input: {
+  query: string;
+  /** `offersAiEntry` over the whole catalog for this query. */
+  offered: boolean;
+  /** Rows the list is showing. */
+  shown: number;
+  /** A model key is configured. */
+  available: boolean;
+}): AiDoorCopy {
+  const typed = input.query.trim();
+  if (!input.available) {
+    return {
+      lead: 'Adding with AI needs a model key — set one in the Coach settings.',
+      spoken: 'Add with AI, unavailable: no model key',
+      enabled: false,
+    };
+  }
+  const review = 'AI can write the catalog entry — you review it before it’s saved.';
+  if (typed === '') {
+    return {
+      lead: `Not in the catalog? ${review}`,
+      spoken: 'Add an exercise with AI',
+      enabled: true,
+    };
+  }
+  if (input.offered) {
+    return {
+      lead: `${input.shown === 0 ? 'ARC doesn’t have this one.' : 'ARC doesn’t have a close match.'} ${review}`,
+      spoken: `Add ${typed} with AI`,
+      enabled: true,
+    };
+  }
+  return {
+    lead: `Not what you’re after? ${review}`,
+    spoken: `Add ${typed} with AI`,
+    enabled: true,
+  };
+}
+
 /**
  * The single confident match for `query`, or null — the discipline the resolver
  * is built on, and the reason this is a separate function rather than

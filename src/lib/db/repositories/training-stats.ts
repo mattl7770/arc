@@ -432,6 +432,15 @@ export type PrevSet = {
   /** 0046 — so a run's Prev column shows last week's time and distance. */
   durationSec: number | null;
   distanceM: number | null;
+  /**
+   * The row's set type (round 3, 2026-10-21). Optional: a draft written before
+   * it rode along has none, and reads as a working row. It keeps the logger's
+   * per-set target off last time's warm-up rows — a progression target there
+   * would put a working load where the owner ramps up — and lets a new block
+   * mark those rows as warm-ups up front (src/lib/exercise/set-hints.ts,
+   * app/workout-live.tsx `buildBlock`).
+   */
+  setType?: SetType;
 };
 
 /**
@@ -474,12 +483,13 @@ export function lastSessionSets(db: Database, exerciseId: string): PrevSet[] {
     rpe: number | null;
     duration_sec: number | null;
     distance_m: number | null;
+    set_type: SetType;
   }>(
     // No warmup filter: the prefill reproduces the whole session (warmups
     // included) so a repeat is one confirm per set, as the docstring promises —
     // unlike the stat reads above, which follow the Hevy/Strong exclude-warmups
     // rule. The latest-workout subquery already makes no warmup distinction.
-    `SELECT reps, weight_kg, rpe, duration_sec, distance_m FROM workout_sets
+    `SELECT reps, weight_kg, rpe, duration_sec, distance_m, set_type FROM workout_sets
      WHERE workout_id = ? AND exercise_id = ?
      ORDER BY set_index`,
     [latest.workout_id, exerciseId]
@@ -490,6 +500,7 @@ export function lastSessionSets(db: Database, exerciseId: string): PrevSet[] {
     rpe: r.rpe,
     durationSec: r.duration_sec,
     distanceM: r.distance_m,
+    setType: r.set_type,
   }));
 }
 
