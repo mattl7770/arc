@@ -58,7 +58,8 @@ export type MicroKey =
   | 'b12_mcg'
   | 'folate_mcg'
   | 'omega3_g'
-  | 'caffeine_mg';
+  | 'caffeine_mg'
+  | 'alcohol_g';
 
 export type MicroDescriptor = {
   key: MicroKey;
@@ -93,7 +94,28 @@ export const MICROS: MicroDescriptor[] = [
   { key: 'caffeine_mg', label: 'Caffeine', unit: 'mg', decimals: 0, reference: 400, ceiling: true },
 ];
 
-const MICRO_KEYS = new Set<string>(MICROS.map((m) => m.key));
+/**
+ * **Alcohol rides the same JSON, and is deliberately NOT on the shortlist
+ * above** (items 61/80, 2026-10-21 — Night out asks "how many drinks?").
+ *
+ * It is recorded here for caffeine's reason: a per-portion amount against a
+ * logged item, summed over a day, with no machinery of its own worth a second
+ * place for the same bug — and storing it this way is not a schema change
+ * (`meal_items.micros` is JSON). Grams of ethanol, per portion, under
+ * `alcohol_g` (src/lib/nutrition/drinks.ts writes it, 14 g a standard drink).
+ *
+ * It is kept OFF `MICROS` because everything that list feeds would misstate it:
+ * the micros screen reads every row against a daily reference value, and the
+ * only figures there are for alcohol are guideline limits — a verdict printed
+ * as if it were a nutrient reference; and the estimator prompts ask for every
+ * shortlist key by name (`NOTABLE_MICRO_KEYS`). So the screen and the
+ * estimator never see it, while every function below that carries a snapshot
+ * — parse, serialize, scale, sum, merge — keeps it, so re-portioning a drinks
+ * row on meal-detail scales its alcohol with its kcal instead of dropping it.
+ */
+const CARRIED_KEYS: readonly MicroKey[] = [...MICROS.map((m) => m.key), 'alcohol_g'];
+
+const MICRO_KEYS = new Set<string>(CARRIED_KEYS);
 
 /** A micros JSON payload: known keys → per-portion (or per-100 g) amount. */
 export type Micros = Partial<Record<MicroKey, number>>;
@@ -150,9 +172,9 @@ export function serializeMicros(micros: Micros): string | null {
 export function microsForAmount(per100Json: string | null | undefined, amount: number): Micros {
   const per100 = parseMicros(per100Json);
   const out: Micros = {};
-  for (const m of MICROS) {
-    const v = per100[m.key];
-    if (v != null) out[m.key] = (v * amount) / 100;
+  for (const key of CARRIED_KEYS) {
+    const v = per100[key];
+    if (v != null) out[key] = (v * amount) / 100;
   }
   return out;
 }
@@ -161,9 +183,9 @@ export function microsForAmount(per100Json: string | null | undefined, amount: n
 export function sumMicros(payloads: Micros[]): Micros {
   const out: Micros = {};
   for (const p of payloads) {
-    for (const m of MICROS) {
-      const v = p[m.key];
-      if (v != null) out[m.key] = (out[m.key] ?? 0) + v;
+    for (const key of CARRIED_KEYS) {
+      const v = p[key];
+      if (v != null) out[key] = (out[key] ?? 0) + v;
     }
   }
   return out;
@@ -187,9 +209,9 @@ export function sumMicros(payloads: Micros[]): Micros {
  */
 export function mergeMicros(primary: Micros, fill: Micros): Micros {
   const out: Micros = {};
-  for (const m of MICROS) {
-    const v = primary[m.key] ?? fill[m.key];
-    if (v != null) out[m.key] = v;
+  for (const key of CARRIED_KEYS) {
+    const v = primary[key] ?? fill[key];
+    if (v != null) out[key] = v;
   }
   return out;
 }
@@ -198,9 +220,9 @@ export function mergeMicros(primary: Micros, fill: Micros): Micros {
  * snapshot (no catalog food to re-derive from). */
 export function scaleMicros(micros: Micros, factor: number): Micros {
   const out: Micros = {};
-  for (const m of MICROS) {
-    const v = micros[m.key];
-    if (v != null) out[m.key] = v * factor;
+  for (const key of CARRIED_KEYS) {
+    const v = micros[key];
+    if (v != null) out[key] = v * factor;
   }
   return out;
 }

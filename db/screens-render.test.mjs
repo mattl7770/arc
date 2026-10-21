@@ -182,8 +182,13 @@ import DataScreen from '../app/(tabs)/data.tsx';
 import HomeScreen from '../app/(tabs)/index.tsx';
 import { MetricsGrid } from '../src/components/home/metrics-strip.tsx';
 import WearablesScreen from '../app/wearables.tsx';
-import { StatusControl, StatusFacts } from '../src/components/status/status-control.tsx';
+import {
+  DrinksPanel,
+  StatusControl,
+  StatusFacts,
+} from '../src/components/status/status-control.tsx';
 import { StatusRail } from '../src/components/status/status-rail.tsx';
+import { ReadinessStrip } from '../src/components/home/readiness-strip.tsx';
 import { openStatuses, startStatus } from '../src/lib/db/repositories/statuses.ts';
 import { endPromptFor, STATUS_CHIPS } from '../src/lib/status/chips.ts';
 import { shortDate } from '../src/lib/experiments/format.ts';
@@ -2027,6 +2032,60 @@ const db = getDb();
     unpinned.length === 0
       ? ok('every chip carries a pinned end prompt')
       : bad('end prompts not pinned', unpinned.map((chip) => chip.label).join(', '));
+
+    // NIGHT OUT'S DRINKS STEPPER (items 61/80, 2026-10-21) — drawn in the sheet
+    // in place of the rail, so rendered directly, as the rail is. The count,
+    // what it records as figures, the four kinds, and Save / Back.
+    const stepper = render(
+      'drinks-panel (Night out, first time)',
+      DrinksPanel,
+      {},
+      { initialCount: 2, initialKind: 'beer', editing: false, onSave() {}, onBack() {} }
+    );
+    expect('drinks-panel (Night out, first time)', stepper, [
+      'How many drinks?',
+      'One fewer drink',
+      'One more drink',
+      'standard drinks',
+      '28 g alcohol · 306 kcal · 25.2 g carbs',
+      'Beer',
+      'Wine',
+      'Spirits',
+      'Cocktail',
+      'Save Night out, 2 drinks',
+      'Back to the statuses',
+    ]);
+    refute('drinks-panel (Night out, first time)', stepper, ['limit', 'too many', 'adjust']);
+    const recount = render(
+      'drinks-panel (re-count, at zero)',
+      DrinksPanel,
+      {},
+      { initialCount: 0, initialKind: 'wine', editing: true, onSave() {}, onBack() {} }
+    );
+    expect('drinks-panel (re-count, at zero)', recount, ['nothing logged', 'Save 0 drinks']);
+    /<StatusRail[\s\S]*if \(chip\.asksDrinks\)[\s\S]*setDrinks\(/.test(controlSource) &&
+    /onToggle\(drinks\.chip, input\)/.test(controlSource)
+      ? ok('the sheet opens the stepper for Night out and hands its count to onToggle')
+      : bad('status-control no longer routes Night out through the stepper');
+
+    // The next morning's fact, under the pillars — and Home passes it.
+    const strip = render(
+      'readiness-strip (alcohol last night)',
+      ReadinessStrip,
+      {},
+      {
+        readiness: { level: 'good', label: 'Ready', detail: 'HRV 50 ms' },
+        pillars: [{ label: 'Recovery', level: 'good' }],
+        alcoholLine: 'Alcohol last night — 4 standard drinks · 56 g',
+      }
+    );
+    expect('readiness-strip (alcohol last night)', strip, [
+      'Alcohol last night — 4 standard drinks · 56 g',
+    ]);
+    const homeSource = readFileSync(new URL('../app/(tabs)/index.tsx', import.meta.url), 'utf8');
+    /alcoholLine=\{alcoholLastNightLine\(readiness\.alcoholLastNight\)\}/.test(homeSource)
+      ? ok('Home hands the readiness view’s alcoholLastNight to the strip')
+      : bad('Home does not pass the alcohol line');
 
     getDb().run('DELETE FROM day_statuses');
   }

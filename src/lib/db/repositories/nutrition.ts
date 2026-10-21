@@ -17,6 +17,18 @@ import { newId } from '../id';
 import type { DateString, TimeString } from '../types';
 import { CombineRefused, combinedName, planCombine } from '@/lib/nutrition/combine';
 import { assembleMealItems } from '@/lib/nutrition/composite';
+import {
+  type DayAlcohol,
+  DRINK_PIECE,
+  type DrinkKind,
+  type DrinksInput,
+  clampDrinks,
+  drinkKindNamed,
+  drinksFromGrams,
+  drinksItem,
+  isNightOutMealName,
+  nightOutMealName,
+} from '@/lib/nutrition/drinks';
 import { isValidClock } from '@/lib/nutrition/meal-time';
 import {
   type MicroKey,
@@ -1664,6 +1676,128 @@ export function dayMicroTotals(db: Database, date: string): Micros {
     [date]
   );
   return sumMicros(rows.map((r) => parseMicros(r.micros)));
+}
+
+// --- Drinks (items 61/80, 2026-10-21) -----------------------------------------
+//
+// Night out's "how many drinks?" (src/lib/nutrition/drinks.ts). The count is
+// stored as an ordinary meal item — see that file's header for the shape — so
+// nothing here is a new kind of record, only two ways to find one.
+
+/**
+ * The item Night out's stepper wrote: a top-level, counted-in-drinks row that
+ * records ethanol. Both marks, because each alone is something else can carry —
+ * a `2 drinks` piece count from an estimate, or a model's `alcohol_g` on a
+ * described pint — and the stepper must never rewrite a row it did not write.
+ */
+const STEPPER_ITEM_SQL = `mi.parent_item_id IS NULL AND mi.is_composite = 0
+  AND mi.piece_name = '${DRINK_PIECE}'
+  AND json_type(mi.micros, '$.alcohol_g') IN ('integer', 'real')`;
+
+/**
+ * The drinks the Night-out stepper recorded on `date` — what it opens on when
+ * its chip is tapped again. Null when it recorded none (or every such row has
+ * since been deleted on meal-detail).
+ *
+ * The count is the row's own `serving_qty`, so a re-count on meal-detail is
+ * what the stepper reads back. The kind is read off the item's name; a row the
+ * user renamed reads as beer, which only pre-selects a chip.
+ */
+export function nightOutDrinks(
+  db: Database,
+  date: string
+): { mealId: string; count: number; kind: DrinkKind } | null {
+  const rows = db.all<{ meal_id: string; name: string; serving_qty: number | null }>(
+    `SELECT mi.meal_id, mi.name, mi.serving_qty
+     FROM meal_items mi JOIN meals m ON m.id = mi.meal_id
+     WHERE m.date = ? AND ${STEPPER_ITEM_SQL}
+     ORDER BY mi.created_at, mi.rowid`,
+    [date]
+  );
+  if (rows.length === 0) return null;
+  return {
+    mealId: rows[0]!.meal_id,
+    count: rows.reduce((sum, row) => sum + (row.serving_qty ?? 0), 0),
+    kind: drinkKindNamed(rows[0]!.name) ?? 'beer',
+  };
+}
+
+/**
+ * Set the day's Night-out drinks to `input` — create, re-count, or (at 0)
+ * remove. One transaction for an existing record.
+ *
+ *   - **None recorded, count > 0:** a new meal, "Night out · 4 drinks", untimed
+ *     (it sorts last on the day, where an evening belongs).
+ *   - **Recorded, count > 0:** the stepper's row is replaced by one of the new
+ *     count and kind in the SAME meal, so anything else the user added to that
+ *     meal stays. The name follows the count only while it is still a name
+ *     this code wrote.
+ *   - **Count 0:** the stepper's row goes; a meal left empty goes with it,
+ *     because an empty meal reads as an unpriced one (removeMealItem's note).
+ *
+ * Nothing outside `meals` / `meal_items` is touched — not the status, not the
+ * mission, not a protocol. db/statuses.test.mjs §13 pins that.
+ */
+export function setNightOutDrinks(db: Database, date: string, input: DrinksInput): void {
+  const count = clampDrinks(input.count);
+  const existing = db.all<{ id: string; meal_id: string }>(
+    `SELECT mi.id, mi.meal_id
+     FROM meal_items mi JOIN meals m ON m.id = mi.meal_id
+     WHERE m.date = ? AND ${STEPPER_ITEM_SQL}
+     ORDER BY mi.created_at, mi.rowid`,
+    [date]
+  );
+  if (existing.length === 0) {
+    if (count > 0) {
+      logMealWithItems(db, {
+        date,
+        time: null,
+        name: nightOutMealName(count),
+        items: [drinksItem({ count, kind: input.kind })],
+      });
+    }
+    return;
+  }
+  const home = existing[0]!.meal_id;
+  const meals = [...new Set(existing.map((row) => row.meal_id))];
+  db.transaction(() => {
+    for (const row of existing) db.run('DELETE FROM meal_items WHERE id = ?', [row.id]);
+    if (count > 0) insertMealItem(db, home, drinksItem({ count, kind: input.kind }));
+    for (const mealId of meals) {
+      const left = db.get<{ n: number }>(
+        'SELECT count(*) AS n FROM meal_items WHERE meal_id = ?',
+        [mealId]
+      );
+      if ((left?.n ?? 0) === 0) {
+        db.run('DELETE FROM meals WHERE id = ?', [mealId]);
+        continue;
+      }
+      recomputeMealTotals(db, mealId);
+      const meal = db.get<{ name: string }>('SELECT name FROM meals WHERE id = ?', [mealId]);
+      if (meal && isNightOutMealName(meal.name)) {
+        const name = mealId === home && count > 0 ? nightOutMealName(count) : 'Night out';
+        if (name !== meal.name) db.run('UPDATE meals SET name = ? WHERE id = ?', [name, mealId]);
+      }
+    }
+  });
+}
+
+/**
+ * Every gram of ethanol recorded on `date`, from any item — the stepper's, or
+ * any other row that carries `alcohol_g` — as grams and standard drinks. Null
+ * on a day with none. What the Coach's state block and the next morning's
+ * readiness line read: the day's alcohol, not just the stepper's.
+ */
+export function dayAlcohol(db: Database, date: string): DayAlcohol | null {
+  const row = db.get<{ grams: number | null }>(
+    `SELECT sum(json_extract(mi.micros, '$.alcohol_g')) AS grams
+     FROM meal_items mi JOIN meals m ON m.id = mi.meal_id
+     WHERE m.date = ? AND mi.is_composite = 0
+       AND json_type(mi.micros, '$.alcohol_g') IN ('integer', 'real')`,
+    [date]
+  );
+  const grams = row?.grams ?? 0;
+  return grams > 0 ? { grams, drinks: drinksFromGrams(grams) } : null;
 }
 
 /**

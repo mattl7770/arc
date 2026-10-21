@@ -3,14 +3,27 @@ import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 
 import { StatusRail } from '@/components/status/status-rail';
+import { Chip } from '@/components/ui/chip';
 import { ModalScreen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import type { DayStatusRow } from '@/lib/db/repositories/statuses';
 import { deriveReadiness } from '@/lib/home/readiness';
+import {
+  DRINK_KINDS,
+  DRINKS_DEFAULT,
+  DRINKS_MAX,
+  DRINKS_MIN,
+  STANDARD_DRINK_G,
+  drinkSpec,
+  drinksPhrase,
+  type DrinkKind,
+  type DrinksInput,
+} from '@/lib/nutrition/drinks';
 import { displayStatus, type RailChip } from '@/lib/status/chips';
 import { statusLine } from '@/lib/status/line';
+import { currentNightOutDrinks } from '@/lib/status/store';
 
 /**
  * The status control — one small target that opens the five chips in a sheet.
@@ -114,8 +127,12 @@ export function StatusControl({
    * of live controls beside it would invite a gesture that cannot happen.
    */
   hidden?: boolean;
-  /** Off → on, or a tap on an on-chip. The sheet closes either way. */
-  onToggle: (chip: RailChip) => void;
+  /**
+   * Off → on, or a tap on an on-chip. The sheet closes either way. For a chip
+   * that asks for drinks (Night out) it is called only from the stepper's
+   * Save, with the count — see {@link DrinksPanel}.
+   */
+  onToggle: (chip: RailChip, drinks?: DrinksInput) => void;
   onEnd: (chip: RailChip & { openId: string }) => void;
 }) {
   const [sheet, setSheet] = useState(false);
@@ -123,6 +140,13 @@ export function StatusControl({
   // read fresh each time the sheet rises — even one that rises again before
   // iOS has finished dismissing it, when the Modal's children stay mounted.
   const [opening, setOpening] = useState(0);
+  // The chip whose drinks stepper is showing in place of the rail, and what it
+  // opened on — read once, on the tap, from the record.
+  const [drinks, setDrinks] = useState<{
+    chip: RailChip;
+    count: number;
+    kind: DrinkKind;
+  } | null>(null);
   if (hidden) return null;
 
   // Newest started first, so a status just set with a tap is the one named.
@@ -140,6 +164,7 @@ export function StatusControl({
       disabled={disabled}
       onPress={() => {
         setOpening((n) => n + 1);
+        setDrinks(null);
         setSheet(true);
       }}
       // min-h-[44px] is the tap-target floor stated rather than inferred: the
@@ -220,25 +245,57 @@ export function StatusControl({
           </Text>
 
           <ScrollView contentContainerClassName="pb-10 pt-5">
-            {/* The RAIL's own chips — and with them the re-ask and the ×, which
-                since 2026-09-23 are nowhere else. One vocabulary, two
-                surfaces. */}
-            <StatusRail
-              open={open}
-              disabled={disabled}
-              onToggle={(chip) => {
-                setSheet(false);
-                onToggle(chip);
-              }}
-              onEnd={(chip) => {
-                setSheet(false);
-                onEnd(chip);
-              }}
-            />
-            <Text className="px-5 pt-3 font-serif text-[11px] leading-4 text-ink-muted">
-              For anything else, tell the Coach. Skips on these days stop counting against you;
-              their readings sit out of your 30-day baselines.
-            </Text>
+            {drinks ? (
+              // Night out asks "how many drinks?" first (items 61/80): its tap
+              // swaps the rail for the stepper, on the recorded count when it is
+              // already on. Save closes the sheet and hands the count on.
+              <DrinksPanel
+                initialCount={drinks.count}
+                initialKind={drinks.kind}
+                editing={drinks.chip.openId !== null}
+                disabled={disabled}
+                onSave={(input) => {
+                  setSheet(false);
+                  onToggle(drinks.chip, input);
+                }}
+                onBack={() => setDrinks(null)}
+              />
+            ) : (
+              <>
+                {/* The RAIL's own chips — and with them the re-ask and the ×,
+                    which since 2026-09-23 are nowhere else. One vocabulary, two
+                    surfaces. */}
+                <StatusRail
+                  open={open}
+                  disabled={disabled}
+                  onToggle={(chip) => {
+                    if (chip.asksDrinks) {
+                      // Open on what today's record holds, whether or not the
+                      // chip is on (a Night out the Coach ended still has its
+                      // drinks). Nothing recorded: 0 while on (the count was
+                      // removed on meal-detail), the owner's default while off.
+                      const recorded = currentNightOutDrinks();
+                      setDrinks({
+                        chip,
+                        count: recorded?.count ?? (chip.openId !== null ? 0 : DRINKS_DEFAULT),
+                        kind: recorded?.kind ?? 'beer',
+                      });
+                      return;
+                    }
+                    setSheet(false);
+                    onToggle(chip);
+                  }}
+                  onEnd={(chip) => {
+                    setSheet(false);
+                    onEnd(chip);
+                  }}
+                />
+                <Text className="px-5 pt-3 font-serif text-[11px] leading-4 text-ink-muted">
+                  For anything else, tell the Coach. Skips on these days stop counting against
+                  you; their readings sit out of your 30-day baselines.
+                </Text>
+              </>
+            )}
           </ScrollView>
         </ModalScreen>
       </Modal>
@@ -294,5 +351,136 @@ export function StatusFacts({ open }: { open: readonly DayStatusRow[] }) {
   if (sentence === null) return null;
   return (
     <Text className="px-5 pt-1 font-mono text-[11px] leading-4 text-ink-muted">{sentence}</Text>
+  );
+}
+
+/**
+ * Night out's drinks stepper (items 61/80, 2026-10-21) — *"how many drinks?"*,
+ * drawn in the status sheet in place of the rail.
+ *
+ * A count of STANDARD drinks, 0–20, opening on 2 the first time and on the
+ * recorded count after; and a choice of what was in the glass, which changes
+ * only the kcal and carbs (src/lib/nutrition/drinks.ts holds the figures and
+ * their sources). Save records the status if it is not on yet, and the drinks
+ * as a meal on the day; a re-count replaces that meal's drinks row.
+ *
+ * Every word on it is a fact — the count, the grams, the kcal, and where they
+ * land. No verdict, no limit line, no signal colour: drinks are something the
+ * user did, not a measured state of his body (the firewall status-rail.tsx
+ * states), and the accent is the screen's send, not this. Save is ink, as the
+ * Log tab's capture editor's is.
+ *
+ * Pure props, so db/screens-render.test.mjs renders it directly — the sheet's
+ * Modal draws nothing server-side.
+ */
+export function DrinksPanel({
+  initialCount,
+  initialKind,
+  editing,
+  disabled,
+  onSave,
+  onBack,
+}: {
+  initialCount: number;
+  initialKind: DrinkKind;
+  /** Night out is already on: Save re-counts and sends nothing. */
+  editing: boolean;
+  disabled?: boolean;
+  onSave: (drinks: DrinksInput) => void;
+  onBack: () => void;
+}) {
+  const [count, setCount] = useState(initialCount);
+  const [kind, setKind] = useState<DrinkKind>(initialKind);
+  const spec = drinkSpec(kind);
+  const step = (delta: number) =>
+    setCount((n) => Math.min(DRINKS_MAX, Math.max(DRINKS_MIN, n + delta)));
+  const square =
+    'h-11 w-11 items-center justify-center rounded-btn border border-hairline active:opacity-60';
+  const atMin = count <= DRINKS_MIN;
+  const atMax = count >= DRINKS_MAX;
+
+  return (
+    <View className="px-5">
+      <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
+        How many drinks?
+      </Text>
+
+      <View className="mt-3 flex-row items-center gap-3">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="One fewer drink"
+          accessibilityState={{ disabled: atMin }}
+          disabled={atMin}
+          onPress={() => step(-1)}
+          className={`${square} ${atMin ? 'opacity-40' : ''}`}>
+          <Ionicons name="remove" size={18} color={palette.ink} />
+        </Pressable>
+        <Text
+          accessibilityLiveRegion="polite"
+          className="w-12 text-center font-mono text-[22px] text-ink">
+          {count}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="One more drink"
+          accessibilityState={{ disabled: atMax }}
+          disabled={atMax}
+          onPress={() => step(1)}
+          className={`${square} ${atMax ? 'opacity-40' : ''}`}>
+          <Ionicons name="add" size={18} color={palette.ink} />
+        </Pressable>
+        <Text className="font-label text-[12px] text-ink-secondary">standard drinks</Text>
+      </View>
+
+      {/* What the count records — figures, so mono. */}
+      <Text className="mt-2 font-mono text-[11px] leading-4 text-ink-muted">
+        {count === 0
+          ? 'nothing logged'
+          : `${count * STANDARD_DRINK_G} g alcohol · ${count * spec.kcal} kcal · ${
+              Math.round(count * spec.carbs_g * 10) / 10
+            } g carbs`}
+      </Text>
+
+      <View className="mt-4 flex-row flex-wrap gap-1.5">
+        {DRINK_KINDS.map((option) => (
+          <Chip
+            key={option.kind}
+            label={option.display}
+            on={option.kind === kind}
+            compact
+            onPress={() => setKind(option.kind)}
+            accessibilityLabel={option.display}
+          />
+        ))}
+      </View>
+
+      <Text className="mt-3 font-serif text-[11px] leading-4 text-ink-muted">
+        One standard drink is 14 g of alcohol: a 12 oz beer, a 5 oz glass of wine, a 1.5 oz
+        shot. Logged on today as a meal; open Night out again to change the count.
+      </Text>
+
+      <View className="mt-4 flex-row gap-2">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={
+            editing ? `Save ${drinksPhrase(count)}` : `Save Night out, ${drinksPhrase(count)}`
+          }
+          accessibilityState={{ disabled: !!disabled }}
+          disabled={disabled}
+          onPress={() => onSave({ count, kind })}
+          className={`min-h-[44px] flex-1 items-center justify-center rounded-btn bg-ink py-2 active:opacity-70 ${
+            disabled ? 'opacity-40' : ''
+          }`}>
+          <Text className="font-label text-[14px] font-semibold text-paper-hi">Save</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back to the statuses"
+          onPress={onBack}
+          className="min-h-[44px] items-center justify-center rounded-btn border border-hairline px-4 py-2 active:bg-paper-dim">
+          <Text className="font-label text-[14px] text-ink">Back</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }

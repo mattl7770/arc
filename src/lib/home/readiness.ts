@@ -29,7 +29,12 @@ import {
   pickDailyMetric,
   type DailyMetricPoint,
 } from '@/lib/db/repositories/wearables';
-import { activeNutritionTargets, todayTotals } from '@/lib/db/repositories/nutrition';
+import {
+  activeNutritionTargets,
+  dayAlcohol,
+  todayTotals,
+} from '@/lib/db/repositories/nutrition';
+import type { DayAlcohol } from '@/lib/nutrition/drinks';
 import { dailyMuscleSetLoad } from '@/lib/db/repositories/training-stats';
 import { getGoalDirection } from '@/lib/db/repositories/user';
 import type { GoalDirection } from '@/lib/user/types';
@@ -115,6 +120,19 @@ export type ReadinessView = {
    * counted? — computed from series already in hand rather than asserted.
    */
   recoveryPausedByStatus: boolean;
+  /**
+   * The alcohol recorded on YESTERDAY's date — grams and standard drinks — or
+   * null when none was (items 61/80, 2026-10-21: Night out's count "tells the
+   * next morning's readiness").
+   *
+   * **An input, not a grade.** Nothing above reads it: Recovery, Sleep and the
+   * verdict are exactly what they would be without it. It is here so Home can
+   * print the fact under the pillars and the Coach can see it beside them;
+   * what last night's drinks mean for this morning is the model's judgment,
+   * against the HRV and resting heart rate it already has
+   * (docs/information-architecture.md §Status).
+   */
+  alcoholLastNight: DayAlcohol | null;
 };
 
 const LEVEL_ORDER: SignalLevel[] = ['optimal', 'good', 'caution', 'poor'];
@@ -1193,5 +1211,6 @@ export function deriveReadiness(
     excludedStatusDays: statusDays?.size ?? 0,
     recoveryDaysRemaining,
     recoveryPausedByStatus,
+    alcoholLastNight: dayAlcohol(db, yesterday),
   };
 }

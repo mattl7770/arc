@@ -64,6 +64,16 @@ export type StatusChipSpec = {
    * have no tomorrow. The other three run until the × ends them.
    */
   endsTonight: boolean;
+  /**
+   * Does tapping it ask "how many drinks?" first (items 61/80, 2026-10-21)?
+   * Night out only. Its tap opens the drinks stepper in the sheet rather than
+   * writing at once, and a tap on it while it is on opens the same stepper on
+   * the recorded count — the re-count, in place of the re-ask. What it sends
+   * when it goes on is `nightOutPrompt` (src/lib/nutrition/drinks.ts), a fact
+   * with the count; its `prompt` and `again` below are what a surface without
+   * the stepper would send.
+   */
+  asksDrinks?: true;
   /** Sent when the chip goes off → on. */
   prompt: string;
   /** Sent when an already-on chip is tapped — the re-ask. */
@@ -115,6 +125,7 @@ export const STATUS_CHIPS: readonly StatusChipSpec[] = [
     label: 'night out',
     display: 'Night out',
     endsTonight: true,
+    asksDrinks: true,
     prompt: `Night out tonight. ${ADJUST}`,
     again: `Still out tonight. ${ADJUST}`,
     ended: `I'm home for the night. ${ADJUST}`,
@@ -174,6 +185,8 @@ export type RailChip = {
   /** The open row's id, when it is on — what the × ends. */
   openId: string | null;
   endsTonight: boolean;
+  /** Opens the drinks stepper before it writes — Night out. */
+  asksDrinks: boolean;
 };
 
 /**
@@ -192,6 +205,7 @@ export function railChips(
     display: chip.display,
     openId: openByLabel.get(chip.label)?.id ?? null,
     endsTonight: chip.endsTonight,
+    asksDrinks: chip.asksDrinks === true,
   }));
   const extras: RailChip[] = open
     .filter((row) => chipFor(row.label) === null)
@@ -203,6 +217,7 @@ export function railChips(
       // A typed status the Coach bounded at today behaves like Night out: it
       // has no tomorrow, so there is nothing for an × to end.
       endsTonight: false,
+      asksDrinks: false,
     }));
   return [...fixed, ...extras];
 }

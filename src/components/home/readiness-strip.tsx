@@ -15,6 +15,13 @@ import {
 type Props = {
   readiness: Readiness;
   pillars: Pillar[];
+  /**
+   * "Alcohol last night — 4 standard drinks · 56 g", or null/absent (items
+   * 61/80). A FACT printed under the pillars in their notes' register, never a
+   * pillar of its own and never a colour: it grades nothing, and the verdict
+   * above it is computed exactly as it would be without it.
+   */
+  alcoholLine?: string | null;
 };
 
 /**
@@ -79,7 +86,7 @@ type Props = {
  * as one phrase — "Sleep, caution" — because a name and a condition read apart
  * are two facts that have to be reassembled by the listener.
  */
-export function ReadinessStrip({ readiness, pillars }: Props) {
+export function ReadinessStrip({ readiness, pillars, alcoholLine }: Props) {
   return (
     <Block device="field">
       <SectionLabel label="Readiness" />
@@ -149,6 +156,9 @@ export function ReadinessStrip({ readiness, pillars }: Props) {
           {group.labels.join(', ')} — {group.note}
         </Text>
       ))}
+      {alcoholLine ? (
+        <Text className="mt-2 font-serif text-[11px] leading-4 text-ink-muted">{alcoholLine}</Text>
+      ) : null}
     </Block>
   );
 }

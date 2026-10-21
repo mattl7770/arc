@@ -30,6 +30,7 @@ import { useSessionKeySet } from '@/hooks/use-session-key';
 import { useStatuses } from '@/hooks/use-statuses';
 import { getDb } from '@/lib/db/client';
 import { coachTapLanding, syncReminderNotifications } from '@/lib/notifications/reminders';
+import type { DrinksInput } from '@/lib/nutrition/drinks';
 import type { RailChip } from '@/lib/status/chips';
 import type { ReminderRow } from '@/lib/reminders/types';
 import {
@@ -341,11 +342,12 @@ export default function CoachScreen() {
   }, [navigation, seededPrompt]);
 
   const onStatusChip = useCallback(
-    (chip: RailChip) => {
+    (chip: RailChip, drinks?: DrinksInput) => {
       // The row is written inside `toggleStatus`, BEFORE this line — so on a
       // plane the fact lands and only the turn fails. A null means the write
-      // threw and nothing happened, which is better than a half-done gesture.
-      const next = toggleStatus(chip);
+      // threw and nothing happened, which is better than a half-done gesture —
+      // or that it was a Night-out re-count, which is bookkeeping, not a turn.
+      const next = toggleStatus(chip, drinks);
       if (next) chat.send(next.prompt);
     },
     [chat]
