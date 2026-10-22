@@ -1,5 +1,5 @@
 import { dayStartMinutes, shiftISODate } from '@/lib/db/date';
-import { expectedDayFraction, ON_PACE_BAND } from '@/lib/home/readiness';
+import { expectedDayFraction, ON_PACE_BAND, PACE_ANCHORS } from '@/lib/home/readiness';
 
 import { fmtInt } from './format';
 
@@ -35,6 +35,9 @@ import { fmtInt } from './format';
  * by 13:00, ~85% by 19:00, all of it by 21:00) that the Home pillar and the Eat
  * tab's bars already grade against. So the only two curves this screen can show
  * are his own days or the assumption the rest of the app is already making.
+ * Read minute by minute it IS that function, and before its first anchor it
+ * expects nothing, so the pace is withheld there exactly as Home withholds its
+ * verdict ({@link paceClockStart}).
  *
  * ## Hours of the LOGICAL day
  *
@@ -99,6 +102,9 @@ export type ExpectedCurve = {
   /** Days with timed intake in the window — what was learned from, or how
    *  short of {@link CURVE_MIN_DAYS} it fell. */
   days: number;
+  /** The day boundary its hours are measured from. A default curve needs it to
+   *  read Home's own {@link expectedDayFraction} minute by minute. */
+  dayStartsAt: string;
 };
 
 /**
@@ -162,7 +168,27 @@ export function defaultCurve(dayStartsAt: string, days = 0): ExpectedCurve {
     shares.push(Math.max(shares[h - 1]!, expectedDayFraction(at, dayStartsAt)));
   }
   shares.push(1);
-  return { shares, source: 'default', days };
+  return { shares, source: 'default', days, dayStartsAt };
+}
+
+/**
+ * The minute of the logical day Home's pace clock starts on a DEFAULT curve —
+ * its first anchor ({@link PACE_ANCHORS}, 10:00) — or null for a learned curve.
+ * Before it the default expects nothing and Home withholds its verdict
+ * (*nothing expected yet — the pace clock starts at 10:00*), so the Eat tab
+ * must too: any breakfast would otherwise read "ahead" of a curve that has not
+ * begun.
+ *
+ * Also null for a boundary at or after that anchor, which `expectedDayFraction`
+ * reads as midnight; the running max in {@link defaultCurve} already makes that
+ * a curve with no start to wait for, which {@link expectedShareAt} then reads
+ * by its hourly samples as a learned curve is read.
+ */
+export function paceClockStart(curve: ExpectedCurve): number | null {
+  if (curve.source !== 'default') return null;
+  const first = minuteOfLogicalDay(PACE_ANCHORS[0].at, '00:00')!;
+  const boundary = dayStartMinutes(curve.dayStartsAt);
+  return boundary < first ? first - boundary : null;
 }
 
 /**
@@ -203,21 +229,58 @@ export function learnCurve(
     dayCurves.push(curve);
   }
 
+  // A past timezone-changed day (D4) is not excluded: its hours are off by the
+  // shift, but it is one day in a median over at least seven, so it cannot move
+  // the curve unless most of the window travelled too.
   if (dayCurves.length < CURVE_MIN_DAYS) return defaultCurve(dayStartsAt, dayCurves.length);
   const shares: number[] = [];
   for (let h = 0; h <= HOURS; h++) shares.push(median(dayCurves.map((c) => c[h]!)));
-  return { shares, source: 'learned', days: dayCurves.length };
+  return { shares, source: 'learned', days: dayCurves.length, dayStartsAt };
 }
 
-/** The curve's share at `minute` of the logical day, linear within the hour. */
+/**
+ * The curve's share at `minute` of the logical day. A learned curve is linear
+ * within the hour. A default curve IS Home's {@link expectedDayFraction} read at
+ * that minute — never interpolated between hourly samples, which would put 7.5%
+ * at 09:30 where Home's clock has not started (it steps 0 → 15% at 10:00).
+ */
 export function expectedShareAt(curve: ExpectedCurve, minute: number): number {
   if (minute <= 0) return curve.shares[0]!;
   if (minute >= MINUTES_PER_DAY) return 1;
+  if (paceClockStart(curve) !== null) {
+    const at = new Date(2000, 0, 1, 0, dayStartMinutes(curve.dayStartsAt) + minute, 0, 0);
+    return expectedDayFraction(at, curve.dayStartsAt);
+  }
   const h = Math.floor(minute / 60);
   const frac = (minute - h * 60) / 60;
   const a = curve.shares[h]!;
   const b = curve.shares[h + 1]!;
   return a + frac * (b - a);
+}
+
+/**
+ * The expected curve as points for its dashed line: `goal × share` at each
+ * hour of `[start, end]`, read through {@link expectedShareAt}. A default
+ * curve's clock starts with a STEP (nothing, then 15% at 10:00), so that
+ * minute takes two points and the line rises vertically there, rather than
+ * ramping across the hour before it as if something were expected.
+ */
+export function expectedCurvePoints(
+  curve: ExpectedCurve,
+  goal: number,
+  start: number,
+  end: number
+): { x: number; y: number }[] {
+  const opens = paceClockStart(curve);
+  const points: { x: number; y: number }[] = [];
+  for (let m = start; m <= end; m += 60) {
+    if (opens !== null && opens > start && opens > m - 60 && opens <= m) {
+      points.push({ x: opens, y: 0 });
+      if (opens < m) points.push({ x: opens, y: goal * expectedShareAt(curve, opens) });
+    }
+    points.push({ x: m, y: goal * expectedShareAt(curve, m) });
+  }
+  return points;
 }
 
 /** Minutes since the boundary for an instant — "now" on the same axis as the meals. */
@@ -306,7 +369,9 @@ export function chartWindow(
   }
   const nowHour = Math.floor(nowMinute / 60);
   for (const step of steps) {
-    const h = Math.floor(step.minute / 60);
+    // A meal timed after now is drawn AT now (it was eaten by now), so it does
+    // not stretch the axis out to a time that has not happened.
+    const h = Math.floor(Math.min(step.minute, nowMinute) / 60);
     first = Math.min(first, h);
     last = Math.max(last, h + 1);
   }
@@ -326,7 +391,8 @@ export function bandStatus(eaten: number, goal: number): BandStatus {
 }
 
 /** How much MORE would land the day inside the band: `[min, max]`, each
- *  floored at 0. `max === 0` means the day is already past the band's top. */
+ *  floored at 0. `max === 0` means the day is AT or past the band's top —
+ *  which of the two is {@link bandStatus}'s call, edges in. */
 export function landingRange(eaten: number, goal: number): { min: number; max: number } {
   return {
     min: Math.max(0, goal * (1 - DAY_BAND) - eaten),
@@ -340,7 +406,9 @@ export type IntakePace = {
   word: PaceWord;
   /** The curve's figure at this minute: goal × expected share. */
   expectedNow: number;
-  /** Eaten minus `expectedNow` — or minus the goal once the curve has closed. */
+  /** Eaten minus `expectedNow` — or, once the curve has closed, eaten minus the
+   *  NEARER band edge (0 inside the band): 2,000 of 2,400 misses the 2,160
+   *  floor by 160, not the goal by 400. */
   delta: number;
   /** True once the expected curve has reached 1: the band speaks, not the pace. */
   closed: boolean;
@@ -351,10 +419,16 @@ export function intakePace(eaten: number, goal: number, expectedShare: number): 
   const closed = expectedShare >= 1 - EPSILON;
   if (closed) {
     const status = bandStatus(eaten, goal);
+    const edge =
+      status === 'under'
+        ? goal * (1 - DAY_BAND)
+        : status === 'over'
+          ? goal * (1 + DAY_BAND)
+          : eaten;
     return {
       word: status === 'in' ? 'in range' : status,
       expectedNow,
-      delta: eaten - goal,
+      delta: eaten - edge,
       closed,
     };
   }
@@ -368,7 +442,9 @@ export function intakePace(eaten: number, goal: number, expectedShare: number): 
  * The folded line's words — the one sentence the Eat tab shows until the chart
  * is opened. Whole kcal (or g), with the deviation named in the direction it
  * runs: "on pace", "180 kcal ahead", "240 kcal behind", and once the curve has
- * closed, "in range", "300 kcal under range", "250 kcal over range".
+ * closed, "in range", "160 kcal under range", "260 kcal over range" — the miss
+ * measured from the band edge the day missed, the same edge the landing line
+ * names, never from the goal.
  */
 export function paceWords(pace: IntakePace, unit: string): string {
   const amount = `${fmtInt(Math.abs(pace.delta))} ${unit}`;

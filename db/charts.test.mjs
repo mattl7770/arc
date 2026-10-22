@@ -17,6 +17,7 @@ import {
   CURVE_MIN_DAYS,
   CURVE_WINDOW_DAYS,
   defaultCurve,
+  expectedCurvePoints,
   expectedShareAt,
   hourlyTotals,
   intakePace,
@@ -24,6 +25,7 @@ import {
   learnCurve,
   minuteOfLogicalDay,
   minuteOfNow,
+  paceClockStart,
   paceWords,
   todayIntake,
 } from '../src/lib/nutrition/pace-curve.ts';
@@ -33,8 +35,8 @@ import {
   trailingAverageSeries,
 } from '../src/lib/charts/moving-average.ts';
 import { linePath, linearScale, paddedDomain, stepPath } from '../src/lib/charts/geometry.ts';
-import { localDaysList, logicalDate, shiftISODate } from '../src/lib/db/date.ts';
-import { ON_PACE_BAND } from '../src/lib/home/readiness.ts';
+import { dayStartMinutes, localDaysList, logicalDate, shiftISODate } from '../src/lib/db/date.ts';
+import { expectedDayFraction, ON_PACE_BAND } from '../src/lib/home/readiness.ts';
 
 let pass = 0;
 let fail = 0;
@@ -291,14 +293,26 @@ console.log('6. pace against the curve, and the words the fold shows');
     closedIn.closed && paceWords(closedIn, 'kcal') === 'in range',
     'once the curve closes, the band speaks: "in range"'
   );
+  // The miss is measured from the band edge the day missed, not from the goal:
+  // 2,000 of 2,400 is 160 under the 2,160 floor (the landing line's own edge),
+  // never "400 under range".
   const closedUnder = intakePace(2000, 2400, 1);
   check(
-    paceWords(closedUnder, 'kcal') === '400 kcal under range',
-    '"400 kcal under range"',
+    paceWords(closedUnder, 'kcal') === '160 kcal under range',
+    '"160 kcal under range" — 2,000 against the 2,160 floor, not the 2,400 goal',
     paceWords(closedUnder, 'kcal')
   );
   const closedOver = intakePace(2900, 2400, 1);
-  check(paceWords(closedOver, 'kcal') === '500 kcal over range', '"500 kcal over range"');
+  check(
+    paceWords(closedOver, 'kcal') === '260 kcal over range',
+    '"260 kcal over range" — 2,900 against the 2,640 ceiling, not the 2,400 goal',
+    paceWords(closedOver, 'kcal')
+  );
+  check(
+    paceWords(intakePace(2159, 2400, 1), 'kcal') === '1 kcal under range' &&
+      paceWords(intakePace(2641, 2400, 1), 'kcal') === '1 kcal over range',
+    'one kcal past either edge reads "1 kcal" — the same edges bandStatus counts'
+  );
 }
 
 console.log('7. the chart window: eating hours plus one either side, now always inside');
@@ -310,11 +324,73 @@ console.log('7. the chart window: eating hours plus one either side, now always 
     'curve 08:00–20:00 → axis 07:00–21:00',
     JSON.stringify([s, e])
   );
-  const [s2, e2] = chartWindow(learned, [{ minute: 23 * 60 + 10, kcal: 1, protein_g: 0 }], 5 * 60);
+  const [s2] = chartWindow(learned, [], 5 * 60);
+  check(s2 === 4 * 60, 'an early now (05:00) widens it to start at 04:00', String(s2));
+  const late = [{ minute: 23 * 60 + 10, kcal: 1, protein_g: 0 }];
+  const [, e2] = chartWindow(learned, late, 23 * 60 + 30);
+  check(e2 === 24 * 60, 'a 23:10 meal, eaten by a 23:30 now, widens it to 24:00', String(e2));
+  // A meal timed after now is drawn AT now (it was eaten by now), so it must
+  // not stretch the axis out to a time that has not happened.
+  const [, e3] = chartWindow(learned, late, 14 * 60);
   check(
-    s2 === 4 * 60 && e2 === 24 * 60,
-    'an early now (05:00) and a 23:10 meal widen it to 04:00–24:00',
-    JSON.stringify([s2, e2])
+    e3 === 21 * 60,
+    'a meal timed 23:10 seen at 14:00 does not widen the window past the curve (21:00)',
+    String(e3)
+  );
+}
+
+console.log('7b. the default curve IS Home’s pace clock, minute by minute');
+{
+  for (const boundary of ['00:00', '04:00', '04:30']) {
+    const def = defaultCurve(boundary);
+    let worst = null;
+    for (let m = 0; m < 1440; m++) {
+      const at = new Date(2026, 9, 21, 0, dayStartMinutes(boundary) + m);
+      const home = expectedDayFraction(at, boundary);
+      if (!near(expectedShareAt(def, m), home, 1e-12)) {
+        worst = `${m}: ${expectedShareAt(def, m)} vs Home ${home}`;
+        break;
+      }
+    }
+    check(
+      worst === null,
+      `under a ${boundary} boundary the default share equals expectedDayFraction at all 1,440 minutes`,
+      worst
+    );
+  }
+  const def = defaultCurve('00:00');
+  check(
+    expectedShareAt(def, 9 * 60 + 30) === 0 && near(expectedShareAt(def, 10 * 60), 0.15),
+    '09:30 expects nothing (Home has 0, not an interpolated 7.5%); 10:00 steps to 15%'
+  );
+  check(
+    paceClockStart(def) === 600 &&
+      paceClockStart(defaultCurve('04:00')) === 360 &&
+      paceClockStart(learnCurve(threeMealDays(10), 'kcal', TODAY, '00:00')) === null,
+    'the pace clock starts at the first anchor on a default curve (minute 600; 360 under 04:00), never on a learned one'
+  );
+  const pts = expectedCurvePoints(def, 2400, 8 * 60, 12 * 60);
+  const atTen = pts.filter((p) => p.x === 600).map((p) => p.y);
+  check(
+    atTen.length === 2 &&
+      atTen[0] === 0 &&
+      near(atTen[1], 360) &&
+      pts[1].x === 540 &&
+      pts[1].y === 0,
+    'the drawn default curve holds at 0 until 10:00 and rises there VERTICALLY (0 → 360 of 2,400)',
+    JSON.stringify(pts)
+  );
+  const half = expectedCurvePoints(defaultCurve('04:30'), 2400, 4 * 60, 7 * 60);
+  const opens = half.filter((p) => p.x === 330).map((p) => p.y);
+  check(
+    opens.length === 2 && opens[0] === 0 && near(opens[1], 360),
+    'under 04:30 the step lands between hour marks, at minute 330 — still vertical',
+    JSON.stringify(half)
+  );
+  const learned = learnCurve(threeMealDays(10), 'kcal', TODAY, '00:00');
+  check(
+    expectedCurvePoints(learned, 2000, 7 * 60, 21 * 60).length === 15,
+    'a learned curve draws one point per hour and no step'
   );
 }
 
