@@ -15,7 +15,12 @@
  *   its date and its time are the result's. "The earliest time" is the only
  *   default that needs no explaining: the meal started when its first part was
  *   eaten. Keeping that meal's ROW (not minting a new one) is what keeps every
- *   reference to it pointing at something.
+ *   reference to it pointing at something. **One caller names the meal
+ *   instead** (`keepId`): the auto-join (item 58), which always keeps the
+ *   EXISTING meal — a food logged at 12:30 beside a 13:00 Lunch joins Lunch,
+ *   and Lunch keeps its id, its 13:00 and its rating. A food logged near a
+ *   meal never changes that meal's id or time; only a combine the user asked
+ *   for picks by clock.
  * - **The name is the earliest meal's until the user types another** — the
  *   same rule the barcode scanner uses for a multi-scan meal (A4): the thing
  *   that started it names it, and a rename is one field away.
@@ -63,7 +68,7 @@ export type CombineOk<M extends CombinableMeal = CombinableMeal> = {
   /** The others, in list order — their rows go, their items move. */
   absorb: M[];
   count: number;
-  /** The result's time: the kept meal's, which is the earliest. */
+  /** The result's time: the kept meal's — the earliest, unless `keepId` named one. */
   time: string | null;
   /** The energy the chosen meals add up to now, over the ones that recorded
    *  any — and so the energy the result will carry. Null when none did. */
@@ -82,15 +87,22 @@ export type CombinePlan<M extends CombinableMeal = CombinableMeal> =
  *
  * `pending` is the set of meal ids still waiting on a queued estimate
  * (`pendingEstimateMealIds`); a chosen meal in it refuses the whole plan.
+ *
+ * `keepId`, when it names one of the chosen meals, is the meal that survives
+ * in place of the earliest; the others are absorbed in list order. An id that
+ * is not among them is ignored, and the earliest is kept.
  */
 export function planCombine<M extends CombinableMeal>(
   chosen: readonly M[],
-  pending: ReadonlySet<string> = new Set()
+  pending: ReadonlySet<string> = new Set(),
+  keepId: string | null = null
 ): CombinePlan<M> {
   const unique = [...new Map(chosen.map((m) => [m.id, m])).values()];
   if (unique.length < 2) return { kind: 'too-few', count: unique.length };
 
-  const ordered = [...unique].sort(mealListOrder);
+  const sorted = [...unique].sort(mealListOrder);
+  const named = sorted.find((m) => m.id === keepId);
+  const ordered = named ? [named, ...sorted.filter((m) => m !== named)] : sorted;
   const keep = ordered[0]!;
 
   if (ordered.some((m) => m.date !== keep.date)) {

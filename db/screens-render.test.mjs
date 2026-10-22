@@ -2072,6 +2072,23 @@ const db = getDb();
       { initialCount: 0, initialKind: 'wine', editing: true, onSave() {}, onBack() {} }
     );
     expect('drinks-panel (re-count, at zero)', recount, ['nothing logged', 'Save 0 drinks']);
+    // The morning after (2026-10-21 review): last night's count, re-counted
+    // on last night — and the panel says so instead of "Logged on today".
+    const lastNight = render(
+      'drinks-panel (the morning after)',
+      DrinksPanel,
+      {},
+      { initialCount: 4, initialKind: 'beer', editing: true, lastNight: true, onSave() {}, onBack() {} }
+    );
+    expect('drinks-panel (the morning after)', lastNight, [
+      'last night’s count',
+      'Save 4 drinks',
+    ]);
+    refute('drinks-panel (the morning after)', lastNight, ['Logged on today']);
+    /const \{ recorded, lastNight \} = currentNightOutDrinks\(\);/.test(controlSource) &&
+    /const editing = chip\.openId !== null \|\| lastNight;/.test(controlSource)
+      ? ok('the sheet opens last night’s count as a re-count the morning after')
+      : bad('status-control does not carry last night’s Night out');
     /<StatusRail[\s\S]*if \(chip\.asksDrinks\)[\s\S]*setDrinks\(/.test(controlSource) &&
     /onToggle\(drinks\.chip, input\)/.test(controlSource)
       ? ok('the sheet opens the stepper for Night out and hands its count to onToggle')

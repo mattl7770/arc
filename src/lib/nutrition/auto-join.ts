@@ -15,15 +15,16 @@
  * - **Within 45 minutes, inclusive**, either side of the new meal's time. "About
  *   45 minutes" needs one number; 45 is the number he gave. A meal timed later
  *   than the food counts too: a lunch he logged at 13:00 is the same lunch as
- *   a drink logged at 12:30.
+ *   a drink logged at 12:30 — and it stays the 13:00 Lunch, with its id and
+ *   its rating: the join keeps the EXISTING meal (`keepId`), never the food's.
  * - **The same logical day.** A meal belongs to one day (`combine.ts` refuses
  *   two), and the day starts at his `dayStartsAt` (src/lib/db/date.ts), not at
  *   midnight. So the gap is measured in minutes since the day began: with the
  *   day starting at 04:00, 23:50 and 00:20 are thirty minutes apart on one day,
  *   while 03:50 and 04:10 are on two days and never join.
  * - **The nearest one.** Two candidates: the closer. A tie: the earlier, in the
- *   day list's own order (`mealListOrder`), because that is the meal a combine
- *   keeps anyway.
+ *   day list's own order (`mealListOrder`) — the meal a manual combine of the
+ *   two would keep, so the two paths agree on which one it is.
  * - **Never an untimed meal** (nothing to measure) and **never one waiting on
  *   its estimate** (0057 — the plan refuses it, so offering it would only
  *   produce a refusal).

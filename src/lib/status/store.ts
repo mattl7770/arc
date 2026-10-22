@@ -36,7 +36,7 @@ import {
 import { nightOutPrompt, type DrinkKind, type DrinksInput } from '@/lib/nutrition/drinks';
 
 import { endPromptFor, promptFor, reaskFor, type RailChip } from './chips';
-import { recordNightOut, recordedDrinks } from './night-out';
+import { nightOutStepper, saveNightOutDrinks } from './night-out';
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -130,7 +130,10 @@ export function endOpenStatus(chip: RailChip & { openId: string }): StatusPrompt
 /**
  * Night out with its count (items 61/80, 2026-10-21) — the drinks stepper's
  * Save. Writes the status (if it is not already on) and the drinks as a meal on
- * the day, through `recordNightOut`, which touches nothing else.
+ * the day, through `saveNightOutDrinks` (`recordNightOut`), which touches
+ * nothing else. The morning after, it re-counts LAST night's row instead and
+ * starts nothing (`nightOutDay`, src/lib/status/night-out.ts), so a count
+ * corrected at 01:15 is a correction, not a second night out.
  *
  * The FIRST save returns the sentence to send — a fact with the count
  * (`nightOutPrompt`), the same order as every chip: the row lands, then the
@@ -145,7 +148,7 @@ export function endOpenStatus(chip: RailChip & { openId: string }): StatusPrompt
 function saveNightOut(drinks: DrinksInput): StatusPrompt | null {
   let started = false;
   try {
-    started = recordNightOut(getDb(), todayISODate(), drinks).started;
+    started = saveNightOutDrinks(getDb(), todayISODate(), drinks).started;
   } catch (error) {
     console.warn('[status] could not record night out', error);
     emit();
@@ -155,12 +158,19 @@ function saveNightOut(drinks: DrinksInput): StatusPrompt | null {
   return started ? { prompt: nightOutPrompt(drinks), send: true } : null;
 }
 
-/** What the drinks stepper opens on today — the recorded count, or null. */
-export function currentNightOutDrinks(): { count: number; kind: DrinkKind } | null {
+/**
+ * What the drinks stepper opens on — the recorded count, or null — and whether
+ * it is last night's, the morning after (`nightOutStepper`); then its Save
+ * re-counts that night. Nothing recorded and not last night on any failure.
+ */
+export function currentNightOutDrinks(): {
+  recorded: { count: number; kind: DrinkKind } | null;
+  lastNight: boolean;
+} {
   try {
-    return recordedDrinks(getDb(), todayISODate());
+    return nightOutStepper(getDb(), todayISODate());
   } catch (error) {
     console.warn('[status] could not read the night out drinks', error);
-    return null;
+    return { recorded: null, lastNight: false };
   }
 }

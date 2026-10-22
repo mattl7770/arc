@@ -146,6 +146,9 @@ export function StatusControl({
     chip: RailChip;
     count: number;
     kind: DrinkKind;
+    /** Save re-counts and sends nothing: the chip is on, or it is last night's. */
+    editing: boolean;
+    lastNight: boolean;
   } | null>(null);
   if (hidden) return null;
 
@@ -252,7 +255,8 @@ export function StatusControl({
               <DrinksPanel
                 initialCount={drinks.count}
                 initialKind={drinks.kind}
-                editing={drinks.chip.openId !== null}
+                editing={drinks.editing}
+                lastNight={drinks.lastNight}
                 disabled={disabled}
                 onSave={(input) => {
                   setSheet(false);
@@ -272,13 +276,18 @@ export function StatusControl({
                     if (chip.asksDrinks) {
                       // Open on what today's record holds, whether or not the
                       // chip is on (a Night out the Coach ended still has its
-                      // drinks). Nothing recorded: 0 while on (the count was
-                      // removed on meal-detail), the owner's default while off.
-                      const recorded = currentNightOutDrinks();
+                      // drinks) — or, the morning after, on LAST night's, which
+                      // Save then re-counts (src/lib/status/night-out.ts).
+                      // Nothing recorded: 0 while it is a re-count (the count
+                      // was removed on meal-detail), the owner's default else.
+                      const { recorded, lastNight } = currentNightOutDrinks();
+                      const editing = chip.openId !== null || lastNight;
                       setDrinks({
                         chip,
-                        count: recorded?.count ?? (chip.openId !== null ? 0 : DRINKS_DEFAULT),
+                        count: recorded?.count ?? (editing ? 0 : DRINKS_DEFAULT),
                         kind: recorded?.kind ?? 'beer',
+                        editing,
+                        lastNight,
                       });
                       return;
                     }
@@ -377,14 +386,17 @@ export function DrinksPanel({
   initialCount,
   initialKind,
   editing,
+  lastNight = false,
   disabled,
   onSave,
   onBack,
 }: {
   initialCount: number;
   initialKind: DrinkKind;
-  /** Night out is already on: Save re-counts and sends nothing. */
+  /** Night out is already on, or it is last night's: Save re-counts and sends nothing. */
   editing: boolean;
+  /** The morning after: the count is last night's, and stays on that day. */
+  lastNight?: boolean;
   disabled?: boolean;
   onSave: (drinks: DrinksInput) => void;
   onBack: () => void;
@@ -456,7 +468,10 @@ export function DrinksPanel({
 
       <Text className="mt-3 font-serif text-[11px] leading-4 text-ink-muted">
         One standard drink is 14 g of alcohol: a 12 oz beer, a 5 oz glass of wine, a 1.5 oz
-        shot. Logged on today as a meal; open Night out again to change the count.
+        shot.{' '}
+        {lastNight
+          ? 'This is last night’s count; Save changes it on last night, not today.'
+          : 'Logged on today as a meal; open Night out again to change the count.'}
       </Text>
 
       <View className="mt-4 flex-row gap-2">
