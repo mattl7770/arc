@@ -186,6 +186,7 @@ function fakeGarmin(clock, route = () => null) {
     const headers = response.headers ?? {};
     return {
       status: response.status,
+      ...(response.url !== undefined ? { url: response.url } : {}),
       headers: { get: (name) => headers[name.toLowerCase()] ?? null },
       text: async () => response.body ?? '',
     };
@@ -516,6 +517,69 @@ console.log('3. the client — mint, reuse, re-mint, refusals, backoff, budget, 
     budgeted.calls.length
   );
   check(GARMIN_REQUESTS_PER_PASS <= 10, 'a pass may make a few requests, never dozens');
+
+  // Redirects: the key or the token must never follow one off-host.
+  check(
+    budgeted.calls.every((c) => c.init.redirect === 'error'),
+    'every request is sent with redirect: error'
+  );
+  const moved = await tryGet((url) =>
+    url.includes('/hrv-service/')
+      ? { status: 302, headers: { location: 'https://evil.example/steal' } }
+      : null
+  );
+  check(
+    moved.error instanceof GarminRequestError && moved.g.calls.length === 2,
+    'a 3xx on a read is that request refused — never followed, never retried',
+    moved.g.calls.length
+  );
+  const followed = await tryGet((url) =>
+    url.includes('/hrv-service/')
+      ? { status: 200, url: 'https://evil.example/steal', body: JSON.stringify(FIX.hrv) }
+      : null
+  );
+  check(
+    followed.error instanceof GarminRequestError,
+    'a reply whose final URL is off Garmin’s origin is refused, its body unread'
+  );
+  const lookalike = await tryGet((url) =>
+    url.includes('/hrv-service/')
+      ? {
+          status: 200,
+          url: `${GARMIN_API_ORIGIN}.evil.example/hrv-service/hrv/daily/x`,
+          body: JSON.stringify(FIX.hrv),
+        }
+      : null
+  );
+  check(
+    lookalike.error instanceof GarminRequestError,
+    'a look-alike host that merely starts with Garmin’s origin is off-host too'
+  );
+  const sameHost = await tryGet((url) =>
+    url.includes('/hrv-service/')
+      ? { status: 200, url, body: JSON.stringify(FIX.hrv) }
+      : null
+  );
+  check(sameHost.error === null, 'a reply that states Garmin’s own URL reads as before');
+  const mintMoved = await tryGet((url) =>
+    url === GARMIN_TOKEN_URL ? { status: 307, headers: { location: 'https://evil.example/' } } : null
+  );
+  const mintFollowed = await tryGet((url) =>
+    url === GARMIN_TOKEN_URL
+      ? {
+          status: 200,
+          url: 'https://evil.example/token',
+          body: JSON.stringify({ access_token: jwt(now + 86400_000) }),
+        }
+      : null
+  );
+  check(
+    mintMoved.error instanceof GarminTokenError &&
+      mintFollowed.error instanceof GarminTokenError &&
+      mintMoved.g.calls.length === 1 &&
+      mintFollowed.g.calls.length === 1,
+    'a redirected mint stops the pass as a token error — its token is never used'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,6 +1226,101 @@ console.log('10. 429 and offline — back off, never throw');
       swapped.requests === 3,
     'a new key mid-pass: the old key’s pass stops sending and writes no state over the new one',
     { calls: swap.calls.length, swapped }
+  );
+}
+
+// ---------------------------------------------------------------------------
+console.log('10b. a write that fails, and a refused recent window, move no coverage');
+{
+  // The probe's case: every wearable_data INSERT throws (a full disk, a CHECK).
+  const { raw: wraw, db: wbase } = freshDb();
+  let failWrites = false;
+  const wdb = {
+    ...wbase,
+    run: (sql, params = []) => {
+      if (failWrites && /INSERT INTO wearable_data/.test(sql)) throw new Error('SQLITE_FULL');
+      wraw.prepare(sql).run(...params);
+    },
+  };
+  let t = NOON.getTime();
+  forgetGarminToken();
+  const g0 = fakeGarmin(() => t);
+  await runGarminPass(wdb, deps(g0, () => t));
+  const s0 = readGarminState(wdb);
+  const reads = (g) => g.calls.map((c) => c.url).filter((u) => u !== GARMIN_TOKEN_URL);
+
+  failWrites = true;
+  t += 20 * 60_000;
+  const g1 = fakeGarmin(() => t);
+  const r1 = await runGarminPass(wdb, deps(g1, () => t));
+  const s1 = readGarminState(wdb);
+  check(
+    r1.outcome === 'error' &&
+      s1.status === 'error' &&
+      s1.lastAttemptAt === new Date(t).toISOString() &&
+      s1.lastSyncedAt === s0.lastSyncedAt &&
+      JSON.stringify(s1.backfill) === JSON.stringify(s0.backfill),
+    'a write that throws: error and throttled, but lastSyncedAt and every backfill cursor stay put',
+    { s0, s1 }
+  );
+
+  failWrites = false;
+  t += 20 * 60_000;
+  const g2 = fakeGarmin(() => t);
+  await runGarminPass(wdb, deps(g2, () => t));
+  check(
+    JSON.stringify(reads(g2)) === JSON.stringify(reads(g1)),
+    'the next pass asks for the very chunks the failed write lost',
+    { failed: reads(g1), next: reads(g2) }
+  );
+
+  // A recent window one endpoint refuses (a 400), while the others serve.
+  const { db: rdb } = freshDb();
+  let rt = NOON.getTime();
+  forgetGarminToken();
+  // The recent requests come first, so the first call to a path is its recent one.
+  const recentRange = (g, part) => g.calls.map((c) => c.url).find((u) => u.includes(part));
+  const refuser = fakeGarmin(
+    () => rt,
+    (url) => (url.includes('/hrv-service/') && url.includes(TODAY) ? { status: 400 } : null)
+  );
+  const first = await runGarminPass(rdb, deps(refuser, () => rt));
+  const fs = readGarminState(rdb);
+  check(
+    first.outcome === 'synced' &&
+      fs.skipped.includes('hrv') &&
+      fs.refused.hrv === shiftISODate(TODAY, -2) &&
+      fs.refused.sleep === undefined,
+    'a refused recent window is held per endpoint, not counted as read',
+    fs
+  );
+  check(
+    !shouldAutoSyncGarmin(fs, new Date(rt + 5 * 60_000)),
+    'and the throttle still holds — no retry on every foreground'
+  );
+  rt += 2 * 24 * 3600_000;
+  const later = fakeGarmin(() => rt);
+  await runGarminPass(rdb, deps(later, () => rt));
+  const day2 = shiftISODate(TODAY, 2);
+  check(
+    recentRange(later, '/hrv-service/')?.includes(`/${shiftISODate(TODAY, -2)}/${day2}`) &&
+      recentRange(later, '/sleep-service/')?.includes(`startDate=${TODAY}`),
+    'two days on, HRV asks back to its refused day while sleep asks only the usual three',
+    later.calls.map((c) => c.url)
+  );
+  check(
+    readGarminState(rdb).refused.hrv === undefined,
+    'served at last: the refusal clears'
+  );
+  const capped = planGarminPass(
+    { ...emptyGarminState(), lastSyncedAt: NOON.toISOString(), refused: { hrv: '2026-08-01' } },
+    TODAY,
+    0
+  );
+  check(
+    capped[0].endpoint === 'hrv' && capped[0].from === shiftISODate(TODAY, -30),
+    'a refusal older than 31 days is stepped over — the window never grows past the cap',
+    capped[0]
   );
 }
 

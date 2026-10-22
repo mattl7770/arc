@@ -1,7 +1,8 @@
 /**
  * The per-turn "Current state" block — a deterministic, on-device synthesis of
  * where the user is right now, injected into every Coach turn as the second
- * (UNCACHED) system block (model-client.ts buildMessagesRequest).
+ * system block, outside the 1-hour cached prefix (model-client.ts
+ * buildMessagesRequest).
  *
  * This exists so the model never starts a turn blind: readiness, status, mission
  * progress, running experiments, unit preferences, and the daily brief are all

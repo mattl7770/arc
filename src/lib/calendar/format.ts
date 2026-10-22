@@ -23,9 +23,9 @@
  *
  * ## Capped, and honest about the cap
  *
- * The block is UNCACHED (it rides turn-context.ts's per-turn system block), so
- * every character is billed at the full input rate on every request of every
- * turn. Three limits hold it: {@link CALENDAR_MAX_EVENTS} events, each text
+ * The block rides outside the 1-hour cached prefix (in turn-context.ts's
+ * per-turn system block), so every character is billed again whenever that
+ * block is written afresh. Three limits hold it: {@link CALENDAR_MAX_EVENTS} events, each text
  * field truncated ({@link CALENDAR_TITLE_MAX} / {@link CALENDAR_LOCATION_MAX} /
  * {@link CALENDAR_NAME_MAX} characters), and a {@link CALENDAR_CHAR_BUDGET} for
  * the event text as a whole — the worst case measures at under 1,000 tokens.

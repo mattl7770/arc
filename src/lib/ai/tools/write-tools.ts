@@ -90,6 +90,7 @@ import { caffeineCardNote } from '@/lib/nutrition/caffeine-cutoff';
 import { catalogResolveRecipe } from '@/lib/recipes/estimate';
 import type { RecipePortion } from '@/lib/recipes/types';
 import { createExperiment } from '@/lib/db/repositories/experiments';
+import { isReadableMetric } from '@/lib/ai/metric-catalog';
 import { findMemories, rememberFact } from '@/lib/db/repositories/coach-memory';
 import {
   rederiveDaysAhead,
@@ -2151,7 +2152,7 @@ const createExperimentTool: CoachTool = {
     // Warn at CREATE time about metrics no tool can read, rather than letting
     // readout day arrive with nothing to measure (the schema's own old example
     // — "sleep score" — was exactly this trap).
-    const unreadable = metrics.filter((m) => !isReadableSeries(m));
+    const unreadable = metrics.filter((m) => !isReadableMetric(db, m));
     return json({
       created: true,
       id,
@@ -2168,39 +2169,11 @@ const createExperimentTool: CoachTool = {
   },
 };
 
-/**
- * Metrics get_metric_series can actually return, normalised loosely (the model
- * writes "HRV", "hrv", "resting HR"). This only WARNS — experiment metrics are
- * free text on purpose, since some things are worth watching qualitatively.
- */
-const READABLE_SERIES: Record<string, true> = {
-  weight: true,
-  body_fat: true,
-  bodyfat: true,
-  waist: true,
-  hrv: true,
-  rhr: true,
-  resting_hr: true,
-  restinghr: true,
-  water: true,
-  sleep: true,
-  sleep_duration: true,
-  sleep_deep: true,
-  deep_sleep: true,
-  steps: true,
-  active_energy: true,
-};
-
-function isReadableSeries(metric: string): boolean {
-  return (
-    READABLE_SERIES[
-      metric
-        .trim()
-        .toLowerCase()
-        .replace(/[\s-]+/g, '_')
-    ] === true
-  );
-}
+// Readability is the catalog's call (`isReadableMetric`, the very rule the
+// readout reads through), not a hand-kept list: the list this replaced
+// (2026-10-21) still called every Garmin metric unreadable. It only WARNS —
+// experiment metrics are free text on purpose, since some things are worth
+// watching qualitatively.
 
 // `abandon_experiment` and `complete_experiment` RETIRED 2026-09-19 into
 // `edit_record { domain: 'experiments', fields: { status } }` — 439 tokens, the

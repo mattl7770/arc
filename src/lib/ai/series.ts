@@ -9,7 +9,13 @@
  * at the edge (the metric registry).
  */
 import type { Database } from '@/lib/db/database';
-import { localDayUtcRange, shiftISODate, todayISODate } from '@/lib/db/date';
+import {
+  getDayStartsAt,
+  localDayUtcRange,
+  logicalDate,
+  shiftISODate,
+  todayISODate,
+} from '@/lib/db/date';
 import { dailyMetricSeries } from '@/lib/db/repositories/wearables';
 
 /**
@@ -130,8 +136,12 @@ export function wearableMetricInventory(db: Database): WearableMetricPresence[] 
 /**
  * Daily series for a body_metrics column (weight_kg / body_fat_pct /
  * waist_cm), averaging multiple same-day measurements. body_metrics stores a
- * UTC `measured_at` instant, so "day" here is the UTC day (substr of the ISO
- * string) — deterministic everywhere, and honest enough for multi-day trends.
+ * UTC `measured_at` instant, so each reading is filed under the LOGICAL LOCAL
+ * day it was taken on (`logicalDate`, honouring Settings' day boundary) — the
+ * day every other window in ARC is counted in, and the one the findings
+ * engine files a weigh-in under. The UTC day of the ISO string was used until
+ * 2026-10-21: east of UTC it filed a 07:00 Auckland weigh-in under the day
+ * before, so an experiment's baseline swallowed its start day's reading.
  */
 export function bodyDailySeries(
   db: Database,
@@ -147,15 +157,32 @@ export function bodyDailySeries(
    */
   untilExclusiveUtc?: string
 ): SeriesPoint[] {
-  // `column` is a fixed union from the signature, never user/model input.
-  return db.all<SeriesPoint>(
-    `SELECT substr(measured_at, 1, 10) AS date, avg(${column}) AS value FROM body_metrics
-     WHERE ${column} IS NOT NULL AND substr(measured_at, 1, 10) >= ?${
+  // `column` is a fixed union from the signature, never user/model input. The
+  // SQL bound is a day early (a local day can begin on the previous UTC date —
+  // up to 14 h east of UTC); the exact cut is on the logical day below.
+  const rows = db.all<{ measuredAt: string; value: number }>(
+    `SELECT measured_at AS measuredAt, ${column} AS value FROM body_metrics
+     WHERE ${column} IS NOT NULL AND measured_at >= ?${
        untilExclusiveUtc ? ' AND measured_at < ?' : ''
      }
-     GROUP BY substr(measured_at, 1, 10) ORDER BY date`,
-    untilExclusiveUtc ? [sinceDate, untilExclusiveUtc] : [sinceDate]
+     ORDER BY measured_at`,
+    untilExclusiveUtc
+      ? [shiftISODate(sinceDate, -1), untilExclusiveUtc]
+      : [shiftISODate(sinceDate, -1)]
   );
+  const dayStartsAt = getDayStartsAt();
+  const byDay = new Map<string, { sum: number; n: number }>();
+  for (const row of rows) {
+    const date = logicalDate(new Date(row.measuredAt), dayStartsAt);
+    if (date < sinceDate) continue;
+    const day = byDay.get(date) ?? { sum: 0, n: 0 };
+    day.sum += row.value;
+    day.n += 1;
+    byDay.set(date, day);
+  }
+  return [...byDay.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([date, { sum, n }]) => ({ date, value: sum / n }));
 }
 
 /** Per-day nutrition totals for days that have meals, oldest first. */

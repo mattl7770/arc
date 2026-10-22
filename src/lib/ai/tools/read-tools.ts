@@ -6,7 +6,7 @@
  * Settings preference), with the unit named so the model never guesses.
  */
 import type { Database } from '@/lib/db/database';
-import { shiftISODate, todayISODate } from '@/lib/db/date';
+import { logicalDate, shiftISODate, todayISODate } from '@/lib/db/date';
 import { listTodayEntries } from '@/lib/db/repositories/logs';
 import { completedAheadOf, listMission } from '@/lib/db/repositories/mission';
 import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-memory';
@@ -707,10 +707,11 @@ const getMetricSeries: CoachTool = {
           points,
           // A body metric with older readings than the window is missing IN THIS
           // WINDOW, not never recorded. Sourced from the true last row (same
-          // date derivation bodyDailySeries uses, substr(measured_at,1,10)) so
-          // an empty-but-historied window yields the softer "most recent value
-          // on record is from <date>" note, matching the wearable branch.
-          lastRecorded: latestBody(db, target.column)?.measuredAt.slice(0, 10) ?? null,
+          // date derivation bodyDailySeries uses, the logical local day of
+          // measured_at) so an empty-but-historied window yields the softer
+          // "most recent value on record is from <date>" note, matching the
+          // wearable branch.
+          lastRecorded: lastBodyDay(latestBody(db, target.column)?.measuredAt),
         })
       );
     }
@@ -739,6 +740,7 @@ const getMetricSeries: CoachTool = {
       date: p.date,
       ...reportValue(spec, display, p.value),
       ...(accumulating && p.date === today ? { partial: true } : {}),
+      ...(spec.categories ? { status: spec.categories[p.value] ?? 'unknown' } : {}),
     }));
 
     const presence = inventory.find((row) => row.metricType === metricType);
@@ -754,13 +756,16 @@ const getMetricSeries: CoachTool = {
               ? 'daily sum of Apple Health sessions NOT also logged in ARC (those are in ' +
                 'get_training_summary); a session two apps recorded counts once'
               : 'daily sum of every logged row'
-            : 'one source per day, richest device first (same rule the Home screen uses)',
+            : spec.agg === 'categorical'
+              ? 'one status code per day, one source per day; counted per status, never averaged'
+              : 'one source per day, richest device first (same rule the Home screen uses)',
         days,
         points,
         isDuration: spec.isDuration === true,
         inferred: spec.inferred === true,
         // Only an accumulating metric has a partial today to hold out.
         partialDate: accumulating ? today : null,
+        categories: spec.agg === 'categorical' ? (spec.categories ?? {}) : undefined,
         // A metric that exists but is silent in this window is a different
         // statement from one that has never been recorded — say which.
         lastRecorded: presence?.lastDate ?? null,
@@ -780,6 +785,8 @@ type SeriesReportPoint = {
   unit?: string;
   hm?: string;
   partial?: boolean;
+  /** A categorical metric's word for the day's code. */
+  status?: string;
 };
 
 type SeriesPayloadInput = {
@@ -801,6 +808,12 @@ type SeriesPayloadInput = {
    * metric — an HRV sample or a night's sleep is whole the moment it lands.
    */
   partialDate?: string | null;
+  /**
+   * Set for a CATEGORICAL metric (a status code, code → word): `stats` is null
+   * — the mean of "balanced" and "low" is not a status — and `counts` gives the
+   * days per status instead.
+   */
+  categories?: Readonly<Record<number, string>>;
 };
 
 /** Layer 2 of the catalog guessed this metric's semantics; say so. */
@@ -842,7 +855,8 @@ function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
   const statPoints = partialToday
     ? input.points.filter((p) => p.date !== input.partialDate)
     : input.points;
-  const stats = seriesStats(statPoints);
+  const categorical = input.categories !== undefined;
+  const stats = categorical ? null : seriesStats(statPoints);
   const noteForEmpty = () => {
     if (input.lastRecorded) {
       return `No ${input.label} recorded in the last ${input.days} days. The most recent value on record is from ${input.lastRecorded}. This is missing data, not a zero — do not report a value.`;
@@ -880,9 +894,11 @@ function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
     // that `stats` deliberately leaves out.
     points: input.points,
     // Spelled out so `points` and `stats` can never be read as the same set.
-    statsBasis: partialToday
-      ? 'complete days only — today is still accumulating and is excluded (see `todaySoFar`)'
-      : 'every day in `points`, today included',
+    statsBasis: categorical
+      ? 'none — each day is a status code, so there is no min/avg/max; `counts` gives days per status'
+      : partialToday
+        ? 'complete days only — today is still accumulating and is excluded (see `todaySoFar`)'
+        : 'every day in `points`, today included',
     statsExcludesToday: partialToday !== null,
     stats:
       stats === null
@@ -910,10 +926,29 @@ function seriesPayload(input: SeriesPayloadInput): Record<string, unknown> {
           },
         }
       : {}),
+    ...(categorical ? { counts: statusCounts(input.points, input.categories!) } : {}),
     ...(input.lastRecorded !== undefined ? { lastRecorded: input.lastRecorded } : {}),
     ...(input.inferred ? { inferred: true } : {}),
     ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
   };
+}
+
+/** The logical local day of a body_metrics instant, as bodyDailySeries files it. */
+function lastBodyDay(measuredAt: string | undefined): string | null {
+  return measuredAt === undefined ? null : logicalDate(new Date(measuredAt));
+}
+
+/** Days per status for a categorical series, in code order, every declared status listed. */
+function statusCounts(
+  points: SeriesReportPoint[],
+  categories: Readonly<Record<number, string>>
+): { code: number; status: string; days: number }[] {
+  const days = new Map<number, number>();
+  for (const p of points) days.set(p.value, (days.get(p.value) ?? 0) + 1);
+  const codes = new Set([...Object.keys(categories).map(Number), ...days.keys()]);
+  return [...codes]
+    .sort((a, b) => a - b)
+    .map((code) => ({ code, status: categories[code] ?? 'unknown', days: days.get(code) ?? 0 }));
 }
 
 // --- get_training_summary ----------------------------------------------------

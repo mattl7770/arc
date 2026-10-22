@@ -70,7 +70,7 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 | `get_experiments` | `include_completed?` | `experiments` | Active experiments w/ daysLeft + ready flags **and a computed `readout` each** (2026-10-21, below); recent verdicts on request, each with the `readoutAtConclusion` stored with it |
 | `search_knowledge` | `query`, `scope?` | RAG layer (0025) | Honest "not available yet" until the on-device embedder ships |
 
-**Every turn also opens with a "Current state" system block** (`src/lib/ai/turn-context.ts`, 2026-08-08): date+weekday, profile+units+**goal direction**, any open **status** (only when there is one — no `Mode: Normal` on every turn forever), readiness verdict+pillars, mission progress, running/ready experiments, and the deterministic brief — sent as a second uncached system block after the prompt-cache breakpoint. The model starts oriented and spends tool calls on depth, not on discovering what Home already shows.
+**Every turn also opens with a "Current state" system block** (`src/lib/ai/turn-context.ts`, 2026-08-08): date+weekday, profile+units+**goal direction**, any open **status** (only when there is one — no `Mode: Normal` on every turn forever), readiness verdict+pillars, mission progress, running/ready experiments, and the deterministic brief — sent as a second system block after the 1-hour prompt-cache breakpoint — outside the cached prefix, so it can change every turn (since Track 0 the conversation's 5-minute breakpoint caches it within a turn's round trips). The model starts oriented and spends tool calls on depth, not on discovering what Home already shows.
 
 **Two settings joined the snapshot and the state block, 2026-09-19** (`get_today_snapshot.goalDirection` / `.waterTarget`; `· goal: <direction>` on the `User:` line). Both are the `nutritionTargets` blind spot again — a shipped, user-editable setting the model was reasoning *around* rather than *from*. `goalDirection` (`cut` | `maintain` | `gain`) is what Home's nutrition pillar grades against, so without it a 600 kcal surplus is unreadable: the plan or the problem. `waterTarget` is reported in the user's own volume unit and is explicitly **`null`** when unset — an unset setting, never a missing feature — because there is deliberately no stock hydration goal. Both cost the schema ceilings **nothing**: they are payload. The goal direction is printed in the state block even at its default, unlike Status and Timezone: those are events, where absence means nothing happened; this is a dial that always has a position.
 
@@ -207,7 +207,7 @@ Not a registry tool: Anthropic's **web search server tool**, carried in the same
 
 ### 2i. Shipped — calendar context (2026-10-21, chief-of-staff Track 2 item 7; ADR "Calendar context to the model")
 
-Not a tool: a section of the **uncached** per-turn context, so the Coach (chat) and the daily pass can plan around travel and busy days. **Settings › Coach › Calendar**, OFF until the owner turns it on; turning it on asks iOS for full calendar access, and ON is stored only when iOS grants it.
+Not a tool: a section of the per-turn context (outside the 1-hour cached prefix), so the Coach (chat) and every pass — the weekly review included — can plan around travel and busy days. **Settings › Coach › Calendar**, OFF until the owner turns it on; turning it on asks iOS for full calendar access, and ON is stored only when iOS grants it.
 
 | Piece | Where | What it does |
 | --- | --- | --- |
@@ -216,7 +216,7 @@ Not a tool: a section of the **uncached** per-turn context, so the Coach (chat) 
 | Cache + switch | `src/lib/calendar/context.ts`, `src/lib/db/repositories/calendar-setting.ts` | `calendarBlockFor(db, now)`: null when the switch is off (no native call at all); otherwise a fresh read, reused for 5 minutes per window, in memory only. The switch is `preferences.calendar.coachSees`. |
 | Wiring | `coach-service.ts`, `coach-pass.ts`, `turn-context.ts` | Both callers await the block and pass it as `buildTurnContext(…, { calendar })`, which appends it as its own section. |
 
-**Budget:** typical week ~270 tokens, worst case ~960, empty week 9; uncached, so the cached prefix and the §6 ceilings are unchanged. Tests: `db/calendar.test.mjs` (the absent seam, formatting under `TZ=Pacific/Auckland`, the cap, the cache, nothing written to SQLite, the wiring, the app.json pin) and `db/screens-render.test.mjs` §41 (the switch and its sentences).
+**Budget:** typical week ~270 tokens, worst case ~960, empty week 9; outside the 1-hour cached prefix, so that prefix and the §6 ceilings are unchanged. Tests: `db/calendar.test.mjs` (the absent seam, formatting under `TZ=Pacific/Auckland`, the cap, the cache, nothing written to SQLite, the wiring, the app.json pin) and `db/screens-render.test.mjs` §41 (the switch and its sentences).
 
 ### 2e. Planned — not yet designed in code
 
@@ -519,7 +519,7 @@ Note the one carve-out: a **specific** proposed next action ("Want me to move th
 The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + voice + tool doctrine + safety rails + date/context tail) and is the refined form of the old skeleton. Keep the two in sync; note voice changes in `docs/decisions.md`.
 
 **Cache note.** The whole system string is one cached block (`buildMessagesRequest`, `model-client.ts`) with a single breakpoint at its end; the tool list carries the second; since 2026-10-21 a turn with tools carries a third, 5-minute one on its latest user message (§7c). Adding `VOICE` did not move either breakpoint — it invalidates the cache exactly once, on first send after deploy. But the block is billed on **every** turn, so keep prompt edits concrete and short: a "write this, not that" pair earns its tokens, a paragraph of adjectives does not.
-The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + tool doctrine + safety rails) and is the refined form of the old skeleton. Since 2026-08-08 it is **two system blocks**: the static block (this file's doctrine — carries the prompt-cache breakpoint; the reminders line is runtime capability truth via `notificationsAvailable()`, so the Coach never denies a delivery channel the binary actually has) and the uncached per-turn "Current state" block from `turn-context.ts` (which owns the date — keeping it out of the static block is what lets the cache survive midnight). Keep the two in sync with this doc; note voice changes in `docs/decisions.md`.
+The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + tool doctrine + safety rails) and is the refined form of the old skeleton. Since 2026-08-08 it is **two system blocks**: the static block (this file's doctrine — carries the prompt-cache breakpoint; the reminders line is runtime capability truth via `notificationsAvailable()`, so the Coach never denies a delivery channel the binary actually has) and the per-turn "Current state" block from `turn-context.ts`, outside the 1-hour cached prefix (which owns the date — keeping it out of the static block is what lets the cache survive midnight). Keep the two in sync with this doc; note voice changes in `docs/decisions.md`.
 
 ---
 
@@ -549,7 +549,7 @@ Net: **~$0.069 → ~$0.004 per question** in steady state, ~19×.
 
 **Two traps this leaves behind**, both guarded by tests in `db/coach-eval.test.mjs` §6:
 
-- **Prompt-cache minimums differ by model** — 512 tokens on Opus 5, 1,024 on Sonnet 5, but **4,096 on Haiku 4.5**, which is what the unattended coach pass runs on with the READ tools only. That prefix is ~4,599 tokens: it clears the floor by 12%. Trim read-tool descriptions much further and Haiku's caching stops *silently* — no error, just `cache_creation_input_tokens: 0` and full price forever.
+- **Prompt-cache minimums differ by model** — 512 tokens on Opus 5, 1,024 on Sonnet 5, but **4,096 on Haiku 4.5**, which is what the unattended coach pass runs on under **Lean**, with the READ tools only (under Standard and Generous the pass runs on the chat model — §7d). That prefix is ~4,599 tokens: it clears the floor by 12%. Trim read-tool descriptions much further and Haiku's caching stops *silently* — no error, just `cache_creation_input_tokens: 0` and full price forever.
 - **Tool schemas creep.** Every new tool is a permanent tax on every request. The budget test fails past 7,600 tokens; trim before adding.
 
 **Round two (same day): killing round-trips, not just bytes.** "How many steps have I taken today?" still cost ~10k tokens. The cause was structural, not prefix size: the state block carried readiness *levels* but not today's actual numbers, and the system prompt ordered a read tool "before answering anything about today". So the model spent an entire extra round-trip on `get_metric_series` — re-sending the whole ~9k prefix — to fetch one integer already on disk.

@@ -118,9 +118,10 @@ times, places), read-only, behind a switch in Settings.*
 **Decision.**
 
 1. **A new category of data, not a new egress.** The events ride the one sanctioned egress, the
-   Coach's own model call (CLAUDE.md §3), as a section of the **uncached** per-turn context block
-   (`src/lib/ai/turn-context.ts`), in chat and in the daily coach pass. No other request carries
-   them; the food estimators do not.
+   Coach's own model call (CLAUDE.md §3), as a section of the per-turn context block
+   (`src/lib/ai/turn-context.ts`) — **outside the 1-hour cached prefix** — in chat and in every
+   coach pass, whatever its trigger (the morning and evening check-ins, a topic, a change worth a
+   second look, the weekly review). No other request carries them; the food estimators do not.
 2. **What is sent, per event:** title, start and end (local wall clock), all-day, location, and the
    calendar's name, for the logical today through today + 6. **Never** notes, attendees, organiser,
    URLs or alarms: the seam (`src/lib/calendar/calendar.ts`) reads only the five fields plus the
@@ -137,11 +138,16 @@ times, places), read-only, behind a switch in Settings.*
 4. **Read-only, full access.** The seam types no write at all. iOS 17's write-only access returns
    no events, so ARC asks for full access (`NSCalendarsFullAccessUsageDescription`, set by the
    `expo-calendar` config plugin with its `writeOnlyAccess` left off).
-5. **Never at rest.** Events are read fresh and held in memory for 5 minutes, keyed on the window
-   (`src/lib/calendar/context.ts`), so one tool loop reads once and a new day reads afresh. No row,
-   file or log line ever holds a title, time or place; the test suite searches every table to
-   prove it. What reaches Anthropic is what any Coach request carries (CLAUDE.md §2 holds: nothing
-   personal sits at rest in a cloud ARC controls).
+5. **The calendar block is never at rest — the Coach's words about it are.** Events are read fresh
+   and held in memory for 5 minutes, keyed on the window (`src/lib/calendar/context.ts`), so one
+   tool loop reads once and a new day reads afresh. The read path writes no row, file or log line;
+   the test suite searches every table after a read to prove it. But Coach text that mentions an
+   event — a chat reply, the brief, a pass note, the weekly read, a plan item's title or reason, a
+   proposal's reason (`ai_messages`, the pass notes, `day_plan_events.title`…) — is stored on the
+   device like any other reply, so it can quote a title, and it rides the encrypted ARCB1 backup
+   and the user's own data export. Nothing leaves the device unencrypted: the backup is sealed
+   before it reaches iCloud, and what reaches Anthropic is what any Coach request carries
+   (CLAUDE.md §2 holds: nothing personal sits at rest in a cloud ARC controls).
 6. **Capped.** At most 40 events, titles cut to 48 characters, places to 32, calendar names to 16,
    and a 3,200-character budget for the event text. Measured: a typical 21-event week ~270 tokens,
    the worst case ~960, an empty week 9. The cap trims the far end of the week and says from which
@@ -273,7 +279,8 @@ memory cannot tell them apart or know this year's menu.
    country — iOS moves it when the phone lands somewhere new, so it follows a trip — and the
    locale's region subtag is the fallback. Both are named when they disagree. No GPS, no permission,
    no native module, no `expo-localization`. The line (`Region: NZ (time zone Pacific/Auckland)`)
-   rides the **uncached** per-turn context of the Coach and of each estimate, never the cached prefix.
+   rides the per-turn context of the Coach and of each estimate, **outside the 1-hour cached
+   prefix**.
    The search tool's own `user_location` is NOT sent: the API rejects an unsupported country code
    with a 400, and the model already has the region in context. This codebase holds that Hermes
    ships no `Intl`; the read is guarded, and an absent `Intl` simply omits the line.

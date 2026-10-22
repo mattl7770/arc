@@ -57,7 +57,7 @@ export function CalendarSetting({
           <Text className="font-serif text-[11px] leading-4 text-ink-muted">
             Every calendar on this phone. Each event&rsquo;s title, times, place and calendar name
             go to Anthropic inside the Coach&rsquo;s own call; never its notes, attendees or links.
-            ARC never writes to your calendar and stores none of it.
+            ARC never writes to your calendar or keeps a copy of it; a Coach reply that mentions an event is saved like any reply.
           </Text>
         </Block>
       </View>
