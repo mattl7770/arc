@@ -67,6 +67,12 @@ export type CoachChatMessage = ChatMessage & {
    * verdict as the live one.
    */
   phantomWrite?: boolean;
+  /**
+   * One quiet line about the turn rather than in it — today only "Web search
+   * isn't available on this API key…" (api-key-store.ts), shown once per app
+   * session on the reply that hit it. Session state, so never persisted.
+   */
+  notice?: string;
 };
 
 /** A turn as it should be rendered — with the retry-superseded mark derived. */
@@ -157,16 +163,30 @@ function landedWrites(toolCalls: CoachToolCall[]): string[] {
  *
  * The claim check runs ONLY when nothing landed. A turn that really wrote is
  * never examined, so no real write can ever be captioned as a phantom one.
+ *
+ * Nor is a turn that CALLED a write the user declined, or that errored
+ * (2026-10-21). The thread now keeps the whole turn, and the prompt has the
+ * Coach present a draft in full BEFORE the write call, so "Added to your
+ * grocery list: milk, eggs." ahead of a declined card is the draft the user
+ * just refused, not a claim, and the thread already says what happened in its
+ * own voice ("Declined, not saved"). Every write call is landed, declined or
+ * errored (`landedWriteCalls`), so the check runs exactly when the turn called
+ * no write at all, which is the owner's report: a save claimed with no tool
+ * call. That reads only the stored tool record, so a reload agrees.
+ *
+ * (Checking only the text after the last write call, as first proposed, would
+ * never run: a turn with a write call has always landed, declined or errored.)
  */
 function writeFidelity(
   content: string,
   toolCalls: CoachToolCall[]
 ): { writes: string[]; declined: string[]; phantomWrite: boolean } {
   const writes = landedWrites(toolCalls);
+  const calledAWrite = toolCalls.some((call) => isWriteTool(call.name));
   return {
     writes,
     declined: declinedWriteLines(toolCalls, humanizeToolName),
-    phantomWrite: writes.length === 0 && claimsCompletedWrite(content),
+    phantomWrite: !calledAWrite && claimsCompletedWrite(content),
   };
 }
 
@@ -366,6 +386,9 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // Registry calls only: searches are counted by the caption itself,
           // from the billed `webSearchRequests`.
           const caption = usageCaption(result.usage, apiKeyStore.getModel(), tools.length);
+          // Owed once after the API refused the search tool on this key — by
+          // this turn or by an estimate made since (api-key-store.ts).
+          const notice = apiKeyStore.takeWebSearchNotice();
           patch((m) => ({
             ...m,
             streaming: false,
@@ -378,6 +401,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
             ...(phantomWrite ? { phantomWrite } : {}),
             ...(result.toolCalls.length > 0 ? { toolCalls: result.toolCalls } : {}),
             ...(caption ? { usageCaption: caption } : {}),
+            ...(notice ? { notice } : {}),
           }));
           if (persisted) {
             appendMessage(

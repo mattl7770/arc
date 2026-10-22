@@ -157,11 +157,14 @@ export async function streamCoachReply(
       // The provider's web search, whenever the model judges it helps (the
       // owner's call, 2026-10-21). Off when he turns it off in Settings › Coach,
       // and dropped by the client for a model with no known tool version.
-      webSearch: apiKeyStore.isWebSearchOn() ? { maxUses: COACH_WEB_SEARCH_MAX_USES } : null,
+      // Also off for the rest of the session once the API has refused the
+      // tool on this key (model-client.ts searchToolRefused).
+      webSearch: apiKeyStore.isWebSearchUsable() ? { maxUses: COACH_WEB_SEARCH_MAX_USES } : null,
     },
     {
       onToken: options.onToken,
       signal: options.signal,
+      onWebSearchUnavailable: () => apiKeyStore.markWebSearchUnavailable(),
       onToolCall: ({ name }) => options.onToolCall?.({ name, label: humanizeToolName(name) }),
       executeTool: async (name, input) => {
         const tool = toolByName(name);

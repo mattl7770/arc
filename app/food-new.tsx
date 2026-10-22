@@ -35,6 +35,7 @@ import {
 } from '@/lib/nutrition/food-form';
 import { MICROS } from '@/lib/nutrition/micros';
 import type { FoodRow } from '@/lib/nutrition/types';
+import { apiKeyStore } from '@/lib/ai/api-key-store';
 import type { WebSearchSummary } from '@/lib/ai/web-search';
 
 /**
@@ -260,6 +261,8 @@ function FoodEntryForm({
   const [described, setDescribed] = useState(false);
   /** What the model looked up for the last description, for the Searched line. */
   const [searches, setSearches] = useState<WebSearchSummary[]>([]);
+  // The one line owed after the API refused search on this key (api-key-store.ts).
+  const [searchNotice, setSearchNotice] = useState<string | null>(null);
   const keySet = isMealEstimationAvailable();
   // The model call is a live stream. Leaving mid-describe must stop it, or it
   // runs to completion and is billed in full while its result lands on an
@@ -288,6 +291,7 @@ function FoodEntryForm({
       micros: microsText(entry.micros),
     });
     setSearches(entry.searches ?? []);
+    setSearchNotice(apiKeyStore.takeWebSearchNotice());
     setDescribed(true);
   };
 
@@ -430,7 +434,7 @@ function FoodEntryForm({
               food, and the entry will be marked as an estimate in your catalog.
             </Text>
           ) : null}
-          {described ? <SearchedLines searches={searches} /> : null}
+          {described ? <SearchedLines searches={searches} notice={searchNotice} /> : null}
         </View>
       )}
 

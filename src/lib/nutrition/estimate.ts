@@ -312,9 +312,12 @@ export type EstimatorOptions = { webSearch: boolean; region: string | null };
 /** No search and no region — the pure builders' default, and the tests'. */
 export const NO_ESTIMATOR_OPTIONS: EstimatorOptions = { webSearch: false, region: null };
 
-/** The live options: the Settings switch, and the region from the phone's settings. */
+/**
+ * The live options: the Settings switch (off for the session once the API has
+ * refused the search tool on this key), and the region from the phone's settings.
+ */
 export function currentEstimatorOptions(): EstimatorOptions {
-  return { webSearch: apiKeyStore.isWebSearchOn(), region: regionLine(deviceRegion()) };
+  return { webSearch: apiKeyStore.isWebSearchUsable(), region: regionLine(deviceRegion()) };
 }
 
 /**
@@ -1007,6 +1010,10 @@ async function runEstimatorTurn(
       // No registry tools in an estimator turn: the model answers in text. A
       // web search is the provider's own tool and never reaches this callback.
       executeTool: async () => ({ content: '' }),
+      // A key that cannot search: this estimate already went through without
+      // it; the latch keeps the next one (and the queue's drain) from paying
+      // the refused request first.
+      onWebSearchUnavailable: () => apiKeyStore.markWebSearchUnavailable(),
     }
   );
   return {

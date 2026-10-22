@@ -11,16 +11,28 @@ import { searchedLine, type WebSearchSummary } from '@/lib/ai/web-search';
  * reloaded thread shows the same lines) and on the estimate reviews (meal,
  * correction, food description), where it says why a figure is a menu's rather
  * than a guess. Draws nothing when there was no search, which is most turns.
+ *
+ * `notice` is the one line owed when the API refused the search tool on this
+ * key (api-key-store.ts `takeWebSearchNotice`): the same quiet ink, because it
+ * is the same kind of fact — what the answer was, and was not, built from.
  */
-export function SearchedLines({ searches }: { searches: readonly WebSearchSummary[] | undefined }) {
-  if (!searches || searches.length === 0) return null;
+export function SearchedLines({
+  searches,
+  notice,
+}: {
+  searches: readonly WebSearchSummary[] | undefined;
+  notice?: string | null;
+}) {
+  const lines = (searches ?? []).map(searchedLine);
+  if (notice) lines.push(notice);
+  if (lines.length === 0) return null;
   return (
     <View className="mt-1">
-      {searches.map((search, index) => (
+      {lines.map((line, index) => (
         <Text
-          key={`${search.query}-${index}`}
+          key={`${line}-${index}`}
           className="font-mono text-[10px] leading-4 tracking-[0.5px] text-ink-muted">
-          {searchedLine(search)}
+          {line}
         </Text>
       ))}
     </View>

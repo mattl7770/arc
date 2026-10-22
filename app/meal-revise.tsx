@@ -37,6 +37,7 @@ import { useReviewDraft } from '@/hooks/use-review-draft';
 import { fmtAmount, fmtInt, pieceCount } from '@/lib/nutrition/format';
 import type { MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
 import type { VolumeUnit } from '@/lib/user/types';
+import { apiKeyStore } from '@/lib/ai/api-key-store';
 import type { WebSearchSummary } from '@/lib/ai/web-search';
 
 /**
@@ -92,7 +93,13 @@ import type { WebSearchSummary } from '@/lib/ai/web-search';
 type Phase =
   | { kind: 'input' }
   | { kind: 'working' }
-  | { kind: 'review'; notes: string | null; searches: WebSearchSummary[] }
+  | {
+      kind: 'review';
+      notes: string | null;
+      searches: WebSearchSummary[];
+      /** The one line owed after the API refused search on this key, or null. */
+      notice: string | null;
+    }
   /** The correction never reached the model, so it was kept (0057, backlog C3).
    *  The meal keeps the items it has until the drain lands. */
   | { kind: 'queued' }
@@ -146,7 +153,12 @@ export default function MealReviseScreen() {
     // pizza's eight over three logged slices.
     draft.replace(rowsFromEstimate(getDb(), estimate, { countIsEaten: true }));
     asking.begin(estimate.questions);
-    setPhase({ kind: 'review', notes: estimate.notes, searches: estimate.searches ?? [] });
+    setPhase({
+      kind: 'review',
+      notes: estimate.notes,
+      searches: estimate.searches ?? [],
+      notice: apiKeyStore.takeWebSearchNotice(),
+    });
   };
 
   const run = async () => {
@@ -409,9 +421,9 @@ export default function MealReviseScreen() {
 
       {phase.kind === 'review' ? (
         <View className="mt-6">
-          {phase.searches.length > 0 ? (
+          {phase.searches.length > 0 || phase.notice ? (
             <View className="mb-3">
-              <SearchedLines searches={phase.searches} />
+              <SearchedLines searches={phase.searches} notice={phase.notice} />
             </View>
           ) : null}
           {phase.notes ? (

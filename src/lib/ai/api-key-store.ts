@@ -32,6 +32,10 @@ const KEYCHAIN_MODEL = 'arc.coach.model';
  */
 const KEYCHAIN_WEB_SEARCH = 'arc.coach.web_search';
 
+/** The one line shown when the API refuses the search tool on this key. */
+export const WEB_SEARCH_UNAVAILABLE_LINE =
+  "Web search isn't available on this API key — answering without it. Settings › Coach › Web search.";
+
 /** The slice of expo-secure-store this module uses. */
 type SecureStoreModule = {
   getItemAsync(key: string): Promise<string | null>;
@@ -73,6 +77,14 @@ type Listener = () => void;
 let apiKey: string | null = null;
 let model: string | null = null;
 let webSearch = true;
+// The session latch (2026-10-21): the API refused the search tool on this key
+// and the same request without it went through (model-client.ts
+// `searchToolRefused`). In memory ONLY — never the stored switch — so a relaunch,
+// or the owner flipping the switch after enabling search in the Console, tries
+// again. `webSearchNoticePending` is the one quiet line owed to whichever
+// screen shows a result next.
+let webSearchUnavailable = false;
+let webSearchNoticePending = false;
 let hydrated = false;
 // Set the moment the user acts (setKey/clearKey/setModel) so a slow boot-time
 // hydrate() read that resolves LATER can never clobber what they just chose —
@@ -134,6 +146,36 @@ export const apiKeyStore = {
    */
   isWebSearchOn(): boolean {
     return webSearch;
+  },
+  /**
+   * Whether a request should carry the search tool now: the switch is on AND
+   * the API has not refused the tool on this key this session. What every
+   * caller that builds a request reads; Settings reads {@link isWebSearchOn}.
+   */
+  isWebSearchUsable(): boolean {
+    return webSearch && !webSearchUnavailable;
+  },
+  /**
+   * The API refused the search tool and the request went through without it:
+   * stop sending it for the rest of the app session, and owe the owner one
+   * line saying so. Idempotent — a second refusal (a turn already in flight)
+   * owes nothing more.
+   */
+  markWebSearchUnavailable(): void {
+    if (webSearchUnavailable) return;
+    webSearchUnavailable = true;
+    webSearchNoticePending = true;
+    emit();
+  },
+  /**
+   * The one quiet line, at most once per latch: returns it to the first screen
+   * that asks after a refusal (a Coach reply, an estimate review), then null.
+   * A background estimate never asks, so the line waits for a screen.
+   */
+  takeWebSearchNotice(): string | null {
+    if (!webSearchNoticePending) return null;
+    webSearchNoticePending = false;
+    return WEB_SEARCH_UNAVAILABLE_LINE;
   },
   /** True when the key is Keychain-backed; false in memory-only fallback. */
   isPersistent(): boolean {
@@ -202,6 +244,9 @@ export const apiKeyStore = {
   async setWebSearch(on: boolean): Promise<void> {
     webSearchTouched = true;
     webSearch = on;
+    // Touching the switch is the owner's answer to the line: try again.
+    webSearchUnavailable = false;
+    webSearchNoticePending = false;
     emit();
     persistInBackground((store) =>
       on

@@ -403,8 +403,10 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   //
   // The search server tool rides the Coach's `tools` array on every turn the
   // switch is on (the default), so it is billed HERE, honestly, at its widest
-  // shape: the 20260209 version with `allowed_callers` (+33; Haiku's basic
-  // version is +23). What this cannot measure is the provider's own text for
+  // shape: the 20260209 version (+33 while it carried `allowed_callers`; that
+  // field is the documented default and was dropped, 9,147 → 9,136, so the
+  // tool is now the same three fields on every model). What this cannot
+  // measure is the provider's own text for
   // the tool — the API adds the search tool's instructions server-side, as it
   // does for every server tool — and that is not ARC's prompt to trim; it shows
   // up in the usage caption's input count on the phone.
