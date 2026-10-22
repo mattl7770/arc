@@ -33,10 +33,13 @@ type DraftRow = { value: string; updated_at: string };
  *
  * It lives here because every write to the table goes through the functions
  * below; an announcement made anywhere else would miss one. Listeners are told
- * THAT a slot changed, never what: they re-read it through
- * {@link readWorkoutDraft}, so there is still one reading of a draft.
+ * WHICH slot changed, never what is in it: they re-read it through
+ * {@link readWorkoutDraft}, so there is still one reading of a draft. The key
+ * is there so a listener can ignore the slot it does not draw — the bar shows
+ * only 'live', and the manual logger writes its slot on every keystroke
+ * (review, 2026-10-21).
  */
-type DraftListener = () => void;
+type DraftListener = (key: DraftKey) => void;
 const listeners = new Set<DraftListener>();
 
 /** Hear every write and clear of either slot. Returns the unsubscribe. */
@@ -47,12 +50,12 @@ export function subscribeWorkoutDrafts(listener: DraftListener): () => void {
   };
 }
 
-function announce(): void {
+function announce(key: DraftKey): void {
   // A copy, so a listener that unsubscribes mid-loop cannot skip its neighbour;
   // and one that throws must stop neither the others nor the write that called it.
   for (const listener of [...listeners]) {
     try {
-      listener();
+      listener(key);
     } catch (error) {
       console.warn('[exercise] draft listener failed', error);
     }
@@ -79,7 +82,7 @@ export function saveWorkoutDraft(db: Database, key: DraftKey, value: unknown): v
      ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
     [newId(db), key, JSON.stringify(value)]
   );
-  announce();
+  announce(key);
 }
 
 /**
@@ -105,7 +108,7 @@ export function readWorkoutDraft(db: Database, key: DraftKey): StoredDraft | nul
  */
 export function clearWorkoutDraft(db: Database, key: DraftKey): void {
   db.run('DELETE FROM workout_drafts WHERE key = ?', [key]);
-  announce();
+  announce(key);
 }
 
 /**

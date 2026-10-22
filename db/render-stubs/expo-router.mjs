@@ -3,7 +3,7 @@
  * per render via __setParams; router methods record calls; useFocusEffect is
  * a no-op (a server render runs no effects — matching SSR semantics).
  */
-export const __router = { pushes: [], replaces: [], backs: 0 };
+export const __router = { pushes: [], replaces: [], backs: 0, dismissTos: [] };
 let params = {};
 /**
  * The route the screen believes it is rendering at. `app/nutrition.tsx` and
@@ -43,7 +43,26 @@ export function useRouter() {
     back: () => {
       __router.backs += 1;
     },
+    dismissTo: (to) => {
+      __router.dismissTos.push(to);
+    },
   };
+}
+
+/**
+ * The navigation container's root state, as `useNavigationContainerRef()`
+ * hands it out — read by the session bar's tap to decide whether the live
+ * logger is already on the stack (src/components/exercise/session-bar.tsx).
+ * Undefined by default: no navigation state, as a server render has none.
+ */
+let rootState;
+
+export function __setRootState(next) {
+  rootState = next;
+}
+
+export function useNavigationContainerRef() {
+  return { getRootState: () => rootState, isReady: () => rootState !== undefined };
 }
 
 export function useFocusEffect() {}

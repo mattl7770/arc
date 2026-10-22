@@ -12,9 +12,12 @@
  * Unlike reminders (which cancel-all-then-reschedule), a rest alert is a single
  * one-shot the workout screen owns: schedule returns an id, and the screen
  * cancels THAT id when the set changes, the timer is bumped, or the workout
- * ends — so it never disturbs the reminder schedule. (The one crossover: a
- * reminder resync's cancel-all would also clear a pending rest alert; a boot or
- * Coach reminder-edit mid-rest is rare and only costs one missed buzz.)
+ * ends — so it never disturbs the reminder schedule. Nor does the reminder
+ * resync disturb it (review, 2026-10-21): its cancel skips any pending request
+ * whose payload carries this file's tag ({@link isRestAlert}), so ticking a
+ * mission row mid-rest, a Coach turn or a cold relaunch no longer silences the
+ * buzz (reminders.ts, `cancelOwnedRequests`). The tag is therefore load-bearing:
+ * a rest alert without `kind: 'rest-timer'` would be cancelled by every sync.
  *
  * FLAG (native): expo-notifications is a native module. It's a configured
  * plugin and, along with the Coach's while-closed reminders that already

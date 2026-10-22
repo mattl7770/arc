@@ -23,7 +23,7 @@ import { offerUndo, type UndoOffer, type UndoWords } from '@/lib/nutrition/undo-
 import { excerpt } from '@/lib/utils/excerpt';
 
 /** "weight", "body-fat", but "HRV" — a label as it reads inside a sentence. */
-function inSentence(label: string): string {
+export function inSentence(label: string): string {
   return /^[A-Z][a-z]/.test(label) ? label[0]!.toLowerCase() + label.slice(1) : label;
 }
 

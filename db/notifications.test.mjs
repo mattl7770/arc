@@ -38,8 +38,11 @@ import { deliveredInstant, dismissDelivered } from '../src/lib/notifications/del
 import { parseNudgeReply } from '../src/lib/notifications/nudge-plan.ts';
 import { protocolReminderKey } from '../src/lib/notifications/protocol-reminders.ts';
 import {
+  cancelOwnedRequests,
   CHECKIN_TITLE,
   getLastNotificationSync,
+  NATIVE_REMINDER_DEPS,
+  notificationsAvailable,
   NOTIFICATION_BUDGET,
   NUDGE_TITLE,
   reminderTrigger,
@@ -47,7 +50,7 @@ import {
   settledDeliveries,
   syncReminderNotifications,
 } from '../src/lib/notifications/reminders.ts';
-import { clearDeliveredRestAlerts } from '../src/lib/notifications/rest-timer.ts';
+import { buildRestAlert, clearDeliveredRestAlerts } from '../src/lib/notifications/rest-timer.ts';
 import {
   appNavigatorMounted,
   createTapLedger,
@@ -899,6 +902,108 @@ console.log('16. the gate reads the app’s own Stack, not expo-router’s __roo
   restTapTarget(root(undefined), true).kind === 'resume'
     ? ok('no Stack to read: the stored session decides')
     : bad('no stack');
+}
+
+console.log('17. a reminder sync leaves a pending "Rest complete" alone (review, 2026-10-21)');
+{
+  /**
+   * A fake pending schedule — the OS's list of requests not yet fired, as the
+   * Notification Centre fake above is its list of those that have. `schedule`
+   * assigns identifiers as iOS does; `cancelAll` empties it, rest alert and all.
+   */
+  const pendingCentre = ({ failCancel = null, readFails = false } = {}) => {
+    let next = 0;
+    const log = { requests: [], cancelAlls: 0 };
+    log.deps = {
+      available: () => true,
+      ensurePermission: async () => true,
+      schedule: async (request) => {
+        log.requests.push({ identifier: `req-${++next}`, ...request });
+      },
+      cancelAll: async () => {
+        log.cancelAlls += 1;
+        log.requests.length = 0;
+      },
+      pending: {
+        scheduled: async () => {
+          if (readFails) throw new Error('read failed');
+          return log.requests.map((r) => ({ identifier: r.identifier, data: r.content.data }));
+        },
+        cancel: async (identifier) => {
+          if (identifier === failCancel) throw new Error('cancel failed');
+          log.requests = log.requests.filter((r) => r.identifier !== identifier);
+        },
+      },
+    };
+    return log;
+  };
+  const rest = (log) => log.requests.filter((r) => r.content.data?.kind === 'rest-timer');
+  const reminders = (log, id) => log.requests.filter((r) => r.content.data?.reminderId === id);
+
+  const { db } = freshDb();
+  const magnesium = createReminder(db, { title: 'Magnesium', time: '23:00', repeat: 'daily' }, NOW);
+  const os = pendingCentre();
+  // The logger armed its rest alert, as scheduleRestAlert does…
+  os.requests.push({ identifier: 'rest-1', ...buildRestAlert(90) });
+  // …and an old request this build no longer schedules is still pending.
+  os.requests.push({ identifier: 'stale', content: { title: 'old', data: { reminderId: 'gone' } } });
+  // A mission tick mid-rest resyncs — twice, as the training tick then does too.
+  await syncReminderNotifications(db, NOW, os.deps);
+  const first = await syncReminderNotifications(db, NOW, os.deps);
+  rest(os).length === 1 && rest(os)[0].identifier === 'rest-1' && os.cancelAlls === 0
+    ? ok('the pending rest alert survives two resyncs, under its own identifier')
+    : bad('rest alert cancelled by a resync', JSON.stringify(os.requests.map((r) => r.identifier)));
+  reminders(os, magnesium).length === 1 &&
+  !os.requests.some((r) => r.identifier === 'stale') &&
+  // rest + Magnesium + the morning check-in (on by default since 2026-09-26)
+  os.requests.length === 3 &&
+  first.scheduledIds.includes(magnesium)
+    ? ok('…while the reminders are an exact mirror: one Magnesium, one check-in, the stale request gone')
+    : bad('reminder mirror', JSON.stringify(os.requests.map((r) => [r.identifier, r.content.title])));
+
+  // A reminder completed between syncs leaves nothing behind.
+  completeReminder(db, magnesium);
+  await syncReminderNotifications(db, NOW, os.deps);
+  reminders(os, magnesium).length === 0 && rest(os).length === 1
+    ? ok('a completed reminder is cancelled on the next sync; the rest alert still waits')
+    : bad('completed reminder', JSON.stringify(os.requests.map((r) => r.identifier)));
+
+  // The fallbacks: when the schedule cannot be read, or a cancel fails, the pass
+  // cancels everything rather than leave a reminder that would fire twice.
+  for (const [why, opts] of [
+    ['an unreadable schedule', { readFails: true }],
+    ['a cancel that fails', { failCancel: 'stale' }],
+  ]) {
+    const { db: db2 } = freshDb();
+    const id = createReminder(db2, { title: 'Magnesium', time: '23:00', repeat: 'daily' }, NOW);
+    const shaky = pendingCentre(opts);
+    shaky.requests.push({ identifier: 'rest-1', ...buildRestAlert(90) });
+    shaky.requests.push({ identifier: 'stale', content: { title: 'old', data: {} } });
+    const result = await syncReminderNotifications(db2, NOW, shaky.deps);
+    shaky.cancelAlls === 1 &&
+    reminders(shaky, id).length === 1 &&
+    !shaky.requests.some((r) => r.identifier === 'stale' || r.identifier === 'rest-1') &&
+    result.failed === false
+      ? ok(`${why}: the pass falls back to cancel-all — no orphan, at the cost of that buzz`)
+      : bad(`fallback: ${why}`, JSON.stringify({ c: shaky.cancelAlls, r: shaky.requests }));
+  }
+
+  // The seam itself, on the native shape: everything but the tagged rest alert.
+  const direct = pendingCentre();
+  direct.requests.push(
+    { identifier: 'a', content: { data: { kind: 'rest-timer' } } },
+    { identifier: 'b', content: { data: { kind: 'nudge', nudgeId: 'n' } } },
+    { identifier: 'c', content: { data: null } },
+    { identifier: 'd', content: {} }
+  );
+  const cancelled = await cancelOwnedRequests(direct.deps);
+  JSON.stringify(cancelled) === JSON.stringify(['b', 'c', 'd']) &&
+  direct.requests.map((r) => r.identifier).join() === 'a'
+    ? ok('cancelOwnedRequests cancels every request but the rest timer’s, payload or none')
+    : bad('cancelOwnedRequests', JSON.stringify(cancelled));
+  NATIVE_REMINDER_DEPS.pending === null && notificationsAvailable() === false
+    ? ok('off-device the native seam has no pending list, so nothing native is touched')
+    : bad('native pending seam off-device');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -65,6 +65,7 @@ import {
 } from '../src/lib/db/repositories/user.ts';
 import {
   editLogCapture,
+  logMetricCapture,
   removeLogCapture,
   restoreLogCapture,
 } from '../src/lib/health/publish.ts';
@@ -83,7 +84,7 @@ import {
   METRICS,
   metricByKey,
 } from '../src/lib/log/metrics.ts';
-import { parseCommand } from '../src/lib/log/parse.ts';
+import { isWholeMetricLine, parseCommand } from '../src/lib/log/parse.ts';
 import {
   ARC_INTENTS_MODULE,
   QUICK_LOG_EVENT,
@@ -1822,6 +1823,164 @@ console.log('25. quick box: a metric files as the Log tab files it, anything els
   todayISODate(small, '04:00') === '2026-10-20'
     ? ok('at 01:00 under a 04:00 boundary the box files to the 20th, the logical day')
     : bad('logical day', todayISODate(small, '04:00'));
+}
+
+console.log('25b. a measurement must be the whole line — in the quick box and on the Log tab (review, 2026-10-21)');
+{
+  const at = new Date(2026, 9, 21, 12, 0, 0, 0);
+  const act = (line) => quickLineAction(line, undefined, at, '00:00');
+  // The reviewer's lines: each named a metric beside a number and was filed as
+  // that metric, the food dropped — water and weight to Apple Health, an RHR
+  // of 10 into the readiness baselines.
+  const foods = [
+    'oatmeal with 8 oz water',
+    '2 eggs and toast with 16 oz water',
+    'chicken thighs resting 10 min then 200g rice',
+    'bw 1 banana',
+    '2 scoops whey in 12 oz water',
+    'electrolytes in 1 l water',
+    'lemon water 16 oz',
+    'protein shake with 500ml water',
+    'steak, resting 30 minutes, then 2 eggs',
+    'big glass of water 20 oz and a banana',
+    '2 eggs, 1 slice toast, weight 180',
+  ];
+  const filed = foods.filter((line) => {
+    const a = act(line);
+    return !(a.kind === 'food' && a.description === line);
+  });
+  filed.length === 0
+    ? ok(`${foods.length} food lines naming a metric beside a number are food, words kept whole`)
+    : bad('food filed as a metric', filed.map((l) => `${l} → ${JSON.stringify(act(l))}`).join('; '));
+
+  // Genuine measurement lines still file, with the value parseCommand gives.
+  const metrics = [
+    ['weight 178', 'weight'],
+    ['weight 178 lb', 'weight'],
+    ['bw 178', 'weight'],
+    ['log weight 178', 'weight'],
+    ['my weight 178.4 this morning', 'weight'],
+    ['weight: 80 kg', 'weight'],
+    ['water 16 oz', 'water'],
+    ['16 oz water', 'water'],
+    ['16oz water.', 'water'],
+    ['water 2l', 'water'],
+    ['drank 16 oz water', 'water'],
+    ['rhr 52', 'rhr'],
+    ['resting 60', 'rhr'],
+    ['rhr 52 at 7am', 'rhr'],
+    ['hrv 48 this morning', 'hrv'],
+    ['hrv: 48 ms', 'hrv'],
+    ['bf 15', 'body_fat'],
+    ['body fat 15%', 'body_fat'],
+    ['waist 34', 'waist'],
+    ['dose 5 mg', 'dose'],
+  ];
+  const lost = metrics.filter(([line, key]) => {
+    const a = act(line);
+    const p = parseCommand(line);
+    return !(
+      a.kind === 'metric' &&
+      a.metric === key &&
+      p.kind === 'metric' &&
+      near(a.canonical, p.canonical) &&
+      isWholeMetricLine(line, key)
+    );
+  });
+  lost.length === 0
+    ? ok(`${metrics.length} measurement lines (filler, units, clock times allowed) still file as before`)
+    : bad('metric line lost', lost.map(([l]) => `${l} → ${JSON.stringify(act(l))}`).join('; '));
+  // There is no sleep metric to type: "slept 7h 20m" was never one, and is food.
+  act('slept 7h 20m').kind === 'food'
+    ? ok('"slept 7h 20m" is not a metric ARC parses (no sleep entry), so it is food')
+    : bad('slept', JSON.stringify(act('slept 7h 20m')));
+  // The range check still runs on a whole line, and only on one.
+  eq(act('weight 0'), { kind: 'note', text: 'weight 0' }) && act('weight 0 and 2 eggs').kind === 'food'
+    ? ok('"weight 0" is still a note; "weight 0 and 2 eggs" is food, not a refused weigh-in')
+    : bad('range order');
+
+  // The LOG TAB had the same bug: its command field filed any adjacent binding
+  // and dropped the rest of the note. It gates on the same predicate now, and a
+  // line that fails it is a note there (the parser is unchanged — §2 still pins
+  // which number a metric takes).
+  ['took 2 pills, weight 181', 'felt rough, resting 10 min after the walk', 'bw 1 banana'].every(
+    (line) => parseCommand(line).kind === 'metric' && !isWholeMetricLine(line, parseCommand(line).metric)
+  ) &&
+  isWholeMetricLine('st 200', 'screen_time') &&
+  !isWholeMetricLine('weight 178', 'water')
+    ? ok('isWholeMetricLine refuses a measurement inside a sentence, and a metric the line does not bind')
+    : bad('isWholeMetricLine');
+  const field = readFileSync(
+    new URL('../src/components/log/command-field.tsx', import.meta.url),
+    'utf8'
+  );
+  /isWholeMetricLine\(trimmed, result\.metric\) &&\s*isLoggableCanonical\(metric, result\.canonical\)/.test(
+    field
+  )
+    ? ok('the Log tab files a metric only when isWholeMetricLine passes — otherwise a note')
+    : bad('command field gate');
+}
+
+console.log('25c. the quick box’s metric receipt has an Undo: the Log tab’s own removal, Health included');
+{
+  const { db } = freshDb();
+  const seam = (inHealth) => {
+    const deleted = [];
+    return {
+      deleted,
+      deps: {
+        isAvailable: () => true,
+        save: async () => true,
+        deleteByTag: async (identifier, id) => {
+          deleted.push(`${identifier}:${id}`);
+          return inHealth.has(id) ? 1 : 0;
+        },
+      },
+    };
+  };
+  const feedIds = () => listEntriesOn(db, TODAY).map((e) => e.id);
+  // Sync OFF while filing, so no publish walk runs; the Health half of the
+  // Undo is then proved with sync on and the samples "already out".
+  setHealthSyncEnabled(db, false);
+  const ids = {};
+  for (const [key, value] of [
+    ['weight', 80],
+    ['water', 473],
+    ['rhr', 52],
+    ['hrv', 48],
+    ['body_fat', 15],
+    ['dose', 5],
+  ]) {
+    ids[key] = logMetricCapture(db, TODAY, key, value);
+  }
+  Object.values(ids).every((id) => feedIds().includes(id)) && /:weight_kg$/.test(ids.weight)
+    ? ok('logMetricCapture returns the id the Log feed lists the capture under, for every kind')
+    : bad('feed ids', JSON.stringify({ ids, feed: feedIds() }));
+
+  setHealthSyncEnabled(db, true);
+  const out = seam(new Set([ids.weight.split(':')[0], ids.water]));
+  const removed = ['weight', 'water', 'rhr'].map((k) => removeLogCapture(db, ids[k], out.deps));
+  await Promise.all(removed.map((r) => r?.health));
+  removed.every(Boolean) &&
+  !feedIds().includes(ids.weight) &&
+  !feedIds().includes(ids.water) &&
+  !feedIds().includes(ids.rhr) &&
+  out.deleted.includes(`HKQuantityTypeIdentifierBodyMass:${ids.weight.split(':')[0]}`) &&
+  out.deleted.includes(`HKQuantityTypeIdentifierDietaryWater:${ids.water}`) &&
+  out.deleted.length === 2
+    ? ok('undoing a weight, a glass and an RHR takes each off the record; weight and water leave Apple Health by tag')
+    : bad('undo path', JSON.stringify(out.deleted));
+  removeLogCapture(db, ids.weight, out.deps) === null
+    ? ok('a second Undo finds nothing and removes nothing (the screen then says it is already gone)')
+    : bad('double undo');
+
+  const screen = readFileSync(new URL('../app/quick-log.tsx', import.meta.url), 'utf8');
+  /const feedId = logMetricCapture\(db, date, action\.metric, action\.canonical\)/.test(screen) &&
+  /undo: \{ feedId, label \}/.test(screen) &&
+  /removeLogCapture\(getDb\(\), undo\.feedId\)/.test(screen) &&
+  /accessibilityLabel=\{`Undo logging \$\{receipt\.undo\.label\}`\}/.test(screen)
+    ? ok('the box keeps the filed id and its Undo button removes exactly that capture')
+    : bad('quick-log undo wiring');
 }
 
 console.log('26. quick box: arc://quick, the route it reaches, and the hand-offs');

@@ -16,15 +16,26 @@
  * is a hazard: "1 lb ground beef" parses as a body weight of one pound, and
  * `logMetricCapture` would file it to the record AND to Apple Health. So here a
  * metric found by its UNIT alone counts only when the unit and its number are
- * the whole line ("180 lb", "48 ms"). Found by its KEYWORD ("weight 178",
- * "16 oz water", "hrv 48 this morning") it counts as the Log tab counts it.
+ * the whole line ("180 lb", "48 ms").
+ *
+ * ## The rule both fields share
+ *
+ * Found by its KEYWORD, a metric counts only when the measurement is the whole
+ * line: the keyword, the number, its unit and a little filler ("hrv 48 this
+ * morning", "log weight 178"), and nothing else (`isWholeMetricLine`,
+ * src/lib/log/parse.ts). Before 2026-10-21 any keyword next to any number
+ * counted, so "oatmeal with 8 oz water" filed 236 ml of water and dropped the
+ * oatmeal, "chicken thighs resting 10 min then 200g rice" filed a resting
+ * heart rate of 10, and "bw 1 banana" sent a weight of one pound to Apple
+ * Health. Here such a line is food; on the Log tab, where it had the same bug,
+ * it is now a note.
  *
  * A keyword line the range check refuses ("weight 0", "bf 150") is a note, as
  * on the Log tab: it was meant as a measurement, so estimating it as a meal
  * would be wrong, and a note never loses the input.
  */
 import { metricByKey, isLoggableCanonical, type MetricDescriptor, type MetricKey } from './metrics';
-import { parseCommand } from './parse';
+import { isWholeMetricLine, parseCommand } from './parse';
 import { screenTimeFiling } from '@/lib/screen-time/entry';
 import type { UnitPreferences } from '@/lib/user/types';
 
@@ -83,8 +94,10 @@ export function quickLineAction(
   // An out-of-range screen-time line ("screen 30h") is a measurement, not food.
   if (!metric || result.metric === 'screen_time') return { kind: 'note', text: raw };
 
-  const named = namesMetric(text, metric);
-  if (!named && !isBareMeasurement(text, metric)) return { kind: 'food', description: raw };
+  const whole = namesMetric(text, metric)
+    ? isWholeMetricLine(text, result.metric)
+    : isBareMeasurement(text, metric);
+  if (!whole) return { kind: 'food', description: raw };
   if (!isLoggableCanonical(metric, result.canonical)) return { kind: 'note', text: raw };
   return { kind: 'metric', metric: result.metric, canonical: result.canonical };
 }

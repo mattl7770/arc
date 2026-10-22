@@ -23,7 +23,9 @@
  *
  * Nothing writes the live slot except the focused logger, and the bar is never
  * shown on the logger — so while the bar is visible the row is still, and a
- * re-read on each announced write (`subscribeWorkoutDrafts`) is all it needs.
+ * re-read on each announced write (`subscribeWorkoutDrafts`) is all it needs —
+ * of the live slot only ({@link barHearsSlot}), and kept when it would draw
+ * the same bar ({@link sameSessionBar}).
  */
 import type { Database } from '@/lib/db/database';
 import { getRoutine } from '@/lib/db/repositories/routines';
@@ -35,8 +37,10 @@ import { formatClock } from '@/lib/exercise/format';
 export const LIVE_LOGGER_ROUTE = 'workout-live';
 
 /**
- * Where a tap on the bar goes: the live logger, resuming the slot — the same
- * href Home's Resume row and the Train hub's card push.
+ * Where a tap on the bar goes when no live logger is on the stack: the live
+ * logger, resuming the slot — the same href Home's Resume row and the Train
+ * hub's card push. With one lower in the stack the tap goes BACK to it
+ * (`restTapTarget`, as the "Rest complete" tap does), never a second logger.
  */
 export const LIVE_LOGGER_RESUME = {
   pathname: '/workout-live',
@@ -63,6 +67,35 @@ export function readOpenLiveSession(db: Database): OpenLiveSession | null {
   const routine = draft.routineId ? getRoutine(db, draft.routineId) : undefined;
   const name = routine?.name.trim() ? routine.name.trim() : 'Workout';
   return { draft, name };
+}
+
+/**
+ * Would `next` draw the same bar as `prev`? The hosts keep the session they
+ * have when it would (review, 2026-10-21): the logger writes the live slot on
+ * every keystroke, and each mounted host — the tab bar's copy under the logger,
+ * any pushed screen under it — re-read it and re-rendered with a fresh object
+ * each time, for a bar that had not changed. Compared on what
+ * {@link sessionBarView} reads and nothing else (the session, its name, its
+ * start, its rest, whether it is a watch fill), so a kept object may carry an
+ * older `draft.blocks`: nothing the bar draws reads them, and nothing may.
+ */
+export function sameSessionBar(
+  prev: OpenLiveSession | null,
+  next: OpenLiveSession | null
+): boolean {
+  if (prev === null || next === null) return prev === next;
+  return (
+    prev.name === next.name &&
+    prev.draft.sessionId === next.draft.sessionId &&
+    prev.draft.startedAt === next.draft.startedAt &&
+    prev.draft.restEndsAt === next.draft.restEndsAt &&
+    prev.draft.ingestId === next.draft.ingestId
+  );
+}
+
+/** Does a write to this draft slot concern the bar? Only the live slot does. */
+export function barHearsSlot(key: string): boolean {
+  return key === 'live';
 }
 
 /**

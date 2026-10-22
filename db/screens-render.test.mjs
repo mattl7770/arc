@@ -28,7 +28,7 @@ import { selectAllOnFocus } from '../src/components/ui/select-on-focus.ts';
 import { snoozeItem, unsnoozeItem } from '../src/lib/home/snooze-store.ts';
 import { isoWeekday } from '../src/lib/protocols/cadence.ts';
 
-import { __router, __setParams, __setRoute } from './render-stubs/expo-router.mjs';
+import { __router, __setParams, __setRootState, __setRoute } from './render-stubs/expo-router.mjs';
 import { SessionBar, TabSessionBar } from '../src/components/exercise/session-bar.tsx';
 import { readOpenLiveSession, sessionBarView } from '../src/lib/exercise/session-bar.ts';
 import { getDb } from './render-stubs/db-client.mjs';
@@ -9291,6 +9291,66 @@ console.log('\n37. item 71 — the workout in progress rides along, and a tap go
   press?.props.accessibilityRole === 'button'
     ? ok('a tap on the bar pushes the live logger with resume=1 — back into the session')
     : bad('tap route', JSON.stringify(pushed1));
+
+  // --- …but never a second logger over the first (review, 2026-10-21) -----------------
+  // The logger pushes exercise-detail (a `Screen`, so it draws the bar), and
+  // Home can be pushed over it. From there a bare push stacked a second logger
+  // and the first read "session ended". The tap now asks restTapTarget, as the
+  // "Rest complete" tap does: a logger lower in the stack is gone back to.
+  const stackOf = (routes) => ({
+    stale: false,
+    index: 0,
+    routes: [{ name: '__root', state: { stale: false, index: routes.length - 1, routes } }],
+  });
+  const tapWith = (rootState, el = element) => {
+    __setRootState(rootState);
+    const before = { p: __router.pushes.length, d: __router.dismissTos.length };
+    const btn = React.Children.toArray(el.props.children).find(
+      (child) => typeof child?.props?.onPress === 'function'
+    );
+    btn?.props.onPress();
+    return {
+      pushes: __router.pushes.slice(before.p),
+      dismissTos: __router.dismissTos.slice(before.d),
+    };
+  };
+  const overDetail = tapWith(
+    stackOf([
+      { name: '(tabs)' },
+      { name: 'workout-live', params: { routineId: 'r9' } },
+      { name: 'exercise-detail', params: { id: 'barbell-bench-press' } },
+    ])
+  );
+  overDetail.pushes.length === 0 &&
+  overDetail.dismissTos.length === 1 &&
+  overDetail.dismissTos[0].pathname === '/workout-live' &&
+  overDetail.dismissTos[0].params.routineId === 'r9'
+    ? ok('from exercise-detail pushed by the logger: dismissTo the logger with its own params, no second push')
+    : bad('bar over the logger', JSON.stringify(overDetail));
+  const tabsOver = tapWith(
+    stackOf([{ name: '(tabs)' }, { name: 'workout-live', params: { resume: '1' } }, { name: '(tabs)' }]),
+    SessionBar({ view })
+  );
+  tabsOver.pushes.length === 0 &&
+  tabsOver.dismissTos.length === 1 &&
+  tabsOver.dismissTos[0].params.resume === '1'
+    ? ok('the tab bar’s copy, with (tabs) pushed above a logger: back to that logger, not a new one')
+    : bad('tab bar over the logger', JSON.stringify(tabsOver));
+  const editing = tapWith(
+    stackOf([
+      { name: '(tabs)' },
+      { name: 'workout-live', params: { workoutId: 'w1' } },
+      { name: 'exercise-detail', params: { id: 'x' } },
+    ])
+  );
+  editing.dismissTos.length === 0 && editing.pushes[0]?.params?.resume === '1'
+    ? ok('a logger correcting a SAVED session is not the live one: the live one is resumed by a push')
+    : bad('editing logger', JSON.stringify(editing));
+  const noLogger = tapWith(stackOf([{ name: '(tabs)' }, { name: 'water' }]));
+  noLogger.dismissTos.length === 0 && noLogger.pushes.length === 1
+    ? ok('no logger on the stack: a push, resuming the slot')
+    : bad('no logger', JSON.stringify(noLogger));
+  __setRootState(undefined);
 
   // --- finished or discarded: the bar goes ---------------------------------------------
   clearOwnLiveDraft(db, 'bar-render'); // what Finish and the logger's Discard call

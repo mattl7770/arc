@@ -79,13 +79,19 @@ export function logNote(db: Database, date: string, text: string): string {
  * Persist one keypad/parsed metric at its canonical value, routing to the table
  * the registry names. `date` is the local day (for the wearable `date` column);
  * body metrics stamp a UTC `measured_at`.
+ *
+ * Returns the id the Log feed lists the new row under (a body row as
+ * `id:column`, as `bodyItem` lists it) — what `removeLogCapture` deletes by,
+ * so a door that files a metric can offer it back (the quick-log box's Undo,
+ * 2026-10-21). Screen time returns its write's id, which is not a feed id: a
+ * day's total is undone through `undoScreenTime`.
  */
 export function logMetric(
   db: Database,
   date: string,
   metricKey: MetricKey,
   canonical: number
-): void {
+): string {
   const metric = metricByKey(metricKey);
   if (!metric) throw new Error(`logMetric: unknown metric "${metricKey}"`);
   const target = metric.target;
@@ -102,11 +108,12 @@ export function logMetric(
     // noon flips to an adjacent UTC date (see dayInstant), so day-bucket readers
     // should go through a local window rather than the raw UTC date.
     const measuredAt = date === todayISODate() ? nowISO() : dayInstant(date);
+    const id = newId(db);
     db.run(
       `INSERT INTO body_metrics (id, measured_at, ${target.column}, source) VALUES (?, ?, ?, 'manual')`,
-      [newId(db), measuredAt, canonical]
+      [id, measuredAt, canonical]
     );
-    return;
+    return `${id}:${target.column}`;
   }
 
   if (target.kind === 'wearable') {
@@ -115,31 +122,33 @@ export function logMetric(
     // (src/lib/db/repositories/screen-time.ts). The Log tab calls
     // recordScreenTime itself, because it needs the id back for its Undo.
     if (metric.key === 'screen_time') {
-      recordScreenTime(db, date, Math.round(canonical), 'typed');
-      return;
+      return recordScreenTime(db, date, Math.round(canonical), 'typed').id;
     }
+    const id = newId(db);
     db.run(
       `INSERT INTO wearable_data (id, date, metric_type, value, unit, source_device)
        VALUES (?, ?, ?, ?, ?, 'manual')`,
-      [newId(db), date, target.metricType, canonical, target.canonicalUnit]
+      [id, date, target.metricType, canonical, target.canonicalUnit]
     );
-    return;
+    return id;
   }
 
   // Generic: no dedicated table — a log_entries row of type 'metric'.
   const log = getOrCreateDailyLog(db, date);
+  const id = newId(db);
   db.run(
     `INSERT INTO log_entries
        (id, daily_log_id, type, title, status, completed_at, value, source)
      VALUES (?, ?, 'metric', ?, 'completed', ?, ?, 'manual')`,
     [
-      newId(db),
+      id,
       log.id,
       formatCanonical(metric, canonical),
       nowISO(),
       JSON.stringify({ adhoc: true, metricKey, canonical }),
     ]
   );
+  return id;
 }
 
 /** The capture types the Log-tab Supplement/Therapy sheet writes. */
