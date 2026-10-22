@@ -1,6 +1,23 @@
 # Smart day: "Do this next" from facts, ordered by the Coach, learning from what he does
 
-**Items 77 and 78.** Status: **SPIKE** (2026-10-21). Nothing here is built.
+**Items 77 and 78.** Status: **BUILT 2026-10-21 (phases 1–3, headless only), under the owner's correction below.** What shipped is recorded in `docs/home-screen.md` › *Smart day*; this spike stays as the record of how it got there.
+
+> ## ⚠️ Superseded in part — the owner's correction (2026-10-21)
+>
+> *"none of this should be hard-coded. a 'weigh-in' reminder is not what we want. we want an intelligent assistant/coach who reminds you to weigh in when it thinks you need that reminder. none of those ideas were things to be hard-coded, just examples of what the coach might do."*
+>
+> **Struck:** every rule-made **prompt** in §2 — "no weigh-in before 10:00", "nothing eaten in 5 h", their Settings thresholds and toggles, and the fallback order that mixed prompts into time order. Struck with them: §3's `NEXT`/`UNTIL`/`WHY` grammar over a candidate pool, §4.1's prompt-driven `done`/`expired`/`snoozed`/`offered` events, and the §4.2 schema as drawn.
+>
+> **What was built instead:**
+>
+> - **Facts, not rules** (`src/lib/home/day-facts.ts`). The deterministic layer gathers only statements that are true or false — the last weigh-in and his cadence, the last meal and today's intake, the wake time, open rows with times, workouts, the live session, open loops — and none implies an action. It never reads a status.
+> - **The Coach plans the top of the day.** The pass may end with up to three `PLAN` lines: `PIN` an existing row, or `DO` a **Coach item** — a short title, one destination from a fixed enum, an optional `UNTIL`, and at most one ≤ 90-character reason marked as the Coach's (owner's Q3: yes). Parsed and validated by code (`src/lib/home/plan-lines.ts`); junk is dropped.
+> - **Coach items appear in the checklist as uncounted rows** (owner's Q1: yes): no checkbox, never in "N of M", never in adherence; they clear when acted on, dismissed, expired, or replaced by the next plan.
+> - **Without a live plan, Home is exactly the time order it always was.** There is no deterministic candidate pool any more, so the fallback is `deriveMissionView().next`, untouched.
+> - **Learning** is migration **0067 `day_plan_events`** — `shown`, `started`, `dismissed`, `done`, `expired`, `replaced`, keyed by the plan that produced them — summarised to the pass as 14-day counts, never as a weight in code.
+> - The turn-context "next" fix (§1.3) shipped: the chat Coach's state block now names what Home actually shows.
+>
+> Q2 ("which prompts ship first") is moot: there are no prompts. §5 (training learning) is Track 2 item 3 and is not part of this build.
 
 The owner's notes, verbatim:
 
@@ -90,7 +107,7 @@ The candidate rules below therefore never read `day_statuses`. Only the Coach's 
 
 ---
 
-## 2. The candidate set
+## 2. The candidate set — ~~superseded~~ (owner's correction, 2026-10-21: no rule-made prompts; see the box at the top)
 
 A **candidate** is anything that may claim "do this next". There are two kinds:
 
@@ -138,7 +155,7 @@ Each new prompt is one pure function plus one Settings toggle. It needs no migra
 
 ---
 
-## 3. The Coach's pass: rank, and pin
+## 3. The Coach's pass: rank, and pin — grammar superseded by `PLAN` lines (see the box at the top)
 
 ### 3.1 What the pass is given
 
@@ -385,7 +402,7 @@ Each phase is shippable alone and reaches the phone only with the next TestFligh
 
 ---
 
-## 8. Questions for the owner
+## 8. Questions for the owner — answered 2026-10-21 (Q1 yes, Q3 yes, Q2 moot: no prompts)
 
 Three remain. Everything else above is decided by the owner's direction or by existing rules.
 

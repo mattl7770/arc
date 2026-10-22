@@ -234,7 +234,14 @@ function isLabel(line: string): boolean {
  * a nudge line is touched: a code block in the note, or a label that
  * introduces prose, stays.
  */
-function stripScaffolding(lines: string[], removed: boolean[]): void {
+export function stripScaffolding(
+  lines: string[],
+  removed: boolean[],
+  // Whose lines the scaffolding is wrapped round. Nudge lines by default; the
+  // smart-day PLAN parser (src/lib/home/plan-lines.ts) passes its own, so one
+  // rule strips the frame round either.
+  isTarget: (line: string) => boolean = (line) => NUDGE_LINE.test(line)
+): void {
   const nearest = (from: number, step: 1 | -1): number => {
     for (let j = from + step; j >= 0 && j < lines.length; j += step) {
       if (lines[j]!.trim().length > 0) return j;
@@ -252,7 +259,7 @@ function stripScaffolding(lines: string[], removed: boolean[]): void {
   const frame = (j: number) => opens.has(j) || RULE_LINE.test(lines[j]!);
   // A removed nudge line, or a removed fence or rule — never a removed label.
   const anchor = (j: number) =>
-    j !== -1 && removed[j] === true && (NUDGE_LINE.test(lines[j]!) || frame(j));
+    j !== -1 && removed[j] === true && (isTarget(lines[j]!) || frame(j));
   let changed = true;
   while (changed) {
     changed = false;

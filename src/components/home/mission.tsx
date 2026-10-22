@@ -5,8 +5,10 @@ import { Pressable, Text, View } from 'react-native';
 import { Block, Divider } from '@/components/ui/block';
 import { SectionLabel } from '@/components/ui/section-label';
 import { palette } from '@/constants/theme';
+import type { CoachItemView } from '@/lib/home/day-plan';
 import type { MissionItem, MissionStatus } from '@/types/home';
 
+import { CoachItemRow } from './coach-item-row';
 import { MissionItemRow } from './mission-item';
 
 type Props = {
@@ -26,6 +28,16 @@ type Props = {
   onToggle: (id: string) => void;
   /** Open one row's sheet — passed to every row's trailing chevron. */
   onOpen: (id: string) => void;
+  /**
+   * The Coach's items (smart day, 0067) — UNCOUNTED rows, drawn where the day
+   * stands (the head of the open rows) in the Coach's order. They take no part
+   * in the tally, the tick strip or the fold: those read mission rows only.
+   */
+  coachRows?: CoachItemView[];
+  /** The Coach item the hero is showing, if it is one. */
+  activeCoachKey?: string | null;
+  onOpenCoach?: (key: string) => void;
+  onDismissCoach?: (key: string) => void;
 };
 
 /**
@@ -239,6 +251,10 @@ export function Mission({
   activeId,
   onToggle,
   onOpen,
+  coachRows = [],
+  activeCoachKey = null,
+  onOpenCoach,
+  onDismissCoach,
 }: Props) {
   const [showSettled, setShowSettled] = useState(false);
   // Folding one row saves nothing and costs a tap, so the control only exists
@@ -248,6 +264,14 @@ export function Mission({
   const folded = foldable && !showSettled;
   const ordered = [...leadingSettled, ...rest];
   const visible = folded ? rest : ordered;
+  // Where the open part of the day begins in what is drawn: the Coach's items
+  // go there, so they read as "now", not as history or as the end of the day.
+  const coachAt = folded ? 0 : leadingSettled.length;
+  const drawn: ({ coach: CoachItemView } | { row: MissionItem })[] = [
+    ...visible.slice(0, coachAt).map((row) => ({ row })),
+    ...(onOpenCoach && onDismissCoach ? coachRows.map((coach) => ({ coach })) : []),
+    ...visible.slice(coachAt).map((row) => ({ row })),
+  ];
 
   // `leadingSettled` holds only settled items, so these two sum to its length.
   const foldedDone = leadingSettled.filter((item) => item.status === 'completed').length;
@@ -313,17 +337,29 @@ export function Mission({
           control is drawn in both fold states now, so the test is `foldable`,
           not "currently folded".
         */}
-        {visible.map((item, index) => (
-          <View key={item.id}>
-            <Divider first={index === 0 && !foldable} />
-            <MissionItemRow
-              item={item}
-              active={item.id === activeId}
-              onToggle={onToggle}
-              onOpen={onOpen}
-            />
-          </View>
-        ))}
+        {drawn.map((entry, index) =>
+          'coach' in entry ? (
+            <View key={entry.coach.key}>
+              <Divider first={index === 0 && !foldable} />
+              <CoachItemRow
+                item={entry.coach}
+                active={entry.coach.key === activeCoachKey}
+                onOpen={onOpenCoach!}
+                onDismiss={onDismissCoach!}
+              />
+            </View>
+          ) : (
+            <View key={entry.row.id}>
+              <Divider first={index === 0 && !foldable} />
+              <MissionItemRow
+                item={entry.row}
+                active={entry.row.id === activeId}
+                onToggle={onToggle}
+                onOpen={onOpen}
+              />
+            </View>
+          )
+        )}
       </View>
     </Block>
   );

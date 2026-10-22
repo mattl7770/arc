@@ -44,6 +44,7 @@ import {
   getNudge,
   markNudgeDelivered,
 } from '@/lib/db/repositories/coach-nudges';
+import { applyDayPlan } from '@/lib/db/repositories/day-plan';
 import { listActiveReminders } from '@/lib/db/repositories/reminders';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
 
@@ -346,6 +347,18 @@ export const coachPassStore = {
       const today = todayISODate(now);
       const applied = applyNudgeReply(db, result.nudges, now);
       const record = describeNudgePlan(applied, today);
+
+      // The PLAN lines (0067, smart day), into the day's plan — after the pass
+      // returned, like the nudges, so the pass itself still wrote nothing. A
+      // failure here costs the plan, never the note: Home falls back to time
+      // order, which is exactly what it shows with no plan at all.
+      if (result.plan) {
+        try {
+          applyDayPlan(db, result.plan, now);
+        } catch {
+          // Time order stands.
+        }
+      }
 
       // Persist into the thread BEFORE consuming the day. What the Coach says
       // unprompted is a normal assistant turn: it shows up in the Coach tab in

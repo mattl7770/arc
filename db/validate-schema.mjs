@@ -270,5 +270,104 @@ if (process.argv[2] === undefined) {
   full.close();
 }
 
+// ---------------------------------------------------------------------------
+// 9. 0067 — `day_plan_events`, over every migration in order (it needs 0001's
+//    `log_entries` for its SET NULL reference).
+// ---------------------------------------------------------------------------
+if (process.argv[2] === undefined) {
+  console.log('9. 0067 day_plan_events (all migrations applied in order)');
+  const full = new DatabaseSync(':memory:');
+  full.exec('PRAGMA foreign_keys = ON;');
+  const dir = join(here, 'migrations');
+  for (const file of readdirSync(dir).filter((f) => /^\d+_.+\.sql$/.test(f)).sort()) {
+    full.exec(readFileSync(join(dir, file), 'utf8'));
+  }
+  const cols = full.prepare('PRAGMA table_info(day_plan_events)').all();
+  const idCol = cols.find((c) => c.name === 'id');
+  idCol && idCol.pk === 1 && idCol.notnull === 1 && idCol.type === 'TEXT'
+    ? ok('day_plan_events.id is text PRIMARY KEY NOT NULL')
+    : bad('id column', JSON.stringify(idCol));
+  ['day', 'plan_id', 'item_key', 'kind', 'title', 'rank', 'event', 'at', 'created_at', 'updated_at'].every(
+    (name) => cols.find((c) => c.name === name)?.notnull === 1
+  ) && ['action', 'log_entry_id'].every((name) => cols.find((c) => c.name === name)?.notnull === 0)
+    ? ok('everything but action and log_entry_id is NOT NULL')
+    : bad('nullability', JSON.stringify(cols.map((c) => [c.name, c.notnull])));
+
+  full.exec(`INSERT INTO daily_logs (id, date) VALUES ('${id('dl1')}', '2026-10-21');
+             INSERT INTO log_entries (id, daily_log_id, type, title) VALUES ('${id('le1')}', '${id('dl1')}', 'supplement', 'Creatine');`);
+  const COLS = 'id, day, plan_id, item_key, kind, action, log_entry_id, title, rank, event, at';
+  const row = (over = {}) => {
+    const v = {
+      id: `'${id('e0')}'`,
+      day: "'2026-10-21'",
+      plan_id: "'p1'",
+      item_key: "'do:log_weight'",
+      kind: "'do'",
+      action: "'log_weight'",
+      log_entry_id: 'NULL',
+      title: "'Weigh in'",
+      rank: '1',
+      event: "'shown'",
+      at: "'2026-10-21T07:12:00.000Z'",
+      ...over,
+    };
+    return () =>
+      full.exec(
+        `INSERT INTO day_plan_events (${COLS}) VALUES (${[v.id, v.day, v.plan_id, v.item_key, v.kind, v.action, v.log_entry_id, v.title, v.rank, v.event, v.at].join(', ')});`
+      );
+  };
+  rejects('NULL id rejected (day_plan_events)', row({ id: 'NULL' }));
+  rejects('a malformed day rejected', row({ day: "'21/10/2026'" }));
+  rejects('an empty plan_id rejected', row({ plan_id: "''" }));
+  rejects('an empty item_key rejected', row({ item_key: "''" }));
+  rejects("kind outside ('pin','do') rejected", row({ kind: "'nag'" }));
+  rejects('an event outside the six rejected', row({ event: "'snoozed'" }));
+  rejects('rank 0 rejected', row({ rank: '0' }));
+  rejects('rank 4 rejected (a plan holds at most three)', row({ rank: '4' }));
+  rejects('a malformed instant rejected', row({ at: "'07:12'" }));
+  rejects('a do item without an action rejected', row({ action: 'NULL' }));
+  rejects('a pin carrying an action rejected', row({ kind: "'pin'", item_key: `'pin:${id('le1')}'` }));
+  rejects('a reference to no mission row rejected (FK)', row({ kind: "'pin'", action: 'NULL', log_entry_id: `'${id('nope')}'` }));
+  try {
+    row()();
+    row({ id: `'${id('e1')}'`, event: "'done'" })();
+    row({
+      id: `'${id('e2')}'`,
+      kind: "'pin'",
+      action: 'NULL',
+      item_key: `'pin:${id('le1')}'`,
+      log_entry_id: `'${id('le1')}'`,
+      title: "'Creatine'",
+      rank: '2',
+    })();
+    ok('a do item, its done, and a pin on a real row insert');
+  } catch (e) {
+    bad('valid events insert', e.message);
+  }
+  rejects('the same event twice for one item rejected (UNIQUE)', row({ id: `'${id('e3')}'` }));
+  try {
+    row({ id: `'${id('e4')}'`, plan_id: "'p2'" })();
+    ok('…but the same event for the same item of a LATER plan inserts');
+  } catch (e) {
+    bad('second plan', e.message);
+  }
+  full.exec(`UPDATE day_plan_events SET updated_at = '2000-01-01T00:00:00.000Z' WHERE id = '${id('e1')}';`);
+  full.exec(`UPDATE day_plan_events SET title = 'Weigh in now' WHERE id = '${id('e1')}';`);
+  full.prepare('SELECT updated_at FROM day_plan_events WHERE id = ?').get(id('e1')).updated_at !==
+  '2000-01-01T00:00:00.000Z'
+    ? ok('the AFTER UPDATE trigger stamps updated_at')
+    : bad('updated_at trigger');
+  full.exec(`DELETE FROM log_entries WHERE id = '${id('le1')}';`);
+  const pin = full.prepare('SELECT log_entry_id, title FROM day_plan_events WHERE id = ?').get(id('e2'));
+  pin && pin.log_entry_id === null && pin.title === 'Creatine'
+    ? ok('deleting the mission row SETs the pin’s reference NULL and keeps its title (history survives)')
+    : bad('set null', JSON.stringify(pin));
+  const fk = full.prepare('PRAGMA foreign_key_list(day_plan_events)').all();
+  fk.length === 1 && fk[0].table === 'log_entries' && fk[0].on_delete === 'SET NULL'
+    ? ok('its one foreign key is log_entries ON DELETE SET NULL')
+    : bad('fk', JSON.stringify(fk));
+  full.close();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

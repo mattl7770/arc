@@ -24,6 +24,13 @@
  *   prompt on purpose — the prompt is the second line of defence, because a
  *   sentinel that leaks reaches the owner as the Coach's own words.
  *
+ *   IT MAY PLAN THE TOP OF HOME (0067, smart day). The directive carries one
+ *   delimited block of FACTS about the day and the PLAN grammar
+ *   (src/lib/home/plan-lines.ts); the reply may end with up to three PLAN
+ *   lines. They are parsed and validated here against the tags this pass was
+ *   shown, and handed back — pass-store.ts writes the plan after the pass
+ *   returns, so the pass itself still writes nothing.
+ *
  *   IT MAY PLAN A NOTIFICATION (0064). While Coach nudges are on, the directive
  *   lets the reply end with `NUDGE YYYY-MM-DD HH:MM text` lines. They are
  *   parsed out here and handed back as proposals; the caps, the rows and the
@@ -37,6 +44,9 @@
 import type { Database } from '@/lib/db/database';
 import { getDayStartsAt, todayISODate } from '@/lib/db/date';
 import { nudgeDirectiveFor } from '@/lib/db/repositories/coach-nudges';
+import { dayPlanDirectiveFor } from '@/lib/db/repositories/day-plan';
+import { parsePlanReply, resolvePlan, type PlanResolution } from '@/lib/home/plan-lines';
+import { snoozedItems } from '@/lib/home/snooze-store';
 import {
   EMPTY_NUDGE_REPLY,
   NUDGE_HORIZON_HOURS,
@@ -182,6 +192,11 @@ export type CoachPassResult = {
    * Empty when nudges are off.
    */
   nudges: NudgeReply;
+  /**
+   * The reply's PLAN lines, validated against this pass's tags — a proposal,
+   * not a write (pass-store.ts applies it). Null when the block was not offered.
+   */
+  plan: PlanResolution | null;
 };
 
 /** The opening line: why this pass is running, in the model's terms. */
@@ -276,8 +291,11 @@ function nudgeInstructions(trigger: PassTrigger, nudges: NudgeDirective): string
 export function passDirective(
   trigger: PassTrigger,
   today: string,
-  nudges: NudgeDirective | null = null
+  nudges: NudgeDirective | null = null,
+  /** The smart-day block (src/lib/home/plan-lines.ts `planInstructions`), or null. */
+  dayPlan: readonly string[] | null = null
 ): string {
+  const exceptions = [nudges ? 'NUDGE' : null, dayPlan ? 'PLAN' : null].filter(Boolean);
   const waiting = isWaitingPass(trigger);
   const verdict = waiting
     ? [
@@ -294,7 +312,13 @@ export function passDirective(
         'it something they can act on or reply to.',
         '',
         `If the day is unremarkable, reply with exactly ${PASS_SKIP} and nothing else — bare, on its own,`,
-        `with no sentence before or after it${nudges ? ' (NUDGE lines are the one exception)' : ''}. Silence on a quiet day is what makes the other days`,
+        `with no sentence before or after it${
+          exceptions.length === 0
+            ? ''
+            : exceptions.length === 1
+              ? ` (${exceptions[0]} lines are the one exception)`
+              : ' (NUDGE and PLAN lines are the exceptions)'
+        }. Silence on a quiet day is what makes the other days`,
         'matter, so do not manufacture an observation to avoid saying it.',
       ];
 
@@ -313,6 +337,7 @@ export function passDirective(
     '',
     ...verdict,
     ...(nudges ? nudgeInstructions(trigger, nudges) : []),
+    ...(dayPlan ?? []),
   ].join('\n');
 }
 
@@ -335,6 +360,7 @@ const FAILED: CoachPassResult = {
   status: 'failed',
   toolCalls: [],
   nudges: EMPTY_NUDGE_REPLY,
+  plan: null,
 };
 
 /** The model the pass uses unless overridden — cheap, fast, good enough to triage. */
@@ -374,6 +400,14 @@ export async function runCoachPass(
   // Null when nudges are off: then the directive says nothing about them and
   // any NUDGE line the model writes anyway is stripped and ignored.
   const nudges = nudgeDirectiveFor(db, now, dayStartsAt);
+  // The Top of Home block (0067). Facts only, gathered by code; if gathering
+  // them fails the pass runs without the block rather than not at all.
+  let dayPlan: ReturnType<typeof dayPlanDirectiveFor> | null = null;
+  try {
+    dayPlan = dayPlanDirectiveFor(db, now, dayStartsAt, snoozedItems());
+  } catch {
+    dayPlan = null;
+  }
 
   try {
     const result = await runCoachTurn(
@@ -385,7 +419,12 @@ export async function runCoachPass(
       {
         system: buildCoachSystemPrompt(),
         systemContext: buildTurnContext(db, now),
-        messages: [{ role: 'user', content: passDirective(options.trigger, today, nudges) }],
+        messages: [
+          {
+            role: 'user',
+            content: passDirective(options.trigger, today, nudges, dayPlan?.block ?? null),
+          },
+        ],
         // READ tools only, MINUS the generic one: with no write in the registry
         // there is nothing to gate, so an unattended pass cannot change
         // anything, and `query_records` is held back for the reasons at
@@ -426,7 +465,10 @@ export async function runCoachPass(
     // shipped as its own words — the isPassSkip lesson. What is left is the
     // note, and the note alone decides spoke vs silent, so a pass can say SKIP
     // and still plan a nudge.
-    const reply = parseNudgeReply(result.text);
+    //
+    // PLAN lines go the same way, first: they are instructions to code too.
+    const planned = parsePlanReply(result.text);
+    const reply = parseNudgeReply(planned.text);
     const text = reply.text.trim();
     // A SKIP means silence, however the model punctuates it and whatever it
     // wrote above it — see isPassSkip for the rule and why it is that rule.
@@ -437,12 +479,21 @@ export async function runCoachPass(
     // opens "SKIP". An empty lead (nudge lines first) decides nothing — the
     // text after them is then the whole note.
     const lead = reply.lead?.trim() ?? '';
-    const skipped = isPassSkip(text) || (lead.length > 0 && isPassSkip(lead));
+    // The text before the first PLAN line is read the same way, its own NUDGE
+    // lines out first.
+    const planLead = planned.lead === null ? '' : parseNudgeReply(planned.lead).text.trim();
+    const skipped =
+      isPassSkip(text) ||
+      (lead.length > 0 && isPassSkip(lead)) ||
+      (planLead.length > 0 && isPassSkip(planLead));
     return {
       message: skipped ? null : text,
       status: skipped ? 'silent' : 'spoke',
       toolCalls: result.toolCalls,
       nudges: nudges ? reply : EMPTY_NUDGE_REPLY,
+      plan: dayPlan
+        ? resolvePlan(planned, { now, today: dayPlan.today, dayStartsAt, tags: dayPlan.tags })
+        : null,
     };
   } catch {
     // Offline, no network, a bad key, a refusal — the user never sees this. But
