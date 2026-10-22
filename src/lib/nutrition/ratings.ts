@@ -26,7 +26,7 @@
  * the USER turn; the system prompt is at its ceiling and is never touched.
  */
 import type { MealItemNode } from './composite';
-import { foodKey, oneLine } from './repeats';
+import { foodKey, isStandIn, oneLine } from './repeats';
 import type { AmountUnit } from './types';
 
 export type EstimateRating = 'good' | 'bad';
@@ -66,9 +66,16 @@ export type RatingCorrection = {
   after: RatedItem[];
 };
 
-/** The meal's top-level rows as a snapshot — a composite as its rolled sum. */
+/**
+ * The meal's top-level rows as a snapshot — a composite as its rolled sum.
+ *
+ * **Never a combine's stand-in** (`<name> (as logged)`, {@link isStandIn}): it
+ * carries a free-form meal's typed totals under the MEAL's name, which is not
+ * a food — and the block promises the estimator no meal names. The usual-foods
+ * and repeat reads drop it for the same reason (src/lib/nutrition/repeats.ts).
+ */
 export function ratedItems(nodes: readonly MealItemNode[]): RatedItem[] {
-  return nodes.map((node) => {
+  return nodes.filter((node) => !isStandIn(node.item.name)).map((node) => {
     const figures = node.kind === 'composite' ? node.rolled : node.item;
     return {
       name: node.item.name,
@@ -84,6 +91,29 @@ export function ratedItems(nodes: readonly MealItemNode[]): RatedItem[] {
 
 export function serializeRatedItems(items: readonly RatedItem[]): string {
   return JSON.stringify(items);
+}
+
+/**
+ * Whether two stored snapshots hold the same items, in ANY order. A snapshot
+ * is a set of what was on the plate, not a list: a combine appends the joined
+ * meal's items to a rating's snapshots (`combineMeals`), while the meal itself
+ * lists them by when they were logged, and that difference of order is not a
+ * correction. Null equals only null.
+ */
+export function sameRatedItems(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return a === b;
+  const canon = (text: string) =>
+    (parseRatedItems(text) ?? [])
+      .map((item) => JSON.stringify(item))
+      .sort()
+      .join('\n');
+  return canon(a) === canon(b);
+}
+
+/** A stored snapshot with `extra` items appended; null stays null. */
+export function withRatedItems(text: string | null, extra: readonly RatedItem[]): string | null {
+  if (text === null) return null;
+  return serializeRatedItems([...(parseRatedItems(text) ?? []), ...extra]);
 }
 
 const numOrNull = (value: unknown): number | null =>
@@ -134,7 +164,13 @@ function phrase(i: RatedItem): string {
 
 /** The changes between two snapshots, before order first, as phrases. Rounded:
  *  a change below the last printed digit is not a change. */
-function changesBetween(before: readonly RatedItem[], after: readonly RatedItem[]): string[] {
+function changesBetween(
+  beforeRows: readonly RatedItem[],
+  afterRows: readonly RatedItem[]
+): string[] {
+  // A stand-in stored by an older snapshot is still not a food (see ratedItems).
+  const before = beforeRows.filter((i) => !isStandIn(i.name));
+  const after = afterRows.filter((i) => !isStandIn(i.name));
   const key = (i: RatedItem) => foodKey({ food_id: null, name: i.name });
   const taken = new Set<number>();
   const removed: RatedItem[] = [];

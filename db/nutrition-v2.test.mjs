@@ -7715,16 +7715,23 @@ console.log('94. the join is the round-8 combine, said, and its Undo is exact');
     ? ok('Undo splits it back out — every row of meals, items and photos as it was logged')
     : bad('undo not exact');
 
-  // A meal timed LATER than the food: the food's row is the earlier and is the
-  // one a combine keeps, but the name is still the existing meal's.
+  // A meal timed LATER than the food: the EXISTING meal is still the one kept
+  // — its id, its 13:00, its name (2026-10-21 review: the earliest row used to
+  // win, so Lunch lost its id, became 12:30, and its rating went with it).
   const { db: db2 } = freshDb();
   const later = plainLunch(db2, '13:00');
   const drink = yogurt(db2, '12:30');
   const snap2 = mealTables(db2);
   const j2 = undoOffers.joinNearbyMealWithUndo(db2, drink);
-  j2?.keptId === drink && getMeal(db2, drink)?.name === 'Lunch' && getMeal(db2, later) === undefined
-    ? ok('a meal timed after the food: the earliest row survives, named as the existing meal')
-    : bad('later meal', JSON.stringify(j2 && { kept: j2.keptId }));
+  j2?.keptId === later &&
+  j2.time === '13:00' &&
+  getMeal(db2, later)?.name === 'Lunch' &&
+  getMeal(db2, later)?.time === '13:00' &&
+  getMeal(db2, drink) === undefined &&
+  listMealItems(db2, later).length === 2 &&
+  currentUndo()?.figure === '13:00'
+    ? ok('a meal timed after the food: Lunch keeps its id, its 13:00 and its name; the food joins it')
+    : bad('later meal', JSON.stringify(j2 && { kept: j2.keptId, time: j2.time }));
   runUndo() && mealTables(db2) === snap2
     ? ok('…and its Undo is exact too')
     : bad('later undo');
@@ -8061,6 +8068,35 @@ console.log('96. the estimators see his 30 usual foods — in the user turn, not
   )
     ? ok('both the live estimate and the offline queue’s drain pass them')
     : bad('callers');
+
+  // Night out's stepper rows are a COUNT times a reference drink, not a
+  // portion he has (2026-10-21 review): five beers as one 1775 ml, 765 kcal
+  // "Beer" must not become his usual beer, or a food to save. A beer a photo
+  // or a description logged still counts.
+  const { recordNightOut } = await import('../src/lib/status/night-out.ts');
+  const { isDrinksStepperRow } = repeats;
+  const { db: nights } = freshDb();
+  recordNightOut(nights, shiftISODate(TODAY, -14), { count: 5, kind: 'beer' });
+  recordNightOut(nights, shiftISODate(TODAY, -7), { count: 4, kind: 'beer' });
+  recordNightOut(nights, shiftISODate(TODAY, -1), { count: 5, kind: 'beer' });
+  recordNightOut(nights, TODAY, { count: 5, kind: 'beer' });
+  const stepperRow = listMealItems(nights, listTodayMeals(nights, TODAY)[0].id)[0];
+  isDrinksStepperRow(stepperRow) &&
+  !isDrinksStepperRow({ piece_name: 'drink', micros: null }) &&
+  !isDrinksStepperRow({ piece_name: null, micros: JSON.stringify({ alcohol_g: 20 }) }) &&
+  history.usualFoodsContextFor(nights, TODAY) === null &&
+  history.repeatFoodCandidate(nights, TODAY) === null
+    ? ok('four Night outs: no "Beer: 1775 ml · 765 kcal" usual food, and no Save-as-a-food offer')
+    : bad(
+        'stepper row became usual',
+        `${history.usualFoodsContextFor(nights, TODAY)} ${JSON.stringify(history.repeatFoodCandidate(nights, TODAY)?.key)}`
+      );
+  const pint = { name: 'Beer', amount: 568, unit: 'ml', kcal: 240, protein_g: 2, carbs_g: 18, fat_g: 0, micros: JSON.stringify({ alcohol_g: 22 }) };
+  logMealWithItems(nights, { date: shiftISODate(TODAY, -3), time: '19:00', name: 'Pub', items: [pint] });
+  logMealWithItems(nights, { date: TODAY, time: '18:00', name: 'Pub', items: [pint] });
+  history.usualFoodsContextFor(nights, TODAY)?.split('\n')[1] === '- Beer: 568 ml · 240 kcal · 2/18/0'
+    ? ok('…while the pints he photographed or described are his usual beer, at their own figures')
+    : bad('real beer', history.usualFoodsContextFor(nights, TODAY));
 }
 
 console.log('97. saved meals and past meals in search; a drink’s usual add-ons');
@@ -8831,8 +8867,191 @@ console.log('103. was this estimate right? — the rating, the correction, the e
   afterCombine[0] === breakfast &&
   rowOf(snack) === snackRow &&
   rowOf(breakfast) === kept
-    ? ok('a combine keeps the surviving meal’s rating, takes the absorbed one’s, and the split puts it back exactly')
+    ? ok('both rated: a combine keeps the KEPT meal’s rating, takes the absorbed one’s, and the split puts it back exactly')
     : bad('combine undo', JSON.stringify(afterCombine));
+}
+
+// ---------------------------------------------------------------------------
+// 104. The rating through a combine and an auto-join (2026-10-21 review,
+//     findings 1, 4 and 5): a rating survives the Undo window closing, the
+//     auto-join keeps the EXISTING meal, a joined item is never a "missed"
+//     example, and a meal's name never reaches the estimator.
+// ---------------------------------------------------------------------------
+console.log('104. the rating through a combine and an auto-join — kept, moved, never a false example');
+{
+  const ratings = await import('../src/lib/db/repositories/food-log-ratings.ts');
+  const { ratedItems } = await import('../src/lib/nutrition/ratings.ts');
+  const { assembleMealItems } = await import('../src/lib/nutrition/composite.ts');
+  /** The meal tables AND the ratings, every column — updated_at included. */
+  const everything = (db) =>
+    JSON.stringify({
+      tables: mealTables(db),
+      ratings: db.all('SELECT rowid AS r, * FROM food_log_ratings ORDER BY id'),
+    });
+  const salad = { name: 'Chicken salad', amount: 350, kcal: 520, protein_g: 40, carbs_g: 10, fat_g: 30 };
+  const fixSalad = (db, mealId) => {
+    const item = listMealItems(db, mealId).find((i) => i.name === 'Chicken salad');
+    nutritionRepoModule.updateMealItemPortion(db, item.id, {
+      amount: 250,
+      kcal: 371,
+      protein_g: 29,
+      carbs_g: 7,
+      fat_g: 21,
+    });
+  };
+  const SALAD_LINE = '- portion off: "Chicken salad" 350 g · 520 kcal → 250 g · 371 kcal';
+
+  // (1b) A food logged EARLIER than a rated, corrected Lunch auto-joins it:
+  // Lunch keeps its id, its 13:00 and its rating — through the Undo window
+  // closing — and the Undo is exact, ratings included.
+  {
+    const { db } = freshDb();
+    const lunch = logMealWithItems(db, { date: TODAY, time: '13:00', name: 'Lunch', source: 'ai_suggested', items: [salad] }).mealId;
+    ratings.rateMeal(db, lunch, 'bad');
+    ratings.setRatingIssue(db, lunch, 'portion');
+    fixSalad(db, lunch);
+    ratings.settleMealRating(db, lunch);
+    const snack = logMeal(db, { date: TODAY, time: '12:30', name: 'Snack', kcal: 90, protein_g: 1, carbs_g: 20, fat_g: 0 });
+    const before = everything(db);
+    const j = undoOffers.joinNearbyMealWithUndo(db, snack);
+    j?.keptId === lunch && j.time === '13:00' && getMeal(db, lunch)?.time === '13:00' && getMeal(db, snack) === undefined
+      ? ok('a snack typed at 12:30 joins the 13:00 Lunch: Lunch keeps its id and its time')
+      : bad('join kept the snack', JSON.stringify(j && { kept: j.keptId, time: j.time }));
+    runUndo() && everything(db) === before
+      ? ok('…its Undo restores every row, the rating’s included, verbatim')
+      : bad('join undo not exact');
+    undoOffers.joinNearbyMealWithUndo(db, snack);
+    closeUndo();
+    const listed = ratings.listMealRatings(db);
+    listed.length === 1 &&
+    listed[0].mealId === lunch &&
+    listed[0].correction === SALAD_LINE &&
+    ratings.correctionsContextFor(db)?.split('\n')[1] === SALAD_LINE
+      ? ok('with the offer closed, Lunch’s rating and its correction are still there, saying exactly what they said')
+      : bad('rating lost or changed by the join', JSON.stringify(listed));
+  }
+
+  // (1a) A manual combine where only the ABSORBED meal was rated: the rating
+  // moves onto the kept meal instead of going with the CASCADE.
+  {
+    const { db } = freshDb();
+    const oats = logMealWithItems(db, { date: TODAY, time: '08:00', name: 'Breakfast', items: [{ name: 'Oats', amount: 80, kcal: 300, protein_g: 10, carbs_g: 50, fat_g: 5 }] }).mealId;
+    const latte = logMealWithItems(db, { date: TODAY, time: '08:30', name: 'Latte', source: 'ai_suggested', items: [{ name: 'Latte', amount: 340, unit: 'ml', kcal: 150, protein_g: 8, carbs_g: 12, fat_g: 8 }] }).mealId;
+    ratings.rateMeal(db, latte, 'bad');
+    ratings.setRatingIssue(db, latte, 'macros');
+    const latteItem = listMealItems(db, latte)[0];
+    nutritionRepoModule.updateMealItemPortion(db, latteItem.id, { amount: 340, kcal: 220, protein_g: 12, carbs_g: 18, fat_g: 10 });
+    ratings.settleMealRating(db, latte);
+    const lineBefore = ratings.listMealRatings(db)[0].correction;
+    const ratingId = ratings.getMealRating(db, latte).id;
+    const before = everything(db);
+    combineWithUndo(db, [oats, latte], null);
+    const moved = ratings.getMealRating(db, oats);
+    moved?.id === ratingId &&
+    ratings.listMealRatings(db)[0].correction === lineBefore &&
+    moved.before.some((i) => i.name === 'Oats') &&
+    moved.after.some((i) => i.name === 'Oats')
+      ? ok('the absorbed Latte’s rating MOVES onto Breakfast (same row), its correction line unchanged')
+      : bad('rating not moved', JSON.stringify(moved));
+    runUndo() && everything(db) === before
+      ? ok('…and the split puts the rating back on the Latte, verbatim')
+      : bad('moved rating undo');
+    combineWithUndo(db, [oats, latte], null);
+    closeUndo();
+    ratings.ratingCorrections(db).length === 1
+      ? ok('…and with the offer closed the correction is still an example (it used to be 0)')
+      : bad('correction lost after combine', String(ratings.ratingCorrections(db).length));
+    // Rated meanwhile: the split would drop or misplace the new verdict, so it
+    // refuses and writes nothing.
+    const { db: d2 } = freshDb();
+    const a = logMealWithItems(d2, { date: TODAY, time: '08:00', name: 'A', items: [{ name: 'Toast', amount: 40, kcal: 100 }] }).mealId;
+    const b = logMealWithItems(d2, { date: TODAY, time: '08:10', name: 'B', items: [{ name: 'Egg', amount: 50, kcal: 78 }] }).mealId;
+    combineWithUndo(d2, [a, b], null);
+    ratings.rateMeal(d2, a, 'good');
+    const rated = everything(d2);
+    runUndo() === false && currentUndo()?.refused === true && everything(d2) === rated
+      ? ok('a rating given to the combined meal since refuses the split, writing nothing')
+      : bad('split ran over a new rating');
+    closeUndo();
+  }
+
+  // (4) An Off rating whose correction window is open (issue answered, nothing
+  // fixed yet) absorbs a coffee by auto-join: the coffee is NOT a missed item.
+  {
+    const { db } = freshDb();
+    const lunch = logMealWithItems(db, { date: TODAY, time: '12:20', name: 'Lunch', source: 'ai_suggested', items: [salad] }).mealId;
+    ratings.rateMeal(db, lunch, 'bad');
+    ratings.setRatingIssue(db, lunch, 'portion');
+    const ratingBefore = JSON.stringify(db.get('SELECT * FROM food_log_ratings'));
+    const coffee = logMealWithItems(db, { date: TODAY, time: '12:40', name: 'Coffee', items: [{ name: 'Coffee, black', amount: 240, unit: 'ml', kcal: 2, protein_g: 0, carbs_g: 0, fat_g: 0 }] }).mealId;
+    undoOffers.joinNearbyMealWithUndo(db, coffee);
+    runUndo();
+    JSON.stringify(db.get('SELECT * FROM food_log_ratings')) === ratingBefore
+      ? ok('the join’s Undo returns the open rating exactly as it was')
+      : bad('open rating not restored');
+    undoOffers.joinNearbyMealWithUndo(db, coffee);
+    closeUndo();
+    // What meal-detail does on the next visit: the window is open, so it settles.
+    const r = ratings.getMealRating(db, lunch);
+    r.rating === 'bad' && r.issue !== null && r.after === null && ratings.settleMealRating(db, lunch);
+    const settled = ratings.getMealRating(db, lunch);
+    settled.after === null &&
+    settled.before.map((i) => i.name).join(',') === 'Chicken salad,Coffee, black' &&
+    ratings.correctionsContextFor(db) === null
+      ? ok('the joined coffee enters the before, so the open window records nothing — no "missed Coffee"')
+      : bad('joined item became a correction', JSON.stringify([settled, ratings.correctionsContextFor(db)]));
+    fixSalad(db, lunch);
+    ratings.settleMealRating(db, lunch);
+    ratings.correctionsContextFor(db)?.split('\n').slice(1).join('|') === SALAD_LINE
+      ? ok('…and the real fix that follows is the one example: the salad, and only the salad')
+      : bad('real fix', ratings.correctionsContextFor(db));
+    // A snapshot is a set: the same items in another order are not a fix.
+    const { sameRatedItems } = await import('../src/lib/nutrition/ratings.ts');
+    const x = { name: 'X', amount: 1, unit: 'g', kcal: 1, protein_g: 0, carbs_g: 0, fat_g: 0 };
+    const y = { ...x, name: 'Y' };
+    sameRatedItems(JSON.stringify([x, y]), JSON.stringify([y, x])) &&
+    !sameRatedItems(JSON.stringify([x]), JSON.stringify([x, y])) &&
+    sameRatedItems(null, null) &&
+    !sameRatedItems(null, '[]')
+      ? ok('two snapshots are the same items in any order; null only equals null')
+      : bad('sameRatedItems');
+  }
+
+  // (5) A free-form meal's NAME, carried by a combine's stand-in, never
+  // reaches the estimator — not as a snapshot row, not as an example.
+  {
+    const { db } = freshDb();
+    const party = logMeal(db, { date: TODAY, time: '19:00', name: "Dinner at Dr Patel's clinic party", kcal: 700, protein_g: 30, carbs_g: 60, fat_g: 30 });
+    const dessert = logMealWithItems(db, { date: TODAY, time: '19:20', name: 'Dessert', items: [{ name: 'Cheesecake', amount: 120, kcal: 400, protein_g: 7, carbs_g: 30, fat_g: 28 }] }).mealId;
+    const c = combineMeals(db, [party, dessert]);
+    ratings.rateMeal(db, c.keptId, 'bad');
+    ratings.setRatingIssue(db, c.keptId, 'portion');
+    const standIn = listMealItems(db, c.keptId).find((i) => / \(as logged\)$/.test(i.name));
+    db.run('UPDATE meal_items SET kcal = 900 WHERE id = ?', [standIn.id]);
+    ratings.settleMealRating(db, c.keptId);
+    const cake = listMealItems(db, c.keptId).find((i) => i.name === 'Cheesecake');
+    nutritionRepoModule.updateMealItemPortion(db, cake.id, { amount: 180, kcal: 600, protein_g: 10, carbs_g: 45, fat_g: 42 });
+    ratings.settleMealRating(db, c.keptId);
+    const block = ratings.correctionsContextFor(db) ?? '';
+    const rows = db.all('SELECT before_items, after_items FROM food_log_ratings').map((r) => `${r.before_items}${r.after_items}`).join('');
+    !block.includes('Patel') &&
+    !block.includes('Dinner') &&
+    !block.includes('as logged') &&
+    !rows.includes('Patel') &&
+    block.includes('"Cheesecake" 120 g · 400 kcal → 180 g · 600 kcal') &&
+    ratedItems(assembleMealItems(listMealItems(db, c.keptId))).every((i) => i.name === 'Cheesecake')
+      ? ok('no meal name reaches the corrections block or a snapshot; the cheesecake’s fix still does')
+      : bad('meal name reached the estimator', `${block}\n${rows}`);
+    // An older snapshot that stored a stand-in is still read without it.
+    const { describeCorrection } = await import('../src/lib/nutrition/ratings.ts');
+    describeCorrection({
+      issue: 'portion',
+      before: [{ name: 'Secret dinner (as logged)', amount: null, unit: 'g', kcal: 700, protein_g: 30, carbs_g: 60, fat_g: 30 }],
+      after: [{ name: 'Secret dinner (as logged)', amount: null, unit: 'g', kcal: 900, protein_g: 30, carbs_g: 60, fat_g: 30 }],
+    }) === null
+      ? ok('a stand-in stored by an older snapshot is never an example')
+      : bad('stored stand-in became an example');
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

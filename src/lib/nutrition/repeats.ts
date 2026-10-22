@@ -37,6 +37,7 @@
  */
 import { normalizeFoodName } from '@/lib/db/repositories/foods';
 
+import { DRINK_PIECE } from './drinks';
 import { parseMicros, scaleMicros, serializeMicros } from './micros';
 import type { AmountUnit, EstimateConfidence, NewFood, NewMealItem } from './types';
 
@@ -86,6 +87,30 @@ export function isStandIn(name: string): boolean {
   return / \(as logged\)$/.test(name);
 }
 
+/**
+ * The row Night out's drinks stepper wrote (src/lib/nutrition/drinks.ts
+ * `drinksItem`) — the same two marks `nutrition.ts` keys it by: counted in
+ * `drink` pieces AND carrying `alcohol_g`. **Not a food he usually has**, so
+ * the usual foods, the Save-as-a-food offer and the add-ons all skip it.
+ *
+ * Skipped rather than divided per piece, because neither the whole row nor a
+ * piece of it is a portion anyone saw: it is a COUNT he stated times a
+ * reference standard drink (12 oz of 5 % beer, a 5 oz glass of wine). Five
+ * beers as one 1775 ml row would teach the estimator that one beer is 765
+ * kcal; per piece it would teach that his beer is the reference can, and a
+ * photographed pint would lose to it as "his usual". His real beers — the ones
+ * a photo or a description logged — still count, because they carry no
+ * `drink` piece. (Dividing every counted row per piece would also re-define
+ * "my usual eggs" for every egg ever logged three to a row — a different
+ * question from this one.)
+ */
+export function isDrinksStepperRow(item: Pick<LoggedFood, 'piece_name' | 'micros'>): boolean {
+  return item.piece_name === DRINK_PIECE && parseMicros(item.micros).alcohol_g !== undefined;
+}
+
+/** Neither a stand-in nor the drinks stepper's row: something he ate or drank. */
+const isFood = (item: LoggedFood): boolean => !isStandIn(item.name) && !isDrinksStepperRow(item);
+
 function near(a: number | null, b: number | null, share: number, slack: number): boolean {
   if (a === null || b === null) return a === b;
   return Math.abs(a - b) <= Math.max(share * Math.max(Math.abs(a), Math.abs(b)), slack);
@@ -134,7 +159,7 @@ export function pickRepeatFood(
 ): RepeatFood | null {
   const groups = new Map<string, LoggedFood[]>();
   for (const item of items) {
-    if (item.food_id !== null || item.is_composite === 1 || isStandIn(item.name)) continue;
+    if (item.food_id !== null || item.is_composite === 1 || !isFood(item)) continue;
     const key = foodKey(item);
     const group = groups.get(key);
     if (group) group.push(item);
@@ -206,7 +231,7 @@ export function rankUsualFoods(
 ): UsualFood[] {
   const groups = new Map<string, UsualFood>();
   for (const item of items) {
-    if (isStandIn(item.name)) continue;
+    if (!isFood(item)) continue;
     const key = foodKey(item);
     const seen = groups.get(key);
     if (seen) {
@@ -297,7 +322,7 @@ export function rankAddOns(
 ): UsualAddOn[] {
   const groups = new Map<string, { occurrences: Set<string>; latest: LoggedFood }>();
   for (const { occurrence, item } of companions) {
-    if (isStandIn(item.name)) continue;
+    if (!isFood(item)) continue;
     const key = foodKey(item);
     if (key === drinkKey || present.has(key)) continue;
     const group = groups.get(key);

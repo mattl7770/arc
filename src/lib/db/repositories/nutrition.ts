@@ -30,6 +30,7 @@ import {
   nightOutMealName,
 } from '@/lib/nutrition/drinks';
 import { isValidClock } from '@/lib/nutrition/meal-time';
+import { ratedItems, withRatedItems } from '@/lib/nutrition/ratings';
 import {
   type MicroKey,
   type Micros,
@@ -1407,20 +1408,26 @@ export function restoreMeal(db: Database, taken: TakenMeal): void {
 
 /** What {@link combineMeals} did, held so {@link uncombineMeals} can undo it. */
 export type CombinedMeals = {
-  /** The meal that survived — the earliest (src/lib/nutrition/combine.ts). */
+  /** The meal that survived — the earliest, or the one `keepId` named
+   *  (src/lib/nutrition/combine.ts). */
   keptId: string;
   /** Its row as it stood before, restored verbatim by the Undo. */
   kept: TakenRow;
   /** The items it held before — they stay with it when the combine is undone. */
   keptItemIds: string[];
-  /** `ratings`: an absorbed meal's "was this right?" row (0066), which the
-   *  CASCADE takes with the meal and the Undo puts back. */
+  /** Its "was this right?" row (0066) as it stood before, if it had one — the
+   *  combine may extend its snapshots, and the Undo puts it back verbatim. */
+  keptRatings: TakenRow[];
+  /** `ratings`: an absorbed meal's "was this right?" row (0066) as it stood
+   *  before — moved onto the kept meal, or taken by the CASCADE — which the
+   *  Undo puts back on its own meal. */
   absorbed: { meal: TakenRow; itemIds: string[]; photoIds: string[]; ratings: TakenRow[] }[];
   /** The "(as logged)" items written for free-form meals — deleted by the Undo. */
   standInIds: string[];
-  /** The combined meal as the combine LEFT it — its row and every item, every
-   *  column. The Undo runs only while the meal still reads exactly this. */
-  result: { meal: TakenRow; items: TakenRow[] };
+  /** The combined meal as the combine LEFT it — its row, every item and its
+   *  rating, every column. The Undo runs only while the meal still reads
+   *  exactly this. */
+  result: { meal: TakenRow; items: TakenRow[]; ratings: TakenRow[] };
   /** The name the result took. */
   name: string;
   count: number;
@@ -1460,20 +1467,37 @@ export type CombinedMeals = {
  * ids it was handed as history (`ai_messages` is append-only), and a later read
  * by an absorbed id says the meal is gone.
  *
+ * **The "was this right?" rating (0066)** — one per meal, by its UNIQUE
+ * `meal_id`, so the result carries one. The kept meal's own rating wins when
+ * it has one, and an absorbed meal's goes with its row (the Undo puts it
+ * back): the kept meal is the one whose estimate he judged as the meal he is
+ * now looking at. When the kept meal has none, the first absorbed meal's (list
+ * order) MOVES onto it, by id, rather than being lost to the CASCADE once the
+ * Undo closes. Whichever survives, an Off rating's snapshots then take the
+ * OTHER meals' items, appended to `before_items` (and to `after_items` when a
+ * fix is already recorded): those items were never part of the estimate he
+ * called off, so a correction window still open on the meal screen must not
+ * read them as a "missed" food (`settleMealRating`), and a fix already
+ * recorded keeps saying exactly what it said.
+ *
+ * `options.keepId` names the meal that survives instead of the earliest — the
+ * auto-join's, so a food logged near a meal never changes that meal's id,
+ * time or name (src/lib/nutrition/undo-offers.ts).
+ *
  * Throws {@link CombineRefused}, writing nothing, when the plan refuses or a
  * meal is no longer there; its message is the sentence the Eat tab shows.
  */
 export function combineMeals(
   db: Database,
   mealIds: readonly string[],
-  options: { name?: string | null } = {}
+  options: { name?: string | null; keepId?: string | null } = {}
 ): CombinedMeals {
   const found = [...new Set(mealIds)].map((id) => getMeal(db, id));
   if (found.some((meal) => meal === undefined)) {
     throw new CombineRefused('One of those meals is no longer logged, so nothing was combined.');
   }
   const meals = found as MealRow[];
-  const plan = planCombine(meals, pendingAmong(db, meals));
+  const plan = planCombine(meals, pendingAmong(db, meals), options.keepId ?? null);
   if (plan.kind === 'too-few') throw new CombineRefused('It takes two meals to combine.');
   if (plan.kind === 'refused') throw new CombineRefused(plan.reason);
 
@@ -1487,13 +1511,17 @@ export function combineMeals(
   const photoIdsOf = (mealId: string): string[] =>
     takeRowsIfPresent(db, 'meal_photos', 'meal_id = ?', [mealId]).map((row) => String(row.id));
 
+  const ratingsOf = (mealId: string): TakenRow[] =>
+    takeRowsIfPresent(db, 'food_log_ratings', 'meal_id = ?', [mealId]);
+
   const kept = takeRows(db, 'meals', 'id = ?', [keep.id])[0]!;
   const keptItemIds = itemIdsOf(keep.id);
+  const keptRatings = ratingsOf(keep.id);
   const absorbed = absorb.map((meal) => ({
     meal: takeRows(db, 'meals', 'id = ?', [meal.id])[0]!,
     itemIds: itemIdsOf(meal.id),
     photoIds: photoIdsOf(meal.id),
-    ratings: takeRowsIfPresent(db, 'food_log_ratings', 'meal_id = ?', [meal.id]),
+    ratings: ratingsOf(meal.id),
   }));
   const freeForm = all.filter(
     (meal, index) => (index === 0 ? keptItemIds : absorbed[index - 1]!.itemIds).length === 0
@@ -1504,8 +1532,33 @@ export function combineMeals(
   const source = all.some((meal) => meal.source === 'ai_suggested') ? 'ai_suggested' : keep.source;
   const recipeId = all.find((meal) => meal.recipe_id !== null)?.recipe_id ?? null;
 
+  // The rating the result carries (see the header): the kept meal's, else the
+  // first absorbed meal's. An Off one takes the other meals' items into its
+  // snapshots, read here — before anything moves — meal by meal, as the
+  // rating's own snapshot reads a meal (a dish as its parts' sum).
+  const rating = keptRatings[0] ?? absorbed.find((a) => a.ratings.length > 0)?.ratings[0];
+  const ratedMealId = rating ? String(rating.meal_id) : null;
+  const ratingId = rating ? String(rating.id) : null;
+  const joinedItems =
+    rating && rating.rating === 'bad' && rating.before_items != null
+      ? all
+          .filter((meal) => meal.id !== ratedMealId)
+          .flatMap((meal) => ratedItems(assembleMealItems(listMealItems(db, meal.id))))
+      : [];
+
   const standInIds: string[] = [];
   db.transaction(() => {
+    if (rating && ratingId !== null && ratedMealId !== keep.id) {
+      // Moved BEFORE its meal is deleted, or the CASCADE would take it.
+      db.run('UPDATE food_log_ratings SET meal_id = ? WHERE id = ?', [keep.id, ratingId]);
+    }
+    if (rating && ratingId !== null && joinedItems.length > 0) {
+      db.run('UPDATE food_log_ratings SET before_items = ?, after_items = ? WHERE id = ?', [
+        withRatedItems(rating.before_items as string | null, joinedItems),
+        withRatedItems(rating.after_items as string | null, joinedItems),
+        ratingId,
+      ]);
+    }
     for (const meal of freeForm) {
       const id = insertMealItem(db, keep.id, {
         name: `${meal.name} (as logged)`,
@@ -1538,11 +1591,13 @@ export function combineMeals(
     keptId: keep.id,
     kept,
     keptItemIds,
+    keptRatings,
     absorbed,
     standInIds,
     result: {
       meal: takeRows(db, 'meals', 'id = ?', [keep.id])[0]!,
       items: itemRecord(db, keep.id),
+      ratings: ratingsOf(keep.id),
     },
     name,
     count: all.length,
@@ -1579,7 +1634,9 @@ function pendingAmong(db: Database, meals: readonly Pick<MealRow, 'id'>[]): Set<
  * a rename, a new time, a changed note; a revision queued against it: any of
  * these, and the old rows and old totals this function restores would be
  * written over the change — a meal nobody logged, and a day total that no
- * longer adds up. So it throws and writes nothing, the way the Coach's
+ * longer adds up. A rating given or changed on the combined meal since is a
+ * change too: splitting would have to drop or misplace it. So it throws and
+ * writes nothing, the way the Coach's
  * staleness guard refuses a card whose row moved (docs/coach-domains.md). The
  * one change it forgives is the database's own: a catalog food or recipe
  * deleted meanwhile, whose reference `ON DELETE SET NULL` cleared.
@@ -1592,11 +1649,27 @@ export function uncombineMeals(db: Database, combined: CombinedMeals): void {
   const unchanged =
     sameRecord(meal, [clearedIfGone(db, combined.result.meal, 'recipe_id', 'recipes')]) &&
     sameRecord(itemRecord(db, combined.keptId), itemsAsExpected(db, combined.result.items)) &&
+    sameRecord(
+      takeRowsIfPresent(db, 'food_log_ratings', 'meal_id = ?', [combined.keptId]),
+      combined.result.ratings
+    ) &&
     pendingAmong(db, [{ id: combined.keptId }]).size === 0;
   if (!unchanged) {
     throw new Error('uncombineMeals: the combined meal has changed since, so it stays as it is.');
   }
+  const ratingsTouched =
+    combined.keptRatings.length > 0 ||
+    combined.result.ratings.length > 0 ||
+    combined.absorbed.some((a) => a.ratings.length > 0);
   db.transaction(() => {
+    if (ratingsTouched) {
+      // The rating the result carries — the kept meal's, extended, or one
+      // moved from an absorbed meal — goes first, so every row below can come
+      // back under its own id: the kept meal's verbatim here, an absorbed
+      // meal's with that meal.
+      db.run('DELETE FROM food_log_ratings WHERE meal_id = ?', [combined.keptId]);
+      for (const row of combined.keptRatings) putRow(db, 'food_log_ratings', row);
+    }
     if (combined.standInIds.length > 0) {
       db.run(
         `DELETE FROM meal_items WHERE id IN (${marks(combined.standInIds)})`,

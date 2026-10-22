@@ -532,6 +532,19 @@ things that read it are a record and two surfaces that print it.
   **re-count** replaces the re-ask, rewrites the record and sends nothing
   (`src/components/status/status-control.tsx` `DrinksPanel`;
   `src/lib/status/night-out.ts` `recordNightOut`).
+- **The morning after** (2026-10-21 review). A night out crosses the day
+  boundary: re-counting at 01:15 used to land on the NEW day — a second
+  status, a second drinks meal, a second Coach sentence, 4 + 6 recorded for 6
+  drunk. Now, when today has no Night out (no status, no stepper drinks) and
+  yesterday has one STARTED that day, the stepper opens on last night's count
+  until **local noon** and Save re-counts that day's row
+  (`setNightOutDrinks(db, thatDate, …)`): no new status, no message, and the
+  readiness *"Alcohol last night"* line shows the corrected count
+  (`nightOutDay` / `saveNightOutDrinks`). Noon, because a count is corrected
+  on the way home or over the next morning, while a Night out tapped in the
+  afternoon is far likelier a new evening; a wall-clock hour, because "the
+  morning after" is a time of day whatever the boundary is.
+  `db/statuses.test.mjs` §15.
 - **The record is a meal**, the fewest new concepts: *"Night out · 4 drinks"*,
   one item counted in drinks (0059's `piece_name`), in ml, with its ethanol under
   `alcohol_g` in the item's micros JSON — 14 g a standard drink. So kcal and

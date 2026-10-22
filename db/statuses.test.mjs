@@ -63,7 +63,14 @@ import {
   nightOutPrompt,
 } from '../src/lib/nutrition/drinks.ts';
 import { MICROS, parseMicros, scaleMicros, serializeMicros } from '../src/lib/nutrition/micros.ts';
-import { recordNightOut, recordedDrinks } from '../src/lib/status/night-out.ts';
+import {
+  NIGHT_OUT_CARRIES_UNTIL_HOUR,
+  nightOutDay,
+  nightOutStepper,
+  recordNightOut,
+  recordedDrinks,
+  saveNightOutDrinks,
+} from '../src/lib/status/night-out.ts';
 import { buildTurnContext } from '../src/lib/ai/turn-context.ts';
 import {
   composerKey,
@@ -1184,7 +1191,8 @@ console.log('\n13. THE RULE: Night out changes no protocol, mission or reminder 
   const store = readFileSync(new URL('../src/lib/status/store.ts', import.meta.url), 'utf8');
   !/repositories\/(mission|mission-generate|protocols|reminders)/.test(nightOut) &&
   !/repositories\/(mission|mission-generate|protocols|reminders)/.test(store) &&
-  /recordNightOut\(getDb\(\)/.test(store)
+  /saveNightOutDrinks\(getDb\(\)/.test(store) &&
+  /recordNightOut\(db, today, drinks\)/.test(nightOut)
     ? ok('night-out.ts and the store import no mission/protocol/reminder repository')
     : bad('a plan repository is reachable from the Night out write');
 }
@@ -1253,6 +1261,71 @@ console.log('\n14. the Coach’s day context and the next morning’s readiness'
   dry.alcoholLastNight === null && grades(dry) === grades(withDrinks)
     ? ok('…and the verdict, Recovery, Sleep, Strain and the metrics are identical without them')
     : bad('readiness moved with the drinks', `${grades(dry)}\n${grades(withDrinks)}`);
+}
+
+console.log('\n15. the morning after: re-counting Night out past the day boundary (2026-10-21 review)');
+{
+  // The reviewer's case, as the store drives it: Night out at 22:30 with 4
+  // beers; at 01:15 — a new logical day under the 00:00 boundary — he opens
+  // the stepper again and makes it 6. It must re-count LAST night's row: one
+  // status, one drinks meal, 6 drinks, no second Coach sentence.
+  const D = '2026-10-17';
+  const D1 = '2026-10-18';
+  const evening = new Date(2026, 9, 17, 22, 30);
+  const smallHours = new Date(2026, 9, 18, 1, 15);
+  const { db } = freshDb();
+  const first = saveNightOutDrinks(db, D, { count: 4, kind: 'beer' }, evening);
+  first.started === true && first.date === D
+    ? ok('22:30: the first save starts Night out on its own day (and sends its sentence)')
+    : bad('first save', JSON.stringify(first));
+  const opened = nightOutStepper(db, D1, smallHours);
+  opened.lastNight === true && opened.recorded?.count === 4 && opened.recorded.kind === 'beer'
+    ? ok('01:15 the next day: the stepper opens on last night’s 4 beers, as a re-count')
+    : bad('stepper at 01:15', JSON.stringify(opened));
+  const second = saveNightOutDrinks(db, D1, { count: 6, kind: 'beer' }, smallHours);
+  const rows = db.all('SELECT label, start_date, end_date FROM day_statuses');
+  second.started === false &&
+  second.date === D &&
+  rows.length === 1 &&
+  rows[0].start_date === D &&
+  dayAlcohol(db, D)?.drinks === 6 &&
+  dayAlcohol(db, D1) === null &&
+  listTodayMeals(db, D).length === 1 &&
+  listTodayMeals(db, D1).length === 0
+    ? ok('…and Save makes it 6 on last night: one status, one drinks meal, nothing on the new day, no message')
+    : bad('second save', JSON.stringify({ second, rows, d: dayAlcohol(db, D), d1: dayAlcohol(db, D1) }));
+  const morning = deriveReadiness(db, D1);
+  morning.alcoholLastNight?.drinks === 6 &&
+  alcoholLastNightLine(morning.alcoholLastNight) === 'Alcohol last night — 6 standard drinks · 84 g'
+    ? ok('readiness’s "last night" line shows the corrected 6')
+    : bad('readiness after re-count', JSON.stringify(morning.alcoholLastNight));
+
+  // The cut-off, either side of it: until noon the night is still being
+  // counted; from noon a tap is a new evening.
+  NIGHT_OUT_CARRIES_UNTIL_HOUR === 12 &&
+  nightOutDay(db, D1, new Date(2026, 9, 18, 11, 59)) === D &&
+  nightOutDay(db, D1, new Date(2026, 9, 18, 12, 0)) === D1
+    ? ok('11:59 the morning after is still last night’s; 12:00 is today’s')
+    : bad('cut-off');
+  const later = saveNightOutDrinks(db, D1, { count: 2, kind: 'wine' }, new Date(2026, 9, 18, 19, 0));
+  later.started === true && later.date === D1 && dayAlcohol(db, D)?.drinks === 6
+    ? ok('19:00 the next day: a new Night out on that day, last night’s 6 untouched')
+    : bad('next evening', JSON.stringify(later));
+  nightOutDay(db, D1, new Date(2026, 9, 18, 9, 0)) === D1
+    ? ok('once today has its own Night out, today’s is the one re-counted, at any hour')
+    : bad('today first');
+
+  // Only a Night out STARTED yesterday carries — not one that began earlier.
+  const { db: older } = freshDb();
+  startStatus(older, { label: 'night out', startDate: shiftISODate(D, -1), endDate: D, source: 'coach' });
+  const { db: none } = freshDb();
+  nightOutDay(older, D1, smallHours) === D1 && nightOutDay(none, D1, smallHours) === D1
+    ? ok('no Night out started yesterday: the morning after is an ordinary today')
+    : bad('older status carried');
+  const fresh = saveNightOutDrinks(none, D1, { count: 3, kind: 'beer' }, smallHours);
+  fresh.started === true && fresh.date === D1
+    ? ok('…and a Night out first set at 01:15 starts on the new day, as before')
+    : bad('first at 01:15', JSON.stringify(fresh));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

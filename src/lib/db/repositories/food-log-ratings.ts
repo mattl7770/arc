@@ -24,6 +24,7 @@ import {
   ratedItems,
   type RatingCorrection,
   type RatingIssue,
+  sameRatedItems,
   serializeRatedItems,
 } from '@/lib/nutrition/ratings';
 
@@ -133,13 +134,17 @@ export function setRatingIssue(db: Database, mealId: string, issue: RatingIssue)
  * changes something, so a re-read with nothing new leaves `updated_at` alone.
  * A no-op on a meal that is not rated off. The meal screen calls it while its
  * correction window is open (app/meal-detail.tsx).
+ *
+ * "The same" is the same ITEMS in any order (`sameRatedItems`): a combine
+ * appends a joined meal's items to the snapshots, and the order the meal lists
+ * them in is not something he corrected.
  */
 export function settleMealRating(db: Database, mealId: string): void {
   const existing = ratingRow(db, mealId);
   if (!existing || existing.rating !== 'bad' || existing.before_items === null) return;
   const now = snapshot(db, mealId);
-  const after = now === existing.before_items ? null : now;
-  if (after !== existing.after_items) {
+  const after = sameRatedItems(now, existing.before_items) ? null : now;
+  if (!sameRatedItems(after, existing.after_items)) {
     db.run('UPDATE food_log_ratings SET after_items = ? WHERE id = ?', [after, existing.id]);
   }
 }

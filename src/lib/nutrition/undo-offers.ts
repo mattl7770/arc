@@ -136,7 +136,7 @@ export type JoinedMeal = {
   createdName: string;
   /** The name the joined meal keeps: the existing meal's. */
   name: string;
-  /** The joined meal's time. */
+  /** The joined meal's time — the existing meal's, unchanged. */
   time: string | null;
   combined: CombinedMeals;
 };
@@ -148,7 +148,8 @@ export type JoinedMeal = {
  * device round 3, item 58), and the join is offered back on that day's list: *Added to Lunch · 12:40 · Undo*.
  *
  * It is the round-8 combine, not a second mechanism: `combineMeals` merges the
- * two (keeping the EXISTING meal's name — the owner's call), and the Undo is
+ * two (keeping the EXISTING meal — its row, id, time and rating, and its name,
+ * the owner's call), and the Undo is
  * `uncombineMeals`, which puts the new meal back exactly as it was logged — its
  * id, its row, its items — and refuses when the joined meal has changed since.
  * Null, writing nothing, when no meal is near enough or the combine refuses
@@ -173,7 +174,13 @@ export function joinNearbyMealWithUndo(
       dayStartsAt,
     });
     if (!target) return null;
-    combined = combineMeals(db, [target.id, created.id], { name: target.name });
+    // The EXISTING meal is kept — its id, time, name and rating — even when the
+    // food was logged earlier than it: a food logged near a meal never changes
+    // that meal (keepId; the Eat tab's own Combine still keeps the earliest).
+    combined = combineMeals(db, [target.id, created.id], {
+      name: target.name,
+      keepId: target.id,
+    });
   } catch (error) {
     // Refused (a recipe on each), or a write that failed and rolled back in
     // its transaction: either way the food stays the meal it was logged as,
