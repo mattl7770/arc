@@ -383,9 +383,16 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
    * @param display what stays on screen underneath the new bubble. Identical to
    *   `history` on send; on retry it also carries the persisted fragments this
    *   attempt supersedes, because the database still holds them.
+   * @param superseded on retry, the tool record of those fragments: what they
+   *   already wrote is told to the model, and cannot save at once again
+   *   (coach-service.ts `superseded`).
    */
   const run = useCallback(
-    (history: CoachChatMessage[], display: CoachChatMessage[] = history) => {
+    (
+      history: CoachChatMessage[],
+      display: CoachChatMessage[] = history,
+      superseded: CoachToolCall[] = []
+    ) => {
       busyRef.current = true;
       setIsResponding(true);
 
@@ -407,6 +414,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
         // long thread silently loses its first half — including whatever set it
         // up ("my knee has been sore since March").
         priorSummary: getConversationSummary(getDb(), conversationId),
+        ...(superseded.length > 0 ? { superseded } : {}),
         onToken: (chunk) => patch((m) => ({ ...m, content: m.content + chunk })),
         onToolCall: ({ label }) => setActivity(label),
         confirmWrite: (request) =>
@@ -607,7 +615,12 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
       .filter((m) => m.persisted)
       .map((m) => ({ ...m, streaming: false }));
 
-    run(history, [...history, ...kept]);
+    // What those fragments already wrote rides along, so the re-answer is told
+    // it and a log that saved at once in one of them shows a card this time
+    // instead of saving twice.
+    const superseded = kept.flatMap((m) => m.toolCalls ?? []);
+
+    run(history, [...history, ...kept], superseded);
   }, [run]);
 
   const reload = useCallback(() => {

@@ -413,7 +413,8 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   //
   // The prompt paid +36 for ONE bullet: what search is for (public facts: a
   // local menu, a product, new research) and the privacy rule the owner's
-  // brief required — a query never carries their health data. It is in the
+  // brief required — a query never carries their health data (nor, since the
+  // calendar section, its titles, places or people). It is in the
   // cached prefix because it binds every turn; the region itself is per-turn
   // and rides the uncached context block (turn-context.ts), not this.
   const allToolTokens = jsonTok(
@@ -1302,8 +1303,9 @@ console.log('7. web search: a reserved name, a privacy rule, a region line outsi
     : bad('a registry tool is named web_search');
 
   const prompt = buildCoachSystemPrompt({ notificationsLive: false });
-  prompt.includes('web_search') && prompt.includes('never carries their health data')
-    ? ok('the cached prompt names what search is for and that a query carries no health data')
+  prompt.includes('web_search') &&
+  prompt.includes('never carries their health data or calendar details (titles, places, people)')
+    ? ok('the cached prompt names what search is for and that a query carries no health data and no calendar detail')
     : bad('privacy rule missing from the prompt');
   !/Region:/.test(prompt)
     ? ok('…and holds no region: the cached prefix stays byte-identical across countries')

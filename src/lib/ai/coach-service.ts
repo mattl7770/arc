@@ -20,8 +20,13 @@ import {
 } from './tools';
 import { getSaveLogsAtOnce } from '@/lib/db/repositories/coach-autosave-setting';
 
-import { autoSaveTurn, runGatedTool, type WriteConfirmation } from './write-gate';
-import type { CoachTurnResult } from './types';
+import {
+  autoSaveTurn,
+  runGatedTool,
+  supersededWritesNote,
+  type WriteConfirmation,
+} from './write-gate';
+import type { CoachToolCall, CoachTurnResult } from './types';
 
 /**
  * The Coach service seam — the ONE place a model call happens.
@@ -86,6 +91,14 @@ export type StreamOptions = {
    * call — see the single read in `executeTool` below.
    */
   now?: () => Date;
+  /**
+   * A RETRY only: the tool record of the unfinished attempts this turn
+   * re-answers (use-coach-chat.ts `retry`). Those attempts are dropped from
+   * the history the model reads, so what they already wrote is told to it in
+   * the uncached turn context, and a tool that wrote there cannot save at once
+   * again (write-gate.ts `autoSaveTurn`).
+   */
+  superseded?: CoachToolCall[];
 };
 
 /**
@@ -131,8 +144,15 @@ export async function streamCoachReply(
   const latest = history[history.length - 1];
   const autoSave =
     options.confirmWrite && latest?.role === 'user' && getSaveLogsAtOnce(db)
-      ? autoSaveTurn(latest.content)
+      ? autoSaveTurn(latest.content, options.superseded)
       : undefined;
+  // A retry's own line, in the uncached block after the breakpoint: the
+  // cached prefix (system prompt + tool schemas) stays byte-identical.
+  const retried = supersededWritesNote(options.superseded ?? []);
+  const turnContext = buildTurnContext(db, clock(), {
+    region: regionLine(deviceRegion()),
+    calendar,
+  });
 
   const result = await runCoachTurn(
     {
@@ -154,10 +174,7 @@ export async function streamCoachReply(
       // which is when the prompt is built and sent; a tool call minutes later
       // reads the clock again for itself (below) rather than inheriting this
       // instant.
-      systemContext: buildTurnContext(db, clock(), {
-        region: regionLine(deviceRegion()),
-        calendar,
-      }),
+      systemContext: retried ? `${turnContext}\n\n${retried}` : turnContext,
       messages,
       tools: toWireTools(COACH_TOOLS),
       // The provider's web search, whenever the model judges it helps (the

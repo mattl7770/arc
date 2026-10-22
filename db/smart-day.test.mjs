@@ -1136,7 +1136,7 @@ console.log('6. the pass: the block rides the directive, the lines come back val
     'each action that takes a tag names the tag letter the facts mint'
   );
   check(
-    /\(PROPOSE, NUDGE and PLAN lines are the exceptions\)|\(NUDGE and PLAN lines are the exceptions\)/.test(content),
+    content.includes('(PROPOSE, NUDGE and PLAN lines are the exceptions)'),
     'SKIP still stands, with PLAN lines allowed beside it'
   );
   check(

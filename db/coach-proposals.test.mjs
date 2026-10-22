@@ -201,6 +201,20 @@ console.log('P1. the grammar: PROPOSE and BRIEF lines out, the note left, nothin
   leadingJsonObject('{"a":"}{"} rest')?.rest === ' rest'
     ? ok('the JSON scanner respects braces inside strings')
     : bad('json scanner');
+  const upper = parsePassLines(
+    'PROPOSE UNTIL 14:00 FINDING rec:gap_1 log_note {"text":"x"} why\nPROPOSE Until 09:30 log_note {"text":"y"} why'
+  );
+  upper.proposals.length === 2 &&
+  upper.malformed.length === 0 &&
+  upper.proposals[0].until === '14:00' &&
+  upper.proposals[0].finding === 'rec:gap_1' &&
+  upper.proposals[1].until === '09:30'
+    ? ok('UNTIL and FINDING parse in any case, as PLAN’s UNTIL does')
+    : bad('qualifier case', JSON.stringify(upper));
+  const placeholders = parsePassLines('SKIP\nBRIEF NONE\nBRIEF: skip.\nBRIEF None!\nBRIEF None of your sleep data synced.');
+  JSON.stringify(placeholders.brief) === '["None of your sleep data synced."]'
+    ? ok('BRIEF NONE / BRIEF SKIP is no brief, not a line on Home; a sentence opening "None" is kept')
+    : bad('brief placeholder', JSON.stringify(placeholders.brief));
   const fenced = parsePassLines('SKIP\n```\nPROPOSE log_note {"text":"x"} y\n```');
   fenced.text === 'SKIP' && fenced.proposals.length === 1
     ? ok('a fence round the lines goes too, so a SKIP stays bare')
@@ -295,6 +309,31 @@ console.log('P3. the pass drafts and executes NOTHING: cards drawn, database unc
   reasons.includes('launch_rocket is not a tool')
     ? ok('refused: input the tool’s parser rejects, a read, an unknown name — each in its own words')
     : bad('refused', JSON.stringify(reasons));
+
+  // A workout draft on a day nothing has opened yet: its card reads which
+  // Training row it would tick, and drawing it must not arrive the day
+  // (log_workout's confirmSummary arrives it in chat; `context.draft` here).
+  {
+    const { db: wdb } = freshDb();
+    const untouched = dump(wdb);
+    const drew = await runCoachPass(wdb, {
+      trigger: { kind: 'daily' },
+      now: NOW,
+      fetchImpl: wire('SKIP\nPROPOSE log_workout {"kind":"cardio","duration_min":30} You ran.'),
+    });
+    dump(wdb) === untouched &&
+    wdb.all('SELECT id FROM daily_logs').length === 0 &&
+    drew.proposals.drafted.length === 1 &&
+    drew.proposals.drafted[0].summary === 'Log workout · 30 min'
+      ? ok('a log_workout draft is drawn and the pass still wrote nothing — no daily_logs row')
+      : bad('workout draft wrote', JSON.stringify({ days: wdb.all('SELECT date FROM daily_logs'), drafted: drew.proposals.drafted.map((d) => d.summary) }));
+    const [kept] = proposals.recordProposals(wdb, drew.proposals.drafted, [], NOW);
+    const approved = await proposals.approveProposal(wdb, kept.id, { now: NOW });
+    approved.status === 'approved' &&
+    wdb.all("SELECT id FROM workouts WHERE kind = 'cardio'").length === 1
+      ? ok('  → and his tap, which does arrive the day, redraws the same card and writes it')
+      : bad('workout approval', JSON.stringify(approved));
+  }
 
   // The whole path: the store, the cap, the thread.
   coachPassStore.reset();

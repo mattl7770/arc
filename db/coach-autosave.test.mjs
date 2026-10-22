@@ -14,6 +14,8 @@
  *   A6  the unattended pass's proposals are never saved at once
  *   A7  phantom-write detection still holds
  *   A8  the registry: exactly five tools qualify, none of it rides the wire
+ *   A9  a unit, a metric or a capture type he did not type keeps its card
+ *   A10 a retry: what the superseded attempt saved is told, and not saved twice
  *
  * The model is a scripted wire (the SSE shape model-client parses). No
  * network, no API key (a placeholder string only), no model call.
@@ -185,19 +187,29 @@ let seq = 0;
  * turn ([name, input]), then answers `answer`. Every card shown is recorded;
  * `approve` is the user's answer to each.
  */
-async function turn(db, userText, calls, { approve = true, answer = 'Done.', gate = true } = {}) {
+async function turn(
+  db,
+  userText,
+  calls,
+  { approve = true, answer = 'Done.', gate = true, superseded } = {}
+) {
   globalThis.__ARC_TEST_DB__ = db;
   const replies = [
     ...calls.map(([name, input]) => toolUseReply(name, input, `toolu_${++seq}`)),
     textReply(answer),
   ];
-  globalThis.__ARC_TEST_FETCH__ = async () => responseOf(replies.shift());
+  const requests = [];
+  globalThis.__ARC_TEST_FETCH__ = async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return responseOf(replies.shift());
+  };
   const cards = [];
   const result = await streamCoachReply(
     [{ id: `u${seq}`, role: 'user', content: userText, createdAt: 0 }],
     {
       onToken: () => {},
       now: () => NOW,
+      ...(superseded ? { superseded } : {}),
       ...(gate
         ? {
             confirmWrite: async (request) => {
@@ -208,7 +220,7 @@ async function turn(db, userText, calls, { approve = true, answer = 'Done.', gat
         : {}),
     }
   );
-  return { result, cards, calls: result.toolCalls };
+  return { result, cards, calls: result.toolCalls, requests };
 }
 
 const resultOf = (call) => JSON.parse(call.result);
@@ -542,6 +554,96 @@ console.log('A8. the registry: exactly five tools may save at once, and none of 
   !wire.includes('autoApprove') && !wire.includes('undoDomain') && !wire.includes(SAVED_AT_ONCE_FIELD)
     ? ok('the wire schemas carry none of it (the §6 ceilings cannot move)')
     : bad('wire leak');
+}
+
+// =============================================================================
+console.log('A9. a unit, a metric or a capture type he did not type keeps its card');
+{
+  const { db: udb } = freshDb();
+  clearUndoOffers();
+  // The reviewer's five (2026-10-21): each figure is his, so the figure rule
+  // alone said yes — and saved something he never said.
+  const MISREAD = [
+    ['his kg saved in pounds', 'weight 80kg', 'log_metric', { metric: 'weight', value: 80 }],
+    ['his ml saved in ounces', 'drank 500 ml water', 'log_metric', { metric: 'water', value: 500 }],
+    ['his g titled mg', 'creatine 5 g', 'log_capture', { type: 'supplement', title: 'Creatine · 5 mg' }],
+    ['resting HR saved as HRV', 'resting hr 52', 'log_metric', { metric: 'hrv', value: 52 }],
+    ['a type he never named', 'creatine 5 g', 'log_capture', { type: 'medication', title: 'Creatine · 5 g' }],
+  ];
+  for (const [label, said, name, input] of MISREAD) {
+    const { cards, calls } = await turn(udb, said, [[name, input]], { approve: false });
+    cards.length === 1 && calls[0]?.declined === true && !wasSavedAtOnce(calls[0])
+      ? ok(`${label}: a card — "${cards[0]}"`)
+      : bad(`${label} saved at once`, JSON.stringify({ cards, call: calls[0] }));
+  }
+  // …and his own figures, units, metric and type still save at once.
+  const HIS = [
+    ['his kg, in kg', 'weight 80kg', 'log_metric', { metric: 'weight', value: 80, unit: 'kg' }],
+    ['his resting HR', 'resting hr 52', 'log_metric', { metric: 'rhr', value: 52 }],
+    ['his g, in g', 'creatine 5 g', 'log_capture', { type: 'supplement', title: 'Creatine · 5 g' }],
+    ['grams spelled out', 'took 5 grams of creatine', 'log_capture', { type: 'supplement', title: 'Creatine · 5 g' }],
+    ['a medication he named', 'took my meds, metformin 500 mg', 'log_capture', { type: 'medication', title: 'Metformin · 500 mg' }],
+  ];
+  for (const [label, said, name, input] of HIS) {
+    const { cards, calls } = await turn(udb, said, [[name, input]]);
+    cards.length === 0 && calls[0] && wasSavedAtOnce(calls[0])
+      ? ok(`${label}: saved at once — "${calls[0].receipt}"`)
+      : bad(`${label} lost its save-at-once`, JSON.stringify({ cards, call: calls[0] }));
+  }
+  // A supplement is not inferred over a type he DID name.
+  const { cards } = await turn(udb, 'took my meds, 500 mg', [
+    ['log_capture', { type: 'supplement', title: 'Meds · 500 mg' }],
+  ], { approve: false });
+  cards.length === 1
+    ? ok('he said meds, the call says supplement: a card')
+    : bad('supplement over meds', JSON.stringify(cards));
+}
+
+// =============================================================================
+console.log('A10. a retry: what the superseded attempt saved is told, and not saved twice');
+{
+  const { db: rdb, raw: rraw } = freshDb();
+  clearUndoOffers();
+  const said = 'took 5 g creatine';
+  const log = ['log_capture', { type: 'supplement', title: 'Creatine · 5 g' }];
+  const count = () =>
+    rraw.prepare("SELECT COUNT(*) AS n FROM log_entries WHERE title LIKE 'Creatine%'").get().n;
+  // The first attempt saved at once, then (say) the stream died before the reply.
+  const first = await turn(rdb, said, [log]);
+  const superseded = first.calls;
+  first.cards.length === 0 && wasSavedAtOnce(superseded[0]) && count() === 1
+    ? ok('the failed attempt saved the creatine at once')
+    : bad('first attempt', JSON.stringify(first.calls));
+
+  // Retry re-answers the same message; the model logs it again.
+  const retry = await turn(rdb, said, [log], { superseded, approve: false });
+  retry.cards.length === 1 && retry.calls[0]?.declined === true && count() === 1
+    ? ok('the retry’s repeat goes to a card, and a decline leaves one row, not two')
+    : bad('retry re-saved', JSON.stringify({ cards: retry.cards, call: retry.calls[0], rows: count() }));
+  const system = JSON.stringify(retry.requests[0]?.system ?? '');
+  system.includes('Retry:') && system.includes(superseded[0].receipt)
+    ? ok('the retry’s turn context names what already saved')
+    : bad('retry note missing', system.slice(-400));
+  // The cached prefix does not move: the first system block and the tools are
+  // the plain turn's, byte for byte.
+  JSON.stringify(retry.requests[0].system[0]) === JSON.stringify(first.requests[0].system[0]) &&
+  JSON.stringify(retry.requests[0].tools) === JSON.stringify(first.requests[0].tools) &&
+  !JSON.stringify(first.requests[0].system).includes('Retry:')
+    ? ok('the note rides the uncached block only: prompt and schemas unchanged, a plain turn has none')
+    : bad('cached prefix moved');
+
+  // Another tool in the retry still saves at once; a tool that only errored
+  // or was declined in the superseded attempt does not count as landed.
+  const other = await turn(rdb, 'took 5 g creatine, slept badly', [
+    ['log_note', { text: 'Slept badly' }],
+  ], { superseded: [...superseded, ...retry.calls] });
+  other.cards.length === 0 && wasSavedAtOnce(other.calls[0])
+    ? ok('a write the superseded attempt never made still saves at once')
+    : bad('other tool', JSON.stringify(other.calls));
+  const state = autoSaveTurn(said, superseded);
+  state.saved === 1 && state.landedTools.has('log_capture') && autoSaveTurn(said, retry.calls).landedTools.size === 0
+    ? ok('what saved at once there counts toward the cap; a declined call is not a landed one')
+    : bad('seeded state', JSON.stringify({ saved: state.saved, tools: [...state.landedTools] }));
 }
 
 await apiKeyStore.clearKey();

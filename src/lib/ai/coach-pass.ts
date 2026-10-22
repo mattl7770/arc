@@ -102,11 +102,16 @@ export const PASS_SKIP = 'SKIP';
 
 /**
  * One line that is the sentinel and nothing else. Tolerates surrounding
- * whitespace, terminal punctuation the model adds unbidden ("SKIP."), and
- * markdown emphasis ("**SKIP**") — none of which are content, and any of which
- * shipped verbatim is the same defect.
+ * whitespace, terminal punctuation the model adds unbidden ("SKIP."),
+ * markdown emphasis, heading and quote marks ("**SKIP**", "## SKIP",
+ * "> SKIP"), quotation marks ("\"SKIP\""), and a short dash-clause after it
+ * ("SKIP — nothing today.") — none of which are content, and any of which
+ * shipped verbatim is the same defect. The clause is bounded (40 characters,
+ * no figure) so a real note that opens "Skip —" and goes on to a number is
+ * still a note; a hyphen needs a space before it, so "skip-level" is a word.
  */
-const SKIP_LINE = /^[*_\s]*skip[.!]*[*_\s]*$/i;
+const SKIP_LINE =
+  /^[\s#>*_`"'“”‘’]*skip[\s*_`"'“”‘’.!]*(?:(?:[—–]|\s-{1,2})[^\n\d]{0,40})?$/i;
 
 /**
  * Did the pass decide to say nothing?

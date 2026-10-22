@@ -81,14 +81,22 @@ const LEAD_MARKER = new RegExp(PREFIX);
 
 /** `PROPOSE`, then the optional qualifiers in either order, then the tool name. */
 const HEAD = /^PROPOSE:?\s+(.*)$/;
-const UNTIL = /^until\s+(\d{1,2}):(\d{2})\s+/;
-const FINDING = /^finding\s+([A-Za-z0-9:_.@-]+)\s+/;
+// Case-insensitive, as PLAN's UNTIL is: a model that capitalises the
+// qualifier is writing the same line.
+const UNTIL = /^until\s+(\d{1,2}):(\d{2})\s+/i;
+const FINDING = /^finding\s+([A-Za-z0-9:_.@-]+)\s+/i;
 const TOOL = /^([a-z][a-z0-9_]*)\s*(.*)$/;
 
 /** A reason is one line under a card, not a paragraph. */
 export const PROPOSAL_REASON_MAX_CHARS = 200;
 /** A brief line is one line on Home. */
 export const BRIEF_LINE_MAX_CHARS = 220;
+
+/**
+ * `BRIEF NONE` / `BRIEF SKIP`: the model saying it has no brief, in the
+ * grammar of the NUDGE and PLAN lines' NONE. A placeholder, not a line for Home.
+ */
+const BRIEF_PLACEHOLDER = /^(?:none|skip)[.!]?$/i;
 
 const FENCE_LINE = /^\s*(?:```|~~~)[\w-]*\s*$/;
 const RULE_LINE = /^\s*([-*_=])(?:\s*\1){2,}\s*$/;
@@ -262,7 +270,7 @@ export function parsePassLines(reply: string): PassLines {
           .replace(/[\s*_`]+$/, ''),
         BRIEF_LINE_MAX_CHARS
       );
-      if (body.length > 0) brief.push(body);
+      if (body.length > 0 && !BRIEF_PLACEHOLDER.test(body)) brief.push(body);
     }
   }
 

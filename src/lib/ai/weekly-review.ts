@@ -195,15 +195,16 @@ export function dueWeekly(db: Database, now: Date = new Date()): WeeklyDue | nul
 /**
  * The weekly allowance: three per reviewed week, counted whatever became of
  * them — so a review retried after a failure cannot draft a fourth. Pending
- * and refused are the shared ones, so the review does not re-draft what the
- * daily pass already has waiting.
+ * is the shared list, so the review does not re-draft what the daily pass
+ * already has waiting; the refusals are the review's OWN (proposals.ts
+ * `weeklyRefused`), which the daily pass neither reads nor overwrites.
  */
 export function weeklyProposalDirectiveFor(
   db: Database,
   now: Date,
   week: string
 ): ProposalDirective {
-  const shared = proposalDirectiveFor(db, now);
+  const shared = proposalDirectiveFor(db, now, 'weekly');
   const made = listProposals(db, now).filter((p) => p.weekly?.week === week).length;
   return { ...shared, remaining: Math.max(0, WEEKLY_DECISIONS - made) };
 }
