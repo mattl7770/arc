@@ -110,7 +110,17 @@ export type StoredProposal = {
 /** A draft code would not keep, and why — told to the next pass. */
 export type RefusedProposal = { line: string; reason: string };
 
-type ProposalState = { items: StoredProposal[]; refused: RefusedProposal[] };
+/**
+ * `refused` is the daily pass's last refusals, `weeklyRefused` the weekly
+ * review's: each is told only to the next pass of its own kind, so Sunday's
+ * evening look (which runs right after the review) cannot overwrite the
+ * review's before next week's reads them.
+ */
+type ProposalState = {
+  items: StoredProposal[];
+  refused: RefusedProposal[];
+  weeklyRefused: RefusedProposal[];
+};
 
 /** A drafted card, before the cap: what {@link draftProposals} hands back. */
 export type DraftedProposal = Omit<
@@ -189,19 +199,20 @@ function isStoredProposal(value: unknown): value is StoredProposal {
 function readState(db: Database): ProposalState {
   const section = readSection(db, 'coachProposals');
   if (!section || typeof section !== 'object' || Array.isArray(section)) {
-    return { items: [], refused: [] };
+    return { items: [], refused: [], weeklyRefused: [] };
   }
   const record = section as Record<string, unknown>;
   const items = Array.isArray(record.items) ? record.items.filter(isStoredProposal) : [];
-  const refused = Array.isArray(record.refused)
-    ? record.refused.filter(
-        (r): r is RefusedProposal =>
-          !!r &&
-          typeof (r as RefusedProposal).line === 'string' &&
-          typeof (r as RefusedProposal).reason === 'string'
-      )
-    : [];
-  return { items, refused };
+  const refusals = (value: unknown): RefusedProposal[] =>
+    Array.isArray(value)
+      ? value.filter(
+          (r): r is RefusedProposal =>
+            !!r &&
+            typeof (r as RefusedProposal).line === 'string' &&
+            typeof (r as RefusedProposal).reason === 'string'
+        )
+      : [];
+  return { items, refused: refusals(record.refused), weeklyRefused: refusals(record.weeklyRefused) };
 }
 
 function writeState(db: Database, state: ProposalState): void {
@@ -336,7 +347,15 @@ export type ProposalDirective = {
   refused: RefusedProposal[];
 };
 
-export function proposalDirectiveFor(db: Database, now: Date = new Date()): ProposalDirective {
+/**
+ * `slot` picks whose refusals are told: the daily pass's own (the default) or
+ * the weekly review's (weekly-review.ts) — never the other kind's.
+ */
+export function proposalDirectiveFor(
+  db: Database,
+  now: Date = new Date(),
+  slot: 'daily' | 'weekly' = 'daily'
+): ProposalDirective {
   const today = todayISODate(now);
   const all = listProposals(db, now);
   // The weekly review's decisions have their own allowance, so they do not
@@ -346,7 +365,7 @@ export function proposalDirectiveFor(db: Database, now: Date = new Date()): Prop
   return {
     remaining: Math.max(0, PROPOSALS_PER_DAY - made),
     pending: all.filter((p) => p.status === 'pending').map((p) => p.summary),
-    refused: readState(db).refused,
+    refused: slot === 'weekly' ? readState(db).weeklyRefused : readState(db).refused,
   };
 }
 
@@ -453,7 +472,8 @@ export function draftProposals(
       refused.push({ line: shortLine(line.line), reason: findingIssue });
       continue;
     }
-    const context: CoachToolContext = { now, clock: () => now };
+    // `draft`: a card that would prepare state before reading it does not.
+    const context: CoachToolContext = { now, clock: () => now, draft: true };
     try {
       const card = drawWriteCard(tool, line.input, db, context);
       drafted.push({
@@ -479,8 +499,8 @@ export function draftProposals(
  * Keep the drafts the rules allow and write them, pending. The cap counts every
  * draft made today, whatever became of it, so a decline does not buy another;
  * a draft whose card matches one still pending is the same draft twice. What
- * is dropped joins the refusals the NEXT pass is told about — this pass's list
- * replaces the last one's.
+ * is dropped joins the refusals the NEXT pass of the same kind is told about —
+ * this pass's list replaces the last one's, in its own slot (daily or weekly).
  *
  * Returns the kept drafts, in order.
  */
@@ -537,7 +557,11 @@ export function recordProposals(
       ...(weekly ? { weekly: { week: weekly.week, through: weekly.through } } : {}),
     });
   }
-  writeState(db, { items: [...state.items, ...kept], refused: dropped });
+  writeState(db, {
+    ...state,
+    items: [...state.items, ...kept],
+    ...(weekly ? { weeklyRefused: dropped } : { refused: dropped }),
+  });
   return kept;
 }
 

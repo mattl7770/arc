@@ -36,7 +36,9 @@
  *   - its predicate says yes for this input (tools/write-tools.ts "Saving at
  *     once": the logical today, every figure and word the user's own);
  *   - it is not a repeat of a call already saved at once this turn, and fewer
- *     than {@link AUTO_SAVE_TURN_CAP} have been — a batch keeps its cards.
+ *     than {@link AUTO_SAVE_TURN_CAP} have been — a batch keeps its cards;
+ *   - on a RETRY, its tool wrote nothing in the attempts being superseded
+ *     ({@link autoSaveTurn}'s `superseded`): a re-answer gets a card.
  *
  * Its Undo is that domain's own delete, through this same function
  * ({@link undoSavedAtOnce}), and refuses if the row changed since it saved.
@@ -148,11 +150,59 @@ export type AutoSaveState = AutoSaveTurn & {
   saved: number;
   /** tool + input of each one, so a repeat call goes to a card, not twice in. */
   seen: Set<string>;
+  /**
+   * A RETRY's inheritance: every tool whose write already LANDED in the
+   * attempts this one supersedes. Any call to one of them goes to a card.
+   */
+  landedTools: Set<string>;
 };
 
-/** A fresh state for a chat turn answering `userText`. */
-export function autoSaveTurn(userText: string): AutoSaveState {
-  return { userText, saved: 0, seen: new Set() };
+/**
+ * The writes that LANDED in a superseded attempt: a receipt is minted only
+ * past `execute`, so it is the proof (a decline or an error carries none).
+ */
+function landedIn(superseded: readonly CoachToolCall[]): CoachToolCall[] {
+  return superseded.filter((call) => !!call.receipt && !call.declined && !call.isError);
+}
+
+/**
+ * A fresh state for a chat turn answering `userText`.
+ *
+ * `superseded` is a RETRY's tool record: the calls of the unfinished attempts
+ * it re-answers (use-coach-chat.ts `retry`). The model re-answers from his
+ * message with those attempts dropped from its history, so a log that already
+ * saved at once would otherwise save again, cardless, from the same words.
+ * So a tool that wrote in a superseded attempt shows a card this time — by
+ * TOOL, not by exact input, because a re-answer may word the same record
+ * differently — and what saved at once there counts toward the turn's cap.
+ */
+export function autoSaveTurn(
+  userText: string,
+  superseded: readonly CoachToolCall[] = []
+): AutoSaveState {
+  const landed = landedIn(superseded);
+  return {
+    userText,
+    saved: landed.filter(wasSavedAtOnce).length,
+    seen: new Set(),
+    landedTools: new Set(landed.map((call) => call.name)),
+  };
+}
+
+/**
+ * The line a RETRY's turn context carries (the uncached block, never the
+ * cached prompt): what the superseded attempts already wrote, so the model
+ * does not make it again. Null when nothing landed.
+ */
+export function supersededWritesNote(superseded: readonly CoachToolCall[]): string | null {
+  const receipts = landedIn(superseded).map((call) => call.receipt!.trim());
+  if (receipts.length === 0) return null;
+  return (
+    'Retry: an earlier answer to the latest message stopped before it finished. These ' +
+    'changes from it are already saved; do not make them again: ' +
+    receipts.join('; ') +
+    '.'
+  );
 }
 
 /**
@@ -177,7 +227,7 @@ function savesAtOnce(
   if (!turn || tool.readOnly || !tool.autoApprove || !tool.undoDomain) return false;
   if (turn.saved >= AUTO_SAVE_TURN_CAP) return false;
   const key = `${tool.name} ${JSON.stringify(input)}`;
-  if (turn.seen.has(key)) return false;
+  if (turn.seen.has(key) || turn.landedTools.has(tool.name)) return false;
   let yes = false;
   try {
     yes = tool.autoApprove(input, db, context, { userText: turn.userText }) === true;

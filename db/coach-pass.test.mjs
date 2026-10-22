@@ -245,6 +245,14 @@ console.log('3b. isPassSkip: the sentinel survives a preamble, a real note survi
   silent('…emphasised', '**SKIP**');
   silent('…with trailing whitespace and newlines', 'SKIP   \n\n  \n');
   silent('…with leading whitespace', '   SKIP');
+  silent('…as a markdown heading', '## SKIP');
+  silent('…block-quoted', '> SKIP');
+  silent('…in quotation marks', '"SKIP"');
+  silent('…in curly quotes, emphasised', '**“SKIP.”**');
+  silent('…with a short dash-clause', 'SKIP — nothing today.');
+  silent('…an en dash, no space', 'SKIP–quiet day');
+  silent('…a spaced hyphen', 'Skip - nothing to add.');
+  silent('…a narrated preamble, then the clause', 'I will check.\n\nSKIP — nothing today.');
   silent(
     'a preamble followed by the sentinel is STILL silence (the shipped defect)',
     "I'll read the current state and check for anything worth flagging.\n\nSKIP"
@@ -272,6 +280,12 @@ console.log('3b. isPassSkip: the sentinel survives a preamble, a real note survi
     '…and a note that merely mentions the sentinel on the way to a real point',
     'SKIP is what I would normally say here, but your sleep debt is 6 h and worth naming.'
   );
+  spoken('…a dash-clause that carries a figure is a note', 'Skip — your HRV is 36 against 50, so rest.');
+  spoken(
+    '…as is one longer than a clause',
+    'Skip — you have trained hard all week and the evening should be about recovery, not more load.'
+  );
+  spoken('…and "skip-level" is a word, not the sentinel', 'skip-level check-in');
 }
 
 console.log('4. runCoachPass: read-only, honest silence, never surfaces a failure');

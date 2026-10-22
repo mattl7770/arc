@@ -192,6 +192,14 @@ const DATE_PROPERTY = {
 //      (a name, a title, a note) appears in what he typed. "Took my stack"
 //      logged as "Magnesium" is the model's inference, so it gets a card; a
 //      note in his own words saves, a précis of them does not.
+//   4. EVERY UNIT IS HIS. A unit is two letters, so rule 3 cannot see it: a
+//      "5 g" he typed stored as "5 mg", or his "80kg" saved in pounds, would
+//      pass on the figure alone. Units are compared as tokens of their own
+//      (unitPairs): one in what is stored must be one he typed, beside the
+//      same figure when he gave that figure a unit.
+//   5. THE THING IS HIS. A metric he named (resting HR is not HRV), a capture
+//      type he named — a supplement excepted, which is what "took X" means
+//      when he names no other kind.
 //
 // A `time` keeps its card too: "this morning" → "08:00" is a figure he did
 // not type, and judging which clock spellings match is not worth a false yes.
@@ -222,10 +230,19 @@ function saidThisTurn(
   const saidFigures = figuresIn(turn.userText);
   const saidWords = new Set(wordsIn(turn.userText));
   const said = (value: number) => saidFigures.some((n) => Math.abs(n - value) < 1e-9);
+  const saidPairs = unitPairs(turn.userText);
+  const saidUnits = new Set(saidPairs.map((p) => p.unit));
   for (const text of texts) {
     if (text === undefined) continue;
     if (!figuresIn(text).every(said)) return false;
     if (!wordsIn(text).every((word) => saidWords.has(word))) return false;
+    // Rule 4: a stored unit he never typed, or one beside a figure he typed
+    // with a different unit, is not his.
+    for (const { value, unit } of unitPairs(text)) {
+      if (!saidUnits.has(unit)) return false;
+      const sameFigure = saidPairs.filter((p) => Math.abs(p.value - value) < 1e-9);
+      if (sameFigure.length > 0 && !sameFigure.some((p) => p.unit === unit)) return false;
+    }
   }
   return figures.every((value) => value == null || said(value));
 }
@@ -234,6 +251,109 @@ function saidThisTurn(
 function onLogicalToday(args: Record<string, unknown>, now: Date): boolean {
   const date = optDate(args, 'date');
   return date === undefined || date === todayISODate(now);
+}
+
+/**
+ * Every spelling of a unit, folded to one. Short on purpose: these are what a
+ * dose, a measurement or a duration is written in, and nothing else.
+ */
+const UNIT_SPELLINGS: Record<string, string> = {
+  g: 'g',
+  gram: 'g',
+  grams: 'g',
+  mg: 'mg',
+  milligram: 'mg',
+  milligrams: 'mg',
+  mcg: 'mcg',
+  'µg': 'mcg',
+  'μg': 'mcg',
+  ug: 'mcg',
+  microgram: 'mcg',
+  micrograms: 'mcg',
+  kg: 'kg',
+  kgs: 'kg',
+  kilo: 'kg',
+  kilos: 'kg',
+  kilogram: 'kg',
+  kilograms: 'kg',
+  lb: 'lb',
+  lbs: 'lb',
+  pound: 'lb',
+  pounds: 'lb',
+  oz: 'oz',
+  'fl oz': 'oz',
+  ounce: 'oz',
+  ounces: 'oz',
+  ml: 'ml',
+  milliliter: 'ml',
+  milliliters: 'ml',
+  millilitre: 'ml',
+  millilitres: 'ml',
+  l: 'l',
+  liter: 'l',
+  liters: 'l',
+  litre: 'l',
+  litres: 'l',
+  iu: 'iu',
+  cm: 'cm',
+  in: 'in',
+  inch: 'in',
+  inches: 'in',
+  ms: 'ms',
+  bpm: 'bpm',
+  '%': '%',
+  percent: '%',
+  min: 'min',
+  mins: 'min',
+  minute: 'min',
+  minutes: 'min',
+  hr: 'h',
+  hrs: 'h',
+  hour: 'h',
+  hours: 'h',
+};
+
+/** One spelling of a unit token ("lbs" → "lb"); an unknown token as given. */
+function foldUnit(unit: string): string {
+  const token = unit.trim().toLowerCase();
+  return UNIT_SPELLINGS[token] ?? token;
+}
+
+/**
+ * A figure followed by a unit token ("5 g", "80kg", "2000 IU"), the longest
+ * spelling tried first. No spelling holds a regex metacharacter but `%`, which
+ * is literal in a pattern.
+ */
+const UNIT_PAIR = new RegExp(
+  '(\\d+(?:[.,]\\d+)?)\\s*(' +
+    Object.keys(UNIT_SPELLINGS)
+      .sort((a, b) => b.length - a.length)
+      .join('|') +
+    ')(?![a-zµμ])',
+  'g'
+);
+
+/**
+ * Rule 4's tokens: each figure that carries a unit, with the unit folded.
+ * Only a unit BESIDE a figure counts, so "in the morning" is not inches.
+ */
+function unitPairs(text: string): { value: number; unit: string }[] {
+  return [...text.toLowerCase().matchAll(UNIT_PAIR)].map((m) => ({
+    value: Number(m[1]!.replace(',', '.')),
+    unit: foldUnit(m[2]!),
+  }));
+}
+
+/** Does `phrase` (lowercase) appear in `text` as whole words? */
+function phraseIn(phrase: string, text: string): boolean {
+  const lower = text.toLowerCase();
+  const letter = /[a-z]/;
+  for (let i = lower.indexOf(phrase); i !== -1; i = lower.indexOf(phrase, i + 1)) {
+    const before = lower[i - 1] ?? '';
+    const after = lower[i + phrase.length] ?? '';
+    if (!letter.test(before) && !letter.test(after)) return true;
+  }
+  return false;
 }
 
 /** A unit token he typed himself ("500 ml", "80kg"), not one the model chose. */
@@ -245,6 +365,12 @@ function unitSaid(unit: string, text: string): boolean {
 // --- log_metric --------------------------------------------------------------
 
 const METRIC_KEYS = ['weight', 'body_fat', 'waist', 'hrv', 'rhr', 'water'] as const;
+
+/** Rule 5: the metric is one he named — the keypad parser's keywords, plus "weighed". */
+function metricNamed(key: MetricKey, text: string): boolean {
+  const words = [...(metricByKey(key)?.keywords ?? []), ...(key === 'weight' ? ['weighed'] : [])];
+  return words.some((word) => phraseIn(word, text));
+}
 
 /**
  * Validated input → canonical value + display string, shared by summary/execute.
@@ -324,12 +450,26 @@ const logMetricTool: CoachTool = {
     const id = logMetricCapture(db, logDate(args, context.now), key, canonical);
     return json({ logged: true, id, metric: key, value: display });
   },
-  // Saves at once only when the value, and any unit, is what he typed.
-  autoApprove: (input, _db, context, turn) => {
+  // Saves at once only when the metric, the value and any unit are what he
+  // typed — and the unit it saves in is the one he typed, if he typed one.
+  autoApprove: (input, db, context, turn) => {
     const args = asRecord(input);
     if (!onLogicalToday(args, context.now)) return false;
+    const key = reqEnum(args, 'metric', METRIC_KEYS);
+    if (!metricNamed(key, turn.userText)) return false;
     const unit = optString(args, 'unit');
     if (unit !== undefined && !unitSaid(unit, turn.userText)) return false;
+    // "weight 80kg" with no unit in the call saves 80 in his DISPLAY unit:
+    // a unit he typed for this metric that is not the one saved is a card.
+    const metric = metricByKey(key)!;
+    const saved = foldUnit(unit ?? resolveDisplay(metric, getPreferences(db).units).unit);
+    const vocabulary = new Set(
+      [...Object.keys(metric.units ?? {}), metric.displayUnit].map(foldUnit)
+    );
+    const typed = unitPairs(turn.userText)
+      .map((p) => p.unit)
+      .filter((u) => vocabulary.has(u));
+    if (typed.length > 0 && !typed.includes(saved)) return false;
     return saidThisTurn(turn, [], [reqNumber(args, 'value')]);
   },
   undoDomain: 'captures',
@@ -597,9 +737,12 @@ const logWorkoutTool: CoachTool = {
     // the same call Home and the caffeine check make. The row is held in the
     // context, and execute ticks that one only (`tickTrainingForWorkout`'s
     // `only`): the card is drawn before the gate and re-read after it.
+    // Not at draft time (`context.draft`): the unattended pass writes nothing,
+    // so its card reads the day as it stands, and the tap's redraw (which
+    // does arrive it) refuses as stale if that names a row the draft did not.
     const today = todayISODate(now);
     const date = logDate(args, now);
-    if (date === today) arriveDay(db, today);
+    if (date === today && !context?.draft) arriveDay(db, today);
     const row = trainingRowFor(db, { date, routineId: null, away: false }, today);
     if (context) context.trainingRow = row;
     const parts = [
@@ -751,6 +894,43 @@ const logSymptomTool: CoachTool = {
 // --- log_capture (supplement / medication / therapy) -------------------------
 
 const CAPTURE_TYPES = ['supplement', 'medication', 'therapy'] as const;
+type CaptureType = (typeof CAPTURE_TYPES)[number];
+
+/** Rule 5's words for each capture type. */
+const CAPTURE_TYPE_WORDS: Record<CaptureType, string[]> = {
+  supplement: ['supplement', 'supplements', 'supp', 'supps', 'vitamin', 'vitamins'],
+  medication: [
+    'medication',
+    'medications',
+    'medicine',
+    'meds',
+    'med',
+    'prescription',
+    'prescribed',
+    'rx',
+  ],
+  therapy: [
+    'therapy',
+    'sauna',
+    'plunge',
+    'ice bath',
+    'cold bath',
+    'cryo',
+    'red light',
+    'massage',
+    'physio',
+  ],
+};
+
+/**
+ * Rule 5 for a capture: he named its type — or it is a supplement and he named
+ * no other kind, since "took creatine" means a supplement and nothing else.
+ */
+function captureTypeSaid(type: CaptureType, text: string): boolean {
+  const named = (t: CaptureType) => CAPTURE_TYPE_WORDS[t].some((word) => phraseIn(word, text));
+  if (named(type)) return true;
+  return type === 'supplement' && !named('medication') && !named('therapy');
+}
 
 const logCaptureTool: CoachTool = {
   name: 'log_capture',
@@ -782,11 +962,16 @@ const logCaptureTool: CoachTool = {
     );
     return json({ logged: true, id });
   },
-  // "Creatine · 5 g" saves at once when he said creatine and 5; a dose the
-  // model filled in from his protocol is not his, and keeps the card.
+  // "Creatine · 5 g" saves at once when he said creatine and 5 g; a dose the
+  // model filled in from his protocol is not his, and keeps the card, as does
+  // a type he did not name.
   autoApprove: (input, _db, context, turn) => {
     const args = asRecord(input);
-    return onLogicalToday(args, context.now) && saidThisTurn(turn, [reqString(args, 'title')], []);
+    return (
+      onLogicalToday(args, context.now) &&
+      captureTypeSaid(reqEnum(args, 'type', CAPTURE_TYPES), turn.userText) &&
+      saidThisTurn(turn, [reqString(args, 'title')], [])
+    );
   },
   undoDomain: 'captures',
 };

@@ -334,8 +334,11 @@ console.log('\nW2–W4. one review, run: the report, the read, the decisions');
     'the day’s own three are untouched, and the daily pass is told the decisions are waiting'
   );
   check(
-    directiveNext.refused.some((r) => r.reason === 'over the 3-decision cap for the weekly review'),
-    'the fourth is refused on the weekly cap and told to the next pass'
+    weekly
+      .weeklyProposalDirectiveFor(db, now, 'next')
+      .refused.some((r) => r.reason === 'over the 3-decision cap for the weekly review') &&
+      !directiveNext.refused.some((r) => r.reason === 'over the 3-decision cap for the weekly review'),
+    'the fourth is refused on the weekly cap and told to the next REVIEW, not the daily pass'
   );
   check(proposals.draftsForDay(all, todayISODate(now)).length === 0, 'Home’s daily drafts do not repeat them');
   check(weekly.weeklyProposalDirectiveFor(db, now, MON).remaining === 0, 'the week’s allowance is spent');
@@ -466,6 +469,39 @@ console.log('\nW7. through the pass store');
   );
   await coachPassStore.maybeRun(tapped, { unlocked: true, now, fetchImpl: wire('A word.', order) });
   check(directiveOf(order[1]).startsWith('[Automatic weekly pass'), 'the next wake-up runs the review');
+}
+
+console.log('\nW8. Sunday: the evening pass after the review keeps its refusals apart from the review’s');
+{
+  const now = at(19, 9);
+  const db = weekDb(now);
+  db.run("UPDATE users SET preferences = json_remove(preferences, '$.coachPass')");
+  coachPassStore.reset();
+  const seen = [];
+  // The review refuses one line, the day's pass right after it another.
+  const routed = async (url, init) => {
+    const isWeekly = directiveOf(JSON.parse(init.body)).startsWith('[Automatic weekly pass');
+    return wire(
+      isWeekly
+        ? 'Breakfast held all seven days.\nPROPOSE launch_rocket {} The week asked for it.'
+        : 'SKIP\nPROPOSE warp_drive {} Tonight.',
+      seen
+    )(url, init);
+  };
+  await coachPassStore.maybeRun(db, { unlocked: true, now, fetchImpl: routed });
+  const weeklyTold = weekly.weeklyProposalDirectiveFor(db, now, 'any').refused.map((r) => r.line);
+  const dailyTold = proposals.proposalDirectiveFor(db, now).refused.map((r) => r.line);
+  check(seen.length === 2, 'both passes ran, review first', String(seen.length));
+  check(
+    weeklyTold.some((l) => l.includes('launch_rocket')) && !weeklyTold.some((l) => l.includes('warp_drive')),
+    'next week’s review is told its own refusal, not overwritten by the evening pass',
+    JSON.stringify(weeklyTold)
+  );
+  check(
+    dailyTold.some((l) => l.includes('warp_drive')) && !dailyTold.some((l) => l.includes('launch_rocket')),
+    'the daily pass is told only its own',
+    JSON.stringify(dailyTold)
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

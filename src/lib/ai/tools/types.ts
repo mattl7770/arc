@@ -82,6 +82,15 @@ export type CoachToolContext = {
    * drawn, which ticks nothing either.
    */
   trainingRow?: { id: string; title: string } | null;
+  /**
+   * The card is being drawn where NOTHING may be written: the unattended pass
+   * drafting a proposal (proposals.ts `draftProposals`), which is read-only by
+   * construction. A `confirmSummary` that would otherwise prepare state before
+   * reading it (log_workout's `arriveDay`) reads the day as it stands instead.
+   * The approval redraws the card without it, so a card that would now say
+   * more refuses as stale rather than writing what the draft did not show.
+   */
+  draft?: boolean;
 };
 
 /**
