@@ -1,8 +1,9 @@
 /**
  * The Coach's write tools — logging on the user's behalf and managing
  * reminders (docs/ai-coach.md, "Tool set"). None are readOnly, so the service
- * layer surfaces EVERY call here to the user for confirmation before execute
- * runs; `confirmSummary` is the one line the confirmation card shows, and it
+ * layer surfaces every call here to the user for confirmation before execute
+ * runs (the one exception: five simple logs may save at once, with an Undo,
+ * under the three rules of "Saving at once" below); `confirmSummary` is the one line the confirmation card shows, and it
  * must carry everything consequential about the write — what, how much, and
  * (when not today) which day — so the user never approves blind.
  *
@@ -141,6 +142,7 @@ import {
   reqEnum,
   reqNumber,
   reqString,
+  type AutoSaveTurn,
   type CoachTool,
 } from './types';
 
@@ -171,6 +173,74 @@ const DATE_PROPERTY = {
       '"YYYY-MM-DD" — pass when the user reports a PAST event ("yesterday…"); omit for today.',
   },
 } as const;
+
+// --- Saving at once (owner, 2026-10-21) --------------------------------------
+//
+// The five simple logs below may skip their card and save with an Undo
+// (docs/decisions.md, "Simple logs save at once, with Undo"). Each says so
+// with an `autoApprove` predicate built from the three rules here, and the
+// gate (write-gate.ts) is the only caller. The rules are the whole definition
+// of "simple", so they are strict on purpose: a miss costs one tap on a card,
+// a false yes writes something he never said.
+//
+//   1. THE LOGICAL TODAY. No `date`, or today's. A backdate keeps its card.
+//   2. EVERY FIGURE IS HIS. Each number the call carries, in a field or inside
+//      its words, is one he typed this turn. A macro the model estimated, a
+//      glass it turned into 250 ml, a dose it read off his protocol, a pound
+//      figure it converted from kilos: all go to the card.
+//   3. EVERY WORD IS HIS. Each word of three letters or more in what is stored
+//      (a name, a title, a note) appears in what he typed. "Took my stack"
+//      logged as "Magnesium" is the model's inference, so it gets a card; a
+//      note in his own words saves, a précis of them does not.
+//
+// A `time` keeps its card too: "this morning" → "08:00" is a figure he did
+// not type, and judging which clock spellings match is not worth a false yes.
+
+/** The numbers in a piece of text: "5g", "178.4", "6/10" → 5, 178.4, 6, 10. */
+function figuresIn(text: string): number[] {
+  return (text.match(/\d+(?:[.,]\d+)?/g) ?? []).map((n) => Number(n.replace(',', '.')));
+}
+
+/** The words that must be his: letters only, three or more, crude plural folded. */
+function wordsIn(text: string): string[] {
+  // A spelled-out class rather than `\p{L}`, which is not a safe bet on Hermes.
+  return (text.toLowerCase().match(/[a-zß-ɏ]+/g) ?? [])
+    .filter((word) => word.length >= 3)
+    .map((word) => (word.length > 3 && word.endsWith('s') ? word.slice(0, -1) : word));
+}
+
+/**
+ * Rules 2 and 3: is every figure and every word of what the call stores one
+ * the user typed this turn? `texts` are stored words (absent ones skipped);
+ * `figures` are stored numbers (null/absent skipped).
+ */
+function saidThisTurn(
+  turn: AutoSaveTurn,
+  texts: (string | undefined)[],
+  figures: (number | null | undefined)[]
+): boolean {
+  const saidFigures = figuresIn(turn.userText);
+  const saidWords = new Set(wordsIn(turn.userText));
+  const said = (value: number) => saidFigures.some((n) => Math.abs(n - value) < 1e-9);
+  for (const text of texts) {
+    if (text === undefined) continue;
+    if (!figuresIn(text).every(said)) return false;
+    if (!wordsIn(text).every((word) => saidWords.has(word))) return false;
+  }
+  return figures.every((value) => value == null || said(value));
+}
+
+/** Rule 1: no `date`, or the logical today's. */
+function onLogicalToday(args: Record<string, unknown>, now: Date): boolean {
+  const date = optDate(args, 'date');
+  return date === undefined || date === todayISODate(now);
+}
+
+/** A unit token he typed himself ("500 ml", "80kg"), not one the model chose. */
+function unitSaid(unit: string, text: string): boolean {
+  const token = unit.toLowerCase().replace(/[^a-z%]/g, '');
+  return token.length > 0 && new RegExp(`(^|[^a-z])${token}([^a-z]|$)`).test(text.toLowerCase());
+}
 
 // --- log_metric --------------------------------------------------------------
 
@@ -249,9 +319,20 @@ const logMetricTool: CoachTool = {
     const { key, canonical, display } = parseMetricInput(input, db);
     // What the keypad calls (the parity rule), so a glass the Coach logs goes
     // to Apple Health when it is logged, as a tapped one does.
-    logMetricCapture(db, logDate(args, context.now), key, canonical);
-    return json({ logged: true, metric: key, value: display });
+    // The id is the Log feed's (a body reading as `id:column`): what the
+    // `captures` delete takes, so a weight saved at once can be undone.
+    const id = logMetricCapture(db, logDate(args, context.now), key, canonical);
+    return json({ logged: true, id, metric: key, value: display });
   },
+  // Saves at once only when the value, and any unit, is what he typed.
+  autoApprove: (input, _db, context, turn) => {
+    const args = asRecord(input);
+    if (!onLogicalToday(args, context.now)) return false;
+    const unit = optString(args, 'unit');
+    if (unit !== undefined && !unitSaid(unit, turn.userText)) return false;
+    return saidThisTurn(turn, [], [reqNumber(args, 'value')]);
+  },
+  undoDomain: 'captures',
 };
 
 // --- log_meal ----------------------------------------------------------------
@@ -340,6 +421,20 @@ const logMealTool: CoachTool = {
     });
     return json({ logged: true, id });
   },
+  // A meal in his words saves at once; an ESTIMATE does not. Macros the model
+  // produced are its numbers, and they move the day's totals and every target
+  // read off them, so they keep the card. Macros he typed himself are his.
+  autoApprove: (input, _db, context, turn) => {
+    const args = asRecord(input);
+    if (!onLogicalToday(args, context.now) || optString(args, 'time') !== undefined) return false;
+    const macros = parseMealMacros(args);
+    return saidThisTurn(
+      turn,
+      [reqString(args, 'name'), optString(args, 'notes')],
+      [macros.kcal, macros.protein_g, macros.carbs_g, macros.fat_g]
+    );
+  },
+  undoDomain: 'meals',
 };
 
 // --- log_workout -------------------------------------------------------------
@@ -641,6 +736,16 @@ const logSymptomTool: CoachTool = {
     });
     return json({ logged: true, id });
   },
+  autoApprove: (input, _db, context, turn) => {
+    const args = asRecord(input);
+    if (!onLogicalToday(args, context.now) || optString(args, 'time') !== undefined) return false;
+    return saidThisTurn(
+      turn,
+      [reqString(args, 'name'), optString(args, 'body_area'), optString(args, 'notes')],
+      [optNumber(args, 'severity')]
+    );
+  },
+  undoDomain: 'captures',
 };
 
 // --- log_capture (supplement / medication / therapy) -------------------------
@@ -677,6 +782,13 @@ const logCaptureTool: CoachTool = {
     );
     return json({ logged: true, id });
   },
+  // "Creatine · 5 g" saves at once when he said creatine and 5; a dose the
+  // model filled in from his protocol is not his, and keeps the card.
+  autoApprove: (input, _db, context, turn) => {
+    const args = asRecord(input);
+    return onLogicalToday(args, context.now) && saidThisTurn(turn, [reqString(args, 'title')], []);
+  },
+  undoDomain: 'captures',
 };
 
 // --- log_note ----------------------------------------------------------------
@@ -702,6 +814,12 @@ const logNoteTool: CoachTool = {
     const id = logNote(db, logDate(args, context.now), reqString(args, 'text'));
     return json({ logged: true, id });
   },
+  // His words, saved as he said them. A summary of them keeps the card.
+  autoApprove: (input, _db, context, turn) => {
+    const args = asRecord(input);
+    return onLogicalToday(args, context.now) && saidThisTurn(turn, [reqString(args, 'text')], []);
+  },
+  undoDomain: 'captures',
 };
 
 // --- set_reminder ------------------------------------------------------------

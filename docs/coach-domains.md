@@ -101,7 +101,10 @@ half of the card, and it is what the staleness guard re-reads.
 ## 4. The rails a generic write passes through
 
 1. **`readOnly: false`** — every call suspends the agentic loop until `confirmWrite` resolves. With
-   no gate present, every write is declined.
+   no gate present, every write is declined. **The generic tools never save at once:** `edit_record`
+   and `delete_record` declare no `autoApprove`, so the 2026-10-21 exception (simple logs a user
+   states in chat save with an Undo — `docs/decisions.md`, "Simple logs save at once, with Undo")
+   reaches only five bespoke log tools, and every edit or removal here keeps its card.
 2. **The card is built from validated input, with every id resolved to what it names**, and it
    throws at card time for any knowable failure. The recurring-reminder refusal moved here from
    `complete_reminder`'s `execute` — one Approve tap earlier than the old tool refused it.
@@ -136,6 +139,13 @@ half of the card, and it is what the staleness guard re-reads.
    > `That meal changed while the card was open (the card said "Combine 2 meals on … 12:45 Soup, 150 kcal …", it now reads "… 12:45 Soup, 210 kcal …"). Nothing written. Read it again and propose once more.`
 5. **The receipt** is the card line the user approved, recorded in `ai_messages.tool_calls`. It is
    unforgeable by prose, and it survives a tool being retired.
+6. **The Undo of a simple log runs `delete_record`'s path (2026-10-21).** A log that saved at once
+   declares the domain that removes it (`undoDomain`: `captures`, or `meals`), and its Undo is that
+   domain's `remove.run` — the Log tab's × and the meal screen's Delete — through `runGatedTool`
+   with `delete_record` itself. The staleness reference is the **removal card drawn at the save**:
+   the Undo redraws it and refuses unless it is the same line, then the delete's own re-read runs
+   past the gate as for any removal. So an Undo is parity, not a new delete: whatever the screen
+   refuses, it refuses, and a row edited since it saved stays.
 
 ## 5. `fields` is the registry's first open schema
 

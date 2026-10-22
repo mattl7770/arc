@@ -475,7 +475,7 @@ export default function CoachScreen() {
                       <Divider first={index === 0} />
                       <View className="py-2.5">
                         {shown.content.length > 0 || mine.length === 0 ? (
-                          <MessageBubble message={shown} onRetry={chat.retry} />
+                          <MessageBubble message={shown} onRetry={chat.retry} onUndo={chat.undo} />
                         ) : null}
                         {mine.length > 0 ? (
                           <View className={shown.content.length > 0 ? 'mt-2.5' : ''}>

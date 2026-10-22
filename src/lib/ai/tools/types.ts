@@ -110,6 +110,19 @@ export type WriteMeta = {
 /** The card's default weight: the long form, for anything that has not spoken. */
 export const DEFAULT_WRITE_META: WriteMeta = { kind: 'edit', selfEvident: false };
 
+/**
+ * What the user typed in the turn a chat write was called in — the one input
+ * {@link CoachTool.autoApprove} judges a call against. Only the chat passes
+ * one (coach-service.ts), and only while Settings › Coach › "Save simple logs
+ * at once" is on; the unattended pass and an approved proposal never do, so
+ * nothing they carry can save without a tap (docs/decisions.md, "Simple logs
+ * save at once, with Undo", 2026-10-21).
+ */
+export type AutoSaveTurn = {
+  /** The latest user message, verbatim. */
+  userText: string;
+};
+
 export type CoachTool = {
   /** Wire name the model calls, snake_case. */
   name: string;
@@ -165,6 +178,33 @@ export type CoachTool = {
     db: Database,
     context: CoachToolContext
   ) => WriteMeta;
+  /**
+   * Writes only: may THIS call save at once, with an Undo, instead of waiting
+   * behind a card? The owner's decision of 2026-10-21 (docs/decisions.md,
+   * "Simple logs save at once, with Undo"), made narrow here and nowhere else.
+   *
+   * Evaluated in CODE by the gate (write-gate.ts `runGatedTool`), after the
+   * card is drawn and against the same `context`; the model never sees it and
+   * cannot set it. Omitted ⇒ always a card, which is every tool but the five
+   * simple logs. True only for an additive, single-record log of the logical
+   * today whose every figure and word the user typed in `turn` — so a number
+   * the model estimated or converted, a dose it read off a protocol, or a
+   * paraphrase goes back to the card. A throw counts as false.
+   *
+   * Requires {@link undoDomain}: a write with no undo path never skips its card.
+   */
+  autoApprove?: (
+    input: Record<string, unknown>,
+    db: Database,
+    context: CoachToolContext,
+    turn: AutoSaveTurn
+  ) => boolean;
+  /**
+   * The `delete_record` domain whose removal is this write's Undo (`captures`,
+   * `meals`). The tool's result must carry the new row's `id`. The Undo runs
+   * that domain's own delete — the one its screen and `delete_record` run.
+   */
+  undoDomain?: string;
   /**
    * Run the tool against the on-device database. Returns the tool_result
    * content (JSON), or a Promise of it — most tools are synchronous SQL, but a
