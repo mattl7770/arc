@@ -10217,5 +10217,134 @@ console.log('\n44. Track 0 (2026-10-21) — Coach usage, the new models, and a p
   refute('meal-detail (estimate waiting)', waiting, ['Try again']);
 }
 
+/**
+ * 41. Smart day (0067) — the Coach's plan at the top of Home.
+ *
+ * Without a plan Home must be EXACTLY what it was: the render with no plan and
+ * the render after a plan is cleared are compared as whole strings. With one,
+ * the hero is the Coach's first item (marked as the Coach's, uncounted), the
+ * checklist carries it as a row with no checkbox, and the tally does not move.
+ * A pinned row keeps Done / Snooze / Skip and takes the Coach's reason.
+ */
+console.log('\n45. Smart day — the Coach’s plan at the top of Home, and its uncounted rows');
+{
+  const dp = await import('../src/lib/db/repositories/day-plan.ts');
+  const { logicalDayUtcRange } = await import('../src/lib/db/date.ts');
+  const { listMission } = await import('../src/lib/db/repositories/mission.ts');
+  const { CoachItemHero } = await import('../src/components/home/hero-card.tsx');
+  const today = todayISODate();
+  const until = logicalDayUtcRange(today).endUtc;
+  dp.applyDayPlan(db, { decision: 'clear', items: [], refused: [] });
+
+  createProtocolWithVersion(
+    db,
+    { name: 'Smart day check', type: 'daily_routine', startedOn: today },
+    {
+      schema: 2,
+      phases: [
+        {
+          id: 'sd',
+          title: null,
+          duration_days: null,
+          items: [
+            {
+              id: 'sdpin',
+              title: 'Smart-day pinned row',
+              scheduled_time: '23:58',
+              dose: null,
+              notes: null,
+              cadence: { kind: 'daily' },
+            },
+          ],
+        },
+      ],
+    }
+  );
+  rederiveMissionForDay(db, today);
+  const pinRow = listMission(db, today).find((row) => row.title === 'Smart-day pinned row');
+  const tally = (html) => /Today’s Mission[\s\S]*?(\d+ of \d+)/.exec(html ?? '')?.[1] ?? null;
+
+  const noPlan = render('home (no plan)', HomeScreen);
+  refute('home (no plan)', noPlan, ['Coach · Do this next', 'Not counted', 'Coach · not counted', 'The Coach:']);
+  const tallyBefore = tally(noPlan);
+
+  dp.applyDayPlan(db, {
+    decision: 'replace',
+    refused: [],
+    items: [
+      {
+        key: 'do:log_weight',
+        rank: 1,
+        kind: 'do',
+        action: 'log_weight',
+        title: 'Weigh in (smart day)',
+        reason: 'Nine days since the last weigh-in.',
+        until,
+        untilGiven: false,
+      },
+      {
+        key: `pin:${pinRow.id}`,
+        rank: 2,
+        kind: 'pin',
+        entryId: pinRow.id,
+        title: pinRow.title,
+        reason: 'Your evening is short tonight.',
+        until,
+        untilGiven: false,
+      },
+    ],
+  });
+  const withPlan = render('home (a Coach item on top)', HomeScreen);
+  expect('home (a Coach item on top)', withPlan, [
+    'Coach · Do this next',
+    'Weigh in (smart day)',
+    'Not counted',
+    'The Coach: Nine days since the last weigh-in.',
+    '>Log weight<',
+    '>Dismiss<',
+    'Coach · not counted',
+    'aria-label="Weigh in (smart day), Coach item, not counted, Log weight"',
+    'Dismiss Weigh in (smart day)',
+  ]);
+  withPlan !== null && withPlan.indexOf('Coach · Do this next') < withPlan.indexOf('Today’s Mission')
+    ? ok('the Coach item is the hero, above the checklist')
+    : bad('hero placement');
+  tally(withPlan) === tallyBefore
+    ? ok(`the tally does not move: "${tallyBefore}" with and without the Coach item`)
+    : bad('tally moved', `${tallyBefore} → ${tally(withPlan)}`);
+  /role="checkbox"[^>]*aria-label="Weigh in \(smart day\)/.test(withPlan ?? '')
+    ? bad('the Coach row is drawn as a checkbox')
+    : ok('the Coach row is a door (role button), never a checkbox');
+
+  // Dismissed: the pinned row takes the hero, with Done / Snooze / Skip and the Coach's reason.
+  const read = dp.readDayPlan(db, new Date());
+  dp.recordPlanEvent(db, read.plan, read.items[0], 'dismissed');
+  const pinned = render('home (a pinned row on top)', HomeScreen);
+  expect('home (a pinned row on top)', pinned, [
+    'Do this next · Coach',
+    'The Coach: Your evening is short tonight.',
+    'Mark Smart-day pinned row done',
+    'Snooze Smart-day pinned row',
+    'Skip Smart-day pinned row',
+  ]);
+  refute('home (a pinned row on top)', pinned, ['Coach · Do this next', 'Not counted', 'Weigh in (smart day)']);
+
+  // Cleared: byte-identical to the render with no plan at all.
+  dp.applyDayPlan(db, { decision: 'clear', items: [], refused: [] });
+  const cleared = render('home (plan cleared)', HomeScreen);
+  cleared !== null && cleared === noPlan
+    ? ok('with the plan cleared, Home renders byte-identical to Home with no plan')
+    : bad('the cleared render differs from the no-plan render');
+
+  // The hero on its own: the named UNTIL is a measured figure.
+  const hero = render('coach item hero (until)', CoachItemHero, {}, {
+    item: { key: 'do:log_meal', title: 'Eat lunch', reason: null, action: 'log_meal', button: 'Log a meal', until: '14:00' },
+    onOpen: () => {},
+    onDismiss: () => {},
+  });
+  expect('coach item hero (until)', hero, ['until 14:00', '>Log a meal<', 'Eat lunch']);
+  refute('coach item hero (no reason)', hero, ['The Coach:']);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

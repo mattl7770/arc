@@ -24,6 +24,7 @@ import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-m
 import { currentTrip, recentTimezoneChange } from '@/lib/db/repositories/day-meta';
 import { consolidatedOpenList } from '@/lib/db/repositories/grocery';
 import { activeExperiments } from '@/lib/db/repositories/experiments';
+import { homeTopFor } from '@/lib/db/repositories/day-plan';
 import { listMission } from '@/lib/db/repositories/mission';
 import { dayAlcohol } from '@/lib/db/repositories/nutrition';
 import {
@@ -40,7 +41,9 @@ import {
   getPreferences,
 } from '@/lib/db/repositories/user';
 import { pickDailyMetric } from '@/lib/db/repositories/wearables';
+import type { HomeTop } from '@/lib/home/day-plan';
 import { deriveReadiness } from '@/lib/home/readiness';
+import { snoozedItems } from '@/lib/home/snooze-store';
 import { type DayAlcohol, drinksPhrase } from '@/lib/nutrition/drinks';
 import { formatHm } from '@/lib/screen-time/entry';
 import { formatUtcOffset, offsetShift } from '@/lib/timezone/classify';
@@ -360,18 +363,33 @@ export function buildTurnContext(
   }
 
   // --- Mission progress — where the day stands and what is next.
+  //
+  // "next" is what Home's hero ACTUALLY shows (smart day, 2026-10-21). It used
+  // to be the first `pending` row in list order, which ignored snoozes and
+  // `partial` rows and so could name a different row from the one on screen;
+  // with the Coach's plan on top it would also miss a Coach item entirely.
+  // `homeTopFor` is the function the hero renders from, so the two cannot
+  // disagree. A Coach item is said to be one: it is not a mission row and does
+  // not count in the tally beside it.
   const mission = listMission(db, today);
+  let top: HomeTop = null;
+  try {
+    top = homeTopFor(db, now, snoozedItems());
+  } catch {
+    top = null;
+  }
+  const nextPhrase =
+    top === null
+      ? ''
+      : top.kind === 'coach'
+        ? ` · next: your plan item "${top.item.title}" (${top.item.action}; not a mission row)`
+        : ` · next: "${top.row.title}"${top.row.scheduledTime ? ` at ${top.row.scheduledTime}` : ''}` +
+          (top.kind === 'pin' ? ' (pinned by your plan)' : '');
   if (mission.length > 0) {
     const done = mission.filter((m) => m.status === 'completed').length;
-    const next = mission.find((m) => m.status === 'pending');
-    lines.push(
-      `Mission: ${done} of ${mission.length} done` +
-        (next
-          ? ` · next: "${next.title}"${next.scheduledTime ? ` at ${next.scheduledTime}` : ''}`
-          : '')
-    );
+    lines.push(`Mission: ${done} of ${mission.length} done${nextPhrase}`);
   } else {
-    lines.push('Mission: not generated yet today');
+    lines.push(`Mission: not generated yet today${nextPhrase}`);
   }
 
   // --- Experiments — a ready readout is the improvement loop waiting on you.

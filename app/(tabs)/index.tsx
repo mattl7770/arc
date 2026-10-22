@@ -6,7 +6,7 @@ import { Pressable, Text, View } from 'react-native';
 import { CoachBrief } from '@/components/home/coach-brief';
 import { CoachNote } from '@/components/home/coach-note';
 import { DateEyebrow } from '@/components/home/date-eyebrow';
-import { HeroCard } from '@/components/home/hero-card';
+import { CoachItemHero, HeroCard } from '@/components/home/hero-card';
 import { MetricsStrip } from '@/components/home/metrics-strip';
 import { Mission } from '@/components/home/mission';
 import { MissionEmpty } from '@/components/home/mission-empty';
@@ -18,6 +18,7 @@ import { palette } from '@/constants/theme';
 import { useCoachPassMessage } from '@/hooks/use-coach-pass';
 import { useCoachProposals } from '@/hooks/use-coach-proposals';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
+import { useDayPlan } from '@/hooks/use-day-plan';
 import { useReadiness } from '@/hooks/use-readiness';
 import { useStatuses } from '@/hooks/use-statuses';
 import { useTimezoneNote } from '@/hooks/use-timezone-note';
@@ -197,6 +198,11 @@ function MissionLinks() {
 export default function HomeScreen() {
   const router = useRouter();
   const mission = useTodayMission();
+  // The Coach's plan for the top of the day (smart day, 0067). With no live
+  // plan its `top` is the mission's own time-ordered hero, so everything below
+  // draws exactly what it drew before.
+  const dayPlan = useDayPlan(mission);
+  const top = dayPlan.top;
   const brief = useDailyBrief();
   const readiness = useReadiness();
   // What the user has SAID about today (0061). The control on the folio row
@@ -318,15 +324,24 @@ export default function HomeScreen() {
       {tickUndo ? <UndoRow offer={tickUndo} onUndo={undoTick} first /> : null}
 
       <View className="mt-5">
-        {planned ? (
+        {dayPlan.heroItem ? (
+          <CoachItemHero
+            item={dayPlan.heroItem}
+            onOpen={dayPlan.open}
+            onDismiss={dayPlan.dismiss}
+          />
+        ) : null}
+        {planned && !dayPlan.heroItem ? (
           <HeroCard
-            item={mission.next}
+            item={top && top.kind !== 'coach' ? top.row : null}
             onDone={(id) => mission.setStatus(id, 'completed')}
             onSnooze={mission.snooze}
             onSkip={(id) => mission.setStatus(id, 'skipped')}
+            {...(top?.kind === 'pin' ? { pinned: { reason: dayPlan.pinReason } } : {})}
           />
-        ) : (
-          <>
+        ) : null}
+        {planned ? null : (
+          <View className={dayPlan.heroItem ? 'mt-6' : undefined}>
             <MissionEmpty hasActiveProtocols={mission.hasActiveProtocols} />
             {/* Under the empty state, because an empty day is a day worth
                 planning FROM — an every-3-days stack has empty days by design,
@@ -336,7 +351,7 @@ export default function HomeScreen() {
             <View className="mt-2">
               <MissionLinks />
             </View>
-          </>
+          </View>
         )}
       </View>
 
@@ -374,11 +389,16 @@ export default function HomeScreen() {
             // The hero and the list must never imply different next actions, so
             // the list is told which row the hero is showing rather than
             // guessing at it. One definition of "next", passed down.
-            activeId={mission.next?.id ?? null}
+            activeId={dayPlan.activeRowId}
             onToggle={mission.toggle}
             // The row's tap stays the toggle; its chevron is the door. Home
             // holds the router, so the row component stays free of navigation.
             onOpen={(id) => router.push({ pathname: '/mission-item', params: { id } })}
+            // The Coach's own items, uncounted, where the day stands.
+            coachRows={dayPlan.rows}
+            activeCoachKey={dayPlan.heroItem?.key ?? null}
+            onOpenCoach={dayPlan.open}
+            onDismissCoach={dayPlan.dismiss}
           />
           {/* Under the list, not above it: the day comes first, and the two
               doors out of it are where you go when the day is wrong or when the

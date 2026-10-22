@@ -24,6 +24,13 @@
  *   prompt on purpose — the prompt is the second line of defence, because a
  *   sentinel that leaks reaches the owner as the Coach's own words.
  *
+ *   IT MAY PLAN THE TOP OF HOME (0067, smart day). The directive carries one
+ *   delimited block of FACTS about the day and the PLAN grammar
+ *   (src/lib/home/plan-lines.ts); the reply may end with up to three PLAN
+ *   lines. They are parsed and validated here against the tags this pass was
+ *   shown, and handed back — pass-store.ts writes the plan after the pass
+ *   returns, so the pass itself still writes nothing.
+ *
  *   IT MAY PLAN A NOTIFICATION (0064). While Coach nudges are on, the directive
  *   lets the reply end with `NUDGE YYYY-MM-DD HH:MM text` lines. They are
  *   parsed out here and handed back as proposals; the caps, the rows and the
@@ -50,6 +57,9 @@ import { calendarBlockFor } from '@/lib/calendar/context';
 import type { Database } from '@/lib/db/database';
 import { getDayStartsAt, todayISODate } from '@/lib/db/date';
 import { nudgeDirectiveFor } from '@/lib/db/repositories/coach-nudges';
+import { dayPlanDirectiveFor } from '@/lib/db/repositories/day-plan';
+import { parsePlanReply, resolvePlan, type PlanResolution } from '@/lib/home/plan-lines';
+import { snoozedItems } from '@/lib/home/snooze-store';
 import {
   EMPTY_NUDGE_REPLY,
   NUDGE_HORIZON_HOURS,
@@ -226,6 +236,11 @@ export type CoachPassResult = {
    * read — or null (not asked for, not written, or nothing survived the check).
    */
   brief: string[] | null;
+  /**
+   * The reply's PLAN lines, validated against this pass's tags — a proposal,
+   * not a write (pass-store.ts applies it). Null when the block was not offered.
+   */
+  plan: PlanResolution | null;
 };
 
 /** The opening line: why this pass is running, in the model's terms. */
@@ -401,8 +416,16 @@ export function passDirective(
   trigger: PassTrigger,
   today: string,
   nudges: NudgeDirective | null = null,
-  extras: PassExtras | null = null
+  extras: PassExtras | null = null,
+  /** The smart-day block (src/lib/home/plan-lines.ts `planInstructions`), or null. */
+  dayPlan: readonly string[] | null = null
 ): string {
+  const exceptions = [
+    extras?.brief ? 'BRIEF' : null,
+    extras ? 'PROPOSE' : null,
+    nudges ? 'NUDGE' : null,
+    dayPlan ? 'PLAN' : null,
+  ].filter((name): name is string => name !== null);
   const waiting = isWaitingPass(trigger);
   const verdict = waiting
     ? [
@@ -419,7 +442,13 @@ export function passDirective(
         'it something they can act on or reply to.',
         '',
         `If the day is unremarkable, reply with exactly ${PASS_SKIP} and nothing else — bare, on its own,`,
-        `with no sentence before or after it${extras ? ' (the BRIEF, PROPOSE and NUDGE lines asked for below are the one exception)' : nudges ? ' (NUDGE lines are the one exception)' : ''}. Silence on a quiet day is what makes the other days`,
+        `with no sentence before or after it${
+          exceptions.length === 0
+            ? ''
+            : exceptions.length === 1
+              ? ` (${exceptions[0]} lines are the one exception)`
+              : ` (${exceptions.slice(0, -1).join(', ')} and ${exceptions[exceptions.length - 1]} lines are the exceptions)`
+        }. Silence on a quiet day is what makes the other days`,
         'matter, so do not manufacture an observation to avoid saying it.',
       ];
 
@@ -439,6 +468,7 @@ export function passDirective(
     ...verdict,
     ...(extras ? extraInstructions(extras, today) : []),
     ...(nudges ? nudgeInstructions(trigger, nudges) : []),
+    ...(dayPlan ?? []),
   ].join('\n');
 }
 
@@ -470,6 +500,7 @@ const FAILED: CoachPassResult = {
   findingsShown: [],
   proposals: { drafted: [], refused: [] },
   brief: null,
+  plan: null,
 };
 
 /** The model the pass uses unless overridden — cheap, fast, good enough to triage. */
@@ -509,6 +540,14 @@ export async function runCoachPass(
   // Null when nudges are off: then the directive says nothing about them and
   // any NUDGE line the model writes anyway is stripped and ignored.
   const nudges = nudgeDirectiveFor(db, now, dayStartsAt);
+  // The Top of Home block (0067). Facts only, gathered by code; if gathering
+  // them fails the pass runs without the block rather than not at all.
+  let dayPlan: ReturnType<typeof dayPlanDirectiveFor> | null = null;
+  try {
+    dayPlan = dayPlanDirectiveFor(db, now, dayStartsAt, snoozedItems());
+  } catch {
+    dayPlan = null;
+  }
 
   try {
     // The record-hygiene and medical-attention findings (src/lib/ai/findings.ts),
@@ -544,7 +583,10 @@ export async function runCoachPass(
         system: buildCoachSystemPrompt(),
         systemContext,
         messages: [
-          { role: 'user', content: passDirective(options.trigger, today, nudges, extras) },
+          {
+            role: 'user',
+            content: passDirective(options.trigger, today, nudges, extras, dayPlan?.block ?? null),
+          },
         ],
         // READ tools only, MINUS the generic one: with no write in the registry
         // there is nothing to gate, so an unattended pass cannot change
@@ -587,9 +629,11 @@ export async function runCoachPass(
     // note, and the note alone decides spoke vs silent, so a pass can say SKIP
     // and still plan a nudge.
     //
-    // The PROPOSE and BRIEF lines come out before them, by the same rule and
-    // for the same reason (proposal-lines.ts), and leave a lead of their own.
-    const passLines = parsePassLines(result.text);
+    // PLAN lines (smart day) come out first, then the PROPOSE and BRIEF lines
+    // (proposal-lines.ts), then the NUDGE lines: each is an instruction to code,
+    // removed by the same rule, and each leaves a lead of its own.
+    const planned = parsePlanReply(result.text);
+    const passLines = parsePassLines(planned.text);
     const reply = parseNudgeReply(passLines.text);
     const text = reply.text.trim();
     // A SKIP means silence, however the model punctuates it and whatever it
@@ -602,10 +646,17 @@ export async function runCoachPass(
     // text after them is then the whole note.
     const lead = reply.lead?.trim() ?? '';
     const ownLead = passLines.lead?.trim() ?? '';
+    // The text before the first PLAN line is read the same way, its own
+    // PROPOSE/BRIEF and NUDGE lines out first.
+    const planLead =
+      planned.lead === null
+        ? ''
+        : parseNudgeReply(parsePassLines(planned.lead).text).text.trim();
     const skipped =
       isPassSkip(text) ||
       (lead.length > 0 && isPassSkip(lead)) ||
-      (ownLead.length > 0 && isPassSkip(ownLead));
+      (ownLead.length > 0 && isPassSkip(ownLead)) ||
+      (planLead.length > 0 && isPassSkip(planLead));
     // Drafts get their cards NOW, at pass time, from the tools themselves —
     // and nothing runs. A brief keeps only the lines whose numbers trace to
     // the state block or a tool result this pass actually read.
@@ -622,6 +673,9 @@ export async function runCoachPass(
       findingsShown: findings.shown,
       proposals,
       brief: vetted.length > 0 ? vetted : null,
+      plan: dayPlan
+        ? resolvePlan(planned, { now, today: dayPlan.today, dayStartsAt, tags: dayPlan.tags })
+        : null,
     };
   } catch {
     // Offline, no network, a bad key, a refusal — the user never sees this. But

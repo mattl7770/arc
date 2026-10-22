@@ -3,6 +3,7 @@ import { Pressable, Text, View } from 'react-native';
 
 import { Block } from '@/components/ui/block';
 import { palette } from '@/constants/theme';
+import type { CoachItemView } from '@/lib/home/day-plan';
 import type { MissionItem } from '@/types/home';
 
 type Props = {
@@ -10,6 +11,13 @@ type Props = {
   onDone: (id: string) => void;
   onSnooze: (id: string) => void;
   onSkip: (id: string) => void;
+  /**
+   * The row is on top because the Coach PINNED it (smart day, 0067). Present
+   * (even as `{ reason: null }`) only then; its reason, when there is one,
+   * takes the italic line in place of the row's own `why`, marked as the
+   * Coach's (see {@link CoachReason}).
+   */
+  pinned?: { reason: string | null };
 };
 
 /**
@@ -257,14 +265,16 @@ const MAX_DIMENSIONED_FIGURE = 24;
  * purpose: every point added to that face widens the figure and shortens the rule,
  * which is the exact failure this rework exists to undo.
  */
-export function HeroCard({ item, onDone, onSnooze, onSkip }: Props) {
+export function HeroCard({ item, onDone, onSnooze, onSkip, pinned }: Props) {
   if (!item) return <MissionComplete />;
 
   // Two fields, two kinds of content, and no inspection of either: the dose is
   // a quantity and joins the figure, the rationale is prose and keeps the
   // italic serif line. Which is which is a fact the generator carries, not a
   // shape this file infers.
-  const why = item.why?.trim() || undefined;
+  // A pinned row's reason replaces the row's own rationale — one italic line,
+  // never two: the Coach's sentence says why THIS, now.
+  const why = pinned ? undefined : item.why?.trim() || undefined;
   const dose = item.dose?.trim() || undefined;
 
   // What the rule dimensions: when, how long, how much.
@@ -272,7 +282,8 @@ export function HeroCard({ item, onDone, onSnooze, onSkip }: Props) {
     .filter(Boolean)
     .join(' · ');
 
-  const tag = item.category ? `${item.category} · Do this next` : 'Do this next';
+  const claim = pinned ? 'Do this next · Coach' : 'Do this next';
+  const tag = item.category ? `${item.category} · ${claim}` : claim;
 
   return (
     <Block device="stamp">
@@ -322,6 +333,7 @@ export function HeroCard({ item, onDone, onSnooze, onSkip }: Props) {
           {why}
         </Text>
       ) : null}
+      {pinned?.reason ? <CoachReason reason={pinned.reason} /> : null}
 
       {/* Commit, defer, abandon — one row, three weights, descending left to
           right. `px-2` rather than `px-3`: width comes from the flex ratio, and
@@ -355,6 +367,120 @@ export function HeroCard({ item, onDone, onSnooze, onSkip }: Props) {
           className="min-h-[44px] shrink grow basis-0 items-center justify-center rounded-btn px-2 py-3 active:opacity-60">
           <Text className="font-label text-[12px] font-semibold uppercase tracking-[0.6px] text-ink-muted">
             Skip
+          </Text>
+        </Pressable>
+      </View>
+    </Block>
+  );
+}
+
+/**
+ * The Coach's one line of reason (owner, 2026-10-21: "the Coach may add one
+ * line of reason (≤ 90 characters, marked as the Coach's)").
+ *
+ * Marked by a `COACH` label in front of it, in the label voice and muted ink —
+ * attribution, the same register as the protocol name on the head row — and
+ * the sentence itself in the italic serif every rationale on Home uses. Not the
+ * accent: the stamp around the card already spends it, and the Coach's voice is
+ * not a second claim on the reader's attention. Spoken as "The Coach: …".
+ */
+export function CoachReason({ reason }: { reason: string }) {
+  return (
+    <View
+      accessible
+      accessibilityLabel={`The Coach: ${reason}`}
+      className="mt-3 flex-row items-baseline gap-2">
+      <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+        Coach
+      </Text>
+      <Text className="flex-1 font-serif text-[13px] italic leading-5 text-ink-secondary">
+        {reason}
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * The hero when the Coach's plan puts one of ITS OWN items first (smart day,
+ * 0067) — a weigh-in, a meal, a saved workout, an open loop.
+ *
+ * The same stamp, the same three voices, the same head row, so the top of Home
+ * reads as one thing whoever chose it. Three differences, all of them honesty:
+ *
+ *   - **The head row says whose it is and that it is uncounted** —
+ *     `COACH · DO THIS NEXT` on the left, `NOT COUNTED` where a mission row's
+ *     protocol name sits. A Coach item is not a mission row: it is in no tally
+ *     and no adherence figure, and the hero must not look as if it were.
+ *   - **The primary action is the DESTINATION** — Log weight, Log a meal,
+ *     Start — because that is what the item is for. It clears when the action's
+ *     data arrives, so there is no Done to tap: "done" here is a weight on the
+ *     record, not a claim.
+ *   - **Dismiss, not Snooze and Skip.** Skip is a statement about adherence and
+ *     this item has none; Snooze is a session's "not now" on a row that will
+ *     still be there, and a dismissed Coach item is simply gone — the Coach can
+ *     put it back on its next look. 2:1, solid accent then bare muted ink, the
+ *     hierarchy the three-button row states by fill and ink.
+ *
+ * The figure is `UNTIL HH:MM` only when the Coach named one — measured, so
+ * mono, beside the dimension rule like any figure.
+ */
+export function CoachItemHero({
+  item,
+  onOpen,
+  onDismiss,
+}: {
+  item: CoachItemView;
+  onOpen: (key: string) => void;
+  onDismiss: (key: string) => void;
+}) {
+  const figure = item.until ? `until ${item.until}` : null;
+  return (
+    <Block device="stamp">
+      <View className="flex-row items-baseline justify-between gap-3">
+        <Text
+          numberOfLines={2}
+          className="shrink font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-pine-deep">
+          Coach · Do this next
+        </Text>
+        <Text
+          numberOfLines={1}
+          className="shrink font-label text-[10px] uppercase tracking-[1px] text-ink-muted">
+          Not counted
+        </Text>
+      </View>
+
+      <Text className="mt-1.5 font-serif text-[22px] leading-[26px] text-ink">{item.title}</Text>
+
+      {figure ? (
+        <View className="mt-3.5 flex-row items-center gap-2.5">
+          <DimensionRule />
+          <Text
+            numberOfLines={1}
+            className="shrink font-mono text-[12px] font-bold uppercase tracking-[0.3px] text-ink">
+            {figure}
+          </Text>
+        </View>
+      ) : null}
+
+      {item.reason ? <CoachReason reason={item.reason} /> : null}
+
+      <View className="mt-4 flex-row gap-2">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${item.button}: ${item.title}`}
+          onPress={() => onOpen(item.key)}
+          className="min-h-[44px] shrink grow-[2] basis-0 items-center justify-center rounded-btn border-[1.4px] border-pine-deep bg-pine px-2 py-3 active:opacity-70">
+          <Text className="font-label text-[12px] font-semibold uppercase tracking-[0.6px] text-pine-on">
+            {item.button}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Dismiss ${item.title}`}
+          onPress={() => onDismiss(item.key)}
+          className="min-h-[44px] shrink grow basis-0 items-center justify-center rounded-btn px-2 py-3 active:opacity-60">
+          <Text className="font-label text-[12px] font-semibold uppercase tracking-[0.6px] text-ink-muted">
+            Dismiss
           </Text>
         </Pressable>
       </View>
