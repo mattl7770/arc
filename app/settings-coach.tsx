@@ -1,3 +1,5 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState, useSyncExternalStore } from 'react';
 import { Pressable, Switch, Text, TextInput, View } from 'react-native';
 
@@ -9,7 +11,10 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { COACH_MODELS } from '@/lib/ai/model-client';
+import { formatUsd, summarizeLedger } from '@/lib/ai/spend-ledger';
+import { readSpendLedger } from '@/lib/ai/spend-store';
 import { getDb } from '@/lib/db/client';
+import { todayISODate } from '@/lib/db/date';
 import { getNudgeSettings, saveNudgeSettings } from '@/lib/db/repositories/coach-nudges';
 import { CHECKIN_AFTER_QUIET_MIN, type NudgeSettings } from '@/lib/notifications/nudge-plan';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
@@ -65,7 +70,26 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * Coach and the food estimators may run the provider's web search inside their
  * own model call. Persisted beside the model choice (api-key-store.ts), and read
  * on every turn, so turning it off takes effect on the next request.
+ *
+ * ## Coach usage (2026-10-21)
+ *
+ * One row under the model picker that opens the spend ledger's screen
+ * (app/settings-coach-usage.tsx), showing today's and this month's estimate
+ * so the cost of a model choice is one glance from the choice itself.
  */
+
+/** Today's and this month's estimate, as the Coach usage row prints it. */
+function readSpendGlance(): string {
+  const summary = summarizeLedger(readSpendLedger(getDb()), todayISODate());
+  return `Today ${formatUsd(summary.today.usd)} · this month ${formatUsd(summary.month.usd)} · est.`;
+}
+
+/** {@link readSpendGlance}, re-read on focus: a turn elsewhere has spent since. */
+function useSpendGlance(): string {
+  const [glance, setGlance] = useState(readSpendGlance);
+  useFocusEffect(useCallback(() => setGlance(readSpendGlance()), []));
+  return glance;
+}
 
 /** The notification settings, written through and resynced on every change. */
 function useNudgeSettings(): [NudgeSettings, (patch: Partial<NudgeSettings>) => void] {
@@ -95,6 +119,8 @@ export default function SettingsCoachScreen() {
   const [draft, setDraft] = useState('');
   const canSave = draft.trim().length > 0;
   const [nudges, saveNudges] = useNudgeSettings();
+  const router = useRouter();
+  const spend = useSpendGlance();
 
   return (
     <Screen scroll>
@@ -231,8 +257,30 @@ export default function SettingsCoachScreen() {
             {/* "Switch anytime." was cut by the owner as explanatory copy on
                 2026-08-11 — the picker above it affords the switch. */}
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-              Sonnet is the cheaper of the two; Opus is stronger on deep, whole-history analysis.
+              Haiku is the cheapest; Opus is the strongest on deep, whole-history analysis. What
+              each choice actually costs is in Coach usage.
             </Text>
+          </Block>
+        </View>
+
+        {/* Coach usage — what the calls have cost (the spend ledger), one tap
+            from the choice that sets most of it. A ruled plate with one
+            navigation row, like the rows of Settings itself. */}
+        <View className="mt-4">
+          <Block device="plate">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Coach usage. ${spend}`}
+              onPress={() => router.push('/settings-coach-usage')}
+              className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+              <View className="flex-1">
+                <Text className="font-serif text-[15px] text-ink">Coach usage</Text>
+                <Text className="mt-0.5 font-mono text-[11px] text-ink-muted" numberOfLines={1}>
+                  {spend}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+            </Pressable>
           </Block>
         </View>
 

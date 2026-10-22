@@ -551,15 +551,16 @@ const MACRO_CELL_LAST = 'flex-1';
  */
 function MealRowItem({
   meal,
-  estimatePending,
+  estimateLine,
   keyMicro,
   first,
   select,
   onPress,
 }: {
   meal: MealRow;
-  /** A queued AI estimate owes this meal its numbers (0057). */
-  estimatePending: boolean;
+  /** A queued AI estimate owes this meal its numbers (0057): the row's line
+   *  saying where it stands (queue-status.ts), or null when nothing is owed. */
+  estimateLine: string | null;
   /** The one notable micro of the meal's items — `126 mg caffeine` — or null
    *  (`mealKeyMicroLabels`, src/lib/nutrition/key-micro.ts). */
   keyMicro: string | null;
@@ -572,6 +573,7 @@ function MealRowItem({
   const hasMacros = cells.some((cell) => cell.text !== null);
   const unrecorded = meal.kcal == null;
   const choosing = select !== undefined;
+  const estimatePending = estimateLine !== null;
   const locked = choosing && estimatePending;
   return (
     <View>
@@ -604,7 +606,7 @@ function MealRowItem({
               never be mistaken for a 0 kcal meal. */}
           {estimatePending ? (
             <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
-              Estimate pending — offline
+              {estimateLine}
             </Text>
           ) : unrecorded ? (
             <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
@@ -803,6 +805,7 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
     targets,
     partialMeals,
     pendingEstimates,
+    pendingEstimateLines,
     kitchen,
     overTime,
     direction,
@@ -1141,7 +1144,11 @@ export default function NutritionScreen({ asTab = false }: { asTab?: boolean }) 
                 <MealRowItem
                   key={meal.id}
                   meal={meal}
-                  estimatePending={pendingEstimates.has(meal.id)}
+                  estimateLine={
+                    pendingEstimates.has(meal.id)
+                      ? (pendingEstimateLines[meal.id] ?? 'Estimate pending — offline')
+                      : null
+                  }
                   keyMicro={mealKeyMicros[meal.id] ?? null}
                   first={index === 0}
                   select={

@@ -17,27 +17,60 @@
  */
 import type { CoachUsage } from './types';
 
-/** USD per million tokens. Cache reads bill ~0.1×, cache writes ~1.25×. */
-type Price = { input: number; output: number };
-
-const PRICES: Record<string, Price> = {
-  'claude-opus-5': { input: 5, output: 25 },
-  // Sonnet 5 is at INTRODUCTORY pricing ($2/$10) through 2026-08-31; it reverts
-  // to $3/$15 after that. The whole point of this module is helping the owner
-  // choose between Opus and Sonnet, and quoting the post-intro rate today
-  // overstates Sonnet by 50% — i.e. gets the one comparison it exists for
-  // wrong. REVISIT 2026-09-01: change to { input: 3, output: 15 }.
-  'claude-sonnet-5': { input: 2, output: 10 },
-  'claude-haiku-4-5': { input: 1, output: 5 },
+/**
+ * USD per million tokens, as published on the live pricing page
+ * (platform.claude.com/docs/en/about-claude/pricing, read 2026-10-21).
+ *
+ * `cacheRead` is a price of its own rather than a multiple, because it stopped
+ * being one: it is 0.1× input on most models but 0.05× on Opus 5.5 and Sonnet
+ * 5.5. Cache WRITES are still multiples of the input price on every model —
+ * 1.25× for the 5-minute cache and 2× for the 1-hour one (same page).
+ *
+ * `longPrompt` is Haiku 5.5's second rate card: a REQUEST whose prompt (input +
+ * cache reads + cache writes) is over the threshold pays it on every token of
+ * that request, output included. Each request is priced on its own, which is
+ * why the spend ledger prices per round trip (src/lib/ai/spend-ledger.ts) — a
+ * turn's summed usage cannot say which of its requests crossed the line.
+ */
+export type Price = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  longPrompt?: { overTokens: number; input: number; output: number; cacheRead: number };
 };
 
-const CACHE_READ_MULTIPLIER = 0.1;
 /**
- * 2× because the client writes the 1-hour cache, not the 5-minute default
- * (see CACHE_TTL in model-client.ts). Quoting 1.25 here would understate every
+ * Every model the app can run. A model missing here prices as null — "not
+ * priced" — never as a guess; db/coach-eval.test.mjs pins that every
+ * `COACH_MODELS` id has a row, so the picker and this table cannot drift.
+ */
+export const PRICES: Readonly<Record<string, Price>> = {
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2 },
+  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5 },
+  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1 },
+  // $2/$10 was announced as introductory pricing through 2026-08-31. The
+  // pricing page now says it "is now the standard price" and that the rise to
+  // $3/$15 "will not occur" (checked 2026-10-21), so the 2026-09-01 REVISIT
+  // this row used to carry is retired rather than applied.
+  'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2 },
+  'claude-haiku-5-5': {
+    input: 0.1,
+    output: 0.5,
+    cacheRead: 0.01,
+    longPrompt: { overTokens: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05 },
+  },
+  'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1 },
+};
+
+/** The 5-minute cache write, as a multiple of the input price. */
+const CACHE_WRITE_5M_MULTIPLIER = 1.25;
+/**
+ * The 1-hour cache write. The big prefix (tools + system) is written at the
+ * 1-hour TTL (CACHE_TTL in model-client.ts), and a write the API did not break
+ * down by TTL is priced at this rate too: quoting 1.25 would understate every
  * cold turn — the exact number the owner is trying to drive down.
  */
-const CACHE_WRITE_MULTIPLIER = 2;
+const CACHE_WRITE_1H_MULTIPLIER = 2;
 
 /**
  * USD per provider-side web search: $10 per 1,000 on the Claude API (the web
@@ -47,16 +80,30 @@ const CACHE_WRITE_MULTIPLIER = 2;
  */
 const WEB_SEARCH_USD = 10 / 1000;
 
-/** Estimated USD for one turn's usage on a given model; null for unknown models. */
+/**
+ * Estimated USD for some usage on a given model; null for unknown models.
+ *
+ * Exact for ONE request. For a sum of requests it is exact on every model but
+ * Haiku 5.5, whose rate card is chosen per request by prompt length: a summed
+ * turn is judged as if it were one request, which can only overstate it. The
+ * Coach caption avoids that by summing per-request estimates instead
+ * (`CoachTurnResult.estimatedUsd`, model-client.ts).
+ */
 export function estimateCost(usage: CoachUsage, model: string): number | null {
-  const price = PRICES[model];
-  if (!price) return null;
-  const perToken = price.input / 1_000_000;
+  const base = PRICES[model];
+  if (!base) return null;
+  const prompt = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+  const rate = base.longPrompt && prompt > base.longPrompt.overTokens ? base.longPrompt : base;
+  const perInput = rate.input / 1_000_000;
+  // Writes the API broke down by TTL are priced by TTL; the rest at 1 hour.
+  const write5m = Math.min(Math.max(usage.cacheWrite5mTokens ?? 0, 0), usage.cacheWriteTokens);
+  const write1h = usage.cacheWriteTokens - write5m;
   return (
-    usage.inputTokens * perToken +
-    usage.cacheReadTokens * perToken * CACHE_READ_MULTIPLIER +
-    usage.cacheWriteTokens * perToken * CACHE_WRITE_MULTIPLIER +
-    (usage.outputTokens * price.output) / 1_000_000 +
+    usage.inputTokens * perInput +
+    (usage.cacheReadTokens * rate.cacheRead) / 1_000_000 +
+    write5m * perInput * CACHE_WRITE_5M_MULTIPLIER +
+    write1h * perInput * CACHE_WRITE_1H_MULTIPLIER +
+    (usage.outputTokens * rate.output) / 1_000_000 +
     (usage.webSearchRequests ?? 0) * WEB_SEARCH_USD
   );
 }
@@ -78,14 +125,19 @@ function compactTokens(n: number): string {
  *
  * Sub-cent turns get three decimals rather than "<$0.01", because at ~$0.004 a
  * turn the difference between 0.004 and 0.009 is the whole optimisation.
+ *
+ * `estimatedUsd`, when the caller has it, is the turn's cost summed request by
+ * request (`CoachTurnResult.estimatedUsd`) and wins over pricing the summed
+ * usage — see {@link estimateCost} for the one model where those differ.
  */
 export function usageCaption(
   usage: CoachUsage | undefined,
   model: string,
-  toolCount: number
+  toolCount: number,
+  estimatedUsd?: number | null
 ): string | null {
   if (!usage || usage.outputTokens + usage.inputTokens + usage.cacheReadTokens === 0) return null;
-  const cost = estimateCost(usage, model);
+  const cost = estimatedUsd !== undefined ? estimatedUsd : estimateCost(usage, model);
   const parts: string[] = [];
 
   if (toolCount > 0) parts.push(`${toolCount} tool call${toolCount === 1 ? '' : 's'}`);

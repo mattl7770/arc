@@ -31,7 +31,17 @@
  * (temperature/top_p/top_k) are not sent — the current models reject them.
  * A `refusal` stop reason is surfaced, never retried. The system prompt and
  * tool list carry prompt-cache breakpoints (buildMessagesRequest) so the large
- * fixed prefix bills at cache-read rates across a turn's round-trips.
+ * fixed prefix bills at cache-read rates across a turn's round-trips, and a
+ * turn that can round-trip carries a third on its latest user message, so the
+ * per-turn context and the history do too (2026-10-21).
+ *
+ * THE SPEND LEDGER'S CHOKE POINT (2026-10-21). Every model request ARC makes
+ * goes through `streamOnce` below, so that is where usage is reported: once per
+ * round trip, to the one sink the app installs at launch
+ * (src/lib/ai/spend-store.ts), tagged with the caller's `callType`. Reporting
+ * can never fail a call — the sink is wrapped, and a sink that throws is
+ * swallowed — and this module stays pure: it knows a sink exists, not where it
+ * writes.
  *
  * Web search (2026-10-21, src/lib/ai/web-search.ts) is the provider's SERVER
  * tool: the request may carry it, the provider runs it inside the same call,
@@ -40,6 +50,8 @@
  * for it: `pause_turn` resumes by re-sending the paused content unchanged, and
  * a search called beside a client tool runs at the start of the next request.
  */
+import { isModelCallType, type ModelCallType } from './call-types';
+import { estimateCost } from './cost';
 import type { CoachStopReason, CoachToolCall, CoachTurnResult } from './types';
 import {
   isWebSearchCall,
@@ -58,14 +70,16 @@ export const ANTHROPIC_VERSION = '2023-06-01';
  * The default model until the user picks in Settings.
  *
  * SONNET 5, not Opus (changed 2026-08-10 during first live testing). Sonnet is
- * described by Anthropic as near-Opus on agentic work and currently bills at
- * $2/$10 per MTok on introductory pricing — 2.5× cheaper than Opus 5's $5/$25,
- * and still 1.7× cheaper when it reverts to $3/$15 after 2026-08-31.
+ * described by Anthropic as near-Opus on agentic work and bills at $2/$10 per
+ * MTok — 2.5× cheaper than Opus 5's $5/$25. That price was introductory until
+ * 2026-08-31 and is now the standard one (the pricing page, checked
+ * 2026-10-21); the rise to $3/$15 it was due to revert to will not happen.
  *
  * This is a "measure, then decide" default, not a verdict on quality: the usage
- * captions now record input/cache/output per turn, so the Opus-vs-Sonnet call
- * can be made against real coach transcripts instead of a guess. Opus stays one
- * tap away in Settings.
+ * captions record input/cache/output per turn and the spend ledger keeps them
+ * (src/lib/ai/spend-ledger.ts), so the choice can be made against real spend
+ * instead of a guess. It stays where it is until the usage policy decides
+ * defaults (docs/spikes/chief-of-staff-release.md, Track 1).
  */
 export const DEFAULT_MODEL = 'claude-sonnet-5';
 
@@ -73,16 +87,25 @@ export const DEFAULT_MODEL = 'claude-sonnet-5';
  * The models the Coach may run, chosen in Settings (src/lib/ai/api-key-store.ts
  * persists the pick).
  *
- * A caution on Haiku: its prompt-cache minimum is 4096 tokens, against 1024 for
- * Sonnet 5 and 512 for Opus 5. A prefix that caches fine on the other two can
- * silently fail to cache on Haiku — no error, just `cache_creation_input_tokens:
- * 0` and full price on every request. Keep an eye on it if the tool list ever
- * shrinks much further.
+ * THREE TABLES MOVE TOGETHER. Every id here has a price (PRICES, cost.ts) and
+ * an explicit web-search decision (TOOL_VERSION_BY_MODEL, web-search.ts — a
+ * version, or null for "no search"). db/model-client.test.mjs fails if any id
+ * is missing from either, which is how a model used to lose its cost line or
+ * its search in silence.
+ *
+ * The notes compare each model's per-token price with the default's. Cache
+ * minimums differ by model, and a prefix under one silently caches nothing:
+ * 512 tokens on Opus 5.5, Opus 5, Sonnet 5.5 and Haiku 5.5; 1,024 on Sonnet 5;
+ * 4,096 on Haiku 4.5 (the prompt-caching page, checked 2026-10-21). The tools +
+ * system prefix (~10k) clears all of them.
  */
 export const COACH_MODELS = [
   { id: 'claude-sonnet-5', label: 'Sonnet 5', note: 'Default' },
-  { id: 'claude-opus-5', label: 'Opus 5', note: 'Deepest reasoning · ~2.5× the cost' },
-  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', note: 'Fastest · cheapest' },
+  { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', note: 'Newer Sonnet · same price' },
+  { id: 'claude-opus-5-5', label: 'Opus 5.5', note: 'Deepest reasoning · ~2× the cost' },
+  { id: 'claude-opus-5', label: 'Opus 5', note: 'Previous Opus · ~2.5× the cost' },
+  { id: 'claude-haiku-5-5', label: 'Haiku 5.5', note: 'Fastest · ~1/20 the cost · no web search' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', note: 'Previous Haiku · ~half the cost' },
 ] as const;
 
 export type CoachModelId = (typeof COACH_MODELS)[number]['id'];
@@ -130,7 +153,65 @@ export type ModelClientConfig = {
   /** expo/fetch on device; a scripted mock in tests. */
   fetchImpl: FetchLike;
   maxTokens?: number;
+  /**
+   * What this call is FOR, as the spend ledger files it (src/lib/ai/call-types.ts).
+   * Required, so a new call site cannot spend without saying on what.
+   */
+  callType: ModelCallType;
 };
+
+// --- The usage sink (the spend ledger's one entry point) ---------------------
+
+/** One billed round trip, as the client reports it. */
+export type ModelCallRecord = {
+  callType: ModelCallType;
+  model: string;
+  /** This request's usage alone — never a turn's sum. */
+  usage: Usage;
+  /** This request's estimated USD (cost.ts), or null when the model has no price. */
+  usd: number | null;
+};
+
+let usageSink: ((record: ModelCallRecord) => void) | null = null;
+
+/**
+ * Install (or, with null, remove) the one place usage is reported to. The app
+ * installs the ledger's writer at launch (src/lib/ai/spend-store.ts); the
+ * headless suites install their own. Returns the sink it replaced.
+ */
+export function setModelUsageSink(
+  sink: ((record: ModelCallRecord) => void) | null
+): ((record: ModelCallRecord) => void) | null {
+  const previous = usageSink;
+  usageSink = sink;
+  return previous;
+}
+
+/**
+ * Report one round trip's usage. NEVER throws: a ledger that cannot write must
+ * not fail the call whose cost it was recording — the call has already been
+ * billed either way, and losing the answer too would be the worse of the two.
+ * A request that billed nothing (it never reached the model) reports nothing.
+ */
+function reportUsage(config: ModelClientConfig, usage: Usage): void {
+  if (!usageSink) return;
+  if (
+    usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens ===
+    0
+  ) {
+    return;
+  }
+  try {
+    usageSink({
+      callType: isModelCallType(config.callType) ? config.callType : 'other',
+      model: config.model,
+      usage,
+      usd: estimateCost(usage, config.model),
+    });
+  } catch {
+    // The ledger's failure is the ledger's problem (see above).
+  }
+}
 
 // --- Wire types (the slice of the Messages API this client speaks) -----------
 
@@ -343,6 +424,10 @@ export function buildMessagesRequest(
     : null;
   const all: (WireTool | WireServerTool)[] = server ? [...custom, server] : custom;
   const tools = all.length > 0 ? all : undefined;
+  // The third breakpoint, on the conversation — only when the turn can round
+  // trip (it has client tools). See CONVERSATION_CACHE.
+  const messages =
+    request.tools.length > 0 ? withConversationBreakpoint(request.messages) : request.messages;
 
   return {
     url: ANTHROPIC_MESSAGES_URL,
@@ -357,10 +442,88 @@ export function buildMessagesRequest(
       max_tokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
       stream: true,
       system,
-      messages: request.messages,
+      messages,
       ...(tools ? { tools } : {}),
     }),
   };
+}
+
+/**
+ * The conversation's cache breakpoint (2026-10-21): FIVE minutes, on the last
+ * block of the latest user message.
+ *
+ * ## Why
+ *
+ * The two prefix breakpoints cache tools + the static system text. Everything
+ * after them — the per-turn context block (~1.4k tokens: date, readiness,
+ * mission, memory) and the whole history — used to be re-sent at full price on
+ * EVERY round trip of a turn, and a tool-using turn makes up to eight. Render
+ * order is tools → system → messages, so a breakpoint on the last message
+ * caches all of it: round trip 2 reads round trip 1's write, round trip 3 reads
+ * round trip 2's, and only what each round added bills at the full rate.
+ *
+ * ## The rules it is placed by (the prompt-caching page, checked 2026-10-21)
+ *
+ * - At most FOUR breakpoints a request. This is the third (system, last tool,
+ *   this), and there is only ever one of it — it moves forward each round trip
+ *   rather than accumulating, because the earlier positions stay readable
+ *   through the 20-block lookback without a marker of their own.
+ * - A longer TTL must come before a shorter one. The prefix is written at one
+ *   hour and this at five minutes, after it — the allowed order. (Five, not an
+ *   hour: the round trips of one turn are seconds apart, and the next turn's
+ *   fresh context block sits ahead of the history anyway, so an hour-long entry
+ *   here would be paid for at 2× and never read.)
+ * - Thinking blocks and empty text blocks cannot carry `cache_control`; text,
+ *   image, document and tool_result blocks in a user turn can. The latest user
+ *   message is the turn's own question or a tool_result turn, so its last block
+ *   is one of those; anything else is left unmarked rather than guessed at.
+ * - The marker is placed on the latest USER message, never on the paused
+ *   assistant content a `pause_turn` resume sends back — that goes back
+ *   unchanged, as the API requires.
+ *
+ * Adding, moving or removing `cache_control` is not an edit for the
+ * thinking-block history check (the claude-api skill's preserved-thinking
+ * guidance), so a marker that moves forward never invalidates a thinking block.
+ *
+ * Only a request that can round trip carries it: a one-shot call (an estimate,
+ * an import) is one request, so a write here would cost 1.25× on its message
+ * and never be read.
+ *
+ * PURE and non-mutating: the loop's own `messages` (echoed verbatim on the next
+ * round) are never touched; the marked message is a copy. A string-content
+ * message is sent as its single text block, which the API treats as the same
+ * content.
+ */
+const CONVERSATION_CACHE: CacheControl = { type: 'ephemeral', ttl: '5m' };
+
+const CACHEABLE_MESSAGE_BLOCKS = new Set(['text', 'image', 'document', 'tool_result']);
+
+export function withConversationBreakpoint(messages: WireMessage[]): WireMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!;
+    if (message.role !== 'user') continue;
+    const marked = markLastBlock(message.content);
+    if (!marked) return messages;
+    const copy = [...messages];
+    copy[i] = { ...message, content: marked };
+    return copy;
+  }
+  return messages;
+}
+
+/** The content with a breakpoint on its last block, or null when it cannot carry one. */
+function markLastBlock(content: string | WireContentBlock[]): WireContentBlock[] | null {
+  if (typeof content === 'string') {
+    if (content.trim() === '') return null;
+    return [{ type: 'text', text: content, cache_control: CONVERSATION_CACHE } as WireContentBlock];
+  }
+  const last = content[content.length - 1];
+  if (!last || !CACHEABLE_MESSAGE_BLOCKS.has(last.type) || 'cache_control' in last) return null;
+  if (last.type === 'text' && String((last as WireTextBlock).text ?? '').trim() === '') return null;
+  return [
+    ...content.slice(0, -1),
+    { ...last, cache_control: CONVERSATION_CACHE } as WireContentBlock,
+  ];
 }
 
 // --- SSE parsing (pure, unit-tested) -----------------------------------------
@@ -450,6 +613,8 @@ export type Usage = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** The 5-minute part of `cacheWriteTokens` (`usage.cache_creation.ephemeral_5m_input_tokens`). */
+  cacheWrite5mTokens?: number;
   /** Provider-side web searches billed (`usage.server_tool_use.web_search_requests`). */
   webSearchRequests?: number;
 };
@@ -467,6 +632,9 @@ export function addUsage(a: Usage, b: Usage): Usage {
     outputTokens: a.outputTokens + b.outputTokens,
     cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
     cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
+    ...(a.cacheWrite5mTokens || b.cacheWrite5mTokens
+      ? { cacheWrite5mTokens: (a.cacheWrite5mTokens ?? 0) + (b.cacheWrite5mTokens ?? 0) }
+      : {}),
     ...(a.webSearchRequests || b.webSearchRequests
       ? { webSearchRequests: (a.webSearchRequests ?? 0) + (b.webSearchRequests ?? 0) }
       : {}),
@@ -666,11 +834,21 @@ export class MessageAccumulator {
       server && typeof server.web_search_requests === 'number' && server.web_search_requests > 0
         ? server.web_search_requests
         : (this.usage.webSearchRequests ?? 0);
+    // The write split by TTL rides a nested object too (`cache_creation`); the
+    // cost estimate prices the 5-minute part at 1.25× and the rest at 2×.
+    const creation = u.cache_creation as Record<string, unknown> | undefined;
+    const write5m =
+      creation &&
+      typeof creation.ephemeral_5m_input_tokens === 'number' &&
+      creation.ephemeral_5m_input_tokens > 0
+        ? creation.ephemeral_5m_input_tokens
+        : (this.usage.cacheWrite5mTokens ?? 0);
     this.usage = {
       inputTokens: num('input_tokens', this.usage.inputTokens),
       outputTokens: num('output_tokens', this.usage.outputTokens),
       cacheReadTokens: num('cache_read_input_tokens', this.usage.cacheReadTokens),
       cacheWriteTokens: num('cache_creation_input_tokens', this.usage.cacheWriteTokens),
+      ...(write5m > 0 ? { cacheWrite5mTokens: write5m } : {}),
       ...(searches > 0 ? { webSearchRequests: searches } : {}),
     };
   }
@@ -694,6 +872,28 @@ export class MessageAccumulator {
 
 // --- One streamed round-trip -------------------------------------------------
 
+/**
+ * `ModelRequestError.errorType` for a request that never reached the API — the
+ * fetch itself rejected. Status 0, like every "no HTTP response" failure; the
+ * type is what tells it from a stream that died after the model started.
+ */
+export const NETWORK_ERROR = 'network_error';
+/** `errorType` for a connection that died while the reply was streaming. */
+export const STREAM_ERROR = 'stream_error';
+
+/**
+ * A transport failure as a {@link ModelRequestError} (status 0), keeping the
+ * underlying message so nothing a screen prints changes. An abort stays an
+ * abort: the user leaving a screen is not a network failure.
+ */
+function transportError(error: unknown, signal: AbortSignal | undefined, type: string): unknown {
+  if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) return error;
+  if (error instanceof ModelRequestError) return error;
+  const message =
+    error instanceof Error && error.message ? error.message : 'Network request failed.';
+  return new ModelRequestError(0, type, message);
+}
+
 async function streamOnce(
   config: ModelClientConfig,
   request: AgenticRequest,
@@ -703,7 +903,15 @@ async function streamOnce(
   carry?: TextCarry
 ): Promise<AccumulatedMessage> {
   const { url, headers, body } = buildMessagesRequest(config, request);
-  const response = await config.fetchImpl(url, { method: 'POST', headers, body, signal });
+  let response: FetchResponseLike;
+  try {
+    response = await config.fetchImpl(url, { method: 'POST', headers, body, signal });
+  } catch (error) {
+    // The request never reached the API (offline, DNS, TLS, a dropped socket).
+    // Named, so a caller can tell "nothing was sent, nothing was billed" from
+    // every other failure — the estimate queue retries this one for free.
+    throw transportError(error, signal, NETWORK_ERROR);
+  }
 
   if (!response.ok) {
     let errorType: string | null = null;
@@ -728,17 +936,33 @@ async function streamOnce(
   const parser = new SseParser();
   const accumulator = new MessageAccumulator(onToken, onServerTool, carry);
 
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    for (const event of parser.push(decoder.decode(value, { stream: true }))) {
-      accumulator.consume(event);
+  let failure: unknown = null;
+  try {
+    for (;;) {
+      let chunk: { done: boolean; value?: Uint8Array };
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        // The connection died mid-reply: the request DID reach the model.
+        throw transportError(error, signal, STREAM_ERROR);
+      }
+      if (chunk.done) break;
+      if (!chunk.value) continue;
+      for (const event of parser.push(decoder.decode(chunk.value, { stream: true }))) {
+        accumulator.consume(event);
+      }
     }
+    for (const event of parser.flush()) accumulator.consume(event);
+  } catch (error) {
+    failure = error;
   }
-  for (const event of parser.flush()) accumulator.consume(event);
 
   const message = accumulator.finish();
+  // Reported BEFORE any failure is rethrown: a reply that streamed half-way
+  // was billed for what it streamed, and the ledger is the record of what was
+  // billed, not of what succeeded.
+  reportUsage(config, message.usage);
+  if (failure !== null) throw failure;
   // message_delta (with stop_reason) always precedes a well-formed stream's
   // end — an empty stop reason means the connection dropped mid-reply. Surface
   // it as an error so a truncated reply is never persisted as complete.
@@ -860,6 +1084,10 @@ export async function runCoachTurn(
   // Summed across every round-trip of the turn — one "how am I doing" can be
   // three calls, and only the total is meaningful to the user.
   let usage: Usage = { ...ZERO_USAGE };
+  // …and priced the same way: request by request, then summed (cost.ts says
+  // why that is not the same as pricing the sum). Null once any request has no
+  // price — a partial dollar figure would read as the whole.
+  let estimatedUsd: number | null = 0;
   // The search tool this turn sends. Dropped for the rest of the turn when the
   // API refuses it (see searchToolRefused).
   let webSearch = request.webSearch ?? null;
@@ -921,6 +1149,8 @@ export async function runCoachTurn(
       throw error;
     }
     usage = addUsage(usage, reply.usage);
+    const replyUsd = estimateCost(reply.usage, config.model);
+    estimatedUsd = estimatedUsd === null || replyUsd === null ? null : estimatedUsd + replyUsd;
     answer += reply.text;
     afterNonText = reply.carry.afterNonText;
     // Searches first: in a mixed round they were requested alongside (and
@@ -959,6 +1189,7 @@ export async function runCoachTurn(
         toolCalls: sealed(),
         stopReason,
         usage,
+        estimatedUsd,
       };
     }
 
@@ -1035,5 +1266,6 @@ export async function runCoachTurn(
     toolCalls: sealed(),
     stopReason: 'tool_use_limit',
     usage,
+    estimatedUsd,
   };
 }

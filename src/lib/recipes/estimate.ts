@@ -306,7 +306,7 @@ export async function resolveRecipeWithModel(
   );
   let text = '';
   const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
+    { apiKey, model: apiKeyStore.getModel(), fetchImpl, callType: 'recipe_pricing' },
     { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
     {
       onToken: (chunk) => {
@@ -583,7 +583,7 @@ export async function reviseRecipe(
   const req = buildRecipeRevisionRequest(recipe, instruction);
   let text = '';
   const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
+    { apiKey, model: apiKeyStore.getModel(), fetchImpl, callType: 'recipe_revision' },
     { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
     {
       onToken: (chunk) => {

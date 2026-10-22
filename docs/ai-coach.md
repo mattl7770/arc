@@ -22,7 +22,7 @@ user turn ──▶ model (streaming) ──▶ tool calls ──▶ executed lo
                                 (loop until the model answers in text)
 ```
 
-Everything runs on-device except the model call itself (local-first, offline-except-AI — the 2026-07-24 ADR). The model is the latest Claude (`claude-opus-5` default), called directly from the app over streaming `expo/fetch`; the model is now user-selectable in **Settings › Coach** — Opus 5 / Sonnet 5 / Haiku 4.5 (`COACH_MODELS` in `model-client.ts`).
+Everything runs on-device except the model call itself (local-first, offline-except-AI — the 2026-07-24 ADR). The model is called directly from the app over streaming `expo/fetch` and is user-selectable in **Settings › Coach** — Sonnet 5 (the default, `DEFAULT_MODEL`), Sonnet 5.5, Opus 5.5, Opus 5, Haiku 5.5, Haiku 4.5 (`COACH_MODELS` in `model-client.ts`; the 5.5 models joined 2026-10-21, §7c). What every call costs is recorded in the spend ledger and shown in **Settings › Coach › Coach usage** (§7c).
 
 **Architecture (shipped 2026-07-26):**
 
@@ -191,7 +191,7 @@ Not a registry tool: Anthropic's **web search server tool**, carried in the same
 
 | Piece | Where | What it does |
 | --- | --- | --- |
-| Tool + version table | `src/lib/ai/web-search.ts` `webSearchTool` | `{ type, name: "web_search", max_uses }` and nothing else: `web_search_20260209` on Sonnet 5 / Opus 5, `web_search_20250305` on Haiku 4.5, nothing on an unknown model (a guessed type is a 400). Appended after the registry, outside the tool cache breakpoint. *(Until the review of 2026-10-21 it also sent `allowed_callers: ["direct"]` to turn dynamic filtering off; the docs give filtering as built into the 20260209 version and `["direct"]` as the field's default, so it did nothing and was dropped.)* |
+| Tool + version table | `src/lib/ai/web-search.ts` `webSearchTool` | `{ type, name: "web_search", max_uses }` and nothing else: `web_search_20260209` on Sonnet 5 / Sonnet 5.5 / Opus 5 / Opus 5.5, `web_search_20250305` on Haiku 4.5, a deliberate **null on Haiku 5.5** (no doc names it as supported, §7c), nothing on an unknown model (a guessed type is a 400). Every `COACH_MODELS` id has an explicit row — a test fails otherwise. Appended after the registry, outside the tool cache breakpoint. *(Until the review of 2026-10-21 it also sent `allowed_callers: ["direct"]` to turn dynamic filtering off; the docs give filtering as built into the 20260209 version and `["direct"]` as the field's default, so it did nothing and was dropped.)* |
 | Wire handling | `src/lib/ai/model-client.ts` | `server_tool_use` input streams like `tool_use`; `web_search_tool_result` and cited text (`citations_delta`) are kept whole and echoed verbatim within the turn (`encrypted_content` / `encrypted_index` must survive). `pause_turn` resumes by re-sending the paused content unchanged. A search beside a client tool runs at the start of the next request. `usage.server_tool_use.web_search_requests` is summed into `webSearchRequests`. An input that arrives whole in `content_block_start` with no `input_json_delta` is kept, not overwritten with `{}` (fix4). **The seam:** a text block that opens right after a non-text, non-thinking block (a search, its results), when the text so far does not end in whitespace, gets a `\n\n` through `onToken` and into the transcript, never into the echoed block, so "…was born." and "Based on the results…" no longer glue; a cited answer split into fragments still joins with nothing. |
 | The record | `WebSearchLedger` → `ai_messages.tool_calls` | One `web_search` entry per search: query, domains found, domains cited (no encrypted data). No migration. A failure after searches alone is a plain error, since a search is not a write. A `server_tool_use` named other than exactly `web_search` still counts (fix4): a name starting `web_search` at once, any other once a `web_search_tool_result` answers it; a server tool no search result answers is never recorded as one. |
 | The UI | `src/components/coach/searched-lines.tsx` | `Searched "big mac nutrition new zealand" · mcdonalds.co.nz` under the bubble (from the record, so a reload draws the same) and on the meal / correction / food-description reviews. Search records are left out of the tool chips. |
@@ -431,7 +431,7 @@ Note the one carve-out: a **specific** proposed next action ("Want me to move th
 
 The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + voice + tool doctrine + safety rails + date/context tail) and is the refined form of the old skeleton. Keep the two in sync; note voice changes in `docs/decisions.md`.
 
-**Cache note.** The whole system string is one cached block (`buildMessagesRequest`, `model-client.ts`) with a single breakpoint at its end; the tool list carries the second. Adding `VOICE` did not move either breakpoint — it invalidates the cache exactly once, on first send after deploy. But the block is billed on **every** turn, so keep prompt edits concrete and short: a "write this, not that" pair earns its tokens, a paragraph of adjectives does not.
+**Cache note.** The whole system string is one cached block (`buildMessagesRequest`, `model-client.ts`) with a single breakpoint at its end; the tool list carries the second; since 2026-10-21 a turn with tools carries a third, 5-minute one on its latest user message (§7c). Adding `VOICE` did not move either breakpoint — it invalidates the cache exactly once, on first send after deploy. But the block is billed on **every** turn, so keep prompt edits concrete and short: a "write this, not that" pair earns its tokens, a paragraph of adjectives does not.
 The real prompt lives in `src/lib/ai/system-prompt.ts` (personality + tool doctrine + safety rails) and is the refined form of the old skeleton. Since 2026-08-08 it is **two system blocks**: the static block (this file's doctrine — carries the prompt-cache breakpoint; the reminders line is runtime capability truth via `notificationsAvailable()`, so the Coach never denies a delivery channel the binary actually has) and the uncached per-turn "Current state" block from `turn-context.ts` (which owns the date — keeping it out of the static block is what lets the cache survive midnight). Keep the two in sync with this doc; note voice changes in `docs/decisions.md`.
 
 ---
@@ -456,7 +456,7 @@ Tools are ~78% of it. That is the price of a Coach that can actually *do* things
 
 1. **1-hour cache TTL.** Writes at 2× instead of 1.25×, but survives the gaps. One turn is already 2–3 round-trips, so it breaks even inside the first question and every question for the next hour reads at 0.1×.
 2. **Tool-description diet.** 8,206 → 6,960 tokens, by deleting doctrine that the system prompt already states globally (the unit rule, "judgment is yours, not a rule's"), a doc path the model cannot open, and property descriptions restating their own field names. Descriptions fell 4,300 → 3,083; the remaining 3,202 is JSON Schema structure, which can only shrink by removing parameters.
-3. **Default model → Sonnet 5** ($2/$10 introductory through 2026-08-31, then $3/$15) rather than Opus 5 ($5/$25). A measure-then-decide default; Opus is one tap away in Settings.
+3. **Default model → Sonnet 5** ($2/$10 — announced as introductory through 2026-08-31, and since made the standard price; the rise to $3/$15 never happened) rather than Opus 5 ($5/$25). A measure-then-decide default; Opus is one tap away in Settings.
 
 Net: **~$0.069 → ~$0.004 per question** in steady state, ~19×.
 
@@ -473,6 +473,57 @@ Net: **~$0.069 → ~$0.004 per question** in steady state, ~19×.
 **The floor.** One round-trip carries ~9k cached tokens no matter how trivial the question. That is the price of 31 always-available tools. Cached, it bills ~$0.002; the raw *count* still looks alarming in a provider dashboard, which is why `usageCaption` now breaks out `cache write` / `cached` / `in` / `out` separately — a warm re-read and a cold write are a 20× cost difference that a single lump total completely hides. The one remaining lever on raw count is sending fewer tools per request (read-only subset: 2,650 vs 6,960), which trades against the Coach's ability to offer an action unprompted.
 
 **Still unmeasured:** output tokens. Sonnet 5 and Opus 5 both run adaptive thinking by default, billed as output ($10 and $25 per MTok respectively). After the cache fix, output is likely the dominant cost — `usageCaption` records input/cache/output per turn, so the next real session decides whether to touch `effort` or `thinking: {type: "disabled"}` (Opus 5 allows the latter only at effort `high` or lower).
+
+## 7c. Track 0 (2026-10-21): current models, the conversation cache, the spend ledger
+
+Three changes from the chief-of-staff release's Track 0 (`docs/spikes/chief-of-staff-release.md` §2), all headless-verified and none yet seen on a device.
+
+### Current models and prices
+
+`COACH_MODELS` gained **Sonnet 5.5** (`claude-sonnet-5-5`), **Opus 5.5** (`claude-opus-5-5`) and **Haiku 5.5** (`claude-haiku-5-5`). `DEFAULT_MODEL` stays Sonnet 5 — the usage policy (Track 1) decides defaults. **Three tables move together** and `db/model-client.test.mjs` §22 fails if they drift: every id has a `PRICES` row (`src/lib/ai/cost.ts`) and an explicit web-search decision (`TOOL_VERSION_BY_MODEL`, `src/lib/ai/web-search.ts` — a version, or `null`).
+
+| Model | Input / output per MTok | Cache read | Web search |
+| --- | --- | --- | --- |
+| Opus 5.5 | $4 / $20 | $0.20 (0.05×) | `web_search_20260209` |
+| Opus 5 | $5 / $25 | $0.50 | `web_search_20260209` |
+| Sonnet 5.5 | $2 / $10 | $0.10 (0.05×) | `web_search_20260209` |
+| Sonnet 5 | $2 / $10 | $0.20 | `web_search_20260209` |
+| Haiku 5.5 | $0.10 / $0.50 (≤100k-token prompt); $0.50 / $2.50 above | $0.01 / $0.05 | **none** |
+| Haiku 4.5 | $1 / $5 | $0.10 | `web_search_20250305` |
+
+**Where each figure was checked (2026-10-21).** Prices: the live pricing page (`platform.claude.com/docs/en/about-claude/pricing`), which also says Sonnet 5's $2/$10 "is now the standard price" — so the old "REVISIT 2026-09-01: change to $3/$15" note is retired, not applied. One disagreement: the claude-api skill's cached table gives Sonnet 5.5 cache reads at $0.20; the live page gives $0.10 (0.05×), and the live page is what `PRICES` uses. Cache writes are 1.25× input for 5 minutes and 2× for an hour on every model (same page). Haiku 5.5's second rate card applies to a whole REQUEST whose prompt (input + cache reads + writes) is over 100,000 tokens — which is why cost is now priced request by request (`CoachTurnResult.estimatedUsd`) rather than from a turn's summed usage. Web search: the live tool page puts dynamic filtering (`web_search_20260209`) on "Claude 4.6 and later models" with `claude-opus-5-5` examples, and the skill's server-tools table lists Opus 5.5 and Sonnet 5.5 for it. **No page names Haiku 5.5 as supporting search** (the tool page, the tool reference, the Haiku 5.5 overview and what's-new were all read), so it gets `null` — no search tool, the estimators' "web search is available" line suppressed, and "no web search" in its picker note. Revisit when the Models API's `capabilities.server_tools.web_search.supported` says otherwise.
+
+**Cache minimums.** 512 tokens on Opus 5.5, Opus 5, Sonnet 5.5 and Haiku 5.5; 1,024 on Sonnet 5; 4,096 on Haiku 4.5 (the live prompt-caching page). The pass-prefix floor test in `db/coach-eval.test.mjs` §6 is Haiku-4.5-specific at 4,096 and is left as it is: the pass still runs on Haiku 4.5 (`PASS_MODEL`). If the pass ever moves to Haiku 5.5 its floor is 512, and the test's constant should move with it.
+
+**Request shape.** Nothing the client sends is rejected by the 5.5 models: no `thinking`, no sampling parameters, no forced `tool_choice`, no prefill. Opus 5.5 and Haiku 5.5 default to `effort: medium` (Sonnet 5.5 to `high`); the client sets no effort, so that default is what they run at until the usage policy sets one per call type.
+
+### The conversation cache — a third breakpoint
+
+The two prefix breakpoints (last tool, static system block, both 1-hour) cached tools + system. Everything after them — the per-turn "Current state" block (~1.4k tokens) and the whole history — was re-sent at full price on **every round trip of a turn**, and a tool-using turn makes up to eight. `buildMessagesRequest` now adds a third, **5-minute** breakpoint on the last block of the **latest user message** (`withConversationBreakpoint`, `model-client.ts`): round trip 2 reads what round trip 1 wrote, and only each round's additions bill in full. The rules it follows (the live prompt-caching page):
+
+- **At most 4 breakpoints a request.** This is the third, and there is only ever one: it MOVES forward each round trip (to the newest `tool_result` turn) instead of accumulating — the earlier positions stay readable through the 20-block lookback.
+- **Longer TTLs first.** 1h (tools), 1h (system), then 5m (messages): the allowed order. Five minutes, not an hour, because a turn's round trips are seconds apart and the next turn's fresh state block sits ahead of the history, so an hour-long entry would be written at 2× and never read.
+- **Only blocks that can carry it.** Text, image, document and tool_result in a user turn; never a thinking block or an empty text. A `pause_turn` resume sends the paused assistant content back unchanged — the marker stays on the user turn before it.
+- **Only requests that can round trip** (client tools present). A one-shot estimate is one request; a write there would cost 1.25× and never be read.
+- **History otherwise byte-identical.** The marked message is a copy; a string-content message is sent as its single text block, which the API treats as the same content. Moving a `cache_control` marker is not an edit for the thinking-block history check (the claude-api skill's preserved-thinking guidance).
+
+**The trade, stated.** A turn that ends in ONE round trip pays the 5-minute write (1.25×) on its state block and history and never reads it back — a 25% surcharge on that uncached tail, about $0.003 on Sonnet 5 for a 6k-token tail. A turn of N round trips saves roughly 0.9 × tail × (N − 1) less that one surcharge, so the change pays for itself as soon as the average tool-using turn makes more than about 1.3 requests. The ledger now measures exactly that, by call type.
+
+Tests: `db/model-client.test.mjs` §24 (placement, the count, TTL order, the moving marker across a tool round, pause_turn, untouched history, and the cost accounting — a warm second round trip priced at the read rate, the 5-minute write at 1.25×). **Device check owed:** on a two-round-trip turn, the second request's `cache_read_input_tokens` should cover the state block and history, not only the ~10k prefix.
+
+### The spend ledger
+
+**Nothing recorded what ARC spends** until 2026-10-21: the chat caption was computed in memory, and passes and one-shot calls recorded nothing. Now **every billed round trip is recorded**, through ONE choke point:
+
+- **The sink.** `streamOnce` (`model-client.ts`) reports each round trip's own usage to a single installed sink (`setModelUsageSink`), tagged with the caller's **`callType`** — a REQUIRED field of `ModelClientConfig`, so a new call site that does not say what it is fails the typecheck. Fourteen types (`src/lib/ai/call-types.ts`): chat, pass, meal estimate / correction, food description, recipe import / pricing / correction, knowledge import, lab parse, photo reading, report read, exercise addition, workout import (plus `other`, where a call whose type did not survive to runtime is filed rather than dropped). A reply that streamed half-way and then died is reported before the error is rethrown — it was billed. An HTTP error or a fetch that never got a response reports nothing.
+- **The store.** `installSpendLedger(getDb)` runs at module scope in `app/_layout.tsx`, before any screen can call the model. Per call it adds to a daily aggregate per call type — calls, input / output / cache-read / cache-write tokens, web searches, estimated USD, unpriced calls, calls per model — in **`users.preferences.spendLedger`** (no migration), keeping the last **120 days**, pruned on every write. Read-modify-write in one synchronous step, touching only its own key.
+- **It can never fail a call.** `recordModelCall` catches everything and returns false; the client also swallows anything a sink throws.
+- **The usage policy's read.** `spentToday(ledger, today)` (pure, `src/lib/ai/spend-ledger.ts`) is the priced total for a logical day; a model with no price adds nothing, so a budget can never trip on a guess.
+- **The screen.** Settings › Coach has a **Coach usage** row (today and this month at a glance) opening `app/settings-coach-usage.tsx`: today, the last 7 days and this month, then this month by call type, every figure labelled **est.** and a margin note saying they are the app's price table applied to reported usage, not the invoice. **The seam for the usage level:** the screen's first section is `UsageLevelSection`, which renders nothing today; the usage-policy branch puts its Lean / Standard / Generous plate there, above the spend figures, and nothing else on the screen moves.
+- **The chat caption** now prices the turn request by request (`result.estimatedUsd`), so the bubble and the ledger agree.
+
+Tests: `db/spend-ledger.test.mjs` — aggregation, the three windows and `spentToday`, pruning at 120 days, tolerant parsing, the preferences write and its failure path, a **source pin** (the eleven files that call `runCoachTurn` are exactly the known ones, each passing its own call types), and a **behavioural test per call type**: all fourteen real entry points driven through a mocked fetch with the app's own sink installed, each landing in the ledger under its own type. `db/model-client.test.mjs` §25 covers the sink itself; `db/screens-render.test.mjs` §41 renders the screen.
+
 
 ## 8. Verified scenarios (the two required flows)
 

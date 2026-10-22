@@ -134,7 +134,7 @@ export async function generateCoachRead(
   const model = apiKeyStore.getModel();
   let streamed = '';
   const result = await runCoachTurn(
-    { apiKey, model, fetchImpl },
+    { apiKey, model, fetchImpl, callType: 'report_read' },
     { system: COACH_READ_SYSTEM, messages: buildCoachReadMessages(data), tools: [] },
     {
       onToken: (chunk) => {

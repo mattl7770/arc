@@ -86,12 +86,36 @@ export type WireServerTool = {
  * every selectable model is a Claude model (model-client.ts COACH_MODELS).
  * A key that cannot use the tool at all is model-client.ts's
  * `searchToolRefused`: one retry without it, then off for the session.
+ *
+ * EVERY selectable model has an explicit row — a version, or `null` for "no
+ * search, on purpose" — and db/model-client.test.mjs fails on a COACH_MODELS
+ * id with neither, so adding a model is a decision here rather than a silent
+ * loss of search (2026-10-21, beside the price table in cost.ts):
+ *
+ *   - Opus 5.5 and Sonnet 5.5 take `web_search_20260209`: the live web-search
+ *     page (checked 2026-10-21) puts dynamic filtering on "Claude 4.6 and later
+ *     models" and its examples run `claude-opus-5-5`; the claude-api skill's
+ *     server-tools table lists both 5.5 models for this version.
+ *   - Haiku 5.5 is NULL. Neither the live pages (the web-search tool, the tool
+ *     reference, the Haiku 5.5 overview and what's-new, checked 2026-10-21)
+ *     nor the skill names Haiku 5.5 as supporting any search version, and a
+ *     wrong guess is a 400 on every turn. Its picker note says "no web
+ *     search"; revisit when the docs say otherwise (the Models API's
+ *     `capabilities.server_tools.web_search.supported` is the authority).
  */
-const TOOL_VERSION_BY_MODEL: Record<string, string> = {
+const TOOL_VERSION_BY_MODEL: Readonly<Record<string, string | null>> = {
   'claude-sonnet-5': 'web_search_20260209',
+  'claude-sonnet-5-5': 'web_search_20260209',
+  'claude-opus-5-5': 'web_search_20260209',
   'claude-opus-5': 'web_search_20260209',
+  'claude-haiku-5-5': null,
   'claude-haiku-4-5': 'web_search_20250305',
 };
+
+/** Has `model` an explicit search decision (a version or a deliberate null)? */
+export function hasWebSearchDecision(model: string): boolean {
+  return Object.prototype.hasOwnProperty.call(TOOL_VERSION_BY_MODEL, model);
+}
 
 /** The server tool for `model`, or null when that model has no known version. */
 export function webSearchTool(model: string, maxUses: number): WireServerTool | null {

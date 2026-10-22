@@ -57,9 +57,15 @@ import {
   setRecipeFavorite,
 } from '../src/lib/db/repositories/recipes.ts';
 import {
+  markPendingEstimateFailed,
+  pendingEstimateForMeal,
   placeholderMealName,
   queueNewMealEstimate,
 } from '../src/lib/db/repositories/pending-estimates.ts';
+import { composeLastError } from '../src/lib/nutrition/queue-status.ts';
+// Track 0 (2026-10-21): the spend ledger's screen, and its store.
+import SettingsCoachUsageScreen from '../app/settings-coach-usage.tsx';
+import * as spendStore from '../src/lib/ai/spend-store.ts';
 import {
   addGroceryItems,
   checkGroceryItem,
@@ -9829,6 +9835,105 @@ console.log('\n40. Item 86 — was this estimate right? Good / Off, the one ques
   !readFileSync(new URL('../app/meal-estimate.tsx', import.meta.url), 'utf8').includes('EstimateRatingLine')
     ? ok('the correction window settles on re-read; Item / Macros push Adjust with AI with the answer; the review screen draws no rating')
     : bad('rating wiring');
+}
+
+console.log('\n41. Track 0 (2026-10-21) — Coach usage, the new models, and a parked estimate');
+{
+  const today = todayISODate();
+  // Coach usage, empty: it says it has nothing yet, and that figures are estimates.
+  const empty = render('coach usage (empty)', SettingsCoachUsageScreen);
+  expect('coach usage (empty)', empty, [
+    'Coach usage',
+    'Spend',
+    'est.',
+    'Today',
+    'Last 7 days',
+    'This month',
+    '$0.00',
+    'No model calls recorded this month yet.',
+    'not your invoice',
+    'Recording starts with the next call',
+  ]);
+
+  // …and with calls in the ledger: the totals and the by-type plate.
+  const now = new Date();
+  const u = (inputTokens) => ({ inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  spendStore.recordModelCall(db, { callType: 'chat', model: 'claude-sonnet-5', usage: u(1000), usd: 0.42 }, now);
+  spendStore.recordModelCall(db, { callType: 'meal_estimate', model: 'claude-sonnet-5', usage: u(500), usd: 0.03 }, now);
+  spendStore.recordModelCall(db, { callType: 'chat', model: 'mystery', usage: u(10), usd: null }, now);
+  const full = render('coach usage (spent)', SettingsCoachUsageScreen);
+  expect('coach usage (spent)', full, [
+    '$0.45',
+    '3 calls',
+    'Coach chat',
+    'Meal estimates',
+    '$0.42',
+    '$0.03',
+    'Recorded since',
+    'ran on a model with no price in the table',
+  ]);
+  if (full !== null) {
+    full.indexOf('Coach chat') < full.indexOf('Meal estimates')
+      ? ok('coach usage: by type, most expensive first')
+      : bad('coach usage order');
+  }
+
+  // Settings › Coach: the new models in the picker, and the row into Coach usage.
+  const coach = render('settings-coach (models + usage row)', SettingsCoachScreen);
+  expect('settings-coach (models + usage row)', coach, [
+    'Sonnet 5.5',
+    'Opus 5.5',
+    'Haiku 5.5',
+    'no web search',
+    'Coach usage',
+    'Today $0.45',
+    'this month $0.45',
+  ]);
+  refute('settings-coach (models + usage row)', coach, ['Sonnet is the cheaper of the two']);
+
+  // A PARKED queued estimate: the Eat tab says it is paused, and its meal
+  // screen says why, plainly, with the two ways out.
+  const { mealId: parkedId } = queueNewMealEstimate(
+    db,
+    { date: today, time: '22:40', name: placeholderMealName('a late kebab') },
+    { kind: 'text', description: 'a late kebab' }
+  );
+  const parkedRow = pendingEstimateForMeal(db, parkedId);
+  markPendingEstimateFailed(
+    db,
+    parkedRow.id,
+    composeLastError('unreadable', 'MealEstimateParseError: not JSON'),
+    'park'
+  );
+  const tab = render('nutrition hub (estimate paused)', NutritionScreen);
+  expect('nutrition hub (estimate paused)', tab, [
+    'a late kebab',
+    'Estimate paused — tap to retry or enter it',
+  ]);
+  const parked = render('meal-detail (estimate parked)', MealDetailScreen, { id: parkedId });
+  expect('meal-detail (estimate parked)', parked, [
+    'Queued estimate',
+    'its answer could not be read as an estimate',
+    'is not sent again by itself',
+    'a late kebab',
+    'Try again',
+    'Enter by hand',
+  ]);
+  refute('meal-detail (estimate parked)', parked, ['MealEstimateParseError', 'not JSON']);
+
+  // A request still waiting offers Enter by hand only — it will send itself.
+  const { mealId: waitingId } = queueNewMealEstimate(
+    db,
+    { date: today, time: '22:50', name: placeholderMealName('a second kebab') },
+    { kind: 'text', description: 'a second kebab' }
+  );
+  const waiting = render('meal-detail (estimate waiting)', MealDetailScreen, { id: waitingId });
+  expect('meal-detail (estimate waiting)', waiting, [
+    'Queued estimate',
+    'Waiting for a connection.',
+    'Enter by hand',
+  ]);
+  refute('meal-detail (estimate waiting)', waiting, ['Try again']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -20,7 +20,10 @@ import {
 } from '@/lib/db/repositories/nutrition';
 import { isTimezoneChangedDay } from '@/lib/db/repositories/day-meta';
 import { checkedGroceryCount, openGroceryLineCount } from '@/lib/db/repositories/grocery';
-import { pendingEstimateMealIds } from '@/lib/db/repositories/pending-estimates';
+import {
+  pendingEstimateMealIds,
+  pendingEstimateStatuses,
+} from '@/lib/db/repositories/pending-estimates';
 import { recipeCount, recipesCookedSince } from '@/lib/db/repositories/recipes';
 import { getGoalDirection } from '@/lib/db/repositories/user';
 import { countTotalsOnlyMeals, mealKeyMicroLabels } from '@/lib/nutrition/key-micro';
@@ -77,6 +80,10 @@ export type NutritionDay = {
    *  "Nothing recorded — tap to fill it in" line, which would be advice the
    *  user cannot act on. Empty on every ordinary day. */
   pendingEstimates: Set<string>;
+  /** meal_id → the row's line for a waiting meal ("Estimate pending — offline",
+   *  "Estimate paused — tap to retry or enter it"; queue-status.ts). Keys are
+   *  exactly {@link pendingEstimates}. */
+  pendingEstimateLines: Record<string, string>;
   /** meal_id → metrics that meal is knowingly SHORT on (an item was never
    *  priced). The countdown refuses these the way it refuses a NULL. */
   partialMeals: PartialMealMetrics;
@@ -167,6 +174,23 @@ function readPendingEstimates(db: ReturnType<typeof getDb>, today: string): Set<
   }
 }
 
+/** Each waiting meal's line (2026-10-21) — guarded exactly like the set above,
+ *  and for the same reason. An empty record costs a parked meal its "paused"
+ *  wording (it falls back to "pending"); a throw costs the tab. */
+function readPendingEstimateLines(
+  db: ReturnType<typeof getDb>,
+  date: string
+): Record<string, string> {
+  try {
+    const lines: Record<string, string> = {};
+    for (const [mealId, status] of pendingEstimateStatuses(db, date)) lines[mealId] = status.line;
+    return lines;
+  } catch (error) {
+    console.warn('[nutrition] pending estimate status unavailable', error);
+    return {};
+  }
+}
+
 function readToday(): Omit<NutritionDay, 'reload'> {
   const db = getDb();
   const date = todayISODate();
@@ -194,6 +218,7 @@ function readToday(): Omit<NutritionDay, 'reload'> {
     targets: activeNutritionTargets(db, date) ?? null,
     partialMeals: partialMealMetrics(db, date),
     pendingEstimates: readPendingEstimates(db, date),
+    pendingEstimateLines: readPendingEstimateLines(db, date),
     // Two indexed reads the bars' grade needs, and nothing else uses. Both are
     // the same ones Home's nutrition pillar takes (src/lib/home/readiness.ts),
     // so the tab and the pillar are graded off identical inputs.
@@ -261,6 +286,8 @@ export type NutritionDayView = {
    *  a photo logged offline can outlive its day. Read so History's combine
    *  refuses such a meal the way the Eat tab does, and its row says why. */
   pendingEstimates: Set<string>;
+  /** Each waiting meal's line, as on the Eat tab (queue-status.ts). */
+  pendingEstimateLines: Record<string, string>;
   /** The first day ever logged, or null — the day picker's back bound. */
   recordStart: string | null;
 };
@@ -291,6 +318,7 @@ export function readNutritionDay(date: string): NutritionDayView {
     targets: activeNutritionTargets(db, date) ?? null,
     partialMeals: partialMealMetrics(db, date),
     pendingEstimates: readPendingEstimates(db, date),
+    pendingEstimateLines: readPendingEstimateLines(db, date),
     recordStart: firstMealDate(db),
   };
 }
