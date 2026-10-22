@@ -493,15 +493,20 @@ const logWorkoutTool: CoachTool = {
     const sets = parseSets(args, db);
     const now = context?.now ?? new Date();
     // Item 70: the card names the Training row the save will tick, so the
-    // approve covers it. Read-only; execute re-chooses, and reports what it
-    // actually ticked. No routine — the Coach logs free sessions — so only a
+    // approve covers it. No routine — the Coach logs free sessions — so only a
     // row that names no saved workout can be meant.
+    //
+    // `arriveDay` first (fix3), as execute's tick does: the Coach tab can be
+    // the first thing to touch today, and a card read over a day not yet
+    // arrived named no row while execute, arriving it, ticked one. Idempotent,
+    // the same call Home and the caffeine check make. The row is held in the
+    // context, and execute ticks that one only (`tickTrainingForWorkout`'s
+    // `only`): the card is drawn before the gate and re-read after it.
     const today = todayISODate(now);
-    const row = trainingRowFor(
-      db,
-      { date: logDate(args, now), routineId: null, away: false },
-      today
-    );
+    const date = logDate(args, now);
+    if (date === today) arriveDay(db, today);
+    const row = trainingRowFor(db, { date, routineId: null, away: false }, today);
+    if (context) context.trainingRow = row;
     const parts = [
       'Log workout',
       ...(duration != null ? [`${Math.round(duration)} min`] : []),
@@ -541,14 +546,21 @@ const logWorkoutTool: CoachTool = {
     } catch {
       // The next sync runs the same pass.
     }
-    // Item 70: today's earliest open Training row, as every finish path ticks
-    // it — after the commit, in its own try, for the pairing's reason. The
+    // Item 70: the row the card named, and only that one (fix3) — after the
+    // commit, in its own try, for the pairing's reason. A card that named none
+    // (or no card at all) ticks nothing, and a named row that was ticked,
+    // skipped or removed while the card was open stays as he left it: the
+    // receipt is the card's line, so the result says what really happened. The
     // reminder re-sync is the Coach tab's, after every turn.
+    const named = context.trainingRow ?? null;
     let ticked: string | null = null;
+    let tickFailed = false;
     try {
-      ticked = tickTrainingForWorkout(db, id, todayISODate(context.now))?.title ?? null;
+      ticked =
+        tickTrainingForWorkout(db, id, todayISODate(context.now), named?.id ?? null)?.title ?? null;
     } catch {
       // A row left open is one tap on Home.
+      tickFailed = true;
     }
     // Unmatched names still log (free-text sets are valid) but stay invisible
     // to e1RM/freshness/progression — tell the model so it can tell the user.
@@ -557,6 +569,16 @@ const logWorkoutTool: CoachTool = {
       logged: true,
       id,
       ...(ticked !== null ? { tickedTraining: ticked } : {}),
+      ...(named !== null && ticked === null
+        ? {
+            trainingNotTicked: named.title,
+            trainingNote: tickFailed
+              ? `The card said this would tick Training: ${named.title}, but the tick failed. ` +
+                'The session is saved; the row is one tap on Home. Tell the user.'
+              : `The card said this would tick Training: ${named.title}, but that row was no ` +
+                'longer open when the session saved, so nothing was ticked. Tell the user.',
+          }
+        : {}),
       ...(unmatched.length > 0
         ? {
             unmatchedExercises: unmatched,

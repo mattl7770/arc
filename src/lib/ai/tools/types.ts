@@ -74,6 +74,14 @@ export type CoachToolContext = {
      */
     line?: string;
   };
+  /**
+   * The Training row `log_workout`'s card said the save will tick (fix3,
+   * 2026-10-21), or null when it named none. Written at card time; past the
+   * gate `execute` ticks that row only, and only while it is still open, so
+   * the approval covers exactly the tick that happens. Absent when no card was
+   * drawn, which ticks nothing either.
+   */
+  trainingRow?: { id: string; title: string } | null;
 };
 
 /**

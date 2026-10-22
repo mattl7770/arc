@@ -560,9 +560,9 @@ export function parseSpan(startIso: string, endIso: string): TimeSpan | null {
  * longer span would score that 0.77 against a union-based 0.48 and start
  * depending on which source happened to be more generous.
  *
- * Exported since 0054. It is the app's ONE definition of "the same session", and
- * pairing an ingested row to a logged one reuses it rather than inventing a
- * second: two definitions agree right up until one of them is tuned.
+ * Exported since 0054. Since fix3 it is the measure, not the rule: "the same
+ * session" is {@link sameSession}, which reads this fraction and the one of the
+ * longer span. Pairing still stores this figure as a link's `overlap`.
  */
 export function overlapFraction(a: TimeSpan, b: TimeSpan): number {
   const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
@@ -572,6 +572,43 @@ export function overlapFraction(a: TimeSpan, b: TimeSpan): number {
 
 /** Above this shared fraction, two rows are treated as one real session. */
 export const SAME_SESSION_OVERLAP = 0.5;
+
+/**
+ * The share of the SHORTER span above which it counts as lying inside the
+ * longer one: a recorder that caught PART of a session (fix3, 2026-10-21).
+ * 0.8 tolerates the minute or two by which two start/stop buttons were pressed
+ * apart; a 20-minute fragment may overhang the session by 4 minutes.
+ */
+export const CONTAINED_OVERLAP = 0.8;
+
+/**
+ * Are two spans ONE session? The app's one definition (fix3, 2026-10-21), read
+ * by the duplicate collapse and by the pairing pass's span rule alike.
+ *
+ * At least {@link SAME_SESSION_OVERLAP} of the shorter is always required, and
+ * then ONE of:
+ *
+ *   · **the shorter lies inside the longer**: at least {@link CONTAINED_OVERLAP}
+ *     of it is shared. The phone that caught the last 20 minutes of a 62-minute
+ *     run (a third of the run's clock) stays one session, which is the case the
+ *     shorter-span measure was chosen for;
+ *   · **or they share at least half of the LONGER one too**: two copies of one
+ *     session from two writers, however their clocks are offset.
+ *
+ * What the second clause rules out is what "half of the shorter" alone merged:
+ * a 60-minute lift whose recording was stopped 10 minutes into a 20-minute run
+ * shares half of the run but a sixth of the lift. Those are two sessions with a
+ * late stop button between them, and merging them took the lift out of every
+ * reader.
+ */
+export function sameSession(a: TimeSpan, b: TimeSpan): boolean {
+  const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
+  if (overlap <= 0) return false;
+  const ofShorter = overlap / Math.min(a.end - a.start, b.end - b.start);
+  if (ofShorter < SAME_SESSION_OVERLAP) return false;
+  const ofLonger = overlap / Math.max(a.end - a.start, b.end - b.start);
+  return ofShorter >= CONTAINED_OVERLAP || ofLonger >= SAME_SESSION_OVERLAP;
+}
 
 /** {@link SOURCE_PRIORITY} rank of a device — lower wins. Exported for pairing. */
 export function sourcePriorityOf(device: string): number {
@@ -655,19 +692,25 @@ export function preferredTwin(challenger: WearableDataRow, incumbent: WearableDa
  * workout", now applied everywhere a workout row is read rather than on one
  * screen.
  *
- * Two rows are one session when their spans share at least
- * {@link SAME_SESSION_OVERLAP} of the SHORTER one ({@link overlapFraction}),
- * whatever wrote them. Deliberately NOT also "similar duration": a phone that
- * caught the last 20 minutes of a 62-minute run shares all of its clock with
- * the run, and one person does not do two sessions in the same 20 minutes — the
- * shorter-span measure was chosen for exactly that case. Sessions that merely
- * abut share no time and stay apart.
+ * Two rows are one session when {@link sameSession} says so, whatever wrote
+ * them. Deliberately NOT a plain "similar duration": a phone that caught the
+ * last 20 minutes of a 62-minute run lies inside the run, and one person does
+ * not do two sessions in the same 20 minutes. Sessions that merely abut share
+ * no time and stay apart.
  *
- * Grouping is transitive (connected components, not a greedy first match), so
- * the answer does not depend on the order the rows arrive in, and three copies
- * of one session are one session even if the shortest overlaps only one of the
- * others. A row whose span cannot be read is its own session — kept, never
- * silently dropped and never guessed into someone else's.
+ * Grouping is COMPLETE linkage (fix3, 2026-10-21): two groups join only when
+ * EVERY cross pair is one session. Connected components, until then, chained:
+ * a phone walk left running 07:00–08:30 is one session with the lift
+ * 07:00–08:00 and, separately, with the run 08:00–08:30, and the chain made all
+ * three one session, so the lift vanished from the minutes and the inbox. Now
+ * the walk joins ONE of them and the other stands alone.
+ *
+ * Which one: pairs are merged strongest first, by shared clock over the union
+ * of the two spans (the walk goes with the hour it shares, not the half hour),
+ * ties broken by the two rows' ids, so the answer does not depend on the order
+ * the rows arrive in. Three copies of one session are still one session,
+ * because every pair of them is. A row whose span cannot be read is its own
+ * session — kept, never silently dropped and never guessed into someone else's.
  *
  * Output order is the order of each session's FIRST member in `rows`, so a
  * caller that read newest-first gets sessions newest-first.
@@ -675,17 +718,11 @@ export function preferredTwin(challenger: WearableDataRow, incumbent: WearableDa
 export function collapseWorkoutTwins<R extends WearableDataRow>(
   rows: readonly R[]
 ): WorkoutSession<R>[] {
-  const parent = rows.map((_, i) => i);
-  const find = (i: number): number => {
-    let root = i;
-    while (parent[root] !== root) root = parent[root]!;
-    while (parent[i] !== root) {
-      const next = parent[i]!;
-      parent[i] = root;
-      i = next;
-    }
-    return root;
-  };
+  // Each row's group: one shared array of member indexes per group.
+  const groupOf = rows.map((_, i) => [i]);
+  const twins = new Set<string>();
+  const pairKey = (i: number, j: number) => (i < j ? `${i}:${j}` : `${j}:${i}`);
+  const pairs: { i: number; j: number; strength: number; tie: string }[] = [];
 
   // A sweep over start times: once a later row starts at or after this one's
   // end, no row after it can overlap this one either.
@@ -693,23 +730,36 @@ export function collapseWorkoutTwins<R extends WearableDataRow>(
     .map((row, index) => ({ index, span: workoutSpan(row) }))
     .filter((r): r is { index: number; span: TimeSpan } => r.span !== null)
     .sort((a, b) => a.span.start - b.span.start || a.index - b.index);
-  for (let i = 0; i < spanned.length; i++) {
-    const a = spanned[i]!;
-    for (let j = i + 1; j < spanned.length; j++) {
-      const b = spanned[j]!;
+  for (let x = 0; x < spanned.length; x++) {
+    const a = spanned[x]!;
+    for (let y = x + 1; y < spanned.length; y++) {
+      const b = spanned[y]!;
       if (b.span.start >= a.span.end) break;
-      if (overlapFraction(a.span, b.span) >= SAME_SESSION_OVERLAP) {
-        const ra = find(a.index);
-        const rb = find(b.index);
-        if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
-      }
+      if (!sameSession(a.span, b.span)) continue;
+      twins.add(pairKey(a.index, b.index));
+      const shared = Math.min(a.span.end, b.span.end) - Math.max(a.span.start, b.span.start);
+      const union = Math.max(a.span.end, b.span.end) - Math.min(a.span.start, b.span.start);
+      const ids = [rows[a.index]!.id, rows[b.index]!.id].sort();
+      pairs.push({ i: a.index, j: b.index, strength: shared / union, tie: ids.join(' ') });
     }
   }
 
-  const byRoot = new Map<number, WorkoutSession<R>>();
+  pairs.sort((p, q) => q.strength - p.strength || (p.tie < q.tie ? -1 : p.tie > q.tie ? 1 : 0));
+  for (const { i, j } of pairs) {
+    const gi = groupOf[i]!;
+    const gj = groupOf[j]!;
+    if (gi === gj) continue;
+    if (!gi.every((m) => gj.every((n) => twins.has(pairKey(m, n))))) continue;
+    for (const n of gj) {
+      gi.push(n);
+      groupOf[n] = gi;
+    }
+  }
+
+  const byRoot = new Map<number[], WorkoutSession<R>>();
   const ordered: WorkoutSession<R>[] = [];
   rows.forEach((row, index) => {
-    const root = find(index);
+    const root = groupOf[index]!;
     const session = byRoot.get(root);
     if (!session) {
       const fresh: WorkoutSession<R> = { primary: row, members: [row] };

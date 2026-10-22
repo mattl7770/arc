@@ -112,7 +112,11 @@ import {
 // The two set grids. They joined the walk with the stopwatch clock field
 // (2026-09-23): workout-live needed a Reanimated stub and both needed
 // `useNavigation` from the expo-router stub — see db/render-hook.mjs.
-import WorkoutLiveScreen, { ExerciseBlock, leaveLiveLogger } from '../app/workout-live.tsx';
+import WorkoutLiveScreen, {
+  blankSet,
+  ExerciseBlock,
+  leaveLiveLogger,
+} from '../app/workout-live.tsx';
 import { AiAddDoor, BrowseCatalog } from '../src/components/exercise/exercise-picker.tsx';
 import { UndoRow } from '../src/components/nutrition/undo-row.tsx';
 import { lbToKg, weightSpec } from '../src/lib/exercise/format.ts';
@@ -8646,6 +8650,48 @@ console.log('\n35. Round 3 — set targets, Prev, swipe-to-delete, Resume first,
     : bad('away placeholders', placeholders(awayHtml, 'Reps', 2));
   refute('workout-live (round 3, away)', awayHtml, ['Hold the load']);
   clearWorkoutDraft(db, 'live');
+
+  // fix3: a draft the phone's 0061 build wrote — no target, rows ticked with
+  // nothing typed, last time grey beside them. Resumed, a row with last time
+  // takes it (what the old build showed) and stays done; a row with nothing to
+  // show is un-ticked; and the hub's count agrees before the resume.
+  const doneEmpty = (key) => ({ ...blankRow(key), done: true });
+  const { target: _oldTarget, ...oldBlock } = ohpBlock;
+  saveWorkoutDraft(db, 'live', {
+    version: DRAFT_VERSION,
+    startedAt: Date.now() - 60_000,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [{ ...oldBlock, sets: [doneEmpty(1), doneEmpty(2), doneEmpty(3)] }],
+  });
+  expect('exercise hub (fix3, old ticked draft)', render('exercise hub (fix3, old ticked draft)', ExerciseScreen), [
+    '2 sets logged',
+  ]);
+  const oldHtml = render('workout-live (fix3, old ticked draft)', WorkoutLiveScreen, { resume: '1' });
+  expect('workout-live (fix3, old ticked draft)', oldHtml, [
+    'aria-label="Mark set 1 incomplete"',
+    'aria-label="Mark set 2 incomplete"',
+    'aria-label="Mark set 3 complete"',
+  ]);
+  const oldValues = [1, 2]
+    .map((i) => `${inputFor(oldHtml, `Weight for set ${i}`)?.value}×${inputFor(oldHtml, `Reps for set ${i}`)?.value}`)
+    .join(',');
+  oldValues === '95×8,95×7'
+    ? ok('…the ticked rows now hold last time’s 95 × 8 · 7, the numbers the old build showed')
+    : bad('settled values', oldValues);
+  clearWorkoutDraft(db, 'live');
+
+  // fix3: Add set copies the row above's exact kilograms with its text, so a
+  // held cross-unit load (137.5 lb shown as 62.4 kg) does not drift on Finish.
+  const above = { ...blankRow(1), weight: '62.4', reps: '9', storedWeightKg: lbToKg(137.5), storedWeightText: '62.4' };
+  const copied = blankSet(above);
+  const retyped = blankSet({ ...above, weight: '65' });
+  copied.weight === '62.4' && copied.storedWeightKg === lbToKg(137.5) && copied.storedWeightText === '62.4' &&
+  retyped.storedWeightKg === undefined && retyped.weight === '65'
+    ? ok('fix3: Add set carries the exact kg behind an untouched weight, and not behind a retyped one')
+    : bad('blankSet carry', JSON.stringify({ copied, retyped }));
 
   // THE EDITOR of last time's session: no targets, no why-line — it happened.
   const editHtml = render('workout-live (round 3, editing)', WorkoutLiveScreen, {

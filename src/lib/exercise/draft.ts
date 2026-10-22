@@ -39,7 +39,9 @@ import { clockFromISO, formatLocalDate } from '@/lib/db/date';
 import type { PrevSet } from '@/lib/db/repositories/training-stats';
 import { asMeasures, type Measures } from '@/lib/exercise/measures';
 import { RECORD_KINDS, type RecordKind } from '@/lib/exercise/records';
+import { settleDoneRows } from '@/lib/exercise/set-hints';
 import type { LoggingType, Mechanic, SetType, WorkoutKind } from '@/lib/exercise/types';
+import { DEFAULT_UNIT_PREFERENCES } from '@/lib/user/types';
 
 /**
  * Bumped whenever {@link LiveDraft} or {@link ManualDraft} changes shape.
@@ -564,9 +566,25 @@ export function liveDraftMovements(draft: LiveDraft): string[] {
   return names;
 }
 
-/** Sets actually completed in this draft — the other half of the Resume card. */
+/**
+ * Sets actually completed in this draft — the other half of the Resume card.
+ *
+ * Counted the way the logger will settle them (fix3, 2026-10-21,
+ * `settleDoneRows`): a ✓ on a row with no figure counts only if the row has a
+ * hint to adopt, since resuming un-ticks one that has none. The units only
+ * format a figure, never decide whether there is one. The basis is not on the
+ * draft, and it decides only whether a TARGET applies: the one basis that
+ * withholds it (assisted) falls back to last time, so this count can run one
+ * high only for an assisted row with a target and no last time, which the
+ * resume then settles with the real basis.
+ */
 export function liveDraftSetsDone(draft: LiveDraft): number {
-  return draft.blocks.reduce((n, b) => n + b.sets.filter((s) => s.done).length, 0);
+  const settled = settleDoneRows(draft.blocks, {
+    basisOf: () => null,
+    away: draft.away,
+    units: DEFAULT_UNIT_PREFERENCES,
+  });
+  return settled.reduce((n, b) => n + b.sets.filter((s) => s.done).length, 0);
 }
 
 /**

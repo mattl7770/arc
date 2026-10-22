@@ -51,7 +51,7 @@ import {
   overlapFraction,
   parseSpan,
   readWorkoutHr,
-  SAME_SESSION_OVERLAP,
+  sameSession,
   sourcePriorityOf,
   workoutSpan,
   type TimeSpan,
@@ -344,8 +344,9 @@ function writePairingRefusals(db: Database, refusals: readonly PairRefusal[]): v
  * are disjoint — so the two rules can never fight over a `workouts` row:
  *
  *   · **`started_at` present → the SPAN rule.** The two sessions are THE SAME
- *     SESSION when their spans share at least {@link SAME_SESSION_OVERLAP} of the
- *     shorter one — the app's one definition of that, borrowed whole from the
+ *     SESSION when {@link sameSession} says so (since fix3: half the shorter AND
+ *     either the shorter lies inside the longer or they share half the longer)
+ *     — the app's one definition of that, borrowed whole from the
  *     duplicate collapse `recentWearableWorkouts` already performs.
  *   · **`started_at` NULL → the DAY rule** ({@link pairByDay}). No span exists,
  *     so the day is all there is, and the duration arbitrates.
@@ -434,7 +435,7 @@ export function pairIngestedWorkouts(
   return links.length;
 }
 
-/** The 0054 rule, unchanged: a shared clock, and the day only pre-filters. */
+/** The 0054 rule: a shared clock ({@link sameSession} since fix3), and the day only pre-filters. */
 function pairBySpan(
   db: Database,
   since: string,
@@ -485,7 +486,7 @@ function pairBySpan(
       if (isRefused(refused, w.id, candidate.members)) continue;
       if (candidate.row.date < before || candidate.row.date > after) continue;
       const shared = overlapFraction(w.span, candidate.span);
-      if (shared < SAME_SESSION_OVERLAP) continue;
+      if (!sameSession(w.span, candidate.span)) continue;
       if (best === null || beatsIncumbent(measured(candidate), measured(best.candidate))) {
         best = { candidate, overlap: shared };
       }

@@ -37,7 +37,7 @@
  *     with no comparable history takes the engine's own rep target.
  *   - **Progress and deload** are new loads, so they are put on real plates:
  *     a progress rounds UP to the next step the user can load (2.5 kg, or a
- *     5 lb pair) and a deload rounds DOWN. Rounding to nearest could turn
+ *     5 lb pair; half that for a per-side figure) and a deload rounds DOWN. Rounding to nearest could turn
  *     "add 1.1 kg" into the same weight at fewer reps — a regression labelled
  *     progress. A held load is never rounded: it is a weight he already lifted.
  *
@@ -109,10 +109,24 @@ export function setTargetOf(s: ProgressionSuggestion, repHigh: number): SetTarge
  * the same weight again), `down` for a deload (never not a drop). The epsilon
  * keeps a value already on a step — 140 lb read back as 140.0000001 — from
  * being pushed one step further.
+ *
+ * The step is in the figure's own basis (0062, fix3 2026-10-21). The 2.5 kg /
+ * 5 lb step is the smallest PAIR of plates, which is the smallest jump of a
+ * `total` load. A `per_side` figure is one side of that pair, so its smallest
+ * jump is one plate: 1.25 kg or 2.5 lb. Without this a plate-loaded machine
+ * logged per side jumped twice as far as a barbell (45 → 50 lb a side is
+ * +10 lb on the sled). `per_hand` keeps the full step on purpose: a dumbbell
+ * rack goes up 2.5 kg or 5 lb per bell, so a half step would offer a bell that
+ * does not exist. `stack` and `bodyweight_plus` are whole figures and keep it too.
  */
-export function snapLoadDirected(kg: number, units: UnitPreferences, way: 'up' | 'down'): number {
+export function snapLoadDirected(
+  kg: number,
+  units: UnitPreferences,
+  way: 'up' | 'down',
+  basis: LoadBasis | null = null
+): number {
   const spec = weightSpec(units);
-  const step = spec.unit === 'kg' ? 2.5 : 5;
+  const step = (spec.unit === 'kg' ? 2.5 : 5) * (basis === 'per_side' ? 0.5 : 1);
   const display = spec.fromCanonical(kg);
   const steps = way === 'up' ? Math.ceil(display / step - 1e-6) : Math.floor(display / step + 1e-6);
   const snapped = steps * step;
@@ -215,7 +229,8 @@ export function setHint(input: {
     weightKg = snapLoadDirected(
       target.weightKg,
       input.units,
-      target.kind === 'progress' ? 'up' : 'down'
+      target.kind === 'progress' ? 'up' : 'down',
+      input.basis
     );
     reps = target.reps;
   }
@@ -297,6 +312,66 @@ export function tickPatch(
   if (set.time.trim() === '' && fields.time != null) patch.time = fields.time;
   if (set.distance.trim() === '' && fields.distance != null) patch.distance = fields.distance;
   return rowHasValue({ ...set, ...patch }, measures) ? patch : null;
+}
+
+/**
+ * A row marked ✓ that carries no figure, made to mean what it shows (fix3,
+ * 2026-10-21). Two ways to get one: a draft written by a build before
+ * {@link tickPatch} (the phone's 0061 build ticked an empty row as it stood,
+ * with last time's numbers grey beside it), or a row emptied after its tick.
+ * Finish saves only rows with a figure, so such a row read as logged and was
+ * then dropped: a fully ticked old session said "Nothing to save yet".
+ *
+ * The rule is the tick's own, applied late: the row takes the figure it
+ * shows ({@link tickPatch} with its {@link setHint}), which for an old draft is
+ * last time's numbers, exactly what the old build drew beside the ✓. A row with
+ * nothing to show is un-ticked rather than left reading as done. A row that is
+ * not done, or has a figure, is returned as it is (the same object).
+ */
+export function settleDoneRow(
+  set: DraftSet,
+  hint: SetHint | null,
+  measures: Measures,
+  units: UnitPreferences
+): DraftSet {
+  if (!set.done || rowHasValue(set, measures)) return set;
+  const patch = tickPatch(set, hint, measures, units);
+  return patch ? { ...set, ...patch } : { ...set, done: false, pr: false, prKinds: undefined };
+}
+
+/**
+ * {@link settleDoneRow} over a live session: every row's hint asked the way the
+ * screen asks it. Returns `blocks` itself when nothing needed settling. Run on
+ * resume and again at Finish, and read by `liveDraftSetsDone`, so the Resume
+ * card's count, the rows' ✓ and what Finish saves are one answer.
+ */
+export function settleDoneRows<B extends DraftBlock>(
+  blocks: B[],
+  ctx: { basisOf: (block: B) => LoadBasis | null; away: boolean; units: UnitPreferences }
+): B[] {
+  let changed = false;
+  const out = blocks.map((block) => {
+    let touched = false;
+    const sets = block.sets.map((set, index) => {
+      if (!set.done) return set;
+      const hint = setHint({
+        block,
+        index,
+        set,
+        basis: ctx.basisOf(block),
+        away: ctx.away,
+        editing: false,
+        units: ctx.units,
+      });
+      const next = settleDoneRow(set, hint, block.measures, ctx.units);
+      if (next !== set) touched = true;
+      return next;
+    });
+    if (!touched) return block;
+    changed = true;
+    return { ...block, sets };
+  });
+  return changed ? out : blocks;
 }
 
 /**

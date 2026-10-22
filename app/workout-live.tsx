@@ -110,6 +110,7 @@ import {
   removeSetWithUndo,
   restampMovement,
   setHint,
+  settleDoneRows,
   setRemovalWords,
   setTargetOf,
   setUndoStands,
@@ -398,11 +399,21 @@ function adoptKeys(blocks: LiveBlock[]): void {
   }
 }
 
-function blankSet(from?: LiveSet, setType: SetType = 'normal'): LiveSet {
+/**
+ * A new row. `from` is the row above, whose load and reps it repeats. Exported
+ * for db/screens-render.test.mjs.
+ */
+export function blankSet(from?: LiveSet, setType: SetType = 'normal'): LiveSet {
   return {
     key: nextKey(),
     weight: from?.weight ?? '',
     reps: from?.reps ?? '',
+    // The exact kg behind a copied weight rides with it (fix3): a held load
+    // shown in the other unit (137.5 lb as 62.4 kg) would otherwise re-convert
+    // from its rounded display on Finish and drift off the load it repeats.
+    ...(from?.storedWeightText != null && from.weight === from.storedWeightText
+      ? { storedWeightKg: from.storedWeightKg, storedWeightText: from.storedWeightText }
+      : {}),
     rpe: '',
     // Time and distance do NOT carry forward from the set above, where weight
     // and reps do. Straight sets repeat a load; nobody runs the same 5 km twice
@@ -580,7 +591,18 @@ function initialBlocks(
 ): LiveBlock[] {
   if (draft) {
     adoptKeys(draft.blocks);
-    return draft.blocks;
+    // A ✓ on a row with no figure (a draft from a build before `tickPatch`)
+    // takes the figure the row shows, or is un-ticked when it shows none
+    // (fix3, `settleDoneRows`): otherwise it reads as logged and Finish drops it.
+    const bases = exerciseLoadBases(
+      getDb(),
+      draft.blocks.map((b) => b.exerciseId).filter((id): id is string => id != null)
+    );
+    return settleDoneRows(draft.blocks, {
+      basisOf: (b) => (b.exerciseId == null ? null : (bases.get(b.exerciseId) ?? null)),
+      away: draft.away,
+      units,
+    });
   }
   if (workout) return blocksFromWorkout(workout, units);
   if (routineId) {
@@ -1564,13 +1586,17 @@ function WorkoutLive({
         return;
       }
     }
-    const groups = supersetGroups(blocks);
+    // A done row emptied after its tick takes the figure it shows, the tick's own
+    // rule applied late (fix3, `settleDoneRows`); one with nothing to show is
+    // dropped below, as before. An edit's rows are stored history: untouched.
+    const settled = editing ? blocks : settleDoneRows(blocks, { basisOf, away, units });
+    const groups = supersetGroups(settled);
     // A LIVE set is saved only when it carries a figure. A tick no longer
     // marks an empty row done (`toggleDone`), but a done row can still be
     // emptied after the tick, or arrive so from a draft an older build wrote —
     // and a set of nothing is not a set. An EDIT keeps its done rows as they
     // are: they are stored history, and Save must not drop one unasked.
-    const sets = blocks.flatMap((b, bi) =>
+    const sets = settled.flatMap((b, bi) =>
       b.sets
         .filter(
           (s) =>

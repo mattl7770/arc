@@ -39,6 +39,7 @@
 import { clockFromISO, formatLocalDate, todayISODate } from '@/lib/db/date';
 import { deleteWorkout, getWorkoutDetail, replaceWorkout } from '@/lib/db/repositories/exercise';
 import { pairIngestedWorkouts } from '@/lib/db/repositories/workout-ingest';
+import { workoutTickTitles } from '@/lib/db/repositories/training-tick';
 import { rederiveMissionFromToday } from '@/lib/db/repositories/mission-generate';
 import {
   checkGroceryItem,
@@ -227,14 +228,19 @@ const workoutsDomain: CoachDomainEntry = {
   // exactly what goes.
   remove: {
     mode: 'hard',
-    gone: (_db, row) => {
+    gone: (db, row) => {
       const workout = row.raw as NonNullable<ReturnType<typeof getWorkoutDetail>>;
       const movements = [...new Set(workout.sets.map((s) => s.exercise))];
+      // The Training row the session ticked comes back open with it (item 70),
+      // and the card says so (fix3): the delete re-opens a row on Home, which
+      // is a second act the approval has to cover.
+      const reopens = workoutTickTitles(db, row.id);
       return [
         workout.durationMin === null ? null : `${Math.round(workout.durationMin)} min`,
         workout.sets.length === 0
           ? 'no sets'
           : `${plural(workout.sets.length, 'set')}: ${listed(movements)}`,
+        reopens.length === 0 ? null : `re-opens Training: ${listed(reopens)}`,
       ]
         .filter((p): p is string => p !== null)
         .join(' · ');
