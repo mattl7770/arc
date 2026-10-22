@@ -299,10 +299,9 @@ export default function RootLayout() {
           if (target.kind === 'resume') {
             router.push({ pathname: '/workout-live', params: { resume: '1' } });
           } else if (target.kind === 'return') {
-            router.dismissTo({
-              pathname: '/workout-live',
-              params: target.params as Record<string, string>,
-            });
+            // By count, never by name: a pop to '/workout-live' stops at the
+            // NEAREST one, which can be a past session's editor.
+            router.dismiss(target.pops);
           }
           return;
         }

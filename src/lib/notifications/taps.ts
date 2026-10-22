@@ -210,8 +210,14 @@ export function appNavigatorMounted(rootState: NavStateLike | null | undefined):
 export type RestTapTarget =
   /** Already on the logger, or no session to show: stay. */
   | { kind: 'stay' }
-  /** The logger is on the stack under something else: go back to it, as it was. */
-  | { kind: 'return'; params: Record<string, unknown> }
+  /**
+   * The logger is on the stack under something else: go back to it, as it
+   * was. `pops` is how many screens sit above THAT logger, so the caller pops
+   * exactly to it (`router.dismiss(pops)`). Popping by name (`dismissTo`)
+   * stops at the NEAREST `workout-live`, which can be a past session's editor
+   * pushed over the live one, and it hands that editor the live one's params.
+   */
+  | { kind: 'return'; params: Record<string, unknown>; pops: number }
   /** A live session is stored but not on screen: resume it, as the hub does. */
   | { kind: 'resume' };
 
@@ -230,12 +236,13 @@ export function restTapTarget(
     const isLiveLogger = (route: { name: string; params?: object }): boolean =>
       route.name === 'workout-live' &&
       !(route.params && 'workoutId' in route.params && route.params.workoutId != null);
-    const focused = stack.routes[stack.index ?? stack.routes.length - 1];
+    const top = stack.index ?? stack.routes.length - 1;
+    const focused = stack.routes[top];
     if (focused && isLiveLogger(focused)) return { kind: 'stay' };
-    for (let i = stack.routes.length - 1; i >= 0; i--) {
+    for (let i = top - 1; i >= 0; i--) {
       const route = stack.routes[i];
       if (route && isLiveLogger(route)) {
-        return { kind: 'return', params: { ...(route.params ?? {}) } };
+        return { kind: 'return', params: { ...(route.params ?? {}) }, pops: top - i };
       }
     }
   }

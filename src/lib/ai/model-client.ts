@@ -617,8 +617,9 @@ export class MessageAccumulator {
         const block = this.blocks[index];
         if (block && (block.type === 'tool_use' || block.type === 'server_tool_use')) {
           const raw = this.partialJson.get(index) ?? '';
-          let input: unknown = {};
+          const target = block as WireToolUseBlock;
           if (raw.trim() !== '') {
+            let input: unknown = {};
             try {
               input = JSON.parse(raw);
             } catch {
@@ -626,8 +627,14 @@ export class MessageAccumulator {
               // so the turn degrades to the max_tokens path instead of a raw
               // SyntaxError discarding the streamed text.
             }
+            target.input = input;
+          } else {
+            // No deltas: the input arrived whole in content_block_start (or is
+            // absent). Keep it — overwriting it with {} would alter a block
+            // that goes back verbatim and record a search with no query.
+            const given: unknown = target.input;
+            target.input = given !== null && typeof given === 'object' ? given : {};
           }
-          (block as WireToolUseBlock).input = input;
         }
         break;
       }
@@ -891,8 +898,11 @@ export async function runCoachTurn(
         // A refused search tool is retried ONCE without it. Only a request
         // that actually carried the tool, and only before any search ran this
         // turn (a search that ran proves the tool is accepted, and its blocks
-        // in the history would not survive the tool's removal).
-        if (!searchToolRefused(error, config, webSearch) || searches.calls().length > 0) {
+        // in the history would not survive the tool's removal). "Ran" is the
+        // ledger OR the API's own count: a search block the ledger did not
+        // read still counts in `server_tool_use.web_search_requests`.
+        const searched = searches.calls().length > 0 || (usage.webSearchRequests ?? 0) > 0;
+        if (!searchToolRefused(error, config, webSearch) || searched) {
           throw error;
         }
         reply = await send(null);

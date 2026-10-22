@@ -560,9 +560,10 @@ export function parseSpan(startIso: string, endIso: string): TimeSpan | null {
  * longer span would score that 0.77 against a union-based 0.48 and start
  * depending on which source happened to be more generous.
  *
- * Exported since 0054. Since fix3 it is the measure, not the rule: "the same
+ * Exported since 0054. Since fix3 it is not the twin rule: "the same
  * session" is {@link sameSession}, which reads this fraction and the one of the
- * longer span. Pairing still stores this figure as a link's `overlap`.
+ * longer span. Pairing gates on this fraction (half the shorter, fix4) and
+ * stores it as a link's `overlap`.
  */
 export function overlapFraction(a: TimeSpan, b: TimeSpan): number {
   const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
@@ -582,8 +583,10 @@ export const SAME_SESSION_OVERLAP = 0.5;
 export const CONTAINED_OVERLAP = 0.8;
 
 /**
- * Are two spans ONE session? The app's one definition (fix3, 2026-10-21), read
- * by the duplicate collapse and by the pairing pass's span rule alike.
+ * Are two spans ONE session? The app's one definition of a twin (fix3,
+ * 2026-10-21), the duplicate collapse's rule. The pairing pass only RANKS by
+ * it (fix4): its gate is half the shorter, the looser question a log and a
+ * recording of one session have to answer.
  *
  * At least {@link SAME_SESSION_OVERLAP} of the shorter is always required, and
  * then ONE of:

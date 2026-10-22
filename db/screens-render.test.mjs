@@ -9373,7 +9373,11 @@ console.log('\n37. item 71 — the workout in progress rides along, and a tap go
   });
   const tapWith = (rootState, el = element) => {
     __setRootState(rootState);
-    const before = { p: __router.pushes.length, d: __router.dismissTos.length };
+    const before = {
+      p: __router.pushes.length,
+      d: __router.dismissTos.length,
+      n: __router.dismisses.length,
+    };
     const btn = React.Children.toArray(el.props.children).find(
       (child) => typeof child?.props?.onPress === 'function'
     );
@@ -9381,8 +9385,16 @@ console.log('\n37. item 71 — the workout in progress rides along, and a tap go
     return {
       pushes: __router.pushes.slice(before.p),
       dismissTos: __router.dismissTos.slice(before.d),
+      dismisses: __router.dismisses.slice(before.n),
     };
   };
+  // A return pops BY COUNT to the live logger, never by name (fix4): a pop to
+  // the nearest `workout-live` can stop at a past session's editor.
+  const returned = (tap, pops) =>
+    tap.pushes.length === 0 &&
+    tap.dismissTos.length === 0 &&
+    tap.dismisses.length === 1 &&
+    tap.dismisses[0] === pops;
   const overDetail = tapWith(
     stackOf([
       { name: '(tabs)' },
@@ -9390,21 +9402,31 @@ console.log('\n37. item 71 — the workout in progress rides along, and a tap go
       { name: 'exercise-detail', params: { id: 'barbell-bench-press' } },
     ])
   );
-  overDetail.pushes.length === 0 &&
-  overDetail.dismissTos.length === 1 &&
-  overDetail.dismissTos[0].pathname === '/workout-live' &&
-  overDetail.dismissTos[0].params.routineId === 'r9'
-    ? ok('from exercise-detail pushed by the logger: dismissTo the logger with its own params, no second push')
+  returned(overDetail, 1)
+    ? ok('from exercise-detail pushed by the logger: one pop, back to the logger as it was, no second push')
     : bad('bar over the logger', JSON.stringify(overDetail));
   const tabsOver = tapWith(
     stackOf([{ name: '(tabs)' }, { name: 'workout-live', params: { resume: '1' } }, { name: '(tabs)' }]),
     SessionBar({ view })
   );
-  tabsOver.pushes.length === 0 &&
-  tabsOver.dismissTos.length === 1 &&
-  tabsOver.dismissTos[0].params.resume === '1'
+  returned(tabsOver, 1)
     ? ok('the tab bar’s copy, with (tabs) pushed above a logger: back to that logger, not a new one')
     : bad('tab bar over the logger', JSON.stringify(tabsOver));
+  // The reviewer's stack (popto.cjs): the live logger, the hub, a PAST
+  // session's editor, and an exercise's detail. `dismissTo('/workout-live')`
+  // stopped at the editor and gave it the live logger's params.
+  const overEditor = tapWith(
+    stackOf([
+      { name: '(tabs)' },
+      { name: 'workout-live', params: { resume: '1' } },
+      { name: 'exercise' },
+      { name: 'workout-live', params: { workoutId: 'W1' } },
+      { name: 'exercise-detail', params: { id: 'bench' } },
+    ])
+  );
+  returned(overEditor, 3)
+    ? ok('a past session’s editor between: three pops, to the LIVE logger, the editor never handed its params')
+    : bad('bar over an editor', JSON.stringify(overEditor));
   const editing = tapWith(
     stackOf([
       { name: '(tabs)' },
@@ -9412,11 +9434,13 @@ console.log('\n37. item 71 — the workout in progress rides along, and a tap go
       { name: 'exercise-detail', params: { id: 'x' } },
     ])
   );
-  editing.dismissTos.length === 0 && editing.pushes[0]?.params?.resume === '1'
+  editing.dismissTos.length === 0 &&
+  editing.dismisses.length === 0 &&
+  editing.pushes[0]?.params?.resume === '1'
     ? ok('a logger correcting a SAVED session is not the live one: the live one is resumed by a push')
     : bad('editing logger', JSON.stringify(editing));
   const noLogger = tapWith(stackOf([{ name: '(tabs)' }, { name: 'water' }]));
-  noLogger.dismissTos.length === 0 && noLogger.pushes.length === 1
+  noLogger.dismissTos.length === 0 && noLogger.dismisses.length === 0 && noLogger.pushes.length === 1
     ? ok('no logger on the stack: a push, resuming the slot')
     : bad('no logger', JSON.stringify(noLogger));
   __setRootState(undefined);

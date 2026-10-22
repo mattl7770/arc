@@ -164,29 +164,29 @@ function landedWrites(toolCalls: CoachToolCall[]): string[] {
  * The claim check runs ONLY when nothing landed. A turn that really wrote is
  * never examined, so no real write can ever be captioned as a phantom one.
  *
- * Nor is a turn that CALLED a write the user declined, or that errored
- * (2026-10-21). The thread now keeps the whole turn, and the prompt has the
- * Coach present a draft in full BEFORE the write call, so "Added to your
- * grocery list: milk, eggs." ahead of a declined card is the draft the user
- * just refused, not a claim, and the thread already says what happened in its
- * own voice ("Declined, not saved"). Every write call is landed, declined or
- * errored (`landedWriteCalls`), so the check runs exactly when the turn called
- * no write at all, which is the owner's report: a save claimed with no tool
- * call. That reads only the stored tool record, so a reload agrees.
+ * Nor is a turn with a write the user DECLINED (2026-10-21). The thread now
+ * keeps the whole turn, and the prompt has the Coach present a draft in full
+ * BEFORE the write call, so "Added to your grocery list: milk, eggs." ahead of
+ * a declined card is the draft the user just refused, not a claim, and the
+ * thread already says what happened in its own voice ("Declined, not saved").
  *
- * (Checking only the text after the last write call, as first proposed, would
- * never run: a turn with a write call has always landed, declined or errored.)
+ * A write that ERRORED earns no exemption. The bubble prints no line for a
+ * failed call, so "Logged your lunch." after one would otherwise stand
+ * uncontradicted; the phantom caption is the only thing on screen that says
+ * nothing was saved. (A first cut exempted every turn that called a write, and
+ * that hid exactly this.) The check reads only the stored tool record, so a
+ * reload agrees.
  */
 function writeFidelity(
   content: string,
   toolCalls: CoachToolCall[]
 ): { writes: string[]; declined: string[]; phantomWrite: boolean } {
   const writes = landedWrites(toolCalls);
-  const calledAWrite = toolCalls.some((call) => isWriteTool(call.name));
+  const declinedAWrite = toolCalls.some((call) => isWriteTool(call.name) && call.declined === true);
   return {
     writes,
     declined: declinedWriteLines(toolCalls, humanizeToolName),
-    phantomWrite: !calledAWrite && claimsCompletedWrite(content),
+    phantomWrite: writes.length === 0 && !declinedAWrite && claimsCompletedWrite(content),
   };
 }
 

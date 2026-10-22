@@ -688,9 +688,10 @@ console.log('7. the whole turn stays in the thread: draft, card and answer, thro
   // 8. The phantom check reads the WHOLE turn now, and the draft ahead of a
   // card is in it (review finding, phantom.mjs): a declined card whose draft
   // reads "Added to your grocery list: milk, eggs." showed "Declined, not
-  // saved" AND the phantom accusation. A turn that called a write has said
-  // what happened (receipt, decline line, or its error), so only a turn that
-  // called NO write is examined — live and reloaded alike.
+  // saved" AND the phantom accusation. A turn with a landed write (its
+  // receipt) or a declined one (its decline line) has said what happened, so
+  // neither is examined; a turn whose only write ERRORED prints no line for
+  // it, so it is — live and reloaded alike.
   console.log('8. the draft ahead of a refused card is not a phantom claim, live or reloaded');
   const CLAIMING_DRAFT = 'Draft below.\n\nAdded to your grocery list: milk, eggs.';
   claimsCompletedWrite(CLAIMING_DRAFT)
@@ -727,20 +728,30 @@ console.log('7. the whole turn stays in the thread: draft, card and answer, thro
       : bad('declined phantom reload', JSON.stringify(reloaded));
   }
   {
-    // An ERRORED write: the card never draws (the input fails at summary time).
+    // An ERRORED write: the card never draws (the input fails at summary
+    // time). The bubble prints no line for a failed call, so a claim in the
+    // turn stands uncontradicted unless the phantom caption says otherwise
+    // (review, 2026-10-21: a first cut exempted errored turns and hid it).
     const { db } = freshDb();
     globalThis.__ARC_TEST_DB__ = db;
     const h = renderHook(() => useCoachChat());
     await turn(h, 'add it', [
       toolUseReply(CLAIMING_DRAFT, 'add_grocery_items', { items: [] }),
-      textReply('That did not go through.'),
+      textReply('Logged your lunch.'),
     ]);
     const bubble = lastOf(h);
     const calls = bubble.toolCalls ?? [];
-    calls.length === 1 && calls[0].isError === true && !bubble.phantomWrite
-      ? ok('errored: the failed write is the record, and no phantom caption is added')
+    calls.length === 1 &&
+    calls[0].isError === true &&
+    bubble.writes === undefined &&
+    bubble.declined === undefined &&
+    bubble.phantomWrite === true
+      ? ok('errored: a claim after a failed write is flagged — the caption is the only line that says nothing saved')
       : bad('errored phantom', JSON.stringify(bubble));
     h.unmount();
+    lastOf(renderHook(() => useCoachChat())).phantomWrite === true
+      ? ok('…and still flagged after a reload')
+      : bad('errored phantom reload');
   }
   {
     // The control: the owner's report itself — a save claimed, no tool called.

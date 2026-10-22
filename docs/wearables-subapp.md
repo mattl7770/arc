@@ -2496,7 +2496,7 @@ An independent review proved two ways the round-3 grouping merged sessions that 
 
 The fix is two changes, both in `repositories/wearables.ts`:
 
-1. **`sameSession(a, b)`** is the one definition. At least half of the shorter span must be
+1. **`sameSession(a, b)`** is the one definition of a twin. At least half of the shorter span must be
    shared, as before, **and then one of**: the shorter lies inside the longer (at least
    `CONTAINED_OVERLAP`, 0.8, of it shared), or they share at least half of the **longer** one too.
    The first clause keeps the case the shorter-span measure was chosen for: the phone that caught
@@ -2512,10 +2512,20 @@ The fix is two changes, both in `repositories/wearables.ts`:
    join, because it shares nothing with the lift. Three copies of one real session are still one
    session, because every pair of them is.
 
-The pairing pass's span rule (`pairBySpan`, `workout-ingest.ts`) reads `sameSession` as well, so
-the app still has one definition of "the same session" for its two questions: a log of the run's
-20 minutes is no longer paired with the lift it barely touches. The day rule, the refusal and the
-stored `overlap` figure (still `overlapFraction`, the provenance number) are unchanged.
+The pairing pass's span rule (`pairBySpan`, `workout-ingest.ts`) **gates on half the shorter, as
+in 0054, and ranks by `sameSession`** (fix4, 2026-10-21). fix3 made `sameSession` the gate too, and
+a review proved that dropped pairings that had worked: a watch that ran 07:00–08:00 with the
+warm-up and a log 07:15–09:00 share 0.75 of the watch's hour but under half of the log's 105
+minutes, so neither clause holds and the session sat unpaired. A log and a recording are two
+clocks on one session, started and stopped by hand at different moments, which is a looser
+question than whether two recordings are twins. `sameSession` now only ranks: among the
+recordings that clear half the shorter, one that is the same session beats one that is not,
+ahead of source priority, so a log of the run's 20 minutes still pairs with the run rather than
+the Garmin lift whose recording ran 10 minutes into it. The twin collapse keeps `sameSession` and
+complete linkage unchanged. The day rule, the refusal and the stored `overlap` figure (still
+`overlapFraction`, the provenance number) are unchanged. Tests: §29's edge case now asserts the
+log pairs with the run (not merely "not the lift"), and two new cases (07:15 + 105 min, 07:20 +
+90 min against a 07:00–08:00 watch) pair by span; both fail on fix3's gate.
 
 **Tests** (`db/wearables.test.mjs` §29). The order-independence case now uses three real copies
 of one session (10:00–11:02, 10:01–11:01, and a fragment 10:42–11:02) and still collapses to one,
