@@ -9831,5 +9831,114 @@ console.log('\n40. Item 86 — was this estimate right? Good / Off, the one ques
     : bad('rating wiring');
 }
 
+console.log('\n41. Coach proposals and the model-voiced brief — Home’s Coach card and the thread record');
+{
+  const { CoachNote } = await import('../src/components/home/coach-note.tsx');
+  const { ProposalRecord } = await import('../src/components/coach/proposal-card.tsx');
+  const P = await import('../src/lib/ai/proposals.ts');
+  const { parsePassLines } = await import('../src/lib/ai/proposal-lines.ts');
+  const noop = () => {};
+  const now = new Date();
+
+  // Nothing drafted, no brief: no Coach card, and the deterministic brief stands.
+  const quiet = render('home (no pass output)', HomeScreen);
+  expect('home (no pass output)', quiet, ['Coach Brief']);
+  refute('home (no pass output)', quiet, ['For your approval', 'Coach · today']);
+
+  // A pass's output, stored as the pass stores it: a brief and one draft.
+  const parsed = parsePassLines(
+    'PROPOSE set_reminder {"title":"Lights out","time":"22:15"} Bed has drifted past 23:00 three nights running.'
+  );
+  const { drafted } = P.draftProposals(db, parsed.proposals, parsed.malformed, now);
+  const [kept] = P.recordProposals(db, drafted, [], now);
+  // The server render escapes quotes; the card line carries two.
+  const shownSummary = kept.summary.replace(/"/g, '&quot;');
+  P.saveBrief(db, ['Recovery is the thing today: sleep ran short again.', 'Keep the session easy.'], now);
+  const home = render('home (brief + a draft)', HomeScreen);
+  expect('home (brief + a draft)', home, [
+    'Coach · today',
+    'Recovery is the thing today: sleep ran short again.',
+    'For your approval',
+    shownSummary,
+    'Bed has drifted past 23:00 three nights running.',
+    `aria-label="Approve: ${shownSummary}"`,
+    '>Decline<',
+  ]);
+  refute('home (brief + a draft)', home, ['Coach Brief', 'PROPOSE', 'BRIEF']);
+
+  // The card on its own: every state a draft can be in, and a removal's cost.
+  const base = { ...kept, messageId: null };
+  const states = render('coach card (all states)', CoachNote, {}, {
+    message: 'Your protein has been under target all week.',
+    onDismiss: noop,
+    brief: null,
+    proposals: [
+      { ...base, id: 'a', summary: 'Delete meal "Pasta"', status: 'pending', until: '14:00', snapshot: { ...base.snapshot, kind: 'delete' } },
+      { ...base, id: 'b', summary: 'Approved one', status: 'approved', outcome: 'Approved one' },
+      { ...base, id: 'c', summary: 'Declined one', status: 'declined' },
+      { ...base, id: 'd', summary: 'Expired one', status: 'expired' },
+      { ...base, id: 'e', summary: 'Moved one', status: 'refused', outcome: 'the card said x, it now reads y. Nothing written.' },
+    ],
+    busyId: null,
+    onApprove: noop,
+    onDecline: noop,
+  });
+  expect('coach card (all states)', states, [
+    'Coach noticed',
+    'Dismiss the Coach',
+    'Deleted for good on Approve · Open until 14:00',
+    'Saved to your record',
+    'Declined, not saved',
+    'Expired, not saved',
+    'Not written: the card said x, it now reads y. Nothing written.',
+  ]);
+  // Exactly one pending row, so exactly one Approve.
+  (states.match(/>Approve</g) ?? []).length === 1
+    ? ok('only the pending draft offers Approve')
+    : bad('approve count', String((states.match(/>Approve</g) ?? []).length));
+  const briefOnly = render('coach card (brief only)', CoachNote, {}, {
+    message: null,
+    onDismiss: noop,
+    brief: ['One line.'],
+  });
+  expect('coach card (brief only)', briefOnly, ['Coach · today', 'One line.']);
+  refute('coach card (brief only)', briefOnly, ['Dismiss the Coach', 'For your approval']);
+
+  // The thread record: a ruled plate, no accent, no signal colour.
+  const record = render('thread record', ProposalRecord, {}, {
+    proposals: [{ ...base, id: 'r1' }, { ...base, id: 'r2', summary: 'Second', status: 'declined' }],
+    busyId: null,
+    onApprove: noop,
+    onDecline: noop,
+  });
+  expect('thread record', record, ['Drafted by the Coach', '1 to answer', shownSummary, 'Declined, not saved']);
+  refute('thread record', record, ['pine', 'signal-']);
+  const busy = render('thread record (a tap in flight)', ProposalRecord, {}, {
+    proposals: [{ ...base, id: 'r1' }],
+    busyId: 'r1',
+    onApprove: noop,
+    onDecline: noop,
+  });
+  expect('thread record (a tap in flight)', busy, ['aria-disabled="true"']);
+
+  // WIRING, as source: the thread draws the record under the row it names,
+  // with the record text stripped from the bubble; Home falls back to the
+  // deterministic brief only when there is no model brief.
+  const coachSrc = readFileSync(new URL('../app/(tabs)/coach.tsx', import.meta.url), 'utf8');
+  const homeSrc = readFileSync(new URL('../app/(tabs)/index.tsx', import.meta.url), 'utf8');
+  coachSrc.includes('drafts.all.filter((p) => p.messageId === message.id)') &&
+  coachSrc.includes('splitProposalRecord(message.content)') &&
+  coachSrc.includes('<ProposalRecord') &&
+  homeSrc.includes('{coach.brief ? null : (') &&
+  homeSrc.includes('const coach = useCoachProposals(mission.reload);')
+    ? ok('the thread draws each pass row’s drafts under it; Home hides the deterministic brief only behind a model one')
+    : bad('proposal wiring');
+
+  db.run(
+    "UPDATE users SET preferences = json_remove(preferences, '$.coachProposals', '$.coachBrief')"
+  );
+  expect('home (cleared)', render('home (cleared)', HomeScreen), ['Coach Brief']);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

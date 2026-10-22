@@ -184,8 +184,10 @@ console.log('2. the attention router wakes the Coach for a NEW signal, once');
   signalPass && signalPass.kind === 'signal'
     ? ok('a new watch-tone signal makes a second pass due the same day')
     : bad('signal trigger', JSON.stringify(signalPass));
-  signalPass.detail.includes('readiness')
-    ? ok('the trigger names what changed')
+  // Since 2026-10-21 in words — the insight's own headline — not its id.
+  signalPass.detail ===
+  computeInsights(db, NOW).find((insight) => insight.id.startsWith('readiness'))?.headline
+    ? ok('the trigger names what changed, in words')
     : bad('detail', signalPass.detail);
 
   markPassRan(db, NOW);

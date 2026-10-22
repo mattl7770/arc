@@ -29,6 +29,11 @@
  *   happen HERE, after it returns, so the pass itself stays read-only by
  *   construction. What changed is recorded in the thread (owner's Q1).
  *
+ *   RECORDS THE DRAFTS AND THE BRIEF (2026-10-21). The pass hands back drafted
+ *   cards and a vetted brief; the three-a-day cap, the store and the thread
+ *   record happen here, after it returns (proposals.ts). Nothing a draft
+ *   describes runs until he taps Approve.
+ *
  *   ANSWERS TAPS. A tapped check-in queues a request; the runner answers it
  *   with the Coach speaking first (owner's Q5), once. A tapped nudge puts its
  *   own line into the thread.
@@ -50,6 +55,13 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
 import { apiKeyStore } from './api-key-store';
 import { runCoachPass, type PassTrigger } from './coach-pass';
 import type { FetchLike } from './model-client';
+import {
+  describeProposalRecord,
+  getBrief,
+  linkProposalsToMessage,
+  recordProposals,
+  saveBrief,
+} from './proposals';
 import {
   checkinAnswered,
   checkinKey,
@@ -210,6 +222,14 @@ export const coachPassStore = {
   getThreadVersion(): number {
     return threadVersion;
   },
+  /**
+   * Something outside this store wrote to the thread — an approved or declined
+   * Coach proposal (proposals.ts) — so the Coach tab re-reads it.
+   */
+  noteThreadWrite(): void {
+    threadVersion += 1;
+    emit();
+  },
   /** A check-in is waiting to be answered, or being answered now. */
   isAnswering(): boolean {
     return answering || request !== null;
@@ -327,9 +347,17 @@ export const coachPassStore = {
         emit();
       }
 
+      // The first look of the logical day writes Home's brief (Coach
+      // proposals, 2026-10-21) — once: a brief already saved today stands.
+      const state = getPassState(db);
+      const firstLook =
+        plan.consumesDay &&
+        (state.lastDate === null || state.lastDate < todayISODate(now)) &&
+        getBrief(db, now) === null;
       const result = await runCoachPass(db, {
         trigger: plan.trigger,
         now,
+        brief: firstLook,
         ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
       });
 
@@ -347,6 +375,14 @@ export const coachPassStore = {
       const applied = applyNudgeReply(db, result.nudges, now);
       const record = describeNudgePlan(applied, today);
 
+      // The drafts, through the cap, into the store — pending, nothing run.
+      // Written BEFORE the thread row so a failed append leaves them on Home
+      // rather than leaving a record of drafts that do not exist; a retried
+      // pass that drafts them again finds them pending and drops the repeat.
+      const kept = recordProposals(db, result.proposals.drafted, result.proposals.refused, now);
+      const drafts = describeProposalRecord(kept);
+      if (result.brief) saveBrief(db, result.brief, now);
+
       // Persist into the thread BEFORE consuming the day. What the Coach says
       // unprompted is a normal assistant turn: it shows up in the Coach tab in
       // context, survives the app closing, and is auditable like any other. If
@@ -358,14 +394,19 @@ export const coachPassStore = {
       // The plan record rides the same turn when the Coach spoke, and stands
       // alone when it was silent: a quiet day that planned a nudge still says
       // so in the thread.
-      const content = [result.message, record].filter((part): part is string => !!part);
+      const content = [result.message, record, drafts].filter((part): part is string => !!part);
       if (content.length > 0) {
-        appendMessage(
+        const messageId = appendMessage(
           db,
           getOrCreateActiveConversation(db).id,
           'assistant',
           content.join('\n\n'),
           result.toolCalls.length > 0 ? result.toolCalls : null
+        );
+        linkProposalsToMessage(
+          db,
+          kept.map((proposal) => proposal.id),
+          messageId
         );
         threadVersion += 1;
       }

@@ -16,6 +16,7 @@ import { CheckinLine } from '@/components/coach/checkin-line';
 import { MessageBubble } from '@/components/coach/message-bubble';
 import { NudgesCard } from '@/components/coach/nudges-card';
 import { PendingWriteCard } from '@/components/coach/pending-write-card';
+import { ProposalRecord } from '@/components/coach/proposal-card';
 import { RemindersCard } from '@/components/coach/reminders-card';
 import { SessionKeyPanel } from '@/components/coach/session-key-panel';
 import { StatusControl } from '@/components/status/status-control';
@@ -25,6 +26,8 @@ import { PaperGrid } from '@/components/ui/screen';
 import { useCoachChat } from '@/hooks/use-coach-chat';
 import { useCoachNudges } from '@/hooks/use-coach-nudges';
 import { useCoachPassThread } from '@/hooks/use-coach-pass';
+import { useCoachProposals } from '@/hooks/use-coach-proposals';
+import { splitProposalRecord } from '@/lib/ai/proposals';
 import { useReminders } from '@/hooks/use-reminders';
 import { useSessionKeySet } from '@/hooks/use-session-key';
 import { useStatuses } from '@/hooks/use-statuses';
@@ -211,6 +214,10 @@ export default function CoachScreen() {
   );
 
   const chat = useCoachChat({ onTurnComplete });
+  // The Coach's drafts (Coach proposals, 2026-10-21), each drawn under the
+  // pass row that recorded it; answering one appends its own row, so the
+  // thread re-reads through the pass store's version below.
+  const drafts = useCoachProposals(onTurnComplete);
   const scrollRef = useRef<ScrollView>(null);
 
   // Only follow the stream to the bottom if the user is already there. If they
@@ -441,28 +448,49 @@ export default function CoachScreen() {
               // a section gap because the turns no longer have a container holding
               // them apart from the card above.
               <View className={hasCards ? 'mt-7' : ''}>
-                {chat.messages.map((message, index) => (
-                  // Spacing and rules live on the thread, not on the turn, so
-                  // the last bubble cannot push a gap against the composer.
-                  //
-                  // The sheet's `.cf-turn` is a ruled row — `padding: 9px 0`
-                  // with a hairline between turns — where the app had only air.
-                  // The rule is what makes a long thread scan as a record of
-                  // exchanges rather than a drift of boxes, and it is the one
-                  // place on this screen a rule belongs: it separates rows of
-                  // ONE list, which is exactly what §4 sanctions ("rules enclose
-                  // objects, never pages"). `Divider` draws it as a filled view;
-                  // `border-b` here would box every turn on the screen, which is
-                  // the bug documented at length in ui/block.tsx. `first` keeps
-                  // it strictly BETWEEN turns — the sheet spells the same
-                  // boundary from the other end with `:last-child`.
-                  <View key={message.id}>
-                    <Divider first={index === 0} />
-                    <View className="py-2.5">
-                      <MessageBubble message={message} onRetry={chat.retry} />
+                {chat.messages.map((message, index) => {
+                  const mine = drafts.all.filter((p) => p.messageId === message.id);
+                  // The row's text keeps the record for the model's history;
+                  // the screen draws the drafts as the plate under it instead.
+                  const shown =
+                    mine.length > 0
+                      ? { ...message, content: splitProposalRecord(message.content) }
+                      : message;
+                  return (
+                    // Spacing and rules live on the thread, not on the turn, so
+                    // the last bubble cannot push a gap against the composer.
+                    //
+                    // The sheet's `.cf-turn` is a ruled row — `padding: 9px 0`
+                    // with a hairline between turns — where the app had only air.
+                    // The rule is what makes a long thread scan as a record of
+                    // exchanges rather than a drift of boxes, and it is the one
+                    // place on this screen a rule belongs: it separates rows of
+                    // ONE list, which is exactly what §4 sanctions ("rules enclose
+                    // objects, never pages"). `Divider` draws it as a filled view;
+                    // `border-b` here would box every turn on the screen, which is
+                    // the bug documented at length in ui/block.tsx. `first` keeps
+                    // it strictly BETWEEN turns — the sheet spells the same
+                    // boundary from the other end with `:last-child`.
+                    <View key={message.id}>
+                      <Divider first={index === 0} />
+                      <View className="py-2.5">
+                        {shown.content.length > 0 || mine.length === 0 ? (
+                          <MessageBubble message={shown} onRetry={chat.retry} />
+                        ) : null}
+                        {mine.length > 0 ? (
+                          <View className={shown.content.length > 0 ? 'mt-2.5' : ''}>
+                            <ProposalRecord
+                              proposals={mine}
+                              busyId={drafts.busyId}
+                              onApprove={drafts.approve}
+                              onDecline={drafts.decline}
+                            />
+                          </View>
+                        ) : null}
+                      </View>
                     </View>
-                  </View>
-                ))}
+                  );
+                })}
               </View>
             ) : (
               <View className={hasCards ? 'mt-6' : ''}>

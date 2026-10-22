@@ -15,21 +15,24 @@
  *   SIGNAL — an attention router: when something appears that was NOT there at
  *   the last pass, the day deserves a second look without waiting for tomorrow.
  *   Keyed by id so the same standing signal (an HRV trend that persists for a
- *   week) fires once, not every launch. Two sources feed it: watch-tone
- *   insights, and a zone change observed today (0060) — see
+ *   week) fires once, not every launch. Two sources fed it until 2026-10-21:
+ *   watch-tone insights, and a zone change observed today (0060) — see
  *   {@link currentSignals} for why a landing is one and why nothing about it
- *   reaches the brief.
+ *   reaches the brief. The chief-of-staff release made the sources a LIST,
+ *   {@link PASS_SIGNAL_SOURCES} — a lab import, a screening coming due, an
+ *   appointment within a week — so the next one is one line.
  *
  * State lives in `users.preferences.coachPass` — the unit-preferences pattern,
  * so no migration. Pure over the {@link Database} interface apart from that
  * read/write; headless-tested in db/coach-pass.test.mjs.
  */
 import type { Database } from '@/lib/db/database';
-import { forwardCursor, getDayStartsAt, todayISODate } from '@/lib/db/date';
+import { forwardCursor, getDayStartsAt, logicalDate, todayISODate } from '@/lib/db/date';
 import { getNudgeSettings } from '@/lib/db/repositories/coach-nudges';
 import { timezoneChangesOn } from '@/lib/db/repositories/day-meta';
+import { dueScreenings, upcomingAppointments } from '@/lib/db/repositories/screenings';
 import { getOrCreateUser } from '@/lib/db/repositories/user';
-import { clockOf } from '@/lib/notifications/nudge-plan';
+import { clockOf, inQuietHours } from '@/lib/notifications/nudge-plan';
 
 import { computeInsights } from './insights';
 import type { PassTrigger } from './coach-pass';
@@ -144,14 +147,135 @@ export function setPassState(db: Database, state: Partial<PassState>): void {
  * never.
  */
 export function currentSignals(db: Database, now: Date): string[] {
-  const today = todayISODate(now);
-  const landings = timezoneChangesOn(db, today).map((row) => `timezone-changed:${row.id}`);
-  return [
-    ...computeInsights(db, now)
-      .filter((insight) => insight.tone === 'watch')
-      .map((insight) => insight.id),
-    ...landings,
-  ].sort();
+  return passSignals(db, now)
+    .map((signal) => signal.id)
+    .sort();
+}
+
+/** One thing worth a look: a stable id (the router's memory) and words for the pass. */
+export type PassSignal = { id: string; label: string };
+
+/**
+ * A source of signals. `waitsOutQuietHours`: a signal from it does not WAKE a
+ * pass inside quiet hours (Settings › Coach) — it waits for the next foreground
+ * after them. It is still remembered by any pass that runs meanwhile, so a
+ * daily pass at 06:00 that already saw it does not pay for a second look at
+ * 07:00.
+ */
+export type PassSignalSource = {
+  name: string;
+  waitsOutQuietHours: boolean;
+  signals: (db: Database, now: Date) => PassSignal[];
+};
+
+/** A lab report imported within this many days is news. */
+const LAB_IMPORT_FRESH_DAYS = 3;
+/** An appointment this close is worth a word ahead of it (owner, 2026-10-21). */
+const APPOINTMENT_AHEAD_DAYS = 7;
+
+/**
+ * THE TRIGGER LIST (chief-of-staff release, Track 2 item 2). Each entry is one
+ * source; adding one is one line here and nothing else — the router, the
+ * dedupe and the quiet-hours rule are below and shared. Each id carries what
+ * would make it news AGAIN (a screening's due date, an appointment's time), so
+ * a rescheduled visit is a new signal and a standing one is not.
+ *
+ * The record-hygiene findings (src/lib/ai/findings.ts, merged separately)
+ * join as one entry — the finding's own stable id is the router's memory, so
+ * a finding fires once and a resolved one leaves the set:
+ *   { name: 'record finding', waitsOutQuietHours: true, signals: (db, now) =>
+ *       computeFindings(db, now).map((f) => ({ id: `finding:${f.id}`, label: … })) },
+ * and the same merge wires proposals.ts `setFindingLookup`, so a draft may
+ * cite the finding it fixes and refuses at the tap once it is resolved.
+ */
+export const PASS_SIGNAL_SOURCES: PassSignalSource[] = [
+  {
+    // Watch-tone insights. This is also the "experiment ready" trigger: a
+    // finished window is the `experiment-ready-<id>` insight, tone watch
+    // (insights.ts), so it needs no source of its own.
+    name: 'watch insight',
+    waitsOutQuietHours: false,
+    signals: (db, now) =>
+      computeInsights(db, now)
+        .filter((insight) => insight.tone === 'watch')
+        .map((insight) => ({ id: insight.id, label: insight.headline })),
+  },
+  {
+    name: 'timezone landing',
+    waitsOutQuietHours: false,
+    signals: (db, now) =>
+      timezoneChangesOn(db, todayISODate(now)).map((row) => ({
+        id: `timezone-changed:${row.id}`,
+        label: "the phone's timezone changed today",
+      })),
+  },
+  {
+    name: 'lab import',
+    waitsOutQuietHours: true,
+    signals: (db, now) =>
+      db
+        .all<{ id: string; collected_at: string }>(
+          'SELECT id, collected_at FROM lab_reports WHERE created_at >= ? ORDER BY created_at',
+          [new Date(now.getTime() - LAB_IMPORT_FRESH_DAYS * 86_400_000).toISOString()]
+        )
+        .map((row) => ({
+          id: `lab-import:${row.id}`,
+          label: `a lab report was imported (drawn ${row.collected_at})`,
+        })),
+  },
+  {
+    name: 'screening due',
+    waitsOutQuietHours: true,
+    signals: (db, now) =>
+      dueScreenings(db, todayISODate(now)).map((row) => ({
+        id: `screening-due:${row.id}@${row.next_due}`,
+        label:
+          row.dueStatus === 'overdue'
+            ? `screening "${row.name}" is overdue (was due ${row.next_due})`
+            : `screening "${row.name}" is coming due (${row.next_due})`,
+      })),
+  },
+  {
+    name: 'appointment ahead',
+    waitsOutQuietHours: true,
+    signals: (db, now) => {
+      const horizon = new Date(now.getTime() + APPOINTMENT_AHEAD_DAYS * 86_400_000).toISOString();
+      return upcomingAppointments(db, now.toISOString())
+        .filter((row) => row.scheduled_at <= horizon)
+        .map((row) => ({
+          id: `appointment:${row.id}@${row.scheduled_at}`,
+          label: `appointment "${row.title}" on ${logicalDate(new Date(row.scheduled_at))}`,
+        }));
+    },
+  },
+];
+
+/**
+ * Every current signal, in source order. With `wakingOnly`, the ones allowed
+ * to wake a pass now: inside quiet hours the sources that wait them out are
+ * left out. A source that throws contributes nothing rather than stopping the
+ * router — a broken read must not cost the day its look.
+ */
+export function passSignals(
+  db: Database,
+  now: Date,
+  options: { wakingOnly?: boolean } = {}
+): PassSignal[] {
+  let quiet = false;
+  if (options.wakingOnly) {
+    const settings = getNudgeSettings(db);
+    quiet = inQuietHours(clockOf(now), settings.quietStart, settings.quietEnd);
+  }
+  const out: PassSignal[] = [];
+  for (const source of PASS_SIGNAL_SOURCES) {
+    if (quiet && source.waitsOutQuietHours) continue;
+    try {
+      out.push(...source.signals(db, now));
+    } catch {
+      // see above
+    }
+  }
+  return out;
 }
 
 /**
@@ -182,8 +306,10 @@ export function duePass(db: Database, now: Date = new Date()): PassTrigger | nul
 
   // Same day (or a rolled-back clock): only a NEW signal justifies another pass.
   const seen = new Set(state.seenSignals);
-  const fresh = currentSignals(db, now).filter((id) => !seen.has(id));
-  if (fresh.length > 0) return { kind: 'signal', detail: fresh.join(', ') };
+  const fresh = passSignals(db, now, { wakingOnly: true }).filter((signal) => !seen.has(signal.id));
+  if (fresh.length > 0) {
+    return { kind: 'signal', detail: fresh.map((signal) => signal.label).join('; ') };
+  }
   return null;
 }
 
