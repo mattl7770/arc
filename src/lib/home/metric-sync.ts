@@ -14,6 +14,11 @@
  * ## The cases, and why each lands where it does
  *
  *   - **A reading** — nothing changes. The control only ever replaces a blank.
+ *   - **HRV, with the Garmin link set up** (2026-10-21, docs/wearables-subapp.md
+ *     §26) — the blank is "Sync Garmin", since that is where HRV comes from
+ *     now; "Syncing" while a Garmin pass runs; and when Garmin refused the key,
+ *     "Garmin key expired or revoked" as a door to Settings › Garmin. Ahead of
+ *     every case below, none of which can bring Garmin's HRV.
  *   - **Module absent** (web preview, a build predating the module) — the plain
  *     blank, unchanged. A sync cannot run, and Settings › Apple Health in that
  *     build has nothing to switch on ("rides the next build"), so a door there
@@ -78,7 +83,23 @@ export type MetricSyncContext = {
   sources: readonly string[];
   /** The day the strip shows — readiness's `today`. */
   today: string;
+  /**
+   * The Garmin Personal API link (2026-10-21, docs/wearables-subapp.md §26),
+   * when it is set up. Absent or `off` leaves every cell as it was.
+   */
+  garmin?: GarminCellFacts;
 };
+
+/** What the HRV cell needs to know about the Garmin link. */
+export type GarminCellFacts = {
+  link: 'off' | 'connected' | 'rejected';
+  running: boolean;
+  /** The last Garmin pass that got through every recent request. */
+  lastSyncedAt: string | null;
+};
+
+/** What the HRV cell says when Garmin refused the key. */
+export const GARMIN_KEY_REFUSED = 'Garmin key expired or revoked';
 
 export type MetricSyncCell =
   | { kind: 'reading' }
@@ -87,7 +108,13 @@ export type MetricSyncCell =
   | { kind: 'syncing' }
   | { kind: 'offer'; note: string }
   /** Sent none on the last pass: the statement, and "Sync again". */
-  | { kind: 'none'; note: string };
+  | { kind: 'none'; note: string }
+  /**
+   * HRV with the Garmin link set up: its blank is one tap from a GARMIN pass,
+   * not an Apple Health one — Garmin never sends HRV to Apple Health, so that
+   * pass could not fill it. `rejected` is a door to Settings › Garmin.
+   */
+  | { kind: 'garmin'; state: 'offer' | 'syncing' | 'rejected'; note: string };
 
 /**
  * The sync log's name for a metric, or null when the log cannot speak for it.
@@ -182,7 +209,7 @@ function failureStands(ctx: MetricSyncContext): boolean {
  * after today's day began — a pass from yesterday evening never looked at
  * today's bucket, so quoting its time would claim a check that did not happen.
  */
-function offerNote(ctx: MetricSyncContext): string {
+function offerNote(ctx: Pick<MetricSyncContext, 'lastSyncedAt' | 'today'>): string {
   if (ctx.lastSyncedAt === null) return 'never synced';
   const at = new Date(ctx.lastSyncedAt);
   if (Number.isNaN(at.getTime())) return 'never synced';
@@ -191,12 +218,31 @@ function offerNote(ctx: MetricSyncContext): string {
     : 'not synced today';
 }
 
+/** The HRV cell while the Garmin link is set up, or null to fall through. */
+function garminCell(metric: Pick<Metric, 'id'>, ctx: MetricSyncContext): MetricSyncCell | null {
+  const garmin = ctx.garmin;
+  if (metric.id !== 'hrv' || !garmin || garmin.link === 'off') return null;
+  if (garmin.link === 'rejected') {
+    return { kind: 'garmin', state: 'rejected', note: GARMIN_KEY_REFUSED };
+  }
+  if (garmin.running) return { kind: 'garmin', state: 'syncing', note: 'reading Garmin' };
+  return {
+    kind: 'garmin',
+    state: 'offer',
+    note: offerNote({ lastSyncedAt: garmin.lastSyncedAt, today: ctx.today }),
+  };
+}
+
 /** What one metrics-strip cell renders. */
 export function metricSyncCell(
   metric: Pick<Metric, 'id' | 'value'>,
   ctx: MetricSyncContext
 ): MetricSyncCell {
   if (metric.value !== NO_READING) return { kind: 'reading' };
+  // Ahead of every Apple Health case: Garmin's HRV does not depend on the
+  // HealthKit link, its module or its pass.
+  const garmin = garminCell(metric, ctx);
+  if (garmin !== null) return garmin;
   if (ctx.link === 'unsupported') return { kind: 'blank' };
   if (ctx.link === 'disconnected') return { kind: 'connect' };
   if (!ctx.available) return { kind: 'blank' };
@@ -217,8 +263,13 @@ export function metricSyncCell(
  * the offer and "Sync again" run a pass, and everything else — a reading, the
  * plain blank, a cell already syncing — takes no tap at all.
  */
-export function metricCellPress(cell: MetricSyncCell): 'settings' | 'sync' | null {
+export function metricCellPress(
+  cell: MetricSyncCell
+): 'settings' | 'sync' | 'garmin_settings' | 'garmin_sync' | null {
   switch (cell.kind) {
+    case 'garmin':
+      if (cell.state === 'rejected') return 'garmin_settings';
+      return cell.state === 'offer' ? 'garmin_sync' : null;
     case 'connect':
       return 'settings';
     case 'offer':

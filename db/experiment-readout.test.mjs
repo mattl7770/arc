@@ -316,7 +316,11 @@ console.log('8. reconciles with get_metric_series over the same days');
 
   const viaCatalog = readMetricDays(db, 'Resting HR', BASE_FROM, END, DEFAULT_UNIT_PREFERENCES);
   check(viaCatalog !== null && viaCatalog.metric === 'rhr' && viaCatalog.points.length === 0, '"Resting HR" resolves to rhr by exact alias, never fuzzily');
-  check(readMetricDays(db, 'sleep score', BASE_FROM, END, DEFAULT_UNIT_PREFERENCES) === null, '"sleep score" is unreadable');
+  // "sleep score" became a real metric with the Garmin link (sleep_score), so the
+  // unreadable example is a name nothing in ARC records.
+  check(readMetricDays(db, 'focus score', BASE_FROM, END, DEFAULT_UNIT_PREFERENCES) === null, '"focus score" is unreadable');
+  const sleepScore = readMetricDays(db, 'sleep score', BASE_FROM, END, DEFAULT_UNIT_PREFERENCES);
+  check(sleepScore !== null && sleepScore.metric === 'sleep_score', '"sleep score" resolves to Garmin\'s sleep_score');
 }
 
 console.log('9. adherence fold: precedence, tombstones, excusal; the ledger sums');

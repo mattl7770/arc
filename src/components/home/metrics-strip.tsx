@@ -173,12 +173,29 @@ function ReadingCell({ metric }: { metric: Metric }) {
   );
 }
 
-type ActionCell = Extract<MetricSyncCell, { kind: 'offer' | 'none' | 'syncing' | 'connect' }>;
+type ActionCell = Extract<
+  MetricSyncCell,
+  { kind: 'offer' | 'none' | 'syncing' | 'connect' | 'garmin' }
+>;
 
 function isActionCell(cell: MetricSyncCell): cell is ActionCell {
   return (
-    cell.kind === 'offer' || cell.kind === 'none' || cell.kind === 'syncing' || cell.kind === 'connect'
+    cell.kind === 'offer' ||
+    cell.kind === 'none' ||
+    cell.kind === 'syncing' ||
+    cell.kind === 'connect' ||
+    cell.kind === 'garmin'
   );
+}
+
+/** Whether the cell is showing a pass in flight (disabled, spinner). */
+function isSyncing(cell: ActionCell): boolean {
+  return cell.kind === 'syncing' || (cell.kind === 'garmin' && cell.state === 'syncing');
+}
+
+/** Whether the cell leads to a screen (chevron) rather than running a pass (sync glyph). */
+function isDoor(cell: ActionCell): boolean {
+  return cell.kind === 'connect' || (cell.kind === 'garmin' && cell.state === 'rejected');
 }
 
 /** What the action row says, and what the line under it says. */
@@ -192,6 +209,12 @@ function actionCopy(cell: ActionCell): { verb: string; note: string } {
       return { verb: 'Syncing', note: 'reading Apple Health' };
     case 'connect':
       return { verb: 'Connect', note: 'Apple Health sync is off' };
+    case 'garmin':
+      return {
+        verb:
+          cell.state === 'rejected' ? 'New key' : cell.state === 'syncing' ? 'Syncing' : 'Sync Garmin',
+        note: cell.note,
+      };
   }
 }
 
@@ -211,7 +234,8 @@ function ActionCellView({
   onPress: (() => void) | undefined;
 }) {
   const { verb, note } = actionCopy(cell);
-  const syncing = cell.kind === 'syncing';
+  const syncing = isSyncing(cell);
+  const door = isDoor(cell);
 
   return (
     <Pressable
@@ -226,7 +250,7 @@ function ActionCellView({
       <View className="mt-1 h-7 flex-row items-center gap-1.5">
         {syncing ? (
           <ActivityIndicator size="small" color={palette.inkMuted} />
-        ) : cell.kind === 'offer' || cell.kind === 'none' ? (
+        ) : !door ? (
           <Ionicons name="sync-outline" size={14} color={palette.ink} />
         ) : null}
         <Text
@@ -235,9 +259,7 @@ function ActionCellView({
           }`}>
           {verb}
         </Text>
-        {cell.kind === 'connect' ? (
-          <Ionicons name="chevron-forward" size={12} color={palette.inkMuted} />
-        ) : null}
+        {door ? <Ionicons name="chevron-forward" size={12} color={palette.inkMuted} /> : null}
       </View>
 
       <Text className="mt-0.5 font-mono text-[10px] text-ink-muted">{note}</Text>
@@ -256,12 +278,23 @@ export function MetricsGrid({
   context,
   onSync,
   onOpenSettings,
+  onSyncGarmin,
+  onOpenGarminSettings,
 }: {
   metrics: Metric[];
   context: MetricSyncContext;
   onSync: () => void;
   onOpenSettings: () => void;
+  /** HRV with the Garmin link set up (2026-10-21). */
+  onSyncGarmin?: () => void;
+  onOpenGarminSettings?: () => void;
 }) {
+  const handlers = {
+    settings: onOpenSettings,
+    sync: onSync,
+    garmin_settings: onOpenGarminSettings,
+    garmin_sync: onSyncGarmin,
+  } as const;
   return (
     <Block device="grid">
       <SectionLabel label="Metrics" note="Today" />
@@ -291,9 +324,7 @@ export function MetricsGrid({
                   <ActionCellView
                     metric={metric}
                     cell={cell}
-                    onPress={
-                      press === 'settings' ? onOpenSettings : press === 'sync' ? onSync : undefined
-                    }
+                    onPress={press === null ? undefined : handlers[press]}
                   />
                 ) : (
                   <ReadingCell metric={metric} />
@@ -316,6 +347,8 @@ export function MetricsStrip({ metrics }: { metrics: Metric[] }) {
       context={control.context}
       onSync={control.sync}
       onOpenSettings={control.openSettings}
+      onSyncGarmin={control.syncGarmin}
+      onOpenGarminSettings={control.openGarminSettings}
     />
   );
 }

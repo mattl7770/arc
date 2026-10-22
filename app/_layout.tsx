@@ -17,11 +17,13 @@ import { AppLockScreen } from '@/components/ui/app-lock-screen';
 import { ErrorBoundary } from '@/components/ui/error-boundary';
 import { navColors } from '@/constants/theme';
 import { useAppLock } from '@/hooks/use-app-lock';
+import { useGarminSyncRunner } from '@/hooks/use-garmin';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { coachPassStore } from '@/lib/ai/pass-store';
 import { installSpendLedger } from '@/lib/ai/spend-store';
 import { autoBackupIfDue } from '@/lib/backup/snapshot';
 import { getDb } from '@/lib/db/client';
+import { garminKeyStore } from '@/lib/garmin/key-store';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
 import { runMealPhotoSweep } from '@/lib/media/meal-photo-store';
 import { runPendingEstimateSweep } from '@/lib/media/pending-estimate-store';
@@ -171,6 +173,9 @@ export default function RootLayout() {
   //    (docs/backups-subapp.md).
   useEffect(() => {
     void apiKeyStore.hydrate();
+    // And the Garmin Personal API key (docs/wearables-subapp.md §26). The
+    // runner below wakes when it lands, so a cold start syncs once it is read.
+    void garminKeyStore.hydrate();
     runMealPhotoSweep(getDb());
     // And the recipe photo directory (0034). Same reconciliation, deliberately
     // NO expiry pass: a recipe photo is part of a document the owner keeps for
@@ -379,6 +384,10 @@ export default function RootLayout() {
   // Gated on the lock: while `locked`, the user has not authenticated, and a
   // pass would ship their health data to the model API on the say-so of whoever
   // is holding the phone. It fires the moment the gate opens.
+  // The Garmin link, gated the same way and for the same reason: a pass sends
+  // the key to Garmin. Mounted BEFORE the Coach pass so the pass it starts is
+  // already marked running when the Coach pass looks (use-coach-pass.ts).
+  useGarminSyncRunner(!lock.locked);
   useCoachPassRunner(!lock.locked);
 
   // Cold start while locked: the lock screen is the ONLY thing that mounts —
@@ -476,6 +485,8 @@ export default function RootLayout() {
           <Stack.Screen name="coach-memory" />
           {/* INTEGRATOR-MERGE: wearables routes (docs/wearables-subapp.md). */}
           <Stack.Screen name="settings-health" />
+          {/* The Garmin Personal API link (docs/wearables-subapp.md §26). */}
+          <Stack.Screen name="settings-garmin" />
           <Stack.Screen name="wearables" />
           {/* Screen time (docs/screen-time.md): its setup note, pushed from
               Settings, and the landing screen for the link a Shortcut opens —

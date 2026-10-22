@@ -4,6 +4,7 @@ import { AppState } from 'react-native';
 import { coachPassStore, type CheckinOutcome } from '@/lib/ai/pass-store';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { getDb } from '@/lib/db/client';
+import { waitForGarminSyncIdle } from '@/lib/garmin/sync';
 import { waitForHealthSyncIdle } from '@/lib/health/sync';
 
 /**
@@ -19,9 +20,15 @@ import { waitForHealthSyncIdle } from '@/lib/health/sync';
  * The pass waits for the Health sync the same foreground started (0064 — the
  * two used to race, and the pass read the database before the night landed).
  * Bounded inside `waitForHealthSyncIdle`, so an unlinked or slow HealthKit
- * never holds the Coach back for more than a few seconds.
+ * never holds the Coach back for more than a few seconds. Then, the same way,
+ * for the Garmin pass (2026-10-21): last night's HRV now arrives from Garmin
+ * directly, and a morning word that had not seen it would be the likely
+ * outcome rather than the rare one.
  */
-const settleHealth = () => waitForHealthSyncIdle();
+const settleHealth = async () => {
+  await waitForHealthSyncIdle();
+  await waitForGarminSyncIdle();
+};
 
 /**
  * Drive the pass. Mount at the ROOT and nowhere else.

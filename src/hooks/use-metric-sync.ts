@@ -8,6 +8,14 @@ import {
   getHealthSyncState,
   recentSourceDevices,
 } from '@/lib/db/repositories/wearables';
+import { garminKeyStore } from '@/lib/garmin/key-store';
+import {
+  garminLink,
+  isGarminSyncRunning,
+  readGarminState,
+  subscribeGarminSync,
+  syncGarminNow,
+} from '@/lib/garmin/sync';
 import { isHealthKitAvailable } from '@/lib/health/healthkit';
 import {
   isHealthSyncRunning,
@@ -49,6 +57,11 @@ function read(): MetricSyncContext {
     log: getHealthSyncLog(db),
     sources: recentSourceDevices(db, today, SYNC_WINDOW_DAYS),
     today,
+    garmin: {
+      link: garminLink(db),
+      running: isGarminSyncRunning(),
+      lastSyncedAt: readGarminState(db).lastSyncedAt,
+    },
   };
 }
 
@@ -58,6 +71,10 @@ export type MetricSyncControl = {
   sync: () => void;
   /** The door the Connect state leads through. */
   openSettings: () => void;
+  /** HRV with the Garmin link set up: a Garmin pass, from now. Never throws. */
+  syncGarmin: () => void;
+  /** The door a refused Garmin key leads through. */
+  openGarminSettings: () => void;
 };
 
 export function useMetricSync(): MetricSyncControl {
@@ -79,6 +96,18 @@ export function useMetricSync(): MetricSyncControl {
   useEffect(() => subscribeHealthSyncRunning(reload), [reload]);
   useEffect(() => subscribeHealthSync(reload), [reload]);
   useEffect(() => subscribeBlankSyncFailure(reload), [reload]);
+  useEffect(() => subscribeGarminSync(reload), [reload]);
+  useEffect(() => garminKeyStore.subscribe(reload), [reload]);
+
+  const syncGarmin = useCallback(() => {
+    // Never throws to the cell: the pass records its own outcome, and the
+    // events above re-read it.
+    void syncGarminNow(getDb()).catch(() => undefined);
+  }, []);
+
+  const openGarminSettings = useCallback(() => {
+    router.push('/settings-garmin');
+  }, [router]);
 
   const sync = useCallback(() => {
     // `disabled` / `unavailable` come back as 'skipped' and fire no event, so
@@ -91,5 +120,5 @@ export function useMetricSync(): MetricSyncControl {
     router.push('/settings-health');
   }, [router]);
 
-  return { context, sync, openSettings };
+  return { context, sync, openSettings, syncGarmin, openGarminSettings };
 }

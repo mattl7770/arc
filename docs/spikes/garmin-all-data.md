@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-10-21 by `garmin-direct.md`.** The recommendation (§3) and the in-app unofficial link (§4 Stage 1) are replaced by Garmin's official Personal API (ADR "Garmin via the official Personal API"; docs/wearables-subapp.md §26). What still holds from §4 and was built: `source_device 'garmin'` rows keyed per metric and `calendarDate` (now `gp:` rather than `gc:`), HRV status and baseline as their OWN metric types because nothing reads metadata, Keychain-only `WHEN_UNLOCKED_THIS_DEVICE_ONLY` storage, sleep and resting HR left on the `hk:` rows when Apple Health has them, a paced backfill, and no migration.
+
 > **See also `garmin-risk.md` (2026-09-26): how detectable the in-app link is, the risk in numbers, every option scored.**
 >
 > **PLAN — not built (written and fact-checked 2026-09-25).** The owner asked for "all data but minimal involvement"; this supersedes the recommendation in `garmin-hrv-routes.md` (file import) with a staged path: Pulse Ox on, a full export and a Health Sync test today; an in-app Garmin link (unofficial API) in the next EAS build, once he accepts the trade. Nothing is built until he answers §6.

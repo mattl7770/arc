@@ -73,7 +73,7 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
     use: "Home's Recovery pillar — today against a 30-day baseline",
     garmin: 'no',
     garminNote:
-      'Garmin exports no overnight HRV to Apple Health in any form — not SDNN, not RMSSD. A years-old feature request is still open, so ARC falls back to resting heart rate for Recovery.',
+      "Garmin exports no overnight HRV to Apple Health in any form — not SDNN, not RMSSD. A years-old feature request is still open. Settings › Garmin brings the band's overnight HRV in directly; without it, Recovery falls back to resting heart rate.",
     verdictDays: 6,
   },
   {
@@ -219,19 +219,20 @@ export const METRIC_COVERAGE: readonly MetricCoverage[] = [
 ];
 
 /**
- * Metrics a Garmin keeps to itself entirely — they have **no HealthKit type at
- * all**, so this is not a Garmin policy choice ARC could wait out. Recorded
- * because the owner's question was about what a Garmin can deliver, and the
- * honest answer includes what it never will.
+ * Metrics a Garmin keeps out of Apple Health entirely — they have **no
+ * HealthKit type at all**, so this is not a Garmin policy choice ARC could wait
+ * out. Recorded because the owner's question was about what a Garmin can
+ * deliver. Since 2026-10-21 Body Battery reaches ARC another way, through
+ * Garmin's Personal API (Settings › Garmin); Training Readiness still does not.
  */
 export const GARMIN_ONLY_METRICS: readonly { label: string; note: string }[] = [
   {
     label: 'Body Battery',
-    note: 'No HealthKit type exists for it, so it cannot leave Garmin Connect even in principle.',
+    note: 'No HealthKit type exists for it. It arrives through Settings › Garmin instead.',
   },
   {
     label: 'Training Readiness and training status',
-    note: "Garmin-proprietary scores with no HealthKit equivalent. ARC's Recovery pillar is its own derivation and does not need them.",
+    note: "Garmin-proprietary scores with no HealthKit equivalent, and Garmin's Personal API does not serve them either. ARC's Recovery pillar is its own derivation and does not need them.",
   },
 ];
 

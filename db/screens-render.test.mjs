@@ -95,7 +95,12 @@ import {
 } from '../src/lib/db/repositories/mission-generate.ts';
 import { setMissionStatus } from '../src/lib/db/repositories/mission.ts';
 import { clearMuscleAnchor, setMuscleAnchor } from '../src/lib/db/repositories/muscle-anchors.ts';
-import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
+import {
+  deleteSyncStateValue,
+  GARMIN_SYNC_KEY,
+  setSyncStateValue,
+  upsertWearableRows,
+} from '../src/lib/db/repositories/wearables.ts';
 
 import { ingestCorpus } from '../src/lib/rag/corpus.ts';
 import { saveKnowledgeEntry } from '../src/lib/db/repositories/knowledge.ts';
@@ -245,6 +250,8 @@ import { weekdayDate } from '../src/lib/protocols/format.ts';
 // isolation (the tab itself stays off the walk — see the status-control note),
 // and Settings › Coach, which gained a Notifications section.
 import SettingsCoachScreen from '../app/settings-coach.tsx';
+import SettingsGarminScreen from '../app/settings-garmin.tsx';
+import { garminKeyStore } from '../src/lib/garmin/key-store.ts';
 import { NudgesCard } from '../src/components/coach/nudges-card.tsx';
 import { RemindersCard } from '../src/components/coach/reminders-card.tsx';
 import { CheckinLine, checkinNote } from '../src/components/coach/checkin-line.tsx';
@@ -10520,6 +10527,133 @@ console.log('\n46. Item 87 — Progressing / Holding / Stalled replaces the PR s
     ? ok('the mark and the Advanced line are ink: no accent, no signal colour, in all three places')
     : bad('mark colour', JSON.stringify(classes));
   for (const id of ids) deleteWorkout(db, id);
+}
+
+// -------------------------------------------------------------------------
+console.log('\n47. 2026-10-21 — Settings › Garmin, its row, the HRV cell, the Garmin plate');
+{
+  // The Garmin Personal API link (docs/wearables-subapp.md §26). The key store
+  // is memory-only under node (no expo-secure-store), which the screen says.
+  // A made-up test key — never a real credential.
+  const TEST_KEY = 'gpk_RENDER_TEST_ONLY_0000';
+  garminKeyStore.clearKey();
+  deleteSyncStateValue(db, GARMIN_SYNC_KEY);
+
+  const off = render('settings-garmin (no key)', SettingsGarminScreen);
+  expect('settings-garmin (no key)', off, [
+    'Not connected',
+    'Personal API key',
+    'Save key',
+    'connect.garmin.com',
+    'personalApiToken',
+    '30, 90 or 180 days, or a year',
+    'Garmin shows it once',
+    'must not be shared',
+    'What syncs',
+    'Body Battery',
+    'Training Readiness, Training Status or skin temperature',
+    'never in ARC&rsquo;s database'.replace('&rsquo;', '’'),
+    'personal.connectapi.garmin.com',
+  ]);
+  refute('settings-garmin (no key)', off, ['Sync now', 'Disconnect', 'Replace key']);
+
+  garminKeyStore.setKey(TEST_KEY);
+  const fresh = render('settings-garmin (key, not synced)', SettingsGarminScreen);
+  expect('settings-garmin (key, not synced)', fresh, [
+    'Connected',
+    'Not synced yet',
+    'Garmin emails you before the key expires.',
+    'Key held for this session only',
+    'Sync now',
+    'Disconnect',
+    'Replace key',
+  ]);
+  refute('settings-garmin (key, not synced)', fresh, [TEST_KEY]);
+
+  const at = new Date(2026, 9, 21, 7, 12).toISOString();
+  setSyncStateValue(db, GARMIN_SYNC_KEY, {
+    lastSyncedAt: at,
+    lastAttemptAt: at,
+    status: 'ok',
+    keyExpiresAt: '2027-01-19T12:00:00.000Z',
+    backfill: {},
+    skipped: [],
+  });
+  const synced = render('settings-garmin (synced, expiry known)', SettingsGarminScreen);
+  expect('settings-garmin (synced, expiry known)', synced, [
+    `Last synced Oct 21 · ${clockFromISO(at)}`,
+    'Key expires Jan 19, 2027.',
+  ]);
+  refute('settings-garmin (synced, expiry known)', synced, ['Garmin emails you']);
+
+  setSyncStateValue(db, GARMIN_SYNC_KEY, { status: 'rejected', rejectedAt: at, backfill: {} });
+  const refused = render('settings-garmin (key refused)', SettingsGarminScreen);
+  expect('settings-garmin (key refused)', refused, [
+    'Key refused',
+    'Garmin refused the key',
+    'Create a new one and paste it below.',
+  ]);
+  refute('settings-garmin (key refused)', refused, ['Garmin emails you', 'Key expires']);
+
+  // app/settings.tsx is not rendered here (its backup import chain does not
+  // resolve under node), so its row is checked as source, as §17b checks the
+  // strip's accent.
+  const settingsSrc = readFileSync(new URL('../app/settings.tsx', import.meta.url), 'utf8');
+  settingsSrc.includes('label="Garmin"') &&
+  settingsSrc.includes("router.push('/settings-garmin')") &&
+  settingsSrc.includes("'Key expired or revoked'")
+    ? ok('Settings has a Garmin row beside Apple Health, and it names a refused key')
+    : bad('the Settings › Garmin row');
+  const ledgerRefused = render('wearables (Garmin key refused)', WearablesScreen);
+  expect('wearables (Garmin key refused)', ledgerRefused, [
+    'Garmin key expired or revoked · Settings › Garmin',
+    '>Garmin<',
+    'Sleep score',
+    'Body Battery at wake',
+    'Stress (day average)',
+    'Lowest blood oxygen',
+  ]);
+
+  // The HRV cell, drawn with the facts passed in.
+  const facts = (garmin) => ({
+    link: 'unsupported',
+    available: false,
+    running: false,
+    lastSyncedAt: null,
+    failedAt: null,
+    log: null,
+    sources: [],
+    today: todayISODate(),
+    garmin,
+  });
+  const strip = [
+    { id: 'hrv', label: 'HRV', value: '—', detail: 'No data yet', level: 'unknown' },
+    { id: 'rhr', label: 'Resting HR', value: '—', detail: 'No data yet', level: 'unknown' },
+  ];
+  const cellOf = (name, garmin) =>
+    render(name, MetricsGrid, {}, {
+      metrics: strip,
+      context: facts(garmin),
+      onSync: () => {},
+      onOpenSettings: () => {},
+      onSyncGarmin: () => {},
+      onOpenGarminSettings: () => {},
+    });
+  const cellRefused = cellOf('metrics (Garmin key refused)', { link: 'rejected', running: false, lastSyncedAt: null });
+  expect('metrics (Garmin key refused)', cellRefused, ['New key', 'Garmin key expired or revoked']);
+  refute('metrics (Garmin key refused)', cellRefused, ['Sync Garmin', 'Sync Apple Health']);
+  const cellOffer = cellOf('metrics (Garmin connected)', { link: 'connected', running: false, lastSyncedAt: null });
+  expect('metrics (Garmin connected)', cellOffer, ['Sync Garmin', 'never synced']);
+  const cellBusy = cellOf('metrics (Garmin syncing)', { link: 'connected', running: true, lastSyncedAt: null });
+  expect('metrics (Garmin syncing)', cellBusy, ['Syncing', 'reading Garmin', 'aria-disabled="true"']);
+  const cellOff = cellOf('metrics (no Garmin link)', { link: 'off', running: false, lastSyncedAt: null });
+  refute('metrics (no Garmin link)', cellOff, ['Garmin']);
+
+  // Leave the suite as it found it.
+  garminKeyStore.clearKey();
+  deleteSyncStateValue(db, GARMIN_SYNC_KEY);
+  const ledgerOff = render('wearables (no Garmin link)', WearablesScreen);
+  refute('wearables (no Garmin link)', ledgerOff, ['Body Battery at wake', 'Garmin key expired']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
