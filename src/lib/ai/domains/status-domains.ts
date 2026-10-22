@@ -65,6 +65,7 @@ import {
   getExperiment,
   type Experiment,
 } from '@/lib/db/repositories/experiments';
+import { attachReadoutNotes, experimentReadout } from '@/lib/experiments/readout';
 import {
   archiveKnowledgeEntry,
   deleteKnowledgeEntry,
@@ -231,9 +232,17 @@ const experimentsDomain: CoachDomainEntry = {
       throw new Error(`Experiment "${exp.title}" is already ${exp.status}.`);
     }
     if (patch.status === 'concluded') {
+      // The readout AT THIS MOMENT is stored with the verdict, so the verdict
+      // always cites the numbers it was based on — a later Health sync that
+      // back-fills a night must not quietly move the evidence under it. It
+      // rides `outcome_notes` (the readout column by 0027's own comment)
+      // behind a marker, after the Coach's words; no migration.
       completeExperiment(db, exp.id, {
         conclusion: patch.conclusion as string,
-        outcomeNotes: (patch.outcome_notes as string | null) ?? null,
+        outcomeNotes: attachReadoutNotes(
+          (patch.outcome_notes as string | null) ?? null,
+          experimentReadout(db, exp, context.now)
+        ),
       });
       // The mirror of create_experiment's call, kept exactly as
       // `complete_experiment` had it: a concluded experiment stops being a

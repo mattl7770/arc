@@ -48,10 +48,7 @@ import { deviceLabel, pickDailyMetric } from '@/lib/db/repositories/wearables';
 import {
   pairedIngestForMany,
   unpairedIngestedSessions,
-  unpairedWorkoutDailyMinutes,
 } from '@/lib/db/repositories/workout-ingest';
-import { isAccumulatingMetric } from '@/lib/health/accumulating';
-import { SAMPLE_METRICS, STATISTIC_METRICS } from '@/lib/health/mapping';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
 import { cadenceText } from '@/lib/protocols/cadence';
@@ -68,10 +65,23 @@ import {
 import { countTotalsOnlyMeals, totalsOnlyNote } from '@/lib/nutrition/key-micro';
 import { MICROS } from '@/lib/nutrition/micros';
 import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
-import type { UnitPreferences } from '@/lib/user/types';
+import { experimentReadout, splitReadoutNotes } from '@/lib/experiments/readout';
 
 import { EXPERIMENT_ABANDON_NOTE, RECURRING_REMINDER_NOTE } from '../domains/status-domains';
 import { computeInsights, dueRemindersFor, generateDailyBrief } from '../insights';
+import {
+  accumulatedSeries,
+  accumulatesThroughDay,
+  BODY_METRIC_KEYS,
+  formatDuration,
+  METRIC_ALIASES,
+  readableMetricNames,
+  reportValue,
+  roundTo,
+  wearableCatalog,
+  wearableDisplay,
+  type WearableMetricSpec,
+} from '../metric-catalog';
 import {
   bodyDailySeries,
   endOfLocalDayUtc,
@@ -80,10 +90,8 @@ import {
   seriesStats,
   trainingDailyTotals,
   wearableArbitratedSeries,
-  wearableDailySeries,
   wearableMetricInventory,
   type SeriesPoint,
-  type WearableMetricPresence,
 } from '../series';
 import { retrievePassages } from '@/lib/rag/retrieve';
 import {
@@ -110,292 +118,6 @@ import {
 } from './types';
 
 const json = (value: unknown): string => JSON.stringify(value);
-
-// --- The wearable metric catalog ---------------------------------------------
-//
-// `wearable_data.metric_type` is deliberately free text so a new vendor metric
-// is never a migration (CLAUDE.md §9). A hardcoded enum of readable metrics
-// therefore rots on contact with the next ingest — which is exactly how the
-// Coach ended up blind to steps, sleep, energy and VO2max while the HealthKit
-// pipeline was happily writing all of them.
-//
-// So the readable set is built in two layers and never typed out by hand:
-//
-//   1. DERIVED from the ingest specs themselves (src/lib/health/mapping.ts's
-//      SAMPLE_METRICS + STATISTIC_METRICS, plus the sleep rows sleepDailyRows
-//      emits and the manual-log wearable targets). Add a metric to the pipeline
-//      and it is readable here with no edit to this file.
-//   2. DISCOVERED from the data (SELECT DISTINCT metric_type). Anything present
-//      that layer 1 does not describe still becomes readable, with its unit
-//      taken from the rows and `inferred: true` flagged in the output so the
-//      model knows the semantics were guessed rather than declared.
-
-type WearableAgg =
-  /** One winning source per day — the rule Home and the Data tab use. */
-  | 'arbitrated'
-  /** Many rows a day that must be added up (sips logged, sessions logged). */
-  | 'sum';
-
-type WearableMetricSpec = {
-  metricType: string;
-  label: string;
-  /** The canonical unit stored in wearable_data.unit. */
-  canonicalUnit: string;
-  agg: WearableAgg;
-  decimals: number;
-  /** Minutes-valued: also rendered "7h 11m", never left as a raw minute count. */
-  isDuration?: boolean;
-  // NO `accumulating` FLAG HERE, deliberately. Whether a folded day is
-  // FINISHED is a different axis from `agg` (which folds it), and it is
-  // answered by {@link isAccumulatingMetric} — the app's one declaration, in
-  // lib/health/accumulating.ts. This spec used to be one of four places each
-  // holding its own copy of that answer.
-  /** Dimensions the user has a Settings preference for. */
-  display?: 'volume' | 'temperature';
-  /** True when the spec was guessed from the rows, not declared by the pipeline. */
-  inferred?: boolean;
-};
-
-/** Readable names for the pipeline's metric_types (the specs carry no label). */
-const WEARABLE_LABELS: Record<string, string> = {
-  hrv: 'HRV',
-  rhr: 'Resting heart rate',
-  respiratory_rate: 'Respiratory rate',
-  spo2_pct: 'Blood oxygen',
-  body_temp_c: 'Body temperature',
-  wrist_temp_c: 'Sleeping wrist temperature',
-  vo2max: 'VO2max',
-  steps: 'Steps',
-  active_energy_kcal: 'Active energy',
-  resting_energy_kcal: 'Resting energy',
-};
-
-/** The sleep rows sleepDailyRows() emits, in the order a night reads. */
-const SLEEP_METRICS: readonly (readonly [string, string])[] = [
-  ['sleep_duration_min', 'Sleep (asleep)'],
-  ['sleep_in_bed_min', 'Time in bed'],
-  ['sleep_deep_min', 'Deep sleep'],
-  ['sleep_rem_min', 'REM sleep'],
-  ['sleep_core_min', 'Core sleep'],
-  ['sleep_awake_min', 'Awake during the night'],
-];
-
-function humanize(metricType: string): string {
-  const words = metricType.replace(/_/g, ' ').trim();
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-function tempSpec(metricType: string): WearableMetricSpec {
-  return {
-    metricType,
-    label: WEARABLE_LABELS[metricType] ?? humanize(metricType),
-    canonicalUnit: 'c',
-    agg: 'arbitrated',
-    decimals: 2,
-    display: 'temperature',
-  };
-}
-
-/** Layer 1: everything the ingest pipeline is known to write. */
-const DECLARED_WEARABLE_METRICS: readonly WearableMetricSpec[] = [
-  ...SAMPLE_METRICS.map((spec): WearableMetricSpec =>
-    spec.unit === 'c'
-      ? tempSpec(spec.metricType)
-      : {
-          metricType: spec.metricType,
-          label: WEARABLE_LABELS[spec.metricType] ?? humanize(spec.metricType),
-          canonicalUnit: spec.unit,
-          agg: 'arbitrated',
-          decimals: spec.decimals,
-        }
-  ),
-  ...STATISTIC_METRICS.map((spec): WearableMetricSpec => ({
-    metricType: spec.metricType,
-    label: WEARABLE_LABELS[spec.metricType] ?? humanize(spec.metricType),
-    canonicalUnit: spec.unit,
-    agg: 'arbitrated',
-    decimals: spec.decimals,
-  })),
-  ...SLEEP_METRICS.map(([metricType, label]): WearableMetricSpec => ({
-    metricType,
-    label,
-    canonicalUnit: 'min',
-    agg: 'arbitrated',
-    decimals: 0,
-    isDuration: true,
-  })),
-  {
-    // Many sessions a day, each its own row keyed by the HK sample UUID — this
-    // one really does accumulate, unlike every day-bucketed metric above.
-    //
-    // The label says "not logged in ARC" because since 0054 that is literally
-    // what the number is: a session PAIRED to one the owner logged is subtracted
-    // here, since get_training_summary already counts it from `workouts` with
-    // its sets and its kind. Before pairing existed the same hour appeared in
-    // both tools and nothing could reconcile them. See `accumulatedSeries`.
-    metricType: 'workout',
-    label: 'Workout minutes (Apple Health, not logged in ARC)',
-    canonicalUnit: 'min',
-    agg: 'sum',
-    decimals: 1,
-    isDuration: true,
-  },
-  {
-    // Manual capture: one row per sip logged, so the day is a sum.
-    metricType: 'water_ml',
-    label: 'Water',
-    canonicalUnit: 'ml',
-    agg: 'sum',
-    decimals: 0,
-    display: 'volume',
-  },
-  {
-    // The day's total off Settings › Screen Time, typed on Log or sent by a
-    // Shortcut (docs/screen-time.md). ONE row per day by construction
-    // (repositories/screen-time.ts replaces), so arbitration has nothing to
-    // pick between. Declared rather than left to discovery so the label says
-    // what the number is — self-reported, from another app's screen — and
-    // `hm` carries "3h 20m" instead of an inferred bare minute count.
-    metricType: SCREEN_TIME_METRIC,
-    label: 'Screen time (daily total, self-reported)',
-    canonicalUnit: 'min',
-    agg: 'arbitrated',
-    decimals: 0,
-    isDuration: true,
-  },
-];
-
-/** Layer 2: declared ∪ whatever the table actually holds today. */
-function wearableCatalog(inventory: WearableMetricPresence[]): Map<string, WearableMetricSpec> {
-  const catalog = new Map<string, WearableMetricSpec>(
-    DECLARED_WEARABLE_METRICS.map((spec) => [spec.metricType, spec])
-  );
-  for (const row of inventory) {
-    if (catalog.has(row.metricType)) continue;
-    const unit = row.unit ?? '';
-    catalog.set(row.metricType, {
-      metricType: row.metricType,
-      label: humanize(row.metricType),
-      canonicalUnit: unit,
-      // Unknown cadence: arbitration can only ever under-report, summing could
-      // silently double a day. Prefer the claim that cannot be inflated.
-      agg: 'arbitrated',
-      decimals: 2,
-      isDuration: unit === 'min',
-      inferred: true,
-    });
-  }
-  return catalog;
-}
-
-/** Friendly names the model is likely to reach for → the real metric_type. */
-const METRIC_ALIASES: Record<string, string> = {
-  water: 'water_ml',
-  sleep: 'sleep_duration_min',
-  sleep_min: 'sleep_duration_min',
-  asleep: 'sleep_duration_min',
-  deep_sleep: 'sleep_deep_min',
-  rem_sleep: 'sleep_rem_min',
-  core_sleep: 'sleep_core_min',
-  time_in_bed: 'sleep_in_bed_min',
-  in_bed: 'sleep_in_bed_min',
-  active_energy: 'active_energy_kcal',
-  active_calories: 'active_energy_kcal',
-  resting_energy: 'resting_energy_kcal',
-  calories_burned: 'active_energy_kcal',
-  spo2: 'spo2_pct',
-  oxygen_saturation: 'spo2_pct',
-  body_temp: 'body_temp_c',
-  wrist_temp: 'wrist_temp_c',
-  vo2: 'vo2max',
-  vo2_max: 'vo2max',
-  workouts: 'workout',
-  workout_minutes: 'workout',
-  step_count: 'steps',
-  heart_rate_variability: 'hrv',
-  resting_heart_rate: 'rhr',
-  respiration: 'respiratory_rate',
-  screen_time: SCREEN_TIME_METRIC,
-  screentime: SCREEN_TIME_METRIC,
-};
-
-/** Body metrics keep their own path — they live in body_metrics, not wearables. */
-const BODY_METRIC_KEYS = ['weight', 'body_fat', 'waist'] as const;
-
-type WearableDisplaySpec = {
-  unit: string;
-  decimals: number;
-  fromCanonical: (canonical: number) => number;
-};
-
-/**
- * How a wearable value should be reported for THIS user's Settings › Units.
- * Same contract the rest of the tool layer honours via resolveDisplay: the
- * Coach must never cite °F to a °C user, or oz to an ml user.
- */
-function wearableDisplay(spec: WearableMetricSpec, units: UnitPreferences): WearableDisplaySpec {
-  if (spec.display === 'volume') {
-    const water = resolveDisplay(metricByKey('water')!, units);
-    return { unit: water.unit, decimals: water.decimals, fromCanonical: water.fromCanonical };
-  }
-  if (spec.display === 'temperature') {
-    return units.temperature === 'C'
-      ? { unit: '°C', decimals: 1, fromCanonical: (c) => c }
-      : { unit: '°F', decimals: 1, fromCanonical: (c) => c * 1.8 + 32 };
-  }
-  return {
-    unit: spec.canonicalUnit,
-    decimals: spec.decimals,
-    fromCanonical: (v) => v,
-  };
-}
-
-/** 431 → "7h 11m", 45 → "45m". Hermes has no Intl; this is hand-formatted. */
-function formatDuration(minutes: number): string {
-  const total = Math.round(minutes);
-  const h = Math.floor(total / 60);
-  const m = total % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
-
-function roundTo(value: number, decimals: number): number {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
-}
-
-/** The one place a canonical wearable value becomes a reportable object. */
-function reportValue(
-  spec: WearableMetricSpec,
-  display: WearableDisplaySpec,
-  canonical: number
-): { value: number; unit: string; hm?: string } {
-  return {
-    value: roundTo(display.fromCanonical(canonical), display.decimals),
-    unit: display.unit,
-    ...(spec.isDuration ? { hm: formatDuration(canonical) } : {}),
-  };
-}
-
-/**
- * Does today's value for this metric keep growing until midnight?
- *
- * Delegated, not decided: {@link isAccumulatingMetric} is the app's one
- * declaration (lib/health/accumulating.ts), shared with the insight trends, the
- * brief's floor line and the self-review. This used to read
- * `spec.agg === 'sum' || spec.accumulating === true`, i.e. it re-derived half
- * the answer from a flag only this file set. The `agg === 'sum'` half was true
- * and remains true — summing many rows into a day IS accumulation — so it is
- * preserved as an assertion (db/health-mapping.test.mjs §13) rather than as a
- * second rule that a new `agg: 'sum'` spec could satisfy here and nowhere else.
- */
-function accumulatesThroughDay(spec: WearableMetricSpec): boolean {
-  return isAccumulatingMetric(spec.metricType);
-}
-
-/** Everything get_metric_series will accept right now, for error text + discovery. */
-function readableMetricNames(catalog: Map<string, WearableMetricSpec>): string[] {
-  return [...BODY_METRIC_KEYS, ...catalog.keys()];
-}
 
 // --- get_today_snapshot ------------------------------------------------------
 
@@ -569,34 +291,6 @@ type NutritionHistoryTarget = {
   fat_g: number | null;
   fiber_g: number | null;
 };
-
-/**
- * The daily series for an ACCUMULATING wearable metric — and the one place the
- * ingested-workout de-duplication is applied.
- *
- * `workout` rows are the only metric in `wearable_data` that can describe the
- * same event as a row in another table: a session the owner logged in ARC and
- * the watch also recorded. `get_training_summary` counts that session from
- * `workouts`, where it carries sets, a kind and a duration the owner stands
- * behind, so counting the watch's copy here as well made one hour of training
- * appear in two tools with nothing able to tell (the defect migration 0054 was
- * written for). {@link unpairedWorkoutDailyMinutes} subtracts exactly the paired
- * rows and nothing else.
- *
- * It lives here — one function, both call sites (today's snapshot and the series
- * tool) — because a second reader that forgot the subtraction would put the
- * defect straight back.
- */
-function accumulatedSeries(
-  db: Database,
-  metricType: string,
-  sinceDate: string,
-  untilDate?: string
-): SeriesPoint[] {
-  return metricType === 'workout'
-    ? unpairedWorkoutDailyMinutes(db, sinceDate, untilDate)
-    : wearableDailySeries(db, metricType, sinceDate, 'sum', untilDate);
-}
 
 /** Today's value for one wearable metric under its own aggregation rule. */
 function wearableToday(
@@ -1846,15 +1540,27 @@ const getExperiments: CoachTool = {
       daysLeft: e.daysLeft,
       ready: e.ready,
       successCriteria: e.success_criteria,
+      // The numbers, computed — baseline vs intervention per watched metric
+      // under the engine's own gates, adherence, excluded days, and whether
+      // the inputs are complete enough to judge (src/lib/experiments/readout.ts).
+      // Payload, not schema: it costs the cached prefix nothing. It states
+      // facts and test statistics only; the verdict is the model's.
+      readout: experimentReadout(db, e, context.now),
     }));
     const completed =
       asRecord(input)['include_completed'] === true
-        ? recentlyConcluded(db, 5).map((e) => ({
-            id: e.id,
-            title: e.title,
-            conclusion: e.conclusion,
-            endDate: e.end_date,
-          }))
+        ? recentlyConcluded(db, 5).map((e) => {
+            // The numbers the verdict was written on, stored with it at
+            // conclusion — never recomputed, so a later sync cannot move them.
+            const stored = splitReadoutNotes(e.outcome_notes).readout;
+            return {
+              id: e.id,
+              title: e.title,
+              conclusion: e.conclusion,
+              endDate: e.end_date,
+              ...(stored ? { readoutAtConclusion: stored } : {}),
+            };
+          })
         : undefined;
     // The abandon-not-conclude rail, moved out of `abandon_experiment`'s
     // description when that tool folded into `edit_record` — see the same

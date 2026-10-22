@@ -9,6 +9,11 @@ import {
   listExperiments,
   type Experiment,
 } from '@/lib/db/repositories/experiments';
+import {
+  experimentReadout,
+  splitReadoutNotes,
+  type ExperimentReadout,
+} from '@/lib/experiments/readout';
 
 export type ActiveExperiment = Experiment & { ready: boolean; daysLeft: number };
 
@@ -50,20 +55,48 @@ export function useExperiments(): ExperimentsView {
   return { ...state, reload };
 }
 
-/** One experiment for the detail screen; null when the id no longer exists. */
-export function useExperiment(id: string | undefined): {
+/** What the detail screen draws for one experiment. */
+export type ExperimentDetailView = {
   experiment: Experiment | null;
-  reload: () => void;
-} {
-  const [experiment, setExperiment] = useState<Experiment | null>(() =>
-    id ? getExperiment(getDb(), id) : null
-  );
+  /**
+   * The numbers: computed live while it runs, the snapshot stored with the
+   * verdict once concluded (never recomputed — the verdict cites what it saw),
+   * and null for an abandoned one or a verdict that predates the snapshot.
+   */
+  readout: ExperimentReadout | null;
+  /** `outcome_notes` with the stored readout split off — the Coach's words only. */
+  notes: string | null;
+};
+
+function readDetail(id: string | undefined): ExperimentDetailView {
+  const experiment = id ? getExperiment(getDb(), id) : null;
+  if (!experiment) return { experiment: null, readout: null, notes: null };
+  if (experiment.status === 'active') {
+    return {
+      experiment,
+      readout: experimentReadout(getDb(), experiment, new Date()),
+      notes: experiment.outcome_notes,
+    };
+  }
+  const split = splitReadoutNotes(experiment.outcome_notes);
+  return {
+    experiment,
+    readout: experiment.status === 'completed' ? split.readout : null,
+    notes: split.notes,
+  };
+}
+
+/** One experiment for the detail screen; `experiment` is null when the id no longer exists. */
+export function useExperiment(
+  id: string | undefined
+): ExperimentDetailView & { reload: () => void } {
+  const [view, setView] = useState<ExperimentDetailView>(() => readDetail(id));
 
   const reload = useCallback(() => {
-    setExperiment(id ? getExperiment(getDb(), id) : null);
+    setView(readDetail(id));
   }, [id]);
 
   useFocusEffect(reload);
 
-  return { experiment, reload };
+  return { ...view, reload };
 }

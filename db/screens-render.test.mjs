@@ -205,6 +205,10 @@ import { ReadinessStrip } from '../src/components/home/readiness-strip.tsx';
 import { openStatuses, startStatus } from '../src/lib/db/repositories/statuses.ts';
 import { endPromptFor, STATUS_CHIPS } from '../src/lib/status/chips.ts';
 import { shortDate } from '../src/lib/experiments/format.ts';
+// §41 — the experiment readout on the detail screen.
+import ExperimentDetailScreen from '../app/experiment-detail.tsx';
+import { completeExperiment, createExperiment } from '../src/lib/db/repositories/experiments.ts';
+import { toolByName } from '../src/lib/ai/tools/index.ts';
 import LogScreen from '../app/(tabs)/log.tsx';
 
 import { deleteWaterEntry, logWater } from '../src/lib/db/repositories/water.ts';
@@ -9829,6 +9833,104 @@ console.log('\n40. Item 86 — was this estimate right? Good / Off, the one ques
   !readFileSync(new URL('../app/meal-estimate.tsx', import.meta.url), 'utf8').includes('EstimateRatingLine')
     ? ok('the correction window settles on re-read; Item / Macros push Adjust with AI with the answer; the review screen draws no rating')
     : bad('rating wiring');
+}
+
+console.log('\n41. Experiments end to end — the readout on the experiment screen');
+{
+  // A metric no earlier section seeds, so the shared database's other
+  // fixtures cannot move these numbers.
+  const today = todayISODate();
+  const seedResp = (from, count, value) => {
+    for (let i = 0; i < count; i++) {
+      db.run(
+        `INSERT INTO wearable_data (id, date, metric_type, value, unit, source_device)
+         VALUES (?, ?, 'respiratory_rate', ?, 'brpm', 'apple_watch')`,
+        [`resp-${from}-${i}`, shiftISODate(from, i), value + (i % 2 === 0 ? -0.5 : 0.5)]
+      );
+    }
+  };
+  const design = (title, start, durationDays) =>
+    createExperiment(db, {
+      title,
+      hypothesis: 'Mouth taping lowers breathing rate',
+      intervention: 'Mouth tape at night',
+      metrics: ['respiratory_rate', 'mood'],
+      startDate: start,
+      durationDays,
+    });
+
+  // RUNNING: started 5 days ago, 14 planned; baseline 14 days before it.
+  const runStart = shiftISODate(today, -5);
+  const running = design('Mouth tape (running)', runStart, 14);
+  seedResp(shiftISODate(runStart, -14), 14, 16);
+  const runHtml = render('experiment-detail (running)', ExperimentDetailScreen, { id: running });
+  expect('experiment-detail (running)', runHtml, [
+    '>Readout<',
+    'so far',
+    'Respiratory rate',
+    '16 → — brpm',
+    'n 14 / 0',
+    'Too few readings',
+    'Not a series ARC records — read qualitatively.',
+    '>Adherence<',
+    '>Excluded days<',
+    'None — every day in both windows counts.',
+    'Before a verdict',
+    'The window is open: day 6 of 14',
+  ]);
+  // No signal colour and no accent on a readout: a gate is a fact about two
+  // windows, never a judgment about the body, and the screen stays read-only.
+  refute('experiment-detail (running)', runHtml, ['signal-', 'pine', 'Conclude', 'supported']);
+
+  // CONCLUDED through the Coach's own write: the snapshot rides the verdict.
+  const doneStart = shiftISODate(today, -40);
+  const concluded = design('Mouth tape (concluded)', doneStart, 14);
+  seedResp(shiftISODate(doneStart, -14), 14, 16);
+  seedResp(doneStart, 14, 14);
+  toolByName('edit_record').execute(
+    db,
+    {
+      domain: 'experiments',
+      id: concluded,
+      fields: {
+        status: 'concluded',
+        conclusion: 'Breathing rate fell about 2 a minute.',
+        outcome_notes: 'Adherence was not tracked on the mission.',
+      },
+    },
+    { now: new Date() }
+  );
+  const doneHtml = render('experiment-detail (concluded)', ExperimentDetailScreen, { id: concluded });
+  expect('experiment-detail (concluded)', doneHtml, [
+    'at conclusion',
+    '16 → 14 brpm',
+    'Δ -2 (-12.5%) · n 14 / 14',
+    'Gate met',
+    '>Notes<',
+    'Adherence was not tracked on the mission.',
+    // No mission rows were written for it, so the readout says so in numbers.
+    '14 d: 14 not on the day',
+    'under the 80% floor',
+  ]);
+  refute('experiment-detail (concluded)', doneHtml, [
+    'signal-',
+    'pine',
+    '[ARC readout at conclusion]',
+    'No numbers were stored',
+  ]);
+
+  // A verdict that predates the snapshot says so rather than recomputing one.
+  const legacy = design('Mouth tape (legacy)', shiftISODate(today, -80), 7);
+  completeExperiment(db, legacy, { conclusion: 'An old verdict.', outcomeNotes: 'Old notes.' });
+  const legacyHtml = render('experiment-detail (legacy verdict)', ExperimentDetailScreen, {
+    id: legacy,
+  });
+  expect('experiment-detail (legacy verdict)', legacyHtml, [
+    'An old verdict.',
+    'Old notes.',
+    'No numbers were stored with this verdict.',
+  ]);
+  refute('experiment-detail (legacy verdict)', legacyHtml, ['>Readout<']);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
