@@ -9831,5 +9831,67 @@ console.log('\n40. Item 86 — was this estimate right? Good / Off, the one ques
     : bad('rating wiring');
 }
 
+console.log('\n41. Calendar context — the Settings › Coach switch, off until he turns it on');
+{
+  const { CalendarSetting, calendarAccessNote } = await import(
+    '../src/components/coach/calendar-setting.tsx'
+  );
+  const { setCalendarContextOn } = await import('../src/lib/db/repositories/calendar-setting.ts');
+  const noop = () => {};
+
+  const screen = render('settings-coach (calendar)', SettingsCoachScreen);
+  expect('settings-coach (calendar)', screen, [
+    '>Calendar<',
+    'The next 7 days, so the Coach can plan around them · read-only',
+    'aria-label="Calendar"',
+    'Every calendar on this phone.',
+    'never its notes, attendees or links',
+    'ARC never writes to your calendar and stores none of it.',
+  ]);
+  // OFF by default: the one switch labelled Calendar is unchecked.
+  const calendarSwitch = screen?.match(/<input[^>]*aria-label="Calendar"[^>]*>/)?.[0] ?? '';
+  calendarSwitch && !/\schecked(=|\s|>)/.test(calendarSwitch)
+    ? ok('settings-coach: the Calendar switch is OFF on a fresh install')
+    : bad('settings-coach: Calendar switch not found or on by default', calendarSwitch);
+  // No access sentence before iOS has answered (the check runs in an effect).
+  refute('settings-coach (calendar)', screen, ['iOS has calendar access off', 'This build of ARC']);
+
+  setCalendarContextOn(db, true);
+  const onScreen = render('settings-coach (calendar on)', SettingsCoachScreen);
+  const onSwitch = onScreen?.match(/<input[^>]*aria-label="Calendar"[^>]*>/)?.[0] ?? '';
+  /\schecked(=|\s|>)/.test(onSwitch)
+    ? ok('settings-coach: his stored ON reads back as an ON switch')
+    : bad('settings-coach: stored ON did not render on', onSwitch);
+  setCalendarContextOn(db, false);
+
+  const revoked = render('calendar-setting (revoked)', CalendarSetting, {}, { on: true, access: 'denied', onChange: noop });
+  expect('calendar-setting (revoked)', revoked, [
+    'Calendar access is off for ARC in iOS Settings, so the Coach sees no events.',
+  ]);
+  const refused = render('calendar-setting (refused)', CalendarSetting, {}, { on: false, access: 'denied', onChange: noop });
+  expect('calendar-setting (refused)', refused, [
+    'iOS has calendar access off for ARC. Allow Full Access in iOS Settings under ARC › Calendars, then turn this on.',
+  ]);
+  const oldBuild = render('calendar-setting (old build)', CalendarSetting, {}, { on: false, access: 'unavailable', onChange: noop });
+  expect('calendar-setting (old build)', oldBuild, ['This build of ARC can’t read calendars yet.']);
+  const oldSwitch = oldBuild?.match(/<input[^>]*aria-label="Calendar"[^>]*>/)?.[0] ?? '';
+  /\sdisabled(=|\s|>)/.test(oldSwitch)
+    ? ok('calendar-setting: the switch is disabled in a build without the module')
+    : bad('calendar-setting: switch not disabled when unavailable', oldSwitch);
+  calendarAccessNote(true, 'granted') === null &&
+  calendarAccessNote(false, 'undetermined') === null &&
+  calendarAccessNote(false, null) === null &&
+  calendarAccessNote(true, 'undetermined')?.startsWith('iOS hasn’t been asked on this phone yet')
+    ? ok('calendar-setting: silent when access matches the switch; a restored ON with no grant says so')
+    : bad('calendar-setting: note logic');
+  for (const [name, html] of [
+    ['revoked', revoked],
+    ['refused', refused],
+    ['old build', oldBuild],
+  ]) {
+    refute(`calendar-setting (${name})`, html, ['pine', 'accent']);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

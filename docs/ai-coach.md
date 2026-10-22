@@ -1,7 +1,7 @@
 # ARC AI Coach — Capability Specification
 
 **Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, and protocol write-back (2026-07-27)
-**Last updated:** 2026-10-21 (§2h provider-side web search + the region line); 2026-08-14 (§5 write receipts + phantom-write detection; §4 day-stamped thread history)
+**Last updated:** 2026-10-21 (§2i calendar context; §2h provider-side web search + the region line); 2026-08-14 (§5 write receipts + phantom-write detection; §4 day-stamped thread history)
 **Status:** v1 spec shipped; Coach live-wired — persistent key (iOS Keychain), model picker, prompt caching, protocol write-back (2026-07-27); Modes + Experiments tools shipped (2026-07-31/08-01), **Modes retired and replaced by `set_status` (2026-09-19, migration 0061 — see `docs/information-architecture.md` §Status)**; **perception layer shipped (2026-08-08** — per-turn "Current state" context block, readiness/sleep/training-engine/lab-trend visibility; see `docs/coach-intelligence-review.md` for the review that drove it and the phases that follow**)**
 **Last updated:** 2026-08-08
 
@@ -200,6 +200,19 @@ Not a registry tool: Anthropic's **web search server tool**, carried in the same
 | Cost | `src/lib/ai/cost.ts` | $10 per 1,000 searches (~1¢) on top of tokens; the caption names "N searches". |
 
 **Privacy rule:** a query never carries the user's health data. It is one bullet in the cached prompt (the Coach) and a line in the estimators' per-call context (their prompt ceiling had 2 tokens left). **Budget:** schemas 9,136 with the search tool measured in (< 9,250), prompt 3,662 (< 3,700), estimation prompt 998 (< 1,000) — none raised. Tests: `db/model-client.test.mjs` §13–21 (§19 the seam, §20 the refused tool and the latch, §21 the whole input and the ledger's names), `db/coach-eval.test.mjs` §6–7, `db/coach-fidelity.test.mjs` §8–9 (§8: a turn that called a write the user DECLINED is never captioned a phantom write: its draft, kept in the whole-turn thread, is not a claim. A turn whose write ERRORED is checked like one that called none (fix4): the bubble prints no line for a failed call, so the caption is the only thing that says "Logged your lunch." saved nothing).
+
+### 2i. Shipped — calendar context (2026-10-21, chief-of-staff Track 2 item 7; ADR "Calendar context to the model")
+
+Not a tool: a section of the **uncached** per-turn context, so the Coach (chat) and the daily pass can plan around travel and busy days. **Settings › Coach › Calendar**, OFF until the owner turns it on; turning it on asks iOS for full calendar access, and ON is stored only when iOS grants it.
+
+| Piece | Where | What it does |
+| --- | --- | --- |
+| The seam | `src/lib/calendar/calendar.ts` | `expo-calendar` required lazily in try/catch; absent (web, node, an older binary) → `unavailable`, never a throw. `calendarAccess()` and `readCalendarEvents()` only check permission; `requestCalendarAccess()` is the one prompt and its only caller is the switch. Reads title, start, end, all-day, location, calendar id and status, nothing else; drops cancelled events; times out at 2.5 s. No write is typed. |
+| The block | `src/lib/calendar/format.ts` | Pure. `Calendar, next 7 days (…):` then one line per logical day with events, `Wed 2026-10-21 (today): 09:00–09:30 Standup [Work] · 18:30–20:00 Dinner @ Prego [Home]`. Timed events file under their logical day (the header states a non-midnight boundary); all-day events under their calendar date; multi-day events once, `all day to 2026-10-25`; overnight `23:00 to 2026-10-23 06:00`; already running `from 2026-10-19 17:00 to 12:00`. Capped at 40 events / 3,200 chars with truncated fields, and says when it is incomplete. An empty week is one line, and a switch-on-but-unreadable calendar is a different line, so neither reads as free. |
+| Cache + switch | `src/lib/calendar/context.ts`, `src/lib/db/repositories/calendar-setting.ts` | `calendarBlockFor(db, now)`: null when the switch is off (no native call at all); otherwise a fresh read, reused for 5 minutes per window, in memory only. The switch is `preferences.calendar.coachSees`. |
+| Wiring | `coach-service.ts`, `coach-pass.ts`, `turn-context.ts` | Both callers await the block and pass it as `buildTurnContext(…, { calendar })`, which appends it as its own section. |
+
+**Budget:** typical week ~270 tokens, worst case ~960, empty week 9; uncached, so the cached prefix and the §6 ceilings are unchanged. Tests: `db/calendar.test.mjs` (the absent seam, formatting under `TZ=Pacific/Auckland`, the cap, the cache, nothing written to SQLite, the wiring, the app.json pin) and `db/screens-render.test.mjs` §41 (the switch and its sentences).
 
 ### 2e. Planned — not yet designed in code
 
