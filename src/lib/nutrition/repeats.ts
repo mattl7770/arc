@@ -340,14 +340,20 @@ export function rankAddOns(
   return [...groups.entries()]
     .map(([key, g]) => ({ key, name: g.latest.name, times: g.occurrences.size, latest: g.latest }))
     .filter((addOn) => addOn.times >= ADD_ON_MIN_TIMES)
+    // Ties go to the more recent meal; two add-ons last seen in the SAME meal
+    // are equally recent — which was inserted a millisecond later says nothing —
+    // so they fall to name order, which keeps the row stable from open to open.
     .sort(
       (a, b) =>
         b.times - a.times ||
-        (a.latest.created_at < b.latest.created_at
-          ? 1
-          : a.latest.created_at > b.latest.created_at
-            ? -1
-            : 0)
+        (a.latest.meal_id === b.latest.meal_id
+          ? 0
+          : a.latest.created_at < b.latest.created_at
+            ? 1
+            : a.latest.created_at > b.latest.created_at
+              ? -1
+              : 0) ||
+        a.name.localeCompare(b.name)
     )
     .slice(0, ADD_ON_LIMIT);
 }

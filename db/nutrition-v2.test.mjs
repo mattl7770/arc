@@ -8517,6 +8517,23 @@ console.log('97. saved meals and past meals in search; a drink’s usual add-ons
   addOns.map((o) => `${o.name}×${o.times}`).join(' ') === 'Oat milk×3 Vanilla syrup×3 Extra shot×2'
     ? ok('learned: three at most, most frequent first; once is not usual; 40 minutes later is not with it')
     : bad('add-ons', addOns.map((o) => `${o.name}×${o.times}`).join(' '));
+  // Two add-ons last seen in the same meal tie on recency, whatever millisecond
+  // each row was inserted at: name order decides, the same on every open.
+  {
+    const row = (id, meal, name, at) => ({
+      occurrence: 'o' + meal, item: { id, meal_id: meal, date: TODAY, food_id: null, name, amount: 10, unit: 'ml',
+        kcal: 30, protein_g: null, carbs_g: null, fat_g: null, fiber_g: null, micros: null, confidence: null,
+        serving_qty: null, piece_name: null, is_composite: 0, created_at: at },
+    });
+    const ranked = (syrupAt) =>
+      repeats.rankAddOns('name:flat white', ['1', '2'].flatMap((m) => [
+        row('m' + m, m, 'Oat milk', `2026-10-0${m}T08:00:00.000Z`),
+        row('s' + m, m, 'Vanilla syrup', `2026-10-0${m}T08:00:00.${syrupAt}Z`),
+      ]), new Set()).map((o) => o.name).join(',');
+    ranked('000') === 'Oat milk,Vanilla syrup' && ranked('001') === 'Oat milk,Vanilla syrup'
+      ? ok('a same-meal tie is decided by name, not by which insert landed a millisecond later')
+      : bad('same-meal tie', ranked('000') + ' / ' + ranked('001'));
+  }
   // Already in the meal: not offered again.
   addMealItem(a, first, { name: 'Oat milk', amount: 60, unit: 'ml', kcal: 36 });
   history.usualAddOnsFor(a, drinkId()).map((o) => o.name).join(',') === 'Vanilla syrup,Extra shot'

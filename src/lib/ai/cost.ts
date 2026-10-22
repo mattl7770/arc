@@ -22,9 +22,8 @@ import type { CoachUsage } from './types';
  * (platform.claude.com/docs/en/about-claude/pricing, read 2026-10-21).
  *
  * `cacheRead` is a price of its own rather than a multiple, because it stopped
- * being one: it is 0.1× input on most models (Sonnet 5.5's $0.20 of $2
- * included) but 0.05× on Opus 5.5 and 0.025× on Fable 5.1. Cache WRITES are
- * still multiples of the input price on every model —
+ * being one: it is 0.1× input on most models but 0.05× on Opus 5.5 and Sonnet
+ * 5.5. Cache WRITES are still multiples of the input price on every model —
  * 1.25× for the 5-minute cache and 2× for the 1-hour one (same page).
  *
  * `longPrompt` is Haiku 5.5's second rate card: a REQUEST whose prompt (input +
@@ -48,7 +47,7 @@ export type Price = {
 export const PRICES: Readonly<Record<string, Price>> = {
   'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2 },
   'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5 },
-  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.2 },
+  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.1 },
   // $2/$10 was announced as introductory pricing through 2026-08-31. The
   // pricing page now says it "is now the standard price" and that the rise to
   // $3/$15 "will not occur" (checked 2026-10-21), so the 2026-09-01 REVISIT
