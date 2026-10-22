@@ -30,6 +30,11 @@
  *   OS schedule are pass-store.ts's and nudge-plan.ts's, after the pass has
  *   returned — so the pass itself still writes nothing.
  *
+ *   IT SEES THE FINDINGS. The record-hygiene and medical-attention detectors
+ *   (src/lib/ai/findings.ts) ride its context as a compact block after the
+ *   state block — only here, never in the chat context or Home's brief. They
+ *   are facts; what, if anything, to say about them is this pass's call.
+ *
  * The judgment itself is entirely the model's. Nothing here decides what a low
  * readiness morning, a stalled lift, or a missed week should mean — the
  * deterministic layer only decides WHEN to wake the model up.
@@ -50,7 +55,9 @@ import {
 } from '@/lib/notifications/nudge-plan';
 
 import { apiKeyStore } from './api-key-store';
+import { computeFindings, findingsBlock } from './findings';
 import { runCoachTurn, type FetchLike } from './model-client';
+import { getPassState } from './pass-schedule';
 import { buildCoachSystemPrompt } from './system-prompt';
 import { buildTurnContext } from './turn-context';
 // Explicit /index: a bare directory import resolves under Metro but not under
@@ -182,6 +189,11 @@ export type CoachPassResult = {
    * Empty when nudges are off.
    */
   nudges: NudgeReply;
+  /**
+   * The finding ids the pass's Findings block spelled out — what markPassRan
+   * records as seen, so the next pass counts them instead of re-listing them.
+   */
+  findingsShown: string[];
 };
 
 /** The opening line: why this pass is running, in the model's terms. */
@@ -335,6 +347,7 @@ const FAILED: CoachPassResult = {
   status: 'failed',
   toolCalls: [],
   nudges: EMPTY_NUDGE_REPLY,
+  findingsShown: [],
 };
 
 /** The model the pass uses unless overridden — cheap, fast, good enough to triage. */
@@ -376,6 +389,15 @@ export async function runCoachPass(
   const nudges = nudgeDirectiveFor(db, now, dayStartsAt);
 
   try {
+    // The record-hygiene and medical-attention findings (src/lib/ai/findings.ts),
+    // AFTER the state block and only in the pass: facts for the unattended look,
+    // with nothing in the chat Coach's context, the cached prefix or Home's brief.
+    // Empty when there are none, so the context is then exactly what it was.
+    const findings = findingsBlock(
+      computeFindings(db, now),
+      new Set(getPassState(db).seenFindings)
+    );
+    const turnContext = buildTurnContext(db, now);
     const result = await runCoachTurn(
       {
         apiKey,
@@ -384,7 +406,7 @@ export async function runCoachPass(
       },
       {
         system: buildCoachSystemPrompt(),
-        systemContext: buildTurnContext(db, now),
+        systemContext: findings.text ? `${turnContext}\n\n${findings.text}` : turnContext,
         messages: [{ role: 'user', content: passDirective(options.trigger, today, nudges) }],
         // READ tools only, MINUS the generic one: with no write in the registry
         // there is nothing to gate, so an unattended pass cannot change
@@ -443,6 +465,7 @@ export async function runCoachPass(
       status: skipped ? 'silent' : 'spoke',
       toolCalls: result.toolCalls,
       nudges: nudges ? reply : EMPTY_NUDGE_REPLY,
+      findingsShown: findings.shown,
     };
   } catch {
     // Offline, no network, a bad key, a refusal — the user never sees this. But

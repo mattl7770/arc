@@ -199,10 +199,10 @@ Corrections applied from the adversarial review: SHBG/AST/iron flagged sex-speci
 
 **Deliberate limits:**
 - **Qualitative results aren't charted** (~20 rows on a full panel). Extracted, counted in review, preserved in `raw_extracted_json`; a `lab_results.value_text` column would make them first-class.
-- **No plausible-range gate.** The alias research suggests a per-marker physiologic band as a third check (a "ferritin" of 300 with unit ug/dL is really serum iron). Exact matching makes mis-matches rare enough that this wasn't worth the curated data; the review screen is the backstop.
+- **No plausible-range gate.** The alias research suggests a per-marker physiologic band as a third check (a "ferritin" of 300 with unit ug/dL is really serum iron). Exact matching makes mis-matches rare enough that this wasn't worth the curated data; the review screen is the backstop. *(2026-10-21: still no gate, but a stored value outside a per-marker physiologic band is now a Coach **finding** — `PHYSIOLOGIC_BANDS` in `src/lib/ai/finding-thresholds.ts`, docs/ai-coach.md §3.)*
 - **Same-unit, different-measurand pairs are undetectable** — venous plasma vs capillary/CGM glucose differ ~11% in identical units. Nothing in the file distinguishes them.
 - **`file_path` points at a cache copy.** iOS's picker returns a temporary copy; the OS may reclaim it. Best-effort provenance until Phase 4 gives media a durable home — `raw_extracted_json` is the reliable record meanwhile.
-- **No re-import dedupe**, only a same-date warning. Deleting the duplicate report is the remedy.
+- **No re-import dedupe**, only a same-date warning. Deleting the duplicate report is the remedy. *(2026-10-21: a re-import — same draw date, shared values within 1% — is now raised to the Coach as a duplicate finding; nothing is removed for him.)*
 
 **Follow-ups worth doing:**
 - Surface lab values on the Data tab's trend rows and in Home's readiness — the values now exist.

@@ -233,6 +233,14 @@ The Coach's proactivity is **deterministic detection + model narration** — the
 
 `⚑ MATT`: thresholds are my calls — tune once real data flows. Also: targets (protein g/day, training min/week) are deliberately NOT hardcoded; they should come from Protocols when it lands, not constants.
 
+### Findings — record hygiene and medical attention (2026-10-21, chief-of-staff Track 2 item 6)
+
+A second, separate detector set (`src/lib/ai/findings.ts`) for facts that are not trends: **gaps** against his own cadence (weight usually daily and none for 4+ days; a day with no meals while steps, a workout or ticked items show he was active), **duplicate candidates** (the same meal or capture twice inside 10 min; a lab report re-imported — same draw date, shared values within 1%), **implausible values** (weight jumping >4% between readings ≤2 days apart; one HRV/RHR reading >4 robust SD from his own baseline; a lab value outside a physiologic band, i.e. a unit or parse error), and **medical attention** (a lab marker outside the lab's standard range, or newly out of ARC's optimal one, or worse than the last draw by more than its reference change value; a symptom on 4 of the last 7 days; RHR up or HRV down ≥2 SD for 3 days running).
+
+They **only detect**: nothing writes, changes a plan or decides (the suite asserts the database is byte-identical). Each `Finding` has a stable id (`<check>-<hash>`), `kind` `record` | `labs`, `severity` `info` | `notice` | `attention`, a factual headline, and the rows behind it — table, id, and the registry `domain`/`domainId` where `edit_record`/`delete_record` reach it — so the coming Coach proposals can cite a finding and re-derive it at approval (`findingById`, null once resolved). Every status day, excused day, away and timezone day is unjudged: never a missed log, never a baseline, never an "implausible" reading.
+
+**Where they go:** never Home's brief (`computeInsights` is untouched, so the brief, the `Signals:` line and the signal trigger do not move); the **coach pass's context**, as a ≤6-line block after the state block (~60 tokens for one finding, ≤350 worst case), with findings an earlier pass was shown counted rather than re-listed (`PassState.seenFindings`); and **`get_insights`'s result** as `findings` (payload, not schema; capped at 12). **Thresholds** live in one file (`src/lib/ai/finding-thresholds.ts`, each with its justification) and are editable in Settings › Coach › Record checks. Seeded biomarkers carry no lab standard range, so for them "out of range" means ARC's optimal one, raised only on the draw that crosses it.
+
 ### Daily brief
 
 `generateDailyBrief(db, now)` composes top insights + reminders due today into 1–3 sentences with no model call, so the brief is real even offline. **It is surfaced in exactly one place: Home** (`src/components/home/coach-brief.tsx` ← `useDailyBrief`). `src/lib/home/mock-day.ts` was deleted outright when Home was wired to it.

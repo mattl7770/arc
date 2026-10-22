@@ -31,6 +31,7 @@ import { timezoneChangesOn } from '@/lib/db/repositories/day-meta';
 import { getOrCreateUser } from '@/lib/db/repositories/user';
 import { clockOf } from '@/lib/notifications/nudge-plan';
 
+import { computeFindings } from './findings';
 import { computeInsights } from './insights';
 import type { PassTrigger } from './coach-pass';
 
@@ -53,6 +54,14 @@ export type PassState = {
    * is answered once. Only today's are kept.
    */
   checkins: string[];
+  /**
+   * Finding ids (src/lib/ai/findings.ts) a pass has already been SHOWN and
+   * that still stand. The pass's Findings block counts these rather than
+   * re-listing them, so a standing duplicate is raised once, not every
+   * morning; one that resolves drops out, so if it recurs it is new again.
+   * Not a trigger: a new finding waits for the next pass.
+   */
+  seenFindings: string[];
 };
 
 const EMPTY: PassState = {
@@ -61,6 +70,7 @@ const EMPTY: PassState = {
   lastEvening: null,
   lastSpoke: null,
   checkins: [],
+  seenFindings: [],
 };
 
 /** The evening pass is the first open at or after this wall-clock time. */
@@ -101,6 +111,7 @@ export function getPassState(db: Database): PassState {
     lastEvening: typeof record.lastEvening === 'string' ? record.lastEvening : null,
     lastSpoke: typeof record.lastSpoke === 'string' ? record.lastSpoke : null,
     checkins: strings(record.checkins),
+    seenFindings: strings(record.seenFindings),
   };
 }
 
@@ -196,7 +207,7 @@ export function duePass(db: Database, now: Date = new Date()): PassTrigger | nul
 export function markPassRan(
   db: Database,
   now: Date = new Date(),
-  what: { evening?: boolean; spoke?: boolean } = {}
+  what: { evening?: boolean; spoke?: boolean; findingsShown?: readonly string[] } = {}
 ): void {
   // lastDate only ever advances, never regresses. duePass leaves a stored date
   // "ahead" of today alone so a rolled-back clock cannot re-fire the daily pass;
@@ -216,6 +227,11 @@ export function markPassRan(
     ...state,
     lastDate: forwardCursor(state.lastDate, today),
     seenSignals: currentSignals(db, now),
+    // Only what a pass was actually shown: a finding past the block's cap was
+    // never read, so it must stay new for the next one.
+    seenFindings: computeFindings(db, now)
+      .map((finding) => finding.id)
+      .filter((id) => state.seenFindings.includes(id) || (what.findingsShown ?? []).includes(id)),
     lastEvening: what.evening ? forwardCursor(state.lastEvening, today) : state.lastEvening,
     lastSpoke: what.spoke ? forwardCursor(state.lastSpoke, today) : state.lastSpoke,
   });

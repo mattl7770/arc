@@ -7839,8 +7839,16 @@ console.log('\n29. Screen time — the keypad, the receipt, the link, Data and S
     'Check-in at',
     '07:05',
     '5 minutes after quiet hours end, and moves with them',
+    // Record checks (findings thresholds): every knob, at its default.
+    'Record checks',
+    'Gap: times your usual spacing',
+    'Weight: jump between readings',
+    '4 %',
+    'Lab change: z',
+    '1.96',
+    'nothing in your record moves unless you approve it',
   ]);
-  refute('settings-coach', settings, ['Follow quiet hours', 'Your time.']);
+  refute('settings-coach', settings, ['Follow quiet hours', 'Your time.', 'Reset to defaults']);
 
   saveNudgeSettings(db, { checkinTime: '07:15', quietStart: '22:00' });
   const settingsOwn = render('settings-coach (his own time)', SettingsCoachScreen);

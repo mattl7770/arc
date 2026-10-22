@@ -2,6 +2,7 @@ import { useCallback, useState, useSyncExternalStore } from 'react';
 import { Pressable, Switch, Text, TextInput, View } from 'react-native';
 
 import { ClockSetting } from '@/components/coach/clock-setting';
+import { FindingThresholdSettings } from '@/components/coach/finding-thresholds';
 import { Block, Divider } from '@/components/ui/block';
 import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
@@ -65,6 +66,12 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * Coach and the food estimators may run the provider's web search inside their
  * own model call. Persisted beside the model choice (api-key-store.ts), and read
  * on every turn, so turning it off takes effect on the next request.
+ *
+ * ## Record checks (Track 2 item 6, docs/ai-coach.md §3)
+ *
+ * The thresholds the record-hygiene and medical-attention findings read, as
+ * steppers (src/components/coach/finding-thresholds.tsx). Their defaults and
+ * the reason for each live in src/lib/ai/finding-thresholds.ts, the one place.
  */
 
 /** The notification settings, written through and resynced on every change. */
@@ -370,6 +377,9 @@ export default function SettingsCoachScreen() {
           </Block>
         </View>
       </View>
+
+      {/* Record checks — the thresholds the Coach's findings use. */}
+      <FindingThresholdSettings />
     </Screen>
   );
 }
