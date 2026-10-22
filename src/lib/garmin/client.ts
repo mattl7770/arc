@@ -44,6 +44,12 @@
  *   - A 403 on a read, and any other 4xx: {@link GarminRequestError} — that one
  *     endpoint refusing, not the key (the mint would have said so).
  *   - fetch itself throwing (offline, timeout): {@link GarminNetworkError}.
+ *   - A redirect — any 3xx, or a reply whose final URL is off
+ *     {@link GARMIN_API_ORIGIN}: {@link GarminRequestError} on a read,
+ *     {@link GarminTokenError} at the mint. Every request is sent with
+ *     `redirect: 'error'` so the key or the token never follows one off-host
+ *     (a fetch that honours it throws, which reads as offline); the status and
+ *     URL checks are the backstop for a fetch that ignores it.
  *
  * Pure apart from the injected `fetch` and clock, so db/garmin.test.mjs drives
  * every branch with fixtures and no network.
@@ -78,11 +84,19 @@ export const GARMIN_REQUEST_TIMEOUT_MS = 20_000;
 /** The fetch surface the client needs; React Native's global fetch satisfies it. */
 export type GarminFetch = (
   url: string,
-  init: { method: 'GET' | 'POST'; headers: Record<string, string>; signal?: AbortSignal }
+  init: {
+    method: 'GET' | 'POST';
+    headers: Record<string, string>;
+    signal?: AbortSignal;
+    /** Always 'error': a credential never follows a redirect. */
+    redirect?: 'error' | 'follow' | 'manual';
+  }
 ) => Promise<GarminFetchResponse>;
 
 export type GarminFetchResponse = {
   status: number;
+  /** The final URL, after any redirect fetch followed. Empty or absent when unknown. */
+  url?: string;
   headers?: { get(name: string): string | null } | null;
   text(): Promise<string>;
 };
@@ -313,6 +327,17 @@ export type GarminSession = {
   keyExpiresAt(): string | null;
 };
 
+/** A reply that was redirected, or says it was: a 3xx, or a final URL off Garmin's origin. */
+function isRedirect(status: number, finalUrl: string | undefined): boolean {
+  if (status >= 300 && status < 400) return true;
+  if (typeof finalUrl !== 'string' || finalUrl === '') return false;
+  return !(
+    finalUrl === GARMIN_API_ORIGIN ||
+    finalUrl.startsWith(`${GARMIN_API_ORIGIN}/`) ||
+    finalUrl.startsWith(`${GARMIN_API_ORIGIN}?`)
+  );
+}
+
 function isAllowedPath(path: string): boolean {
   return (
     path.startsWith('/') &&
@@ -340,7 +365,7 @@ export function openGarminSession(options: GarminSessionOptions): GarminSession 
   const timeoutMs = options.timeoutMs ?? GARMIN_REQUEST_TIMEOUT_MS;
   let made = 0;
 
-  type Reply = { status: number; retryAfter: string | null; text: string };
+  type Reply = { status: number; retryAfter: string | null; text: string; redirected: boolean };
 
   // The body is read inside the same timeout as the headers, so a stalled body
   // is a network failure too.
@@ -357,13 +382,17 @@ export function openGarminSession(options: GarminSessionOptions): GarminSession 
       const response = await options.fetchImpl(url, {
         method,
         headers,
+        redirect: 'error',
         ...(controller ? { signal: controller.signal } : {}),
       });
-      const text = response.status === 204 ? '' : await response.text();
+      // A redirected reply's body is not Garmin's to read.
+      const redirected = isRedirect(response.status, response.url);
+      const text = redirected || response.status === 204 ? '' : await response.text();
       return {
         status: response.status,
         retryAfter: response.headers?.get('retry-after') ?? null,
         text,
+        redirected,
       };
     } catch {
       throw new GarminNetworkError();
@@ -382,6 +411,7 @@ export function openGarminSession(options: GarminSessionOptions): GarminSession 
       Authorization: `ApiKey ${options.key}`,
       Accept: 'application/json',
     });
+    if (response.redirected) throw new GarminTokenError(response.status);
     if (response.status === 401 || response.status === 403) {
       forgetGarminToken();
       throw new GarminRejectedError(response.status);
@@ -418,6 +448,7 @@ export function openGarminSession(options: GarminSessionOptions): GarminSession 
           Authorization: `Bearer ${bearer.token}`,
           Accept: 'application/json',
         });
+        if (response.redirected) throw new GarminRequestError(response.status, 'read');
         // 401 is the token (or the key behind it): re-mint once. A 403 on a
         // READ is this endpoint refusing, not the key — the mint would have
         // said so — so it is that request's failure only.

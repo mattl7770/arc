@@ -912,9 +912,10 @@ function assembleWhatChanged(
   const rows: ChangeRow[] = [];
 
   // Protocol revisions. `created_at` is a UTC instant and the period is local
-  // days; bucketing on its date substring is the same approximation
-  // `bodyDailySeries` and the Coach's history reads already make, and it is
-  // stated here rather than left to be discovered.
+  // days; bucketing on its date substring is the same approximation the
+  // Coach's history reads make (`bodyDailySeries` files by the logical local
+  // day since 2026-10-21), and it is stated here rather than left to be
+  // discovered.
   const versions = db.all<{
     name: string;
     versionNumber: number;

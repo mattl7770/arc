@@ -1,7 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
-import { AppState, Pressable, Switch, Text, TextInput, View } from 'react-native';
+import { useCallback, useState, useSyncExternalStore } from 'react';
+import { Pressable, Switch, Text, TextInput, View } from 'react-native';
 
 import { CalendarSetting } from '@/components/coach/calendar-setting';
 import { ClockSetting } from '@/components/coach/clock-setting';
@@ -18,17 +18,8 @@ import {
   USAGE_LEVEL_LABELS,
   type UsageResolution,
 } from '@/lib/ai/usage-policy';
-import {
-  calendarAccess,
-  requestCalendarAccess,
-  type CalendarAccess,
-} from '@/lib/calendar/calendar';
-import { clearCalendarCache } from '@/lib/calendar/context';
+import { useCalendarSetting } from '@/hooks/use-calendar-setting';
 import { getDb } from '@/lib/db/client';
-import {
-  getCalendarContextOn,
-  setCalendarContextOn,
-} from '@/lib/db/repositories/calendar-setting';
 import {
   getSaveLogsAtOnce,
   setSaveLogsAtOnce,
@@ -103,9 +94,12 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * One switch, OFF until he turns it on: the Coach may then see the next 7 days
  * of the phone's calendar events, read-only. Turning it on is the ONLY thing in
  * ARC that asks iOS for calendar access; it is stored on only when iOS grants
- * it. Access is re-checked whenever ARC comes back to the foreground, so a
- * change made in iOS Settings shows here at once (src/components/coach/
- * calendar-setting.tsx carries the sentences).
+ * it. While it is ON, access is re-checked whenever ARC comes back to the
+ * foreground, so a change made in iOS Settings shows here at once
+ * (src/components/coach/calendar-setting.tsx carries the sentences). While it
+ * is OFF, nothing asks iOS anything — not even the permission check; the screen
+ * only looks at whether this build carries the module at all
+ * (src/hooks/use-calendar-setting.ts).
  *
  * ## Save simple logs at once (2026-10-21, docs/decisions.md "Simple logs save
  * at once, with Undo")
@@ -135,43 +129,6 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * (app/settings-coach-usage.tsx), showing today's and this month's estimate
  * so the cost of a model choice is one glance from the choice itself.
  */
-
-/**
- * The Calendar switch: his choice (the preferences blob), iOS's answer, and the
- * change handler that asks iOS before storing an ON.
- */
-function useCalendarSetting(): [boolean, CalendarAccess | null, (on: boolean) => void] {
-  const [on, setOn] = useState(() => getCalendarContextOn(getDb()));
-  const [access, setAccess] = useState<CalendarAccess | null>(null);
-  useEffect(() => {
-    let live = true;
-    const check = () => {
-      void calendarAccess().then((next) => {
-        if (live) setAccess(next);
-      });
-    };
-    check();
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') check();
-    });
-    return () => {
-      live = false;
-      subscription.remove();
-    };
-  }, []);
-  const change = useCallback((next: boolean) => {
-    clearCalendarCache();
-    if (!next) {
-      setOn(setCalendarContextOn(getDb(), false));
-      return;
-    }
-    void requestCalendarAccess().then((answer) => {
-      setAccess(answer);
-      if (answer === 'granted') setOn(setCalendarContextOn(getDb(), true));
-    });
-  }, []);
-  return [on, access, change];
-}
 
 /** Today's and this month's estimate, as the Coach usage row prints it. */
 function readSpendGlance(): string {

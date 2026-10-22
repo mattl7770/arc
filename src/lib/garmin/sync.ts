@@ -46,7 +46,11 @@
  *   - **Any other 4xx** on one request (a 403 on a read included — the mint
  *     would have refused a bad key): that request is skipped and named in
  *     Settings › Garmin, the rest of the pass continues. A backfill chunk Garmin will not serve is
- *     stepped over rather than retried forever.
+ *     stepped over rather than retried forever. A RECENT window it will not serve is not
+ *     coverage: that endpoint's next recent request reaches back to it again (one request,
+ *     inside the usual throttle), for up to {@link RECENT_MAX_DAYS} — then stepped over too.
+ *   - **A write that throws:** the pass is `error` and throttled, but no cursor and no
+ *     `lastSyncedAt` moves — nothing it fetched is on disk, so the next pass asks again.
  *
  * Rows fetched before a stop are still written: what arrived is real.
  */
@@ -185,6 +189,13 @@ export type GarminSyncState = {
   backfill: Partial<Record<GarminEndpoint, string>>;
   /** Endpoints Garmin would not serve on the last pass (a 4xx), by name. */
   skipped: GarminEndpoint[];
+  /**
+   * Per endpoint, the first day of a RECENT window Garmin refused (a 4xx) and
+   * no pass has read since. That endpoint's next recent request reaches back to
+   * it, within {@link RECENT_MAX_DAYS}; older than that it is stepped over, as a
+   * refused backfill chunk is. Cleared when the endpoint serves its window.
+   */
+  refused: Partial<Record<GarminEndpoint, string>>;
 };
 
 export function emptyGarminState(): GarminSyncState {
@@ -198,6 +209,7 @@ export function emptyGarminState(): GarminSyncState {
     keyExpiresAt: null,
     backfill: {},
     skipped: [],
+    refused: {},
   };
 }
 
@@ -233,6 +245,12 @@ export function readGarminState(db: Database): GarminSyncState {
     for (const endpoint of GARMIN_ENDPOINTS) {
       const value = (r.backfill as Record<string, unknown>)[endpoint];
       if (typeof value === 'string' && DAY_SHAPE.test(value)) state.backfill[endpoint] = value;
+    }
+  }
+  if (r.refused && typeof r.refused === 'object') {
+    for (const endpoint of GARMIN_ENDPOINTS) {
+      const value = (r.refused as Record<string, unknown>)[endpoint];
+      if (typeof value === 'string' && DAY_SHAPE.test(value)) state.refused[endpoint] = value;
     }
   }
   if (Array.isArray(r.skipped)) {
@@ -285,6 +303,10 @@ export function recentWindow(
  * Every request this pass would like to make, in order: the five recent
  * ranges, then up to `backfillSteps` older chunks. The session's budget is
  * what actually stops it, so asking for more than will be served costs nothing.
+ *
+ * An endpoint whose recent window Garmin refused last time (`state.refused`)
+ * asks from that window's first day again — still one request, so a refusal
+ * that never lifts costs nothing extra — but never past {@link RECENT_MAX_DAYS}.
  */
 export function planGarminPass(
   state: GarminSyncState,
@@ -292,12 +314,17 @@ export function planGarminPass(
   backfillSteps: number = GARMIN_REQUESTS_PER_PASS
 ): GarminStep[] {
   const recent = recentWindow(state.lastSyncedAt, today);
-  const steps: GarminStep[] = GARMIN_ENDPOINTS.map((endpoint) => ({
-    endpoint,
-    kind: 'recent',
-    from: recent.from,
-    to: recent.to,
-  }));
+  const floor = shiftISODate(today, -(RECENT_MAX_DAYS - 1));
+  const steps: GarminStep[] = GARMIN_ENDPOINTS.map((endpoint) => {
+    const unread = state.refused[endpoint];
+    const from =
+      unread !== undefined && unread < recent.from
+        ? unread < floor
+          ? floor
+          : unread
+        : recent.from;
+    return { endpoint, kind: 'recent', from, to: recent.to };
+  });
   const horizon = shiftISODate(today, -(BACKFILL_DAYS - 1));
   const cursors = new Map<GarminEndpoint, string>();
   for (const endpoint of GARMIN_ENDPOINTS) {
@@ -397,6 +424,7 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
     ? {}
     : { ...state.backfill };
   const skipped: GarminEndpoint[] = [];
+  const refused: Partial<Record<GarminEndpoint, string>> = { ...state.refused };
   let recentReached = 0;
   let stop: 'rejected' | 'backoff' | 'offline' | 'error' | null = null;
   let retryAfterMs: number | null = null;
@@ -410,6 +438,7 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
     try {
       const body = await session.get(path, query);
       rows.push(...spec.map(body));
+      if (step.kind === 'recent') delete refused[step.endpoint];
     } catch (error) {
       if (error instanceof GarminBudgetError) break;
       if (error instanceof GarminRejectedError) stop = 'rejected';
@@ -420,24 +449,32 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
       else if (error instanceof GarminTokenError) stop = 'error';
       else if (error instanceof GarminRequestError) {
         if (!skipped.includes(step.endpoint)) skipped.push(step.endpoint);
+        // A refused RECENT window is not coverage: that endpoint asks for it
+        // again next pass (see `refused`), while the others move on.
+        if (step.kind === 'recent') refused[step.endpoint] = step.from;
       } else stop = 'error';
       if (stop !== null) break;
     }
     // Served, or refused by that endpoint alone (named in `skipped`, shown in
-    // Settings) — either way the range is behind us. A stop above never gets
-    // here, so no cursor moves past anything a stop left unread.
+    // Settings) — either way the backfill range is behind us, and a refused
+    // recent window is held in `refused` above. A stop never gets here, so no
+    // cursor moves past anything a stop left unread.
     if (step.kind === 'recent') recentReached++;
     else backfill[step.endpoint] = step.from;
   }
 
   // A write that throws (a CHECK the mappers did not foresee) must not skip the
   // state write below: without `lastAttemptAt` the throttle never engages and
-  // every foreground would refetch the same bad range.
+  // every foreground would refetch the same bad range. But nothing this pass
+  // fetched is on disk, so no cursor and no "synced" may move for it: the next
+  // pass asks for the same ranges again.
   let rowsWritten = 0;
+  let written = true;
   try {
     rowsWritten = writeRows(db, rows);
   } catch {
     stop = 'error';
+    written = false;
   }
 
   // Disconnected, or a new key pasted, while the pass was out: what arrived is
@@ -455,11 +492,12 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
   const next: GarminSyncState = {
     ...state,
     lastAttemptAt: now.toISOString(),
-    backfill,
+    backfill: written ? backfill : state.backfill,
+    refused: written ? refused : state.refused,
     skipped,
     keyExpiresAt: session.keyExpiresAt() ?? state.keyExpiresAt,
   };
-  if (recentReached === GARMIN_ENDPOINTS.length) next.lastSyncedAt = now.toISOString();
+  if (written && recentReached === GARMIN_ENDPOINTS.length) next.lastSyncedAt = now.toISOString();
   let backoffUntil: string | null = null;
   if (stop === 'rejected') {
     next.status = 'rejected';

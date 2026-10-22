@@ -52,7 +52,14 @@ type WearableAgg =
   /** One winning source per day — the rule Home and the Data tab use. */
   | 'arbitrated'
   /** Many rows a day that must be added up (sips logged, sessions logged). */
-  | 'sum';
+  | 'sum'
+  /**
+   * One winning source per day, as 'arbitrated' — but the value is a CODE
+   * (Garmin's HRV status), so a day is a category: counted, never averaged.
+   * `get_metric_series` reports days per status; {@link readMetricDays}
+   * refuses it, so an experiment watching it is read qualitatively.
+   */
+  | 'categorical';
 
 export type WearableMetricSpec = {
   metricType: string;
@@ -72,6 +79,8 @@ export type WearableMetricSpec = {
   display?: 'volume' | 'temperature';
   /** True when the spec was guessed from the rows, not declared by the pipeline. */
   inferred?: boolean;
+  /** For `agg: 'categorical'`: code → the status word. */
+  categories?: Readonly<Record<number, string>>;
 };
 
 /** Readable names for the pipeline's metric_types (the specs carry no label). */
@@ -142,8 +151,9 @@ const DECLARED_WEARABLE_METRICS: readonly WearableMetricSpec[] = [
       metricType: spec.metricType,
       label: spec.label,
       canonicalUnit: spec.unit,
-      agg: 'arbitrated',
+      agg: spec.categories ? 'categorical' : 'arbitrated',
       decimals: spec.decimals,
+      ...(spec.categories ? { categories: spec.categories } : {}),
     })
   ),
   ...SLEEP_METRICS.map(([metricType, label]): WearableMetricSpec => ({
@@ -363,10 +373,9 @@ export function accumulatedSeries(
 // --- A watched metric over a fixed window -------------------------------------
 
 /**
- * The names `create_experiment` already promises are readable
- * (`READABLE_SERIES` in tools/write-tools.ts) but that `get_metric_series`'s
- * lowercase-only lookup misses. Exact keys, never a fuzzy match: a name that is
- * in neither table is reported unreadable, and the Coach says so.
+ * Spellings of watched names that `get_metric_series`'s lowercase-only lookup
+ * misses. Exact keys, never a fuzzy match: a name that is in neither table is
+ * reported unreadable, and the Coach says so.
  */
 const WATCHED_NAME_ALIASES: Record<string, string> = {
   resting_hr: 'rhr',
@@ -390,15 +399,46 @@ export type MetricDays = {
   points: SeriesPoint[];
 };
 
+type WatchedSeries =
+  | { kind: 'body'; name: (typeof BODY_METRIC_KEYS)[number] }
+  | { kind: 'wearable'; metricType: string; spec: WearableMetricSpec };
+
+/**
+ * The series a watched name reads, or null when none answers to it — a name
+ * nothing records, or a categorical metric (a status code has no mean to
+ * compare). The ONE readability rule: {@link readMetricDays} reads through it,
+ * and `create_experiment`'s unreadable-metric note asks {@link isReadableMetric}.
+ */
+function resolveWatched(db: Database, requested: string): WatchedSeries | null {
+  const normal = requested
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  const name = WATCHED_NAME_ALIASES[normal] ?? normal;
+  if ((BODY_METRIC_KEYS as readonly string[]).includes(name)) {
+    return { kind: 'body', name: name as (typeof BODY_METRIC_KEYS)[number] };
+  }
+  const metricType = METRIC_ALIASES[name] ?? name;
+  const spec = wearableCatalog(wearableMetricInventory(db)).get(metricType);
+  if (!spec || spec.agg === 'categorical') return null;
+  return { kind: 'wearable', metricType, spec };
+}
+
+/** Whether an experiment watching `requested` gets numbers at readout. */
+export function isReadableMetric(db: Database, requested: string): boolean {
+  return resolveWatched(db, requested) !== null;
+}
+
 /**
  * A watched metric's daily values over the inclusive window `from … to`, or
- * null when no series answers to the name.
+ * null when no series answers to the name (see {@link resolveWatched}).
  *
  * The same reads, the same folds and the same rounding as `get_metric_series`:
- * body metrics through `bodyDailySeries` (UTC day of `measured_at`, averaged,
- * `round1` in display units), wearables through `wearableArbitratedSeries` or
- * `accumulatedSeries` and `reportValue`. Nothing is dropped here — a partial
- * today, an excluded day — because those are the caller's rules to state.
+ * body metrics through `bodyDailySeries` (logical local day of `measured_at`,
+ * averaged, `round1` in display units), wearables through
+ * `wearableArbitratedSeries` or `accumulatedSeries` and `reportValue`. Nothing
+ * is dropped here — a partial today, an excluded day — because those are the
+ * caller's rules to state.
  */
 export function readMetricDays(
   db: Database,
@@ -407,14 +447,12 @@ export function readMetricDays(
   to: string,
   units: UnitPreferences
 ): MetricDays | null {
-  const normal = requested
-    .trim()
-    .toLowerCase()
-    .replace(/[\s-]+/g, '_');
-  const name = WATCHED_NAME_ALIASES[normal] ?? normal;
   if (to < from) return null;
+  const watched = resolveWatched(db, requested);
+  if (watched === null) return null;
 
-  if ((BODY_METRIC_KEYS as readonly string[]).includes(name)) {
+  if (watched.kind === 'body') {
+    const name = watched.name;
     const descriptor = metricByKey(name as MetricKey)!;
     const target = descriptor.target as {
       kind: 'body';
@@ -433,9 +471,7 @@ export function readMetricDays(
     };
   }
 
-  const metricType = METRIC_ALIASES[name] ?? name;
-  const spec = wearableCatalog(wearableMetricInventory(db)).get(metricType);
-  if (!spec) return null;
+  const { metricType, spec } = watched;
   const display = wearableDisplay(spec, units);
   const raw =
     spec.agg === 'sum'

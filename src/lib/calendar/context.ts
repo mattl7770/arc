@@ -2,10 +2,11 @@
  * The calendar block for one Coach request — the switch, the read, the cache,
  * the format (2026-10-21, docs/decisions.md "Calendar context to the model").
  *
- * Called by coach-service.ts (every chat turn) and coach-pass.ts (the daily
- * pass) before they build the per-turn context; the string it returns rides
- * turn-context.ts's UNCACHED block as its own section, so the cached prefix and
- * the chat ceilings (db/coach-eval.test.mjs §6) do not move.
+ * Called by coach-service.ts (every chat turn) and coach-pass.ts (every pass,
+ * whatever its trigger, the weekly review included) before they build the
+ * per-turn context; the string it returns rides turn-context.ts's per-turn
+ * block — outside the 1-hour cached prefix — as its own section, so the cached
+ * prefix and the chat ceilings (db/coach-eval.test.mjs §6) do not move.
  *
  * - **Off → nothing.** With the switch off (the default) this returns null
  *   before touching the native module, so no permission is checked and no
@@ -15,7 +16,8 @@
  *   tool loop, or a chat turn right after the morning pass, reads once rather
  *   than six times; short enough that a meeting added in the Calendar app shows
  *   up on the next question. The cache is keyed on the window, so a day
- *   rollover reads afresh. Nothing is written to SQLite, a file or a log.
+ *   rollover reads afresh. The read writes nothing to SQLite, a file or a log
+ *   (Coach text that later mentions an event is stored like any reply).
  * - **Never throws, never holds a turn up.** The seam times out at
  *   2.5 s and every failure becomes one honest line or null.
  */

@@ -431,5 +431,90 @@ console.log('12. concluding stores the readout of that moment with the verdict')
   check(getExperiment(db3, id3).outcome_notes === 'got sick', 'abandon keeps its reason verbatim');
 }
 
+console.log('13. east of UTC: a weigh-in is filed under its own local day (Pacific/Auckland)');
+{
+  const tzBefore = process.env.TZ;
+  process.env.TZ = 'Pacific/Auckland';
+  try {
+    const offset = new Date(2026, 7, 15, 7, 0, 0).getTimezoneOffset();
+    check(offset === -720, 'TZ=Pacific/Auckland took effect (NZST, UTC+12), so this is not vacuous', offset);
+    const db = freshDb();
+    // A 07:00 local weigh-in every day — 19:00 UTC the day BEFORE. 82 kg before
+    // the start day, 80 kg from it on.
+    days(BASE_FROM, END).forEach((d) => {
+      const [y, m, dd] = d.split('-').map(Number);
+      db.run(`INSERT INTO body_metrics (id, measured_at, weight_kg) VALUES (?, ?, ?)`, [
+        randomUUID(),
+        new Date(y, m - 1, dd, 7, 0, 0).toISOString(),
+        d < START ? 82 : 80,
+      ]);
+    });
+    const id = experiment(db, ['weight']);
+    const r = experimentReadout(db, getExperiment(db, id), noonOf('2026-08-30'));
+    const w = metricOf(r, 'weight');
+    // Reported in the default display unit, lb: 82 kg → 180.8, 80 kg → 176.4.
+    check(w.baseline.n === 14 && w.baseline.mean === 180.8 && w.intervention.n === 14 && w.intervention.mean === 176.4,
+      'the start day’s reading is the intervention’s, not the baseline’s', JSON.stringify(w));
+    const series = (end) =>
+      JSON.parse(toolByName('get_metric_series').execute(db, { metric: 'weight', days: 14 }, { now: noonOf(end) }));
+    const base = series(BASE_TO);
+    const intv = series(END);
+    check(base.stats.count === 14 && base.stats.avg === 180.8 && base.points[0].date === BASE_FROM &&
+      intv.stats.count === 14 && intv.stats.avg === 176.4 && intv.points.at(-1).date === END,
+      'get_metric_series files the same readings under the same local days', JSON.stringify({ base: base.stats, intv: intv.stats }));
+    check(base.stats.count === w.baseline.n && base.stats.avg === w.baseline.mean &&
+      intv.stats.count === w.intervention.n && intv.stats.avg === w.intervention.mean,
+      'and the readout still equals it, window for window');
+  } finally {
+    if (tzBefore === undefined) delete process.env.TZ;
+    else process.env.TZ = tzBefore;
+  }
+}
+
+console.log('14. HRV status is a category: counted, never averaged, never read as numbers');
+{
+  const db = freshDb();
+  const codes = [4, 3, 4, 2, 4];
+  days(BASE_FROM, END).forEach((d, i) => {
+    db.run(
+      `INSERT INTO wearable_data (id, date, metric_type, value, unit, source_device, source_raw_id)
+       VALUES (?, ?, 'hrv_status', ?, 'code', 'garmin', ?)`,
+      [randomUUID(), d, codes[i % 5], `gp:hrv_status:${d}`]
+    );
+  });
+  seedHrv(db, 10);
+  const s = JSON.parse(toolByName('get_metric_series').execute(db, { metric: 'hrv_status', days: 14 }, { now: noonOf(END) }));
+  const count = (word) => s.counts?.find((c) => c.status === word)?.days;
+  check(s.stats === null && s.counts?.length === 4 && count('Balanced') + count('Unbalanced') + count('Low') === 14 &&
+    count('Poor') === 0,
+    'get_metric_series: no min/avg/max, days per status with the status words', JSON.stringify(s));
+  check(s.points.every((p) => typeof p.status === 'string') && s.points.find((p) => p.value === 2)?.status === 'Low',
+    'each day carries its status word');
+  check(readMetricDays(db, 'hrv_status', BASE_FROM, END, DEFAULT_UNIT_PREFERENCES) === null,
+    'readMetricDays refuses it — a status code has no mean to compare');
+  const id = experiment(db, ['hrv_status', 'hrv']);
+  allDone(db, id);
+  const r = experimentReadout(db, getExperiment(db, id), AFTER);
+  check(metricOf(r, 'hrv_status').readable === false && metricOf(r, 'hrv').readable === true &&
+    metricOf(r, 'hrv').intervention.n === 14,
+    'an experiment watching it reads it qualitatively; HRV beside it is untouched');
+  const h = JSON.parse(toolByName('get_metric_series').execute(db, { metric: 'hrv', days: 14 }, { now: noonOf(END) }));
+  check(h.stats?.count === 14 && h.counts === undefined && h.points.every((p) => p.status === undefined),
+    'hrv itself keeps its min/avg/max and gains nothing');
+
+  // create_experiment's warning asks the catalog, so it is true of every name.
+  const made = JSON.parse(toolByName('create_experiment').execute(db, {
+    name: 'Garmin watch', hypothesis: 'h', intervention: 'i', duration_days: 14,
+    metrics: ['sleep score', 'Body Battery wake', 'stress_avg', 'HRV', 'hrv_status', 'focus score'],
+  }, { now: AFTER }));
+  check(JSON.stringify(made.unreadableMetrics) === JSON.stringify(['hrv_status', 'focus score']),
+    'create_experiment: Garmin’s numeric metrics are readable; the status code and an unknown name are flagged',
+    JSON.stringify(made));
+  for (const name of ['sleep score', 'Body Battery wake', 'stress_avg']) {
+    check(readMetricDays(db, name, BASE_FROM, END, DEFAULT_UNIT_PREFERENCES) !== null,
+      `"${name}" — the note's "readable" is readMetricDays' readable`);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
