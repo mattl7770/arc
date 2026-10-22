@@ -51,6 +51,7 @@ import {
   foodEditConsequence,
   foodFormFromRow,
   readFoodForm,
+  switchEntryBasis,
 } from '../src/lib/nutrition/food-form.ts';
 import { deleteFoodWithUndo } from '../src/lib/nutrition/undo-offers.ts';
 import { closeUndo, currentUndo, runUndo } from '../src/lib/nutrition/undo-store.ts';
@@ -1274,11 +1275,145 @@ console.log('18. a catalog food edited on its own screen — what changes, and w
   // PARITY: the screen saves through updateFood, as the Coach's edit does.
   const screen = readFileSync(new URL('../app/food-new.tsx', import.meta.url), 'utf8');
   const coach = readFileSync(new URL('../src/lib/ai/domains/read-domains.ts', import.meta.url), 'utf8');
-  screen.includes('if (editing) updateFood(getDb(), editing.id, result.food);') &&
+  screen.includes('if (!updateFood(getDb(), editing.id, result.food, editing)) {') &&
   coach.includes('updateFood(db, row.id, {') &&
   !/\bdb\.run\(/.test(screen)
     ? ok('the edit screen and the Coach both write through updateFood, and the screen runs no SQL')
     : bad('parity');
+}
+
+// ---------------------------------------------------------------------------
+// 19. The 2026-10-21 review of the food fixes, proved on real SQLite: the
+// basis chip reinterpreted every prefilled figure, and an edit dropped every
+// micros key the form has no field for.
+console.log('19. the food form — the basis chip converts, and unknown micros survive an edit');
+{
+  const { db } = freshDb();
+  const id = createFood(db, {
+    name: 'Fresh Chocolate Milk',
+    brand: 'Lewis Road Creamery',
+    barcode: '9421903483058',
+    serving_name: '0.33 of bottle (250 ml)',
+    serving_amount: 250,
+    basis: 'ml',
+    kcal_100g: 132.887,
+    protein_g_100g: 4.32,
+    carbs_g_100g: 12.4,
+    fat_g_100g: 7.32,
+    micros: JSON.stringify({ sodium_mg: 50, calcium_mg: 121.333 }),
+    source: 'openfoodfacts',
+  });
+  const food = getFood(db, id);
+  const opened = foodFormFromRow(food);
+  const original = { food, form: opened };
+  const opts = { barcode: food.barcode, source: food.source, original };
+
+  // PER SERVING, TAPPED: every figure is converted by the 250 ml serving —
+  // from the STORED number where untouched — micros included.
+  const perServing = switchEntryBasis(opened, 'serving', { food });
+  perServing?.entryBasis === 'serving' &&
+  perServing.kcal === '332.22' &&
+  perServing.protein === '10.8' &&
+  perServing.carbs === '31' &&
+  perServing.fat === '18.3' &&
+  perServing.micros.sodium_mg === '125' &&
+  perServing.micros.calcium_mg === '303.33'
+    ? ok('Per serving converts every field: 132.887 per 100 ml → 332.22 per 250 ml, micros too')
+    : bad('switch to serving', JSON.stringify(perServing));
+
+  // …and only kcal changed: kcal is the typed figure ÷ 2.5, every other figure
+  // is written back EXACTLY (the probe wrote protein 1.73, i.e. 4.32 ÷ 2.5).
+  const onlyKcal = readFoodForm({ ...perServing, kcal: '332' }, opts);
+  onlyKcal.ok &&
+  near(onlyKcal.food.kcal_100g, 132.8) &&
+  onlyKcal.food.protein_g_100g === 4.32 &&
+  onlyKcal.food.carbs_g_100g === 12.4 &&
+  onlyKcal.food.fat_g_100g === 7.32 &&
+  JSON.parse(onlyKcal.food.micros).calcium_mg === 121.333
+    ? ok('per serving, kcal 332 is stored as 132.8 per 100 ml; untouched figures stay 4.32 / 12.4 / 7.32 exactly')
+    : bad('serving edit', JSON.stringify(onlyKcal));
+
+  // BACK TO PER 100: the opened text exactly, and Save writes the stored row.
+  const back = switchEntryBasis(perServing, 'per100', { food });
+  const backSaved = readFoodForm(back, opts);
+  JSON.stringify(back) === JSON.stringify(opened) &&
+  backSaved.ok &&
+  backSaved.food.kcal_100g === 132.887 &&
+  backSaved.food.micros === food.micros
+    ? ok('per 100 → per serving → per 100 lands on the opened text, and saves the stored 132.887')
+    : bad('round trip', JSON.stringify(back));
+  // A field typed per serving converts back as typed: 300 per 250 ml is 120.
+  const typedBack = switchEntryBasis({ ...perServing, kcal: '300' }, 'per100', { food });
+  typedBack?.kcal === '120' && typedBack.protein === '4.32'
+    ? ok('a figure typed per serving converts back by the serving (300 → 120 per 100 ml)')
+    : bad('typed back', JSON.stringify(typedBack));
+
+  // No serving to convert by: refused while figures are filled, free while not.
+  const noServing = { ...opened, servingName: '', servingAmount: '' };
+  const empty = { ...noServing, kcal: '', protein: '', carbs: '', fat: '', micros: {} };
+  switchEntryBasis(noServing, 'serving', { food }) === null &&
+  switchEntryBasis(empty, 'serving')?.entryBasis === 'serving'
+    ? ok('with no serving size, filled figures refuse the switch; an empty form just switches')
+    : bad('no serving');
+  // CREATE mode after Describe it (no original): the texts themselves convert.
+  const described = {
+    ...opened,
+    kcal: '200',
+    protein: '10',
+    carbs: '',
+    fat: '8',
+    micros: { sodium_mg: '40' },
+  };
+  const describedServing = switchEntryBasis(described, 'serving');
+  describedServing?.kcal === '500' &&
+  describedServing.protein === '25' &&
+  describedServing.carbs === '' &&
+  describedServing.micros.sodium_mg === '100'
+    ? ok('a described (create-mode) form converts its per-100 texts too: 200 → 500 per 250 ml')
+    : bad('describe convert', JSON.stringify(describedServing));
+  const screen = readFileSync(new URL('../app/food-new.tsx', import.meta.url), 'utf8');
+  screen.includes('onPress={() => chooseBasis(key)}') &&
+  screen.includes('switchEntryBasis(form, next, editing ? { food: editing } : undefined)') &&
+  !screen.includes('set({ entryBasis: key })')
+    ? ok('food-new: the basis chip goes through switchEntryBasis, never a bare set')
+    : bad('chip wiring');
+
+  // UNKNOWN MICROS KEYS SURVIVE: Night out's alcohol_g, and a key outside
+  // the vocabulary, pass through a rename untouched (probe T3).
+  const beerId = createFood(db, {
+    name: 'Beer',
+    serving_name: '1 can',
+    serving_amount: 330,
+    basis: 'ml',
+    kcal_100g: 43,
+    protein_g_100g: 0.5,
+    carbs_g_100g: 3.6,
+    fat_g_100g: 0,
+    micros: JSON.stringify({ alcohol_g: 4.24, sodium_mg: 4, future_key: 1 }),
+    source: 'openfoodfacts',
+  });
+  const beer = getFood(db, beerId);
+  const beerForm = foodFormFromRow(beer);
+  const beerOpts = { barcode: null, source: beer.source, original: { food: beer, form: beerForm } };
+  const renamed = readFoodForm({ ...beerForm, name: 'Lager' }, beerOpts);
+  const untouched = readFoodForm(beerForm, beerOpts);
+  const sodiumCleared = readFoodForm(
+    { ...beerForm, micros: { ...beerForm.micros, sodium_mg: '', iron_mg: '0.1' } },
+    beerOpts
+  );
+  const cleared = JSON.parse(sodiumCleared.food.micros);
+  renamed.food.micros === beer.micros &&
+  untouched.food.micros === beer.micros &&
+  cleared.alcohol_g === 4.24 &&
+  cleared.future_key === 1 &&
+  cleared.sodium_mg === undefined &&
+  cleared.iron_mg === 0.1
+    ? ok('alcohol_g and an unknown key survive an edit; only the shortlist’s keys follow the fields')
+    : bad('micros pass-through', JSON.stringify([renamed.food.micros, sodiumCleared.food.micros]));
+  updateFood(db, beerId, untouched.food);
+  getFood(db, beerId).source === 'openfoodfacts'
+    ? ok('…so an untouched save of an OFF row with alcohol_g is no change, and does not claim it')
+    : bad('no-op claim with alcohol', getFood(db, beerId).source);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

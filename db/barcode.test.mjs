@@ -28,12 +28,14 @@ import {
 import { keyMicroLabel } from '../src/lib/nutrition/key-micro.ts';
 import { mealNameForProduct, mealNameToSave } from '../src/lib/nutrition/format.ts';
 import { commitScanMealName, offersScanMealName } from '../src/lib/nutrition/scan-meal-name.ts';
-import { itemForPortion } from '../src/lib/nutrition/servings.ts';
+import { itemForPortion, portionAfterHeal } from '../src/lib/nutrition/servings.ts';
+import { foodFormFromRow, readFoodForm } from '../src/lib/nutrition/food-form.ts';
 import {
   lookupOffProduct,
   normalizeBarcode,
   offProductUrl,
   OffLookupError,
+  drinkLooksPerServing,
   energyLooksWrong,
   readOffProduct,
   servingSizeMeasure,
@@ -936,10 +938,290 @@ console.log('13. Item 81 — the cache heals, and never over a correction');
   const screen = readFileSync(new URL('../app/barcode-scan.tsx', import.meta.url), 'utf8');
   screen.includes("if (food.source !== 'openfoodfacts' || !food.barcode) return;") &&
   screen.includes('const healed = refreshOffFood(getDb(), food.id, off.food);') &&
-  (screen.match(/void refreshFromOff\(/g) || []).length === 2 &&
+  // Three: a local hit, a recents tap, and the restart after an edit (§14).
+  (screen.match(/void refreshFromOff\(/g) || []).length === 3 &&
   screen.includes('openPortion(local, false);')
     ? ok('barcode-scan: a local hit and a recents tap open at once and heal in the background')
     : bad('refresh wiring');
+}
+
+/**
+ * 14. The 2026-10-21 review of item 81, each finding proved on real SQLite
+ * first (review/r3/probe1.mjs). Fixtures only — no network.
+ */
+console.log('14. Item 81 review — a late heal, a single small figure, alcohol and polyols');
+{
+  // (a) AN EDIT OPENED BEFORE THE HEAL LANDS (probe T1). The form is read from
+  // the stale row; the heal lands; Save must not write the stale figures back.
+  const { db } = freshDb();
+  const id = createFood(db, {
+    name: 'Fresh Chocolate Milk',
+    brand: 'Lewis Road Creamery',
+    barcode: '9421903483058',
+    serving_name: '250ml',
+    serving_amount: 250,
+    basis: 'g',
+    kcal_100g: 332,
+    protein_g_100g: 10.8,
+    carbs_g_100g: 31,
+    fat_g_100g: 18.4,
+    source: 'openfoodfacts',
+  });
+  const editing = getFood(db, id);
+  const opened = foodFormFromRow(editing);
+  refreshOffFood(db, id, readOffProduct(LEWIS_ROAD_LIVE, '9421903483058').food);
+  const form = readFoodForm(
+    { ...opened, kcal: '133' },
+    { barcode: editing.barcode, source: editing.source, original: { food: editing, form: opened } }
+  );
+  const wrote = updateFood(db, id, form.food, editing);
+  const after = getFood(db, id);
+  wrote === false &&
+  after.basis === 'ml' &&
+  near(after.kcal_100g, 132.887) &&
+  after.source === 'openfoodfacts'
+    ? ok('a Save from a form opened before the heal is refused: the healed row stands, still OFF’s')
+    : bad('stale edit', JSON.stringify({ wrote, after }));
+  const changedAgain = readOffProduct(
+    withNutriments(LEWIS_ROAD_LIVE, {
+      ...LEWIS_ROAD_LIVE.product.nutriments,
+      'energy-kcal_100g': 120,
+      'energy-kcal_serving': 300,
+    }),
+    '9421903483058'
+  ).food;
+  refreshOffFood(db, id, changedAgain)?.kcal_100g === 120
+    ? ok('…so later heals are not blocked (the probe’s save had made the row the user’s)')
+    : bad('heal after refusal');
+  // Reopened, it saves; a row whose stamp moved with the same contents refuses.
+  const reopened = getFood(db, id);
+  const reForm = foodFormFromRow(reopened);
+  const ok2 = updateFood(
+    db,
+    id,
+    readFoodForm(
+      { ...reForm, kcal: '125' },
+      { barcode: reopened.barcode, source: reopened.source, original: { food: reopened, form: reForm } }
+    ).food,
+    reopened
+  );
+  const stamped = getFood(db, id);
+  // A write that changes no content but moves the stamp (a star, say). The
+  // trigger stamps `now` at millisecond grain, so let the clock tick first.
+  const t0 = Date.now();
+  while (Date.now() - t0 < 5) {
+    /* spin */
+  }
+  db.run('UPDATE foods SET is_favorite = is_favorite WHERE id = ?', [id]);
+  ok2 === true &&
+  stamped.kcal_100g === 125 &&
+  stamped.source === 'user' &&
+  updateFood(db, id, { ...stamped, kcal_100g: 1 }, stamped) === false &&
+  updateFood(db, 'no-such-food', { name: 'x' }, stamped) === false
+    ? ok('a fresh form saves; a moved stamp or a vanished row refuses; the Coach (no expected) is unchanged')
+    : bad('cas', JSON.stringify(stamped));
+  const screen = readFileSync(new URL('../app/food-new.tsx', import.meta.url), 'utf8');
+  screen.includes('if (!updateFood(getDb(), editing.id, result.food, editing)) {') &&
+  screen.includes('This food changed while you were editing — reopen it.')
+    ? ok('food-new: Save is a compare-and-swap against the row as it opened, and says so in a sentence')
+    : bad('cas wiring');
+
+  // (b) ONE SMALL FIGURE NO LONGER TRIPS A SWAP (probe T4): energy, carbs and
+  // fat are consistent, so protein 0.5 ≈ 1 vetoes nothing into a rescale; and
+  // fibre and sodium, which have no _serving, are never divided.
+  const oat = readOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Oat drink',
+        nutrition_data_per: '100ml',
+        serving_size: '500 ml',
+        serving_quantity: 500,
+        serving_quantity_unit: 'ml',
+        nutriments: {
+          'energy-kcal_100g': 42,
+          'energy-kcal_serving': 210,
+          carbohydrates_100g: 6.6,
+          carbohydrates_serving: 33,
+          fat_100g: 1.5,
+          fat_serving: 7.5,
+          proteins_100g: 0.5,
+          proteins_serving: 1,
+          fiber_100g: 0.8,
+          sodium_100g: 0.04,
+        },
+      },
+    },
+    '5000000000100'
+  );
+  oat.label.read === 'per100' &&
+  oat.food.kcal_100g === 42 &&
+  oat.food.protein_g_100g === 0.5 &&
+  oat.food.fiber_g_100g === 0.8 &&
+  near(parseMicros(oat.food.micros).sodium_mg, 40)
+    ? ok('a consistent oat drink is read per 100 as given — fibre 0.8, sodium 40, not divided by 5')
+    : bad('one small figure', JSON.stringify(oat));
+  // A true swap still rebuilds — and a figure with no _serving is left as given.
+  const swapped = readOffProduct(
+    withNutriments(LEWIS_ROAD_LIVE, {
+      'energy-kcal_100g': 332,
+      proteins_100g: 10.8,
+      carbohydrates_100g: 31,
+      fat_100g: 18.4,
+      fiber_100g: 0.5,
+      'energy-kcal_serving': 332,
+      proteins_serving: 10.8,
+      carbohydrates_serving: 31,
+      fat_serving: 18.3,
+    }),
+    '9421903483058'
+  );
+  swapped.label.read === 'rescaled' &&
+  near(swapped.food.kcal_100g, 132.8) &&
+  swapped.food.fiber_g_100g === 0.5
+    ? ok('the owner’s swapped entry is still rebuilt; its fibre, with no _serving, is not divided')
+    : bad('swap with lone figure', JSON.stringify(swapped));
+
+  // (c) IDENTICAL COLUMNS are ambiguous (probe T7b): kept, and doubtful.
+  const pot = readOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Yogurt pot',
+        nutrition_data_per: '100g',
+        serving_size: '125 g',
+        serving_quantity: 125,
+        nutriments: {
+          'energy-kcal_100g': 97,
+          'energy-kcal_serving': 97,
+          proteins_100g: 9,
+          proteins_serving: 9,
+          carbohydrates_100g: 4,
+          carbohydrates_serving: 4,
+          fat_100g: 5,
+          fat_serving: 5,
+        },
+      },
+    },
+    '5000000000102'
+  );
+  pot.label.read === 'per100' && pot.food.kcal_100g === 97 && pot.label.doubtful === true
+    ? ok('a 125 g pot with identical columns keeps 97 per 100 g and is marked doubtful, not rescaled')
+    : bad('ambiguous', JSON.stringify(pot));
+
+  // (d) ALCOHOL AND POLYOLS (probe T5, T8). Correct labels are not flagged.
+  const r = (k, p, c, f, fiber = null) => ({
+    kcal_100g: k,
+    protein_g_100g: p,
+    carbs_g_100g: c,
+    fat_g_100g: f,
+    fiber_g_100g: fiber,
+  });
+  !energyLooksWrong(r(43, 0.5, 3.6, 0)) &&
+  !energyLooksWrong(r(83, 0.1, 2.6, 0)) &&
+  !energyLooksWrong(r(231, 0, 0, 0)) &&
+  !energyLooksWrong(r(43, 0.5, 3.6, 0), { abv: 4.5 }) &&
+  !energyLooksWrong(r(240, 0, 98, 0), { polyols: 95 }) &&
+  !energyLooksWrong(r(260, 13, 74, 5, 29))
+    ? ok('beer, wine and vodka (alcohol unknown or known), a polyol mint and a US-label bran cereal read clean')
+    : bad('false flags');
+  energyLooksWrong(r(240, 0, 98, 0)) &&
+  energyLooksWrong(r(43, 0.5, 3.6, 0), { abv: 40 }) &&
+  energyLooksWrong(r(300, 1, 2, 0), { abv: 0 }) &&
+  energyLooksWrong(r(50, 10, 10, 10))
+    ? ok('macros that over-shoot, or an under-shoot alcohol cannot explain, are still flagged')
+    : bad('true flags');
+  const lager = readOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Lager',
+        nutrition_data_per: '100ml',
+        serving_size: '330 ml',
+        serving_quantity: 330,
+        nutriments: {
+          'energy-kcal_100g': 43,
+          'energy-kcal_serving': 141.9,
+          proteins_100g: 0.5,
+          proteins_serving: 1.65,
+          carbohydrates_100g: 3.6,
+          carbohydrates_serving: 11.9,
+          fat_100g: 0,
+          fat_serving: 0,
+          alcohol_100g: 4.5,
+        },
+      },
+    },
+    '5000000000103'
+  );
+  const mints = readOffProduct(
+    {
+      status: 1,
+      product: {
+        product_name: 'Sugar-free mints',
+        nutrition_data_per: '100g',
+        nutriments: {
+          'energy-kcal_100g': 240,
+          proteins_100g: 0,
+          carbohydrates_100g: 98,
+          polyols_100g: 95,
+          fat_100g: 0,
+        },
+      },
+    },
+    '5000000000104'
+  );
+  lager.label.doubtful === false && mints.label.doubtful === false
+    ? ok('read from OFF, a 4.5 % lager and a polyol mint are not doubtful')
+    : bad('off alcohol/polyols', JSON.stringify([lager.label, mints.label]));
+
+  // (e) A DRINK READING LIKE ONE SERVING (probe T9): only the line, never a number.
+  const t9 = readOffProduct(
+    withNutriments(LEWIS_ROAD_LIVE, {
+      'energy-kcal_100g': 332,
+      proteins_100g: 10.8,
+      carbohydrates_100g: 31,
+      fat_100g: 18.4,
+      'energy-kcal_serving': 830,
+      proteins_serving: 27,
+      carbohydrates_serving: 77.5,
+      fat_serving: 46,
+    }),
+    '9421903483058'
+  );
+  t9.label.doubtful === true &&
+  t9.food.kcal_100g === 332 &&
+  !drinkLooksPerServing({ basis: 'ml', kcal_100g: 340, serving_amount: 15 }) &&
+  !drinkLooksPerServing({ basis: 'g', kcal_100g: 500, serving_amount: 250 }) &&
+  !drinkLooksPerServing({ basis: 'ml', kcal_100g: 330, serving_amount: 250 }, 17) &&
+  !drinkLooksPerServing({ basis: 'ml', kcal_100g: 132.887, serving_amount: 250 })
+    ? ok('332 kcal “per 100 ml” in a 250 ml glass is doubtful (numbers kept); cream by the spoon, a solid, a liqueur and the real milk are not')
+    : bad('drink per serving', JSON.stringify(t9.label));
+
+  // (f) THE HEAL KEEPS THE PORTION CHOSEN (finding 4).
+  const milkG = { serving_amount: 250, basis: 'g' };
+  const milkMl = { serving_amount: 250, basis: 'ml' };
+  const two = { mode: 'serving', qty: 2, amountText: '500' };
+  const typed = { mode: 'amount', qty: 1, amountText: '330' };
+  const sameServing = portionAfterHeal(milkMl, { serving_amount: 250, basis: 'ml' }, two);
+  const sameUnitTyped = portionAfterHeal(milkMl, { serving_amount: 300, basis: 'ml' }, typed);
+  const newServing = portionAfterHeal(milkMl, { serving_amount: 300, basis: 'ml' }, two);
+  const newUnit = portionAfterHeal(milkG, milkMl, typed);
+  JSON.stringify(sameServing) === JSON.stringify(two) &&
+  JSON.stringify(sameUnitTyped) === JSON.stringify(typed) &&
+  JSON.stringify(newServing) === '{"mode":"serving","qty":1,"amountText":"300"}' &&
+  JSON.stringify(newUnit) === '{"mode":"serving","qty":1,"amountText":"250"}'
+    ? ok('a heal keeps “2 × serving” and a typed 330; a resized serving or a new unit starts again')
+    : bad('portion after heal', JSON.stringify([sameServing, sameUnitTyped, newServing, newUnit]));
+  const scan = readFileSync(new URL('../app/barcode-scan.tsx', import.meta.url), 'utf8');
+  scan.includes('const next = portionAfterHeal(current.food, healed, portionRef.current);') &&
+  scan.includes('if (controller.signal.aborted) return;') &&
+  scan.includes('onPress={() => editFood(phase.food)}') &&
+  scan.includes('if (healed && added !== undefined) setStaleAdd({ name: healed.name, mealId: added });') &&
+  scan.includes('if (label ? label.doubtful : energyLooksWrong(food) || drinkLooksPerServing(food)) {') &&
+  !scan.includes('product whose two sets of figures disagree is not cached')
+    ? ok('barcode-scan: the heal keeps the portion, Edit aborts it, a late heal names the item added, the reading’s verdict wins')
+    : bad('heal wiring');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

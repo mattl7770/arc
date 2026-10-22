@@ -533,8 +533,21 @@ export function removeMealItem(db: Database, itemId: string): void {
  * a third of eight is the honest 2.7. The correspondence the count declares —
  * "the parts, as they stand, are N pieces" — is preserved by scaling both, which
  * is exactly what keeps `kcal ÷ serving_qty` constant across any run of chips.
+ *
+ * **…except when the dish was re-WEIGHED (`keepCount`, 2026-10-21 review).**
+ * The ½ ⅓ ¼ chips say "I ate a share", and a share of eight slices is fewer
+ * slices. Typing the whole dish's weight (meal-detail's Whole dish field) says
+ * "it weighed this much": the same eight slices, each heavier or lighter — the
+ * rule `setCompositeCount` states for a part corrected by hand ("you still ate
+ * three slices, they were lighter"). So that path keeps the count, and the
+ * grams per piece, which is derived, moves instead.
  */
-export function scaleCompositeItem(db: Database, parentItemId: string, factor: number): void {
+export function scaleCompositeItem(
+  db: Database,
+  parentItemId: string,
+  factor: number,
+  opts: { keepCount?: boolean } = {}
+): void {
   if (!Number.isFinite(factor) || factor <= 0) {
     throw new Error(`scaleCompositeItem: ${factor} is not a portion of anything.`);
   }
@@ -570,12 +583,15 @@ export function scaleCompositeItem(db: Database, parentItemId: string, factor: n
         ]
       );
     }
-    // The header's count, where it has one. Nothing is rounded here either, for
-    // the same reason: ×0.5 then ×2 must return to exactly 8.
-    db.run(
-      'UPDATE meal_items SET serving_qty = serving_qty * ? WHERE id = ? AND serving_qty IS NOT NULL',
-      [factor, parentItemId]
-    );
+    // The header's count, where it has one — unless the dish was re-weighed.
+    // Nothing is rounded here either, for the same reason: ×0.5 then ×2 must
+    // return to exactly 8.
+    if (!opts.keepCount) {
+      db.run(
+        'UPDATE meal_items SET serving_qty = serving_qty * ? WHERE id = ? AND serving_qty IS NOT NULL',
+        [factor, parentItemId]
+      );
+    }
     recomputeMealTotals(db, parent.meal_id);
   });
 }
