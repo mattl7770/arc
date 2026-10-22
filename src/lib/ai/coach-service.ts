@@ -2,6 +2,7 @@ import { fetch as expoFetch } from 'expo/fetch';
 
 import type { ChatMessage } from '@/types/coach';
 import { getDb } from '@/lib/db/client';
+import { calendarBlockFor } from '@/lib/calendar/context';
 
 import { runCoachTurn, type FetchLike } from './model-client';
 import { apiKeyStore } from './api-key-store';
@@ -131,6 +132,10 @@ export async function streamCoachReply(
   // boundary so the model can see how old the conversation it is reading is
   // (history-window.ts). Without that every past turn read as "now".
   const messages = buildWireHistory(history, options.priorSummary, clock());
+  // The calendar section (2026-10-21): null unless the owner turned the switch
+  // on in Settings › Coach; read fresh or from a few minutes' memory, never
+  // from the database. Never throws and times out on its own.
+  const calendar = await calendarBlockFor(db, clock());
 
   const result = await runCoachTurn(
     {
@@ -151,7 +156,10 @@ export async function streamCoachReply(
       // which is when the prompt is built and sent; a tool call minutes later
       // reads the clock again for itself (below) rather than inheriting this
       // instant.
-      systemContext: buildTurnContext(db, clock(), { region: regionLine(deviceRegion()) }),
+      systemContext: buildTurnContext(db, clock(), {
+        region: regionLine(deviceRegion()),
+        calendar,
+      }),
       messages,
       tools: toWireTools(COACH_TOOLS),
       // The provider's web search, whenever the model judges it helps (the

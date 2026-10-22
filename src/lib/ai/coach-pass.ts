@@ -39,6 +39,7 @@
  * readiness morning, a stalled lift, or a missed week should mean — the
  * deterministic layer only decides WHEN to wake the model up.
  */
+import { calendarBlockFor } from '@/lib/calendar/context';
 import type { Database } from '@/lib/db/database';
 import { getDayStartsAt, todayISODate } from '@/lib/db/date';
 import { nudgeDirectiveFor } from '@/lib/db/repositories/coach-nudges';
@@ -397,7 +398,12 @@ export async function runCoachPass(
       computeFindings(db, now),
       new Set(getPassState(db).seenFindings)
     );
-    const turnContext = buildTurnContext(db, now);
+    // ===== Calendar (2026-10-21): the next 7 days of events, so the pass can
+    // plan around travel and busy days before they happen. Null unless the
+    // owner turned the switch on; the same section the chat turn carries.
+    const calendar = await calendarBlockFor(db, now, { dayStartsAt });
+    // ===== end Calendar
+    const turnContext = buildTurnContext(db, now, { calendar });
     const result = await runCoachTurn(
       {
         apiKey,

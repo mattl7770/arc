@@ -1,6 +1,7 @@
-import { useCallback, useState, useSyncExternalStore } from 'react';
-import { Pressable, Switch, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { AppState, Pressable, Switch, Text, TextInput, View } from 'react-native';
 
+import { CalendarSetting } from '@/components/coach/calendar-setting';
 import { ClockSetting } from '@/components/coach/clock-setting';
 import { FindingThresholdSettings } from '@/components/coach/finding-thresholds';
 import { Block, Divider } from '@/components/ui/block';
@@ -10,7 +11,17 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { COACH_MODELS } from '@/lib/ai/model-client';
+import {
+  calendarAccess,
+  requestCalendarAccess,
+  type CalendarAccess,
+} from '@/lib/calendar/calendar';
+import { clearCalendarCache } from '@/lib/calendar/context';
 import { getDb } from '@/lib/db/client';
+import {
+  getCalendarContextOn,
+  setCalendarContextOn,
+} from '@/lib/db/repositories/calendar-setting';
 import { getNudgeSettings, saveNudgeSettings } from '@/lib/db/repositories/coach-nudges';
 import { CHECKIN_AFTER_QUIET_MIN, type NudgeSettings } from '@/lib/notifications/nudge-plan';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
@@ -72,7 +83,53 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * The thresholds the record-hygiene and medical-attention findings read, as
  * steppers (src/components/coach/finding-thresholds.tsx). Their defaults and
  * the reason for each live in src/lib/ai/finding-thresholds.ts, the one place.
+ *
+ * ## Calendar (2026-10-21, docs/decisions.md "Calendar context to the model")
+ *
+ * One switch, OFF until he turns it on: the Coach may then see the next 7 days
+ * of the phone's calendar events, read-only. Turning it on is the ONLY thing in
+ * ARC that asks iOS for calendar access; it is stored on only when iOS grants
+ * it. Access is re-checked whenever ARC comes back to the foreground, so a
+ * change made in iOS Settings shows here at once (src/components/coach/
+ * calendar-setting.tsx carries the sentences).
  */
+
+/**
+ * The Calendar switch: his choice (the preferences blob), iOS's answer, and the
+ * change handler that asks iOS before storing an ON.
+ */
+function useCalendarSetting(): [boolean, CalendarAccess | null, (on: boolean) => void] {
+  const [on, setOn] = useState(() => getCalendarContextOn(getDb()));
+  const [access, setAccess] = useState<CalendarAccess | null>(null);
+  useEffect(() => {
+    let live = true;
+    const check = () => {
+      void calendarAccess().then((next) => {
+        if (live) setAccess(next);
+      });
+    };
+    check();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') check();
+    });
+    return () => {
+      live = false;
+      subscription.remove();
+    };
+  }, []);
+  const change = useCallback((next: boolean) => {
+    clearCalendarCache();
+    if (!next) {
+      setOn(setCalendarContextOn(getDb(), false));
+      return;
+    }
+    void requestCalendarAccess().then((answer) => {
+      setAccess(answer);
+      if (answer === 'granted') setOn(setCalendarContextOn(getDb(), true));
+    });
+  }, []);
+  return [on, access, change];
+}
 
 /** The notification settings, written through and resynced on every change. */
 function useNudgeSettings(): [NudgeSettings, (patch: Partial<NudgeSettings>) => void] {
@@ -102,6 +159,7 @@ export default function SettingsCoachScreen() {
   const [draft, setDraft] = useState('');
   const canSave = draft.trim().length > 0;
   const [nudges, saveNudges] = useNudgeSettings();
+  const [calendarOn, calendarAccessNow, changeCalendar] = useCalendarSetting();
 
   return (
     <Screen scroll>
@@ -273,6 +331,13 @@ export default function SettingsCoachScreen() {
               time zone and region settings, not its location.
             </Text>
           </Block>
+        </View>
+
+        {/* Calendar (2026-10-21): what the Coach may see of the week ahead —
+            off until he turns it on. Beside Web search: both are inputs to
+            the Coach's own call. */}
+        <View className="mt-4">
+          <CalendarSetting on={calendarOn} access={calendarAccessNow} onChange={changeCalendar} />
         </View>
       </View>
 

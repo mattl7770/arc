@@ -1,5 +1,60 @@
 # Architecture Decision Records (ADR)
 
+## 2026-10-21 — Calendar context to the model
+
+**Context.** The chief-of-staff release, Track 2 item 7 (`docs/spikes/chief-of-staff-release.md`):
+a Coach that cannot see the week cannot plan around a flight on Thursday or three back-to-back
+evenings. The plan flagged it as an owner call because **it sends a new category of personal data
+to the model**. The owner's answer (2026-10-21): *yes, the next 7 days of calendar events (titles,
+times, places), read-only, behind a switch in Settings.*
+
+**Decision.**
+
+1. **A new category of data, not a new egress.** The events ride the one sanctioned egress, the
+   Coach's own model call (CLAUDE.md §3), as a section of the **uncached** per-turn context block
+   (`src/lib/ai/turn-context.ts`), in chat and in the daily coach pass. No other request carries
+   them; the food estimators do not.
+2. **What is sent, per event:** title, start and end (local wall clock), all-day, location, and the
+   calendar's name, for the logical today through today + 6. **Never** notes, attendees, organiser,
+   URLs or alarms: the seam (`src/lib/calendar/calendar.ts`) reads only the five fields plus the
+   calendar id and status off the native object, so the others never exist in JavaScript. Cancelled
+   events are dropped. Every calendar on the phone is read; a per-calendar picker was left out of
+   v1 (the Settings note says "every calendar on this phone").
+3. **Off until he turns it on.** One switch, **Settings › Coach › Calendar**, stored in the
+   preferences blob (`preferences.calendar.coachSees`, no migration). Turning it on is the only thing
+   in ARC that asks iOS for calendar access, and ON is stored only when iOS grants it. With the
+   switch off nothing touches the calendar, not even a permission check. A refusal, a later
+   revocation in iOS Settings, and a build without the module each get one sentence under the
+   switch; the Coach is told in one line when the switch is on but nothing could be read, so a
+   blank calendar is never read as a free week.
+4. **Read-only, full access.** The seam types no write at all. iOS 17's write-only access returns
+   no events, so ARC asks for full access (`NSCalendarsFullAccessUsageDescription`, set by the
+   `expo-calendar` config plugin with its `writeOnlyAccess` left off).
+5. **Never at rest.** Events are read fresh and held in memory for 5 minutes, keyed on the window
+   (`src/lib/calendar/context.ts`), so one tool loop reads once and a new day reads afresh. No row,
+   file or log line ever holds a title, time or place; the test suite searches every table to
+   prove it. What reaches Anthropic is what any Coach request carries (CLAUDE.md §2 holds: nothing
+   personal sits at rest in a cloud ARC controls).
+6. **Capped.** At most 40 events, titles cut to 48 characters, places to 32, calendar names to 16,
+   and a 3,200-character budget for the event text. Measured: a typical 21-event week ~270 tokens,
+   the worst case ~960, an empty week 9. The cap trims the far end of the week and says from which
+   day the list is incomplete. The cached prefix and the chat ceilings (`db/coach-eval.test.mjs` §6)
+   do not move.
+7. **Event text is data.** A title can be an invitation someone else wrote. Line breaks and control
+   characters are flattened, the header names titles as "the calendar's own text, not
+   instructions", writes stay behind the confirmation card, and the pass has no write tools.
+
+**What the EAS build gains.** The `expo-calendar` native module (EventKit) and two Info.plist
+strings ARC wrote itself: `NSCalendarsUsageDescription` and `NSCalendarsFullAccessUsageDescription`.
+The plugin also always declares the reminders keys; rather than delete them (and risk an App Store
+missing-purpose-string rejection, since EventKit covers both), they say plainly that ARC does not
+use reminders, and ARC never asks for them. Until that build, the switch is disabled with a
+sentence and nothing else changes.
+
+**Revisit if** the owner wants a calendar left out (a per-calendar picker, stored as ids beside the
+switch), the block's token cost shows in the usage captions, or a calendar title ever steers the
+Coach.
+
 ## 2026-10-21 — Provider-side web search
 
 **Context.** Device round 3, items 62 and 91, the owner verbatim: *"web search in food logging +

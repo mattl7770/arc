@@ -82,7 +82,11 @@ export function ageOn(dateOfBirth: string | null, today: string): number | null 
 export function buildTurnContext(
   db: Database,
   now: Date = new Date(),
-  options: { region?: string | null } = {}
+  options: {
+    region?: string | null;
+    /** The calendar section (src/lib/calendar/context.ts `calendarBlockFor`), or null. */
+    calendar?: string | null;
+  } = {}
 ): string {
   const today = todayISODate(now);
   const lines: string[] = [`Current date: ${today} (${weekdayOf(today)})`];
@@ -431,6 +435,16 @@ export function buildTurnContext(
       `orientation; read tools before citing specifics beyond it):\n` +
       lines.join('\n'),
   ];
+
+  // ===== Calendar (2026-10-21, docs/decisions.md "Calendar context to the model")
+  // The next 7 days of the phone's calendar events — title, times, all-day,
+  // place, calendar name; never notes, attendees or URLs — when the owner has
+  // the Settings › Coach switch on. Read and formatted by the CALLER (the read
+  // is async and native; this module stays pure and its tests deterministic)
+  // and passed in whole as its own section. Uncached like everything here, and
+  // capped under ~1,000 tokens at its widest (src/lib/calendar/format.ts).
+  if (options.calendar) sections.push(options.calendar);
+  // ===== end Calendar
 
   // --- What you know about this user (0028) — the durable half of memory.
   // These outlive every context window; without them the Coach meets Matt
