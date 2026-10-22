@@ -240,7 +240,9 @@ export default function HomeScreen() {
   // in-memory note: they are stored, so a relaunch still shows them. An
   // approved draft may have restructured today, so the mission re-reads.
   const coach = useCoachProposals(mission.reload);
-  const showCoachCard = !!pass.message || !!coach.brief || coach.today.length > 0;
+  // …and the weekly review's "Your week", the evening it lands and the next day.
+  const showCoachCard =
+    !!pass.message || !!coach.brief || coach.today.length > 0 || coach.week !== null;
   // The Training row a session just finished ticked, while it can be taken
   // back (item 70, src/lib/exercise/training-tick-offer.ts).
   const tickUndo = useUndoOffer('training', todayISODate());
@@ -352,6 +354,7 @@ export default function HomeScreen() {
             busyId={coach.busyId}
             onApprove={coach.approve}
             onDecline={coach.decline}
+            week={coach.week}
           />
         </View>
       ) : null}

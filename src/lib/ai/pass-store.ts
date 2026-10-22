@@ -70,6 +70,8 @@ import {
   markPassRan,
   recordCheckin,
 } from './pass-schedule';
+import { dueWeekly } from './weekly-review';
+import { runWeeklyIfDue, type WeeklyOutcome } from './weekly-runner';
 
 type Listener = () => void;
 
@@ -324,6 +326,8 @@ export const coachPassStore = {
 
     running = true;
     let plan: PassPlan | null = null;
+    let weekly: WeeklyOutcome = null;
+    let weeklyDeferred = false;
     // Wrap the whole body: maybeRun is invoked fire-and-forget from a boot /
     // foreground effect, so any throw here would surface as an unhandled promise
     // rejection. An unexpected failure is treated like an offline morning — the
@@ -334,12 +338,40 @@ export const coachPassStore = {
       if (options.settle) await options.settle();
       const now = options.now ?? new Date();
 
+      // ===== Weekly review (2026-10-21, claude/cos-weekly) =====
+      // Before the regular pass, so Sunday evening's look (and its drafts)
+      // already knows what the review drafted — unless he tapped a check-in
+      // and is waiting on that: then the review waits for the next wake-up,
+      // which `finally` sends at once. It has its own cursor and allowance
+      // (weekly-review.ts) and never consumes the day.
+      if (request === null) {
+        try {
+          weekly = await runWeeklyIfDue(db, {
+            now,
+            ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+          });
+        } catch {
+          // A review that throws must not cost the day its look; the week
+          // stays due for the next foreground.
+          weekly = 'offline';
+        }
+        if (weekly === 'ran' || weekly === 'silent') {
+          threadVersion += 1;
+          emit();
+        }
+      } else {
+        weeklyDeferred = dueWeekly(db, now) !== null;
+      }
+      // ===== end Weekly review
+
       const hadRequest = request !== null;
       plan = choosePass(db, now);
       if (!plan) {
         // A tap answered without a pass (shown / silent) still has to reach
         // the tab; an ordinary nothing-due call changes nothing to announce.
         if (hadRequest) emit();
+        // Nothing else due, but the weekly review may have run.
+        if (weekly === 'ran' || weekly === 'silent' || weekly === 'offline') return weekly;
         return 'skipped';
       }
       if (plan.request) {
@@ -436,7 +468,7 @@ export const coachPassStore = {
       }
       // A tap that arrived while this pass ran found the runner busy. Wake it
       // again now rather than leave the request for the next foreground.
-      if (request) emitRequest();
+      if (request || weeklyDeferred) emitRequest();
     }
   },
 };

@@ -13,6 +13,7 @@ import {
   type ProposalResolution,
   type StoredProposal,
 } from '@/lib/ai/proposals';
+import { weeklyCardFor, type WeeklyCard } from '@/lib/ai/weekly-review';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { syncReminderNotifications } from '@/lib/notifications/reminders';
@@ -24,6 +25,11 @@ export type CoachProposals = {
   today: StoredProposal[];
   /** Today's model-voiced brief, or null (Home falls back to the deterministic one). */
   brief: string[] | null;
+  /**
+   * The weekly review's "Your week" (weekly-review.ts): its read, its decisions and
+   * its report — on the day it landed and the next, otherwise null.
+   */
+  week: WeeklyCard | null;
   /** The draft whose tap is being answered right now, or null. */
   busyId: string | null;
   approve: (id: string) => void;
@@ -54,11 +60,16 @@ export function useCoachProposals(onResolved?: () => void): CoachProposals {
   const [busyId, setBusyId] = useState<string | null>(null);
   const busyRef = useRef<string | null>(null);
 
-  const { all, brief } = useMemo(() => {
+  const { all, brief, week } = useMemo(() => {
     void version;
     void tick;
     const now = new Date();
-    return { all: listProposals(getDb(), now), brief: getBrief(getDb(), now) };
+    const items = listProposals(getDb(), now);
+    return {
+      all: items,
+      brief: getBrief(getDb(), now),
+      week: weeklyCardFor(getDb(), items, now),
+    };
   }, [version, tick]);
   const today = useMemo(() => draftsForDay(all, todayISODate()), [all]);
 
@@ -103,5 +114,5 @@ export function useCoachProposals(onResolved?: () => void): CoachProposals {
     [settle]
   );
 
-  return { all, today, brief, busyId, approve, decline };
+  return { all, today, brief, week, busyId, approve, decline };
 }

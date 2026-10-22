@@ -5,6 +5,7 @@ import { Pressable, Text, View } from 'react-native';
 import { ProposalRows } from '@/components/coach/proposal-card';
 import { palette } from '@/constants/theme';
 import type { StoredProposal } from '@/lib/ai/proposals';
+import type { WeeklyCard } from '@/lib/ai/weekly-review';
 
 /**
  * The Coach speaking first — Home's Coach card.
@@ -28,6 +29,11 @@ import type { StoredProposal } from '@/lib/ai/proposals';
  *   with Approve and Decline. Approve runs the chat write path, re-reading the
  *   row first (proposals.ts); the same drafts appear in the thread.
  *
+ *   YOUR WEEK (2026-10-21) — the weekly review (weekly-review.ts), on the
+ *   evening it lands and the next day: the Coach's read of the week (every
+ *   number traced), its decisions with the same Approve / Decline, and the door
+ *   to the report it read, which is also filed under Data › Reports.
+ *
  * Same porcelain slip as before, one eyebrow to mark that the Coach initiated
  * it. Tapping Reply opens the thread, where the note is already the latest turn.
  */
@@ -39,6 +45,7 @@ export function CoachNote({
   busyId = null,
   onApprove,
   onDecline,
+  week = null,
 }: {
   message: string | null;
   onDismiss: () => void;
@@ -47,6 +54,7 @@ export function CoachNote({
   busyId?: string | null;
   onApprove?: (id: string) => void;
   onDecline?: (id: string) => void;
+  week?: WeeklyCard | null;
 }) {
   const router = useRouter();
   const hasDrafts = proposals.length > 0 && !!onApprove && !!onDecline;
@@ -57,7 +65,7 @@ export function CoachNote({
         <View className="flex-row items-center gap-2">
           <View className="h-1.5 w-1.5 rounded-full bg-pine" />
           <Text className="text-[11px] font-medium uppercase tracking-[2px] text-ink-muted">
-            {brief ? 'Coach · today' : 'Coach noticed'}
+            {brief ? 'Coach · today' : message || hasDrafts ? 'Coach noticed' : 'Coach · your week'}
           </Text>
         </View>
         {message ? (
@@ -99,6 +107,57 @@ export function CoachNote({
             onApprove={onApprove}
             onDecline={onDecline}
           />
+        </View>
+      ) : null}
+
+      {week ? (
+        <View className={brief || message || hasDrafts ? 'mt-5' : 'mt-3'}>
+          <View className="flex-row items-baseline justify-between">
+            <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+              Your week
+            </Text>
+            <Text className="font-mono text-[10px] text-ink-muted">{week.rangeLabel}</Text>
+          </View>
+          {week.read ? (
+            <View className="mt-2 gap-1.5">
+              {week.read.map((line, index) => (
+                <Text key={index} className="font-serif text-[13px] leading-5 text-ink-secondary">
+                  {line}
+                </Text>
+              ))}
+            </View>
+          ) : (
+            <Text className="mt-2 font-serif text-[13px] leading-5 text-ink-secondary">
+              {week.reportId
+                ? 'The Coach read the week and had nothing to add to the numbers.'
+                : 'This week’s report was deleted from Data › Reports.'}
+            </Text>
+          )}
+          {week.drafts.length > 0 && onApprove && onDecline ? (
+            <View className="mt-3">
+              <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-muted">
+                Decisions for the week ahead
+              </Text>
+              <ProposalRows
+                proposals={week.drafts}
+                busyId={busyId}
+                onApprove={onApprove}
+                onDecline={onDecline}
+              />
+            </View>
+          ) : null}
+          {week.reportId ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Open the weekly review, ${week.rangeLabel}`}
+              onPress={() =>
+                router.push({ pathname: '/report-view', params: { id: week.reportId ?? '' } })
+              }
+              className="mt-3 min-h-[44px] flex-row items-center gap-1 self-start active:opacity-70">
+              <Text className="text-sm font-medium text-ink-secondary">Open the report</Text>
+              <Ionicons name="chevron-forward" size={14} color={palette.inkSecondary} />
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
 

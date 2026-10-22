@@ -80,6 +80,7 @@ import { runCoachTurn, type FetchLike } from './model-client';
 import { getPassState } from './pass-schedule';
 import { buildCoachSystemPrompt } from './system-prompt';
 import { buildTurnContext } from './turn-context';
+import { vetWeeklyRead, weeklyDirective, type WeeklyPassInput } from './weekly-review';
 // Explicit /index: a bare directory import resolves under Metro but not under
 // Node ESM, and this module IS loaded headlessly (db/coach-pass.test.mjs).
 import { PASS_EXCLUDED_TOOLS, PASS_READ_TOOLS, toolByName, toWireTools } from './tools/index';
@@ -181,7 +182,10 @@ export type PassTrigger =
   | { kind: 'daily' }
   | { kind: 'signal'; detail: string }
   | { kind: 'checkin'; part: 'morning' | 'evening' }
-  | { kind: 'topic'; title: string; notes: string | null; firstLook: boolean };
+  | { kind: 'topic'; title: string; notes: string | null; firstLook: boolean }
+  // The weekly review (weekly-review.ts): Sunday evening's look back at the
+  // week, run by weekly-runner.ts with the report in `RunPassOptions.weekly`.
+  | { kind: 'weekly'; rangeLabel: string };
 
 /** He tapped something and is waiting on the reply. */
 export function isWaitingPass(trigger: PassTrigger): boolean {
@@ -226,6 +230,12 @@ export type CoachPassResult = {
    * read — or null (not asked for, not written, or nothing survived the check).
    */
   brief: string[] | null;
+  /**
+   * The weekly review's read, line by line, every number traced to the report,
+   * the state block or a tool result (weekly-review.ts `vetWeeklyRead`) — or
+   * null: not a weekly pass, a SKIP, or nothing survived. Absent on a FAILED.
+   */
+  weeklyRead?: string[] | null;
 };
 
 /** The opening line: why this pass is running, in the model's terms. */
@@ -250,6 +260,10 @@ function passOpening(trigger: PassTrigger, today: string): string {
             ]
           : []),
       ].join(' ');
+    case 'weekly':
+      // Only for completeness: passDirective hands a weekly pass to its own
+      // directive (weekly-review.ts) before this is reached.
+      return `This is your weekly review of ${trigger.rangeLabel}. The user did not ask for it.`;
   }
 }
 
@@ -327,6 +341,8 @@ export type PassExtras = {
   proposals: ProposalDirective;
   /** The first look of the day writes Home's brief. */
   brief: boolean;
+  /** The weekly review's report and allowance — set only on a weekly pass. */
+  weekly?: WeeklyPassInput | null;
 };
 
 function briefInstructions(today: string): string[] {
@@ -403,6 +419,9 @@ export function passDirective(
   nudges: NudgeDirective | null = null,
   extras: PassExtras | null = null
 ): string {
+  // ===== Weekly review (2026-10-21, claude/cos-weekly) — its own directive.
+  if (trigger.kind === 'weekly' && extras?.weekly) return weeklyDirective(extras.weekly, PASS_SKIP);
+  // ===== end Weekly review
   const waiting = isWaitingPass(trigger);
   const verdict = waiting
     ? [
@@ -459,6 +478,12 @@ export type RunPassOptions = {
    * and ignored.
    */
   brief?: boolean;
+  /**
+   * The weekly review (weekly-runner.ts): the report, as the model reads it,
+   * and the week's allowance. With it the pass runs the weekly directive,
+   * plans no notifications, writes no brief, and vets its note as the read.
+   */
+  weekly?: WeeklyPassInput;
 };
 
 /** A pass that never reached the model: nothing said, nothing proposed. */
@@ -508,7 +533,8 @@ export async function runCoachPass(
   const today = todayISODate(now, dayStartsAt);
   // Null when nudges are off: then the directive says nothing about them and
   // any NUDGE line the model writes anyway is stripped and ignored.
-  const nudges = nudgeDirectiveFor(db, now, dayStartsAt);
+  // The weekly review plans none: the evening pass beside it does.
+  const nudges = options.weekly ? null : nudgeDirectiveFor(db, now, dayStartsAt);
 
   try {
     // The record-hygiene and medical-attention findings (src/lib/ai/findings.ts),
@@ -526,10 +552,9 @@ export async function runCoachPass(
     // ===== end Calendar
     // Inside the try, as the state block always was: a read that throws is a
     // pass that failed to look, never an exception out of a pass.
-    const extras: PassExtras = {
-      proposals: proposalDirectiveFor(db, now),
-      brief: options.brief === true,
-    };
+    const extras: PassExtras = options.weekly
+      ? { proposals: options.weekly.proposals, brief: false, weekly: options.weekly }
+      : { proposals: proposalDirectiveFor(db, now), brief: options.brief === true };
     const turnContext = buildTurnContext(db, now, { calendar });
     // Held, because it is also the haystack the brief's numbers must come from.
     const systemContext = findings.text ? `${turnContext}\n\n${findings.text}` : turnContext;
@@ -614,6 +639,17 @@ export async function runCoachPass(
       ? vetBrief(passLines.brief, [systemContext, ...result.toolCalls.map((call) => call.result)])
           .kept
       : [];
+    // ===== Weekly review: the note IS the read, kept line by line only where
+    // every number traces to the report, the state block or a tool result.
+    const weeklyRead =
+      options.weekly && !skipped
+        ? vetWeeklyRead(text, [
+            systemContext,
+            options.weekly.reportJson,
+            ...result.toolCalls.map((call) => call.result),
+          ]).kept
+        : [];
+    // ===== end Weekly review
     return {
       message: skipped ? null : text,
       status: skipped ? 'silent' : 'spoke',
@@ -622,6 +658,7 @@ export async function runCoachPass(
       findingsShown: findings.shown,
       proposals,
       brief: vetted.length > 0 ? vetted : null,
+      ...(options.weekly ? { weeklyRead: weeklyRead.length > 0 ? weeklyRead : null } : {}),
     };
   } catch {
     // Offline, no network, a bad key, a refusal — the user never sees this. But

@@ -10217,5 +10217,101 @@ console.log('\n44. Track 0 (2026-10-21) — Coach usage, the new models, and a p
   refute('meal-detail (estimate waiting)', waiting, ['Try again']);
 }
 
+console.log('\n45. The weekly review (2026-10-21) — Home’s “Your week”, and the report it filed');
+{
+  const W = await import('../src/lib/ai/weekly-review.ts');
+  const P = await import('../src/lib/ai/proposals.ts');
+  const { parsePassLines } = await import('../src/lib/ai/proposal-lines.ts');
+  const { CoachNote } = await import('../src/components/home/coach-note.tsx');
+  const { COACH_READ_ATTRIBUTION } = await import('../src/lib/reports/coach-read.ts');
+  const noop = () => {};
+  const now = new Date();
+  const today = todayISODate(now);
+
+  // A review as weekly-runner.ts files it: the report with its read, the
+  // decisions on the weekly allowance, the week stamped with its filing.
+  const period = W.reviewWeekFor(now);
+  const data = assembleSelfReview(db, period, { now });
+  const readLines = ['Training held all week.', 'Dinners were the gap, not breakfasts.'];
+  const reportId = insertReport(db, {
+    data,
+    read: { text: readLines.join('\n'), attribution: COACH_READ_ATTRIBUTION, model: null },
+    fileName: 'arc-report-self-review-weekly.html',
+    filePath: 'reports/arc-report-self-review-weekly.html',
+  });
+  const parsed = parsePassLines(
+    'PROPOSE set_reminder {"title":"Plan dinners","time":"17:30"} Dinners went unlogged four nights.'
+  );
+  const { drafted } = P.draftProposals(db, parsed.proposals, parsed.malformed, now);
+  const [decision] = P.recordProposals(db, drafted, [], now, {
+    weekly: { week: period.start, through: shiftISODate(today, 1), allowance: W.WEEKLY_DECISIONS },
+  });
+  W.setWeeklyState(db, {
+    lastWeek: period.start,
+    latest: { weekStart: period.start, weekEnd: period.end, day: today, reportId, at: now.toISOString() },
+  });
+  const shownSummary = decision.summary.replace(/"/g, '&quot;');
+
+  const home = render('home (your week)', HomeScreen);
+  expect('home (your week)', home, [
+    'Coach · your week',
+    'Your week',
+    period.rangeLabel,
+    'Training held all week.',
+    'Dinners were the gap, not breakfasts.',
+    'Decisions for the week ahead',
+    shownSummary,
+    'Dinners went unlogged four nights.',
+    `aria-label="Approve: ${shownSummary}"`,
+    'Open the report',
+    `aria-label="Open the weekly review, ${period.rangeLabel}"`,
+  ]);
+  // The decision is drawn once, under the week — not again as a daily draft.
+  refute('home (your week)', home, ['For your approval', 'PROPOSE']);
+  (home?.split(`aria-label="Approve: ${shownSummary}"`).length ?? 0) === 2
+    ? ok('home (your week): the decision is drawn exactly once')
+    : bad('home (your week): decision count');
+
+  // The report it opens, from Home and from Data › Reports.
+  const view = render('report-view (weekly review)', ReportViewScreen, { id: reportId });
+  expect('report-view (weekly review)', view, [
+    'Weekly review',
+    period.rangeLabel,
+    'Training held all week.',
+    'written by the model over the numbers above',
+    'Share again',
+  ]);
+  expect('reports (weekly filed)', render('reports (weekly filed)', ReportsScreen), [
+    'Self-review',
+    `${period.rangeLabel} · generated`,
+  ]);
+
+  // The card with the week alone and no read: says so, keeps the door.
+  const bare = render('coach card (week, no read)', CoachNote, {}, {
+    message: null,
+    onDismiss: noop,
+    week: { reportId: 'r', rangeLabel: '12 – 18 Oct 2026', read: null, drafts: [] },
+    onApprove: noop,
+    onDecline: noop,
+  });
+  expect('coach card (week, no read)', bare, [
+    'Coach · your week',
+    '12 – 18 Oct 2026',
+    'The Coach read the week and had nothing to add to the numbers.',
+    'Open the report',
+  ]);
+  refute('coach card (week, no read)', bare, ['Decisions for the week ahead', 'Dismiss the Coach', 'pine-on']);
+
+  // The day after next: gone.
+  const later = new Date(now.getTime() + 2 * 86_400_000);
+  W.weeklyCardFor(db, P.listProposals(db, later), later) === null
+    ? ok('your week: gone two days after it landed')
+    : bad('your week lingered');
+
+  db.run("UPDATE users SET preferences = json_remove(preferences, '$.coachProposals', '$.coachWeekly')");
+  db.run('DELETE FROM reports WHERE id = ?', [reportId]);
+  refute('home (week cleared)', render('home (week cleared)', HomeScreen), ['Your week']);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
