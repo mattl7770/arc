@@ -3991,28 +3991,93 @@ console.log('29. one session, two writers — one session everywhere (round 3, i
       created_at: '2026-07-26T20:00:00.000Z',
       updated_at: '2026-07-26T20:00:00.000Z',
     });
-    // a 10:00–12:00 and c 12:30–13:30 share nothing; b 11:00–13:00 shares
-    // half of each.
-    const rows = [
-      mk('a', 'other', 600, 720),
-      mk('b', 'garmin', 660, 780),
-      mk('c', 'other', 750, 810),
-      mk('z', 'garmin', 1200, 1260),
-    ];
-    const forward = collapseWorkoutTwins(rows);
-    const backward = collapseWorkoutTwins([...rows].reverse());
     const shape = (sessions) =>
       sessions
         .map((s) => `${s.primary.id}:${s.members.map((m) => m.id).sort().join('')}`)
         .sort()
         .join(' ');
+    // Three copies of ONE session: the phone's whole hour 10:00–11:02, the
+    // Garmin copy 10:01–11:01, and a second phone app that caught only the last
+    // 20 minutes 10:42–11:02 — every pair of them is one session.
+    const rows = [
+      mk('a', 'other', 600, 662),
+      mk('b', 'garmin', 601, 661),
+      mk('c', 'other', 642, 662),
+      mk('z', 'garmin', 1200, 1260),
+    ];
+    const forward = collapseWorkoutTwins(rows);
+    const backward = collapseWorkoutTwins([...rows].reverse());
     shape(forward) === 'b:abc z:z' && shape(backward) === shape(forward)
-      ? ok('grouping is transitive and order-independent, and the Garmin copy speaks for it')
+      ? ok('three copies of one session are one session, order-independent, and the Garmin copy speaks for it')
       : bad('collapse shape', `${shape(forward)} | ${shape(backward)}`);
     forward.map((s) => s.primary.id).join() === 'b,z' &&
     backward.map((s) => s.primary.id).join() === 'z,b'
       ? ok('…and sessions come back in the order their first copy was handed in')
       : bad('collapse order');
+
+    // fix3: the grouping does NOT chain. a 10:00–12:00 and c 12:30–13:30 share
+    // nothing; b 11:00–13:00 shares half of each. Connected components made
+    // that one session; complete linkage needs every pair, so a and c can
+    // never be together, and b goes with a (the hour it shares, over the half
+    // hour it shares with c, which is half of c but a quarter of b).
+    const chain = [
+      mk('a', 'other', 600, 720),
+      mk('b', 'garmin', 660, 780),
+      mk('c', 'other', 750, 810),
+    ];
+    const cf = shape(collapseWorkoutTwins(chain));
+    const cb = shape(collapseWorkoutTwins([...chain].reverse()));
+    cf === 'b:ab c:c' && cb === cf
+      ? ok('fix3: overlaps do not chain — two rows that share nothing are never one session')
+      : bad('chained collapse', `${cf} | ${cb}`);
+  }
+
+  // --- fix3: a phone workout left running across two real sessions ----------
+  {
+    const { db } = freshDb();
+    // Garmin: a lift 07:00–08:00 then a run 08:00–08:30. The phone's walk
+    // 07:00–08:30 spans both, and is one session with either on its own.
+    const lift = ingest(db, { uuid: 'G-lift', device: 'garmin', hour: 7, minutes: 60, raw: 50 });
+    ingest(db, { uuid: 'G-run', device: 'garmin', hour: 8, minutes: 30, raw: 37, distanceKm: 5 });
+    ingest(db, { uuid: 'P-walk', device: 'other', hour: 7, minutes: 90, raw: 52 });
+    const minutes = unpairedWorkoutDailyMinutes(db, DAY, DAY);
+    minutes.length === 1 && minutes[0].value === 90
+      ? ok('fix3: the lift and the run both count — 90 minutes, not the run’s 30')
+      : bad('chained minutes', JSON.stringify(minutes));
+    pendingIngestedStrength(db, NOW).length === 1 && unpairedIngestedSessions(db, DAY, 10).length === 2
+      ? ok('…the lift is still in the inbox, and the day lists two sessions')
+      : bad('chained inbox', JSON.stringify(unpairedIngestedSessions(db, DAY, 10)));
+    const typed = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 45 });
+    pairIngestedWorkouts(db, NOW) === 1 && pairedIngestFor(db, typed)?.wearableId === lift
+      ? ok('…and a typed-in lift pairs with the lift, not with the run’s kcal and distance')
+      : bad('chained day pair', JSON.stringify(pairedIngestFor(db, typed)));
+  }
+  {
+    const { db } = freshDb();
+    // A 60-minute lift whose recording ran 10 minutes into a 20-minute run:
+    // half of the run, a sixth of the lift.
+    const lift = ingest(db, { uuid: 'G-lift', device: 'garmin', hour: 7, minutes: 60, raw: 50 });
+    ingest(db, { uuid: 'P-run', device: 'other', hour: 7, minute: 50, minutes: 20, raw: 37 });
+    const minutes = unpairedWorkoutDailyMinutes(db, DAY, DAY);
+    minutes.length === 1 && minutes[0].value === 80 && pendingIngestedStrength(db, NOW).length === 1
+      ? ok('fix3: a late stop button does not make a lift and a run one session')
+      : bad('edge overlap merged', JSON.stringify(minutes));
+    const live = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 20, startedAt: at(DAY, 7, 50) });
+    pairIngestedWorkouts(db, NOW);
+    pairedIngestFor(db, live)?.wearableId !== lift
+      ? ok('…and a log of the run’s 20 minutes is not paired with the lift it barely touches')
+      : bad('span pair to edge', JSON.stringify(pairedIngestFor(db, live)));
+  }
+  {
+    const { db } = freshDb();
+    // The case the shorter-span measure was chosen for, kept: the phone caught
+    // the last 20 minutes of a 62-minute run (a third of the run's clock).
+    ingest(db, { uuid: 'G-run', device: 'garmin', hour: 7, minutes: 62, raw: 37 });
+    ingest(db, { uuid: 'P-run', device: 'other', hour: 7, minute: 42, minutes: 20, raw: 37 });
+    const minutes = unpairedWorkoutDailyMinutes(db, DAY, DAY);
+    minutes.length === 1 && minutes[0].value === 62
+      ? ok('a phone that caught the last 20 minutes of a run is still the same run')
+      : bad('fragment twin split', JSON.stringify(minutes));
   }
 
   // --- twins filed under two calendar days are still one session -------------

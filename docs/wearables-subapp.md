@@ -2406,15 +2406,17 @@ recorded workouts should be fully automatic, no manual syncing at all"*.
 ### 25.2 The fix: every read is over sessions
 
 `collapseWorkoutTwins` (`repositories/wearables.ts`) is now the app's one grouping. Two rows are
-one session when their spans share at least `SAME_SESSION_OVERLAP` of the shorter one, whichever
-apps wrote them. The grouping is transitive (connected components), so it does not depend on row
-order. A row with no readable span is its own session. The copy that speaks for a session is
+one session when `sameSession` says so (25.5; until fix3 it was "their spans share at least
+`SAME_SESSION_OVERLAP` of the shorter one"), whichever apps wrote them. The grouping is complete
+linkage (25.5; until fix3, connected components), and it does not depend on row order. A row with
+no readable span is its own session. The copy that speaks for a session is
 `preferredTwin`: source priority, then the richer record (kcal, distance and heart rate, one point
 each), then the longer span, then `created_at`, then `id`.
 
 **No "similar duration" test, on purpose.** A phone that caught the last 20 minutes of a
 62-minute run shares all of its clock with the run, and one person does not do two sessions in
-the same 20 minutes. The shorter-span overlap measure was chosen for exactly that case.
+the same 20 minutes. The shorter-span overlap measure was chosen for exactly that case, and 25.5
+keeps it.
 
 `workout-ingest.ts` reads everything through `ingestedSessions`. A session is **paired when any
 copy is linked**. An unpaired one is offered, counted and asked about once, through its best copy:
@@ -2477,3 +2479,56 @@ Only the phone can settle:
   cascades a hand link away needs its own care.
 - **The two logged sessions some days may already hold** if he filled in both twins before this
   build. Those are his records and are never touched. Each stays paired to its own copy.
+
+### 25.5 Overlaps do not chain, and an edge is not a twin (fix3, 2026-10-21, **no migration**)
+
+An independent review proved two ways the round-3 grouping merged sessions that were not one.
+
+- **The chain.** Connected components joined any two rows linked by a path of overlaps. A phone
+  workout left running 07:00–08:30 is one session with the Garmin lift 07:00–08:00 and,
+  separately, with the Garmin run 08:00–08:30; the lift and the run share nothing, but the walk
+  chained all three into one session whose best copy was the run. The lift vanished from the
+  Coach's minutes (30, not 90) and from the blank inbox, and a lift typed in afterwards paired by
+  the day rule with the run's kcal and distance.
+- **The edge.** "Half of the shorter" alone merged a 60-minute lift with a 20-minute run that
+  started 10 minutes before the lift's recording was stopped: half of the run, but a sixth of the
+  lift.
+
+The fix is two changes, both in `repositories/wearables.ts`:
+
+1. **`sameSession(a, b)`** is the one definition. At least half of the shorter span must be
+   shared, as before, **and then one of**: the shorter lies inside the longer (at least
+   `CONTAINED_OVERLAP`, 0.8, of it shared), or they share at least half of the **longer** one too.
+   The first clause keeps the case the shorter-span measure was chosen for: the phone that caught
+   the last 20 minutes of a 62-minute run shares only a third of the run, but lies inside it. 0.8
+   tolerates the minute or two by which two start/stop buttons were pressed apart (a 20-minute
+   fragment may overhang by 4 minutes). The second clause is two copies of one session from two
+   writers, however their clocks are offset. The edge case passes neither: half the run is
+   outside the lift, and the lift is mostly outside the run.
+2. **Complete linkage.** Two groups join only when **every** cross pair is one session. Candidate
+   pairs are merged strongest first, by shared clock over the union of the two spans, with ties
+   broken by the rows' ids, so the result is independent of row order. The walk goes with the lift
+   (an hour shared, out of 90 minutes) rather than the run (half an hour), and the run then cannot
+   join, because it shares nothing with the lift. Three copies of one real session are still one
+   session, because every pair of them is.
+
+The pairing pass's span rule (`pairBySpan`, `workout-ingest.ts`) reads `sameSession` as well, so
+the app still has one definition of "the same session" for its two questions: a log of the run's
+20 minutes is no longer paired with the lift it barely touches. The day rule, the refusal and the
+stored `overlap` figure (still `overlapFraction`, the provenance number) are unchanged.
+
+**Tests** (`db/wearables.test.mjs` §29). The order-independence case now uses three real copies
+of one session (10:00–11:02, 10:01–11:01, and a fragment 10:42–11:02) and still collapses to one,
+Garmin first. The old chain fixture (10:00–12:00, 11:00–13:00, 12:30–13:30), which §29 had
+asserted was ONE session, is now asserted to be two (`b:ab c:c`) in both orders: that assertion
+was pinning the bug. New: the walk across a lift and a run (90 minutes counted, the lift still in
+the inbox, two sessions listed, a typed lift paired with the lift); the edge (80 minutes, the lift
+in the inbox, the run's log not paired with the lift); and the 20-minute phone fragment of a
+62-minute run, still one session. With the old grouping and pairing, 6 of these fail.
+
+**The cost, stated.** A fragment that overhangs a session by more than a fifth of its own length
+(a phone started late AND stopped late on a 20-minute tail) is now its own session, and its
+minutes count twice. And of three copies where a fragment is inside one copy but straddles the
+end of another (they share under 80% of the fragment), the fragment stands alone. Both are rarer
+than the merges they replace, and both double-count rather than lose a session, which the inbox
+shows and a fill settles.

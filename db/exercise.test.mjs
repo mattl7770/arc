@@ -101,6 +101,7 @@ import {
   setRemovalWords,
   setTargetOf,
   setUndoStands,
+  settleDoneRows,
   snapLoadDirected,
   targetApplies,
   tickPatch,
@@ -2082,6 +2083,37 @@ console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and 
     ? ok('…and a deload that would round to nothing keeps the engine’s own figure')
     : bad('deload floor');
 
+  // --- fix3: the plate step is in the figure's own basis (0062) -------------
+  const progressFrom = (startKg, units, basis) =>
+    setHint({
+      block: {
+        prev: [prevRow(10, startKg)],
+        target: { kind: 'progress', weightKg: startKg + lbToKg(2.5), reps: 6, repHigh: 10, note: '' },
+        measures: 'reps,load',
+      },
+      index: 0,
+      set: set(1),
+      basis,
+      away: false,
+      editing: false,
+      units,
+    })?.weightKg;
+  near(progressFrom(lbToKg(45), LB, 'per_side'), lbToKg(47.5)) &&
+  near(progressFrom(20, KG, 'per_side'), 21.25)
+    ? ok('fix3: a per-side load steps one plate a side — 45 → 47.5 lb, 20 → 21.25 kg, not 50 / 22.5')
+    : bad(
+        'per_side step',
+        `${progressFrom(lbToKg(45), LB, 'per_side')} ${progressFrom(20, KG, 'per_side')}`
+      );
+  near(progressFrom(lbToKg(45), LB, 'per_hand'), lbToKg(50)) &&
+  near(progressFrom(lbToKg(45), LB, 'total'), lbToKg(50)) &&
+  near(progressFrom(20, KG, 'per_hand'), 22.5)
+    ? ok('…while a dumbbell (per hand) and a total load keep the full step: the next bell, the next pair')
+    : bad('per_hand step');
+  near(snapLoadDirected(lbToKg(47.5) * 0.9, LB, 'down', 'per_side'), lbToKg(42.5))
+    ? ok('…and a per-side deload rounds down to a half step too (42.75 → 42.5 lb)')
+    : bad('per_side deload', String(snapLoadDirected(lbToKg(47.5) * 0.9, LB, 'down', 'per_side')));
+
   // --- where the target does NOT apply: last time, exactly ------------------
   const lastFor = (over) =>
     setHint({
@@ -2180,6 +2212,48 @@ console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and 
   heldLb?.weight === '61.2' && heldLb.storedWeightKg === 61.235
     ? ok('a held 61.235 kg shows 61.2 and is logged as 61.235 kg, not the rounded display')
     : bad('stored kg', JSON.stringify(heldLb));
+
+  // --- fix3: a ✓ on a row with no figure is settled, never dropped silently ---
+  const ticked = (key, over) => set(key, { done: true, ...over });
+  const settledBlocks = settleDoneRows(
+    [
+      {
+        ...benchBlock,
+        key: 1,
+        sets: [ticked(1), ticked(2, { reps: '6' }), set(3), ticked(4), ticked(5)],
+      },
+      { key: 2, prev: [], target: undefined, measures: 'reps,load', sets: [ticked(1, { pr: true })] },
+    ],
+    { basisOf: () => 'total', away: false, units: KG }
+  );
+  const [s1, s2, s3] = settledBlocks[0].sets;
+  s1.done && s1.weight === '100' && s1.reps === '9' && s1.storedWeightKg === 100 &&
+  s2.reps === '6' && s2.weight === '' &&
+  !s3.done
+    ? ok('fix3: a ticked empty row takes the figure it shows (100 × 9); a typed one and an open one are left alone')
+    : bad('settle fill', JSON.stringify(settledBlocks[0].sets));
+  const lone = settledBlocks[1].sets[0];
+  !lone.done && !lone.pr
+    ? ok('…and a ticked row with nothing to show is un-ticked, its stamp with it')
+    : bad('settle untick', JSON.stringify(lone));
+  const untouched = [{ ...benchBlock, key: 1, sets: [set(1, { reps: '8', done: true })] }];
+  settleDoneRows(untouched, { basisOf: () => null, away: false, units: KG }) === untouched
+    ? ok('…a session with nothing to settle comes back as the same array')
+    : bad('settle identity');
+  liveDraftSetsDone({
+    version: DRAFT_VERSION,
+    startedAt: 0,
+    routineId: null,
+    ingestId: null,
+    restEndsAt: null,
+    away: false,
+    blocks: [
+      { ...benchBlock, key: 1, sets: [ticked(1), ticked(2)] },
+      { key: 2, prev: [], target: undefined, measures: 'reps,load', sets: [ticked(1)] },
+    ],
+  }) === 2
+    ? ok('…and the Resume card counts the rows the logger will keep ticked (2 of 3)')
+    : bad('settled count');
 
   // --- Prev copies last time in whole (67) -----------------------------------
   const copied = prevPatch(prevRow(8, lbToKg(135)), 'reps,load', LB);
@@ -2830,8 +2904,9 @@ console.log('18. item 70 — a finished session ticks the earliest open Training
     imp.includes('tickTrainingAfterSave(getDb(), savedId);')
       ? ok('the photo import ticks after its commit')
       : bad('workout-import wiring');
-    coach.includes('tickTrainingForWorkout(db, id, todayISODate(context.now))')
-      ? ok('the Coach’s log_workout ticks after its commit, on the turn’s own today')
+    // fix3: only the row its card named (the card's read rides on the context).
+    coach.includes('tickTrainingForWorkout(db, id, todayISODate(context.now), named?.id ?? null)')
+      ? ok('the Coach’s log_workout ticks after its commit, on the turn’s own today, the card’s row only')
       : bad('log_workout wiring');
     // Pairing never ticks: the pass attaches a watch record to a session that
     // was already saved (and already ticked, or not).

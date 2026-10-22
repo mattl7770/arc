@@ -3914,7 +3914,19 @@ console.log('49. item 70 — log_workout ticks today’s Training row; delete_re
           WHERE d.date = ? AND e.title = 'Zone 2'`
       )
       .get(TODAY)?.status;
-  const logCard = (input) => toolByName('log_workout').confirmSummary(input, db, CTX);
+  // The service's own order: the card into a FRESH context, then execute
+  // against that same context (coach-service.ts), since the card's row rides
+  // on it (fix3).
+  const logCard = (input, context = { now: NOW }) =>
+    toolByName('log_workout').confirmSummary(input, db, context);
+  const approve = (input) => {
+    const context = { now: NOW };
+    const shown = logCard(input, context);
+    return {
+      card: shown,
+      result: JSON.parse(toolByName('log_workout').execute(db, input, context)),
+    };
+  };
   const card = logCard({ kind: 'cardio', duration_min: 40 });
   card === 'Log workout · 40 min · ticks Training: Zone 2'
     ? ok(`the card names the row the save will tick ("${card}")`)
@@ -3922,22 +3934,99 @@ console.log('49. item 70 — log_workout ticks today’s Training row; delete_re
   !logCard({ kind: 'cardio', duration_min: 40, date: shiftISODate(TODAY, -1) }).includes('ticks')
     ? ok('…and a session for yesterday names none')
     : bad('yesterday card');
-  const result = run('log_workout', db, { kind: 'cardio', duration_min: 40 });
+  const { result } = approve({ kind: 'cardio', duration_min: 40 });
   result.tickedTraining === 'Zone 2' && status() === 'completed'
     ? ok('execute ticks it and says so in the receipt')
     : bad('execute', JSON.stringify(result));
-  const second = run('log_workout', db, { kind: 'cardio', duration_min: 20 });
-  second.tickedTraining === undefined && !logCard({ kind: 'cardio' }).includes('ticks')
+  const { card: secondCard, result: second } = approve({ kind: 'cardio', duration_min: 20 });
+  second.tickedTraining === undefined && !secondCard.includes('ticks')
     ? ok('with no open Training row left, the card and the receipt say nothing')
     : bad('second', JSON.stringify(second));
   const del = toolByName('delete_record');
   const context = { now: NOW };
-  del.confirmSummary({ domain: 'workouts', id: result.id }, db, context);
+  const delCard = del.confirmSummary({ domain: 'workouts', id: result.id }, db, context);
+  delCard.includes('re-opens Training: Zone 2')
+    ? ok(`fix3: the delete card says the row it will re-open ("${delCard}")`)
+    : bad('delete card', delCard);
   del.execute(db, { domain: 'workouts', id: result.id }, context);
   status() === 'pending'
     ? ok('delete_record on that session re-opens the row it ticked')
     : bad('delete_record', status());
+  const plainCard = del.confirmSummary({ domain: 'workouts', id: second.id }, db, { now: NOW });
+  !plainCard.includes('re-opens')
+    ? ok('…and a session that ticked nothing re-opens nothing, and its card says nothing')
+    : bad('plain delete card', plainCard);
 }
+{
+  // fix3: the Coach tab is the first thing to touch today. The card used to
+  // read a day not yet arrived and name no row, while execute arrived it and
+  // ticked one — a tick no approval covered.
+  const { db } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Strength block', type: 'training_block' },
+    { items: [{ title: 'Zone 2', scheduled_time: '07:00', dose: null, notes: null }] }
+  );
+  const tool = toolByName('log_workout');
+  const context = { now: NOW };
+  const card = tool.confirmSummary({ kind: 'cardio', duration_min: 40 }, db, context);
+  const result = JSON.parse(tool.execute(db, { kind: 'cardio', duration_min: 40 }, context));
+  card.includes('ticks Training: Zone 2') && result.tickedTraining === 'Zone 2'
+    ? ok('fix3: on a day not yet arrived, the card names the row execute ticks')
+    : bad('cold card', JSON.stringify({ card, result }));
+  // No card drawn, no tick: the approval covers the act, or there is no act.
+  const { db: other } = freshDb();
+  createProtocolWithVersion(
+    other,
+    { name: 'Strength block', type: 'training_block' },
+    { items: [{ title: 'Zone 2', scheduled_time: '07:00', dose: null, notes: null }] }
+  );
+  const bare = JSON.parse(tool.execute(other, { kind: 'cardio', duration_min: 10 }, { now: NOW }));
+  bare.tickedTraining === undefined
+    ? ok('…and an execute no card preceded ticks nothing, with Zone 2 open')
+    : bad('bare execute', JSON.stringify(bare));
+}
+{
+  // fix3: two open rows; the card names Zone 2; while it is open he ticks Zone 2
+  // on Home. Execute used to re-choose and tick Mobility, a row nobody approved.
+  const { arriveDay } = await import('../src/lib/db/seed.ts');
+  const { setMissionStatus } = await import('../src/lib/db/repositories/mission.ts');
+  const { db, raw } = freshDb();
+  createProtocolWithVersion(
+    db,
+    { name: 'Block', type: 'training_block' },
+    {
+      items: [
+        { title: 'Zone 2', scheduled_time: '07:00', dose: null, notes: null },
+        { title: 'Mobility', scheduled_time: '18:00', dose: null, notes: null },
+      ],
+    }
+  );
+  arriveDay(db, TODAY);
+  const rowOf = (title) =>
+    raw
+      .prepare(
+        `SELECT e.id, e.status, json_extract(e.value, '$.by_workout') AS by FROM log_entries e
+           JOIN daily_logs d ON d.id = e.daily_log_id WHERE d.date = ? AND e.title = ?`
+      )
+      .get(TODAY, title);
+  const tool = toolByName('log_workout');
+  const context = { now: NOW };
+  const card = tool.confirmSummary({ kind: 'cardio', duration_min: 40 }, db, context);
+  setMissionStatus(db, rowOf('Zone 2').id, 'completed', TODAY);
+  const result = JSON.parse(tool.execute(db, { kind: 'cardio', duration_min: 40 }, context));
+  card.includes('ticks Training: Zone 2') &&
+  result.tickedTraining === undefined &&
+  result.trainingNotTicked === 'Zone 2' &&
+  rowOf('Mobility').status === 'pending' &&
+  rowOf('Zone 2').by === null
+    ? ok('fix3: the named row was ticked by hand meanwhile: execute ticks nothing else, and says so')
+    : bad(
+        'stale tick',
+        JSON.stringify({ card, result, m: rowOf('Mobility'), z: rowOf('Zone 2') })
+      );
+}
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

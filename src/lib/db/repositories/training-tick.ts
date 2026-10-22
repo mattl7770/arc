@@ -130,9 +130,22 @@ export function trainingRowFor(
   session: SessionForTick,
   today: string
 ): { id: string; title: string } | null {
-  if (session.away || session.date !== today) return null;
+  return eligibleTrainingRows(db, session, today)[0] ?? null;
+}
+
+/**
+ * Every open Training row this session MAY tick, in Home's order: the first is
+ * {@link trainingRowFor}'s. The whole list is what a named tick (the Coach's
+ * card, fix3) checks its row against past the gate.
+ */
+function eligibleTrainingRows(
+  db: Database,
+  session: SessionForTick,
+  today: string
+): { id: string; title: string }[] {
+  if (session.away || session.date !== today) return [];
   const training = openTrainingRows(db, today);
-  if (training.length === 0) return null;
+  if (training.length === 0) return [];
 
   // Every saved workout, archived ones too: a row titled after a workout he
   // has since archived still names it, and must not fall to just any session.
@@ -145,14 +158,13 @@ export function trainingRowFor(
     named.set(key, ids);
   }
 
-  for (const row of training) {
+  return training.flatMap((row) => {
     const names = named.get(nameKey(row.title));
     // An unnamed row takes any session; a named one only its own workout.
-    if (names === undefined || (session.routineId !== null && names.has(session.routineId))) {
-      return { id: row.id, title: row.title };
-    }
-  }
-  return null;
+    return names === undefined || (session.routineId !== null && names.has(session.routineId))
+      ? [{ id: row.id, title: row.title }]
+      : [];
+  });
 }
 
 /**
@@ -174,12 +186,20 @@ export function trainingRowFor(
  * day under a quota or an adjusting clock). Neither `arriveDay` nor the
  * re-derive can sit inside the transaction: both open their own, and
  * `Database.transaction` does not nest.
+ *
+ * `only` (fix3, 2026-10-21) is for a save behind a confirmation card that
+ * NAMED its row: the approval covered that row and no other. `null` (the card
+ * named none) ticks nothing; an id ticks that row only while it is still an
+ * open Training row this session may tick, and otherwise nothing. Left out,
+ * the earliest such row ticks, which is every finish path that has no card.
  */
 export function tickTrainingForWorkout(
   db: Database,
   workoutId: string,
-  today: string
+  today: string,
+  only?: string | null
 ): TrainingTick | null {
+  if (only === null) return null;
   const workout = db.get<{ date: string; routine_id: string | null; away: number }>(
     'SELECT date, routine_id, away FROM workouts WHERE id = ?',
     [workoutId]
@@ -199,7 +219,8 @@ export function tickTrainingForWorkout(
   if (already) return null;
 
   arriveDay(db, today);
-  const row = trainingRowFor(db, session, today);
+  const eligible = eligibleTrainingRows(db, session, today);
+  const row = only === undefined ? eligible[0] : eligible.find((r) => r.id === only);
   if (!row) return null;
   db.transaction(() => {
     setMissionStatus(db, row.id, 'completed', today);
@@ -231,6 +252,24 @@ export function untickTraining(db: Database, tick: TrainingTick, today: string):
   rederiveDaysAhead(db, today);
 }
 
+/** The rows still completed AND marked with this session — what its delete re-opens. */
+function heldTicks(db: Database, workoutId: string): { id: string; title: string }[] {
+  return db.all<{ id: string; title: string }>(
+    `SELECT id, title FROM log_entries
+      WHERE status = 'completed' AND json_extract(value, '$.by_workout') = ?
+      ORDER BY created_at, id`,
+    [workoutId]
+  );
+}
+
+/**
+ * The titles {@link releaseWorkoutTick} would re-open, read-only — so the
+ * Coach's delete card can say so before the gate (fix3, 2026-10-21).
+ */
+export function workoutTickTitles(db: Database, workoutId: string): string[] {
+  return heldTicks(db, workoutId).map((row) => row.title);
+}
+
 /**
  * Deleting a session takes back the tick it made, and only that one: every
  * row still completed AND marked with this session goes back to pending
@@ -241,11 +280,7 @@ export function untickTraining(db: Database, tick: TrainingTick, today: string):
  * Coach's `delete_record` share it.
  */
 export function releaseWorkoutTick(db: Database, workoutId: string, today: string): string[] {
-  const rows = db.all<{ id: string; title: string }>(
-    `SELECT id, title FROM log_entries
-      WHERE status = 'completed' AND json_extract(value, '$.by_workout') = ?`,
-    [workoutId]
-  );
+  const rows = heldTicks(db, workoutId);
   if (rows.length === 0) return [];
   for (const row of rows) setMissionStatus(db, row.id, 'pending', today);
   rederiveDaysAhead(db, today);
