@@ -19,6 +19,14 @@ import {
   type WearableWorkout,
 } from '@/lib/db/repositories/wearables';
 import { getPreferences, isHealthSyncEnabled } from '@/lib/db/repositories/user';
+import { garminKeyStore } from '@/lib/garmin/key-store';
+import { HRV_STATUS_WORDS } from '@/lib/garmin/mapping';
+import {
+  garminLink,
+  readGarminState,
+  subscribeGarminSync,
+  type GarminLink,
+} from '@/lib/garmin/sync';
 import { isHealthKitSupported } from '@/lib/health/healthkit';
 import { subscribeHealthSync, SYNC_WINDOW_DAYS } from '@/lib/health/sync';
 import { ledgerEmptyNote } from '@/lib/home/metric-sync';
@@ -84,6 +92,8 @@ export interface WearablesOverview {
   supported: boolean;
   enabled: boolean;
   lastSyncedAt: string | null;
+  /** The Garmin Personal API link, for the footer and its refusal line. */
+  garmin: { link: GarminLink; lastSyncedAt: string | null };
   sections: WearableSection[];
   /** HRV and resting HR, charted. Always both, empty or not — the chart says
    *  so itself when a window holds too few readings. */
@@ -192,6 +202,56 @@ const ACTIVITY: MetricSpec[] = [
   },
 ];
 
+/**
+ * The figures only the Garmin Personal API link writes (2026-10-21,
+ * docs/wearables-subapp.md §26). Blood oxygen, respiration, VO₂max, HRV and
+ * resting HR are not here: the link fills the rows above that already exist.
+ */
+const GARMIN: MetricSpec[] = [
+  {
+    key: 'sleep_score',
+    name: 'Sleep score',
+    sparkBaseline: 'auto',
+    format: (v) => [String(Math.round(v)), '/ 100'],
+  },
+  {
+    key: 'body_battery_wake',
+    name: 'Body Battery at wake',
+    sparkBaseline: 'zero',
+    format: (v) => [String(Math.round(v)), ''],
+  },
+  {
+    key: 'body_battery_high',
+    name: 'Body Battery high',
+    sparkBaseline: 'zero',
+    format: (v) => [String(Math.round(v)), ''],
+  },
+  {
+    key: 'body_battery_low',
+    name: 'Body Battery low',
+    sparkBaseline: 'zero',
+    format: (v) => [String(Math.round(v)), ''],
+  },
+  {
+    key: 'stress_avg',
+    name: 'Stress (day average)',
+    sparkBaseline: 'auto',
+    format: (v) => [String(Math.round(v)), '/ 100'],
+  },
+  {
+    key: 'spo2_lowest_pct',
+    name: 'Lowest blood oxygen',
+    sparkBaseline: 'auto',
+    format: (v) => [String(Math.round(v)), '%'],
+  },
+  {
+    key: 'hrv_status',
+    name: 'HRV status',
+    sparkBaseline: 'auto',
+    format: (v) => [HRV_STATUS_WORDS[Math.round(v)] ?? '—', ''],
+  },
+];
+
 function read(): Omit<WearablesOverview, 'reload'> {
   const db = getDb();
   const today = todayISODate();
@@ -234,6 +294,14 @@ function read(): Omit<WearablesOverview, 'reload'> {
     { title: 'Sleep', rows: SLEEP.map(buildRow) },
     { title: 'Activity', rows: ACTIVITY.map(buildRow) },
   ];
+  // Drawn once the link is set up or has ever written: a plate of seven
+  // "No data yet" rows for an owner who never connected Garmin is noise.
+  const link = garminLink(db);
+  const garminRows = GARMIN.map(buildRow);
+  if (link !== 'off' || garminRows.some((r) => !r.empty)) {
+    sections.push({ title: 'Garmin', rows: garminRows });
+  }
+  const garminState = readGarminState(db);
 
   // The chart's 30 days plus the six before them, so the first point of the
   // trailing average has a full window instead of starting a week late.
@@ -259,6 +327,7 @@ function read(): Omit<WearablesOverview, 'reload'> {
     supported,
     enabled,
     lastSyncedAt: getHealthSyncState(db).lastSyncedAt,
+    garmin: { link, lastSyncedAt: garminState.lastSyncedAt },
     sections,
     trends,
     workouts,
@@ -275,6 +344,9 @@ export function useWearables(): WearablesOverview {
 
   useFocusEffect(reload);
   useEffect(() => subscribeHealthSync(reload), [reload]);
+  useEffect(() => subscribeGarminSync(reload), [reload]);
+  // The key landing from the Keychain on a cold start turns the Garmin plate on.
+  useEffect(() => garminKeyStore.subscribe(reload), [reload]);
 
   return { ...state, reload };
 }

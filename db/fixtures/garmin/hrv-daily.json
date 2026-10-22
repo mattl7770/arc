@@ -1,0 +1,25 @@
+{
+  "userProfilePk": 987654321,
+  "hrvSummaries": [
+    {
+      "calendarDate": "2026-10-19",
+      "weeklyAvg": 47,
+      "lastNightAvg": 45,
+      "lastNight5MinHigh": 68,
+      "baseline": { "lowUpper": 38, "balancedLow": 42, "balancedUpper": 56, "markerValue": 0.41 },
+      "status": "BALANCED",
+      "feedbackPhrase": "HRV_BALANCED_2",
+      "createTimeStamp": "2026-10-19T06:48:11.0"
+    },
+    {
+      "calendarDate": "2026-10-21",
+      "weeklyAvg": 46,
+      "lastNightAvg": 39,
+      "lastNight5MinHigh": 61,
+      "baseline": { "lowUpper": 38, "balancedLow": 42, "balancedUpper": 56, "markerValue": 0.36 },
+      "status": "UNBALANCED",
+      "feedbackPhrase": "HRV_UNBALANCED_3",
+      "createTimeStamp": "2026-10-21T06:52:40.0"
+    }
+  ]
+}

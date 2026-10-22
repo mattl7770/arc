@@ -10,6 +10,7 @@ import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
 import { useAppLockPreference } from '@/hooks/use-app-lock-preference';
+import { useGarminView } from '@/hooks/use-garmin';
 import { useSessionKeySet } from '@/hooks/use-session-key';
 import { lastBackupInfo } from '@/lib/backup/snapshot';
 import { getDb } from '@/lib/db/client';
@@ -161,6 +162,7 @@ export default function SettingsScreen() {
   const keySet = useSessionKeySet();
   const [profile, setProfile] = useState(() => getOrCreateUser(getDb()));
   const appLock = useAppLockPreference();
+  const garmin = useGarminView();
   const [exporting, setExporting] = useState(false);
   const [exportNote, setExportNote] = useState<string | null>(null);
 
@@ -190,6 +192,13 @@ export default function SettingsScreen() {
     : isHealthSyncEnabled(getDb())
       ? 'Connected'
       : 'Wearables via Apple Health';
+
+  const garminSub =
+    garmin.link === 'off'
+      ? 'HRV, sleep score, Body Battery · personal API key'
+      : garmin.link === 'rejected'
+        ? 'Key expired or revoked'
+        : 'Connected';
 
   // Honest three ways: off, on but nothing written yet, or the age of the last
   // snapshot. Nothing here promises a backup that does not exist on disk.
@@ -296,6 +305,14 @@ export default function SettingsScreen() {
               label="Apple Health"
               sub={healthSub}
               onPress={() => router.push('/settings-health')}
+            />
+            {/* Beside Apple Health: the other way wearable data arrives, for
+                what a Garmin never sends there (docs/wearables-subapp.md §26). */}
+            <NavRow
+              icon="watch-outline"
+              label="Garmin"
+              sub={garminSub}
+              onPress={() => router.push('/settings-garmin')}
             />
             {/* Beside Apple Health because it is the other place a daily number
                 comes from, and not inside it because Health carries no screen

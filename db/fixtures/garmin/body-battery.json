@@ -1,0 +1,47 @@
+[
+  {
+    "date": "2026-10-21",
+    "charged": 61,
+    "drained": 9,
+    "startTimestampGMT": "2026-10-20T22:00:00.0",
+    "endTimestampGMT": "2026-10-21T11:00:00.0",
+    "bodyBatteryValueDescriptorDTOList": [
+      { "bodyBatteryValueDescriptorIndex": 0, "bodyBatteryValueDescriptorKey": "timestamp" },
+      { "bodyBatteryValueDescriptorIndex": 1, "bodyBatteryValueDescriptorKey": "bodyBatteryStatus" },
+      { "bodyBatteryValueDescriptorIndex": 2, "bodyBatteryValueDescriptorKey": "bodyBatteryLevel" },
+      { "bodyBatteryValueDescriptorIndex": 3, "bodyBatteryValueDescriptorKey": "bodyBatteryVersion" }
+    ],
+    "bodyBatteryValuesArray": [
+      [1792536000000, "MEASURED", 19, 3.0],
+      [1792549800000, "MEASURED", 55, 3.0],
+      [1792563300000, "MEASURED", 79, 3.0],
+      [1792566900000, "MEASURED", 76, 3.0]
+    ],
+    "bodyBatteryActivityEvent": [
+      {
+        "eventType": "SLEEP",
+        "eventStartTimeGmt": "2026-10-20T22:40:00.0",
+        "timezoneOffset": 3600000,
+        "durationInMilliseconds": 27300000,
+        "bodyBatteryImpact": 60,
+        "feedbackType": "NONE",
+        "shortFeedback": "NONE"
+      },
+      {
+        "eventType": "STRESS",
+        "eventStartTimeGmt": "2026-10-21T09:15:00.0",
+        "durationInMilliseconds": 1800000,
+        "bodyBatteryImpact": -3
+      }
+    ]
+  },
+  {
+    "date": "2026-10-20",
+    "bodyBatteryValueDescriptorDTOList": [
+      { "bodyBatteryValueDescriptorIndex": 0, "bodyBatteryValueDescriptorKey": "timestamp" },
+      { "bodyBatteryValueDescriptorIndex": 1, "bodyBatteryValueDescriptorKey": "bodyBatteryLevel" }
+    ],
+    "bodyBatteryValuesArray": [[1792497600000, 40]],
+    "bodyBatteryActivityEvent": []
+  }
+]

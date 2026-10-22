@@ -51,6 +51,7 @@ import {
   unpairedWorkoutDailyMinutes,
 } from '@/lib/db/repositories/workout-ingest';
 import { isAccumulatingMetric } from '@/lib/health/accumulating';
+import { GARMIN_API_METRICS } from '@/lib/garmin/mapping';
 import { SAMPLE_METRICS, STATISTIC_METRICS } from '@/lib/health/mapping';
 import { deriveReadiness } from '@/lib/home/readiness';
 import { metricByKey, resolveDisplay, type MetricKey } from '@/lib/log/metrics';
@@ -216,6 +217,18 @@ const DECLARED_WEARABLE_METRICS: readonly WearableMetricSpec[] = [
     agg: 'arbitrated',
     decimals: spec.decimals,
   })),
+  // The figures only the Garmin Personal API link writes (2026-10-21,
+  // docs/wearables-subapp.md §26) — declared so they arrive labelled, with
+  // HRV status's numeric code spelled out, rather than guessed from the rows.
+  ...GARMIN_API_METRICS.map(
+    (spec): WearableMetricSpec => ({
+      metricType: spec.metricType,
+      label: spec.label,
+      canonicalUnit: spec.unit,
+      agg: 'arbitrated',
+      decimals: spec.decimals,
+    })
+  ),
   ...SLEEP_METRICS.map(([metricType, label]): WearableMetricSpec => ({
     metricType,
     label,

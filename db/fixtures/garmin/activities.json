@@ -1,0 +1,33 @@
+[
+  {
+    "activityId": 21000000003,
+    "activityName": "Evening Run",
+    "startTimeLocal": "2026-10-20 18:05:10",
+    "startTimeGMT": "2026-10-20 17:05:10",
+    "activityType": { "typeKey": "running" },
+    "duration": 2400.9,
+    "averageHR": 148.0,
+    "maxHR": 171.0,
+    "beginTimestamp": 1792515910000,
+    "vO2MaxValue": 51.0
+  },
+  {
+    "activityId": 21000000002,
+    "activityName": "Morning Walk",
+    "startTimeLocal": "2026-10-20 07:30:00",
+    "startTimeGMT": "2026-10-20 06:30:00",
+    "activityType": { "typeKey": "walking" },
+    "duration": 1800.0,
+    "beginTimestamp": 1792477800000,
+    "vO2MaxValue": 50.0
+  },
+  {
+    "activityId": 21000000001,
+    "activityName": "Strength",
+    "startTimeLocal": "2026-10-19 12:00:00",
+    "startTimeGMT": "2026-10-19 11:00:00",
+    "activityType": { "typeKey": "strength_training" },
+    "duration": 3300.0,
+    "beginTimestamp": 1792407600000
+  }
+]

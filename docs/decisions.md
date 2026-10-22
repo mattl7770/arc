@@ -1,5 +1,68 @@
 # Architecture Decision Records (ADR)
 
+## 2026-10-21 — Garmin via the official Personal API
+
+**Context.** The owner's band is a Garmin CIRQA. Garmin Connect writes sleep, resting HR, steps
+and workouts to Apple Health and has never written HRV, SpO2, respiration, VO₂max, stress, Body
+Battery or a sleep score (docs/wearables-subapp.md §12), so Home's Recovery has run on the
+resting-HR fallback and the owner has typed HRV by hand. The 2026-09 spikes
+(`docs/spikes/garmin-hrv-routes.md`, `garmin-all-data.md`, `garmin-risk.md`) found no official
+route and weighed Garmin's unofficial API against its Terms of Use. On 2026-10-21 Garmin
+launched an official **Personal API**: an account owner creates a key on Garmin Connect Web
+(Settings › personalApiToken; it lasts 30, 90 or 180 days or a year, is shown once, and can be
+revoked), exchanges it for a 24-hour bearer token, and reads his own data.
+
+**Decision.**
+
+1. **ARC reads Garmin through the Personal API, from the phone.** The owner creates his own key
+   and pastes it into Settings › Garmin. One module, `src/lib/garmin/client.ts`, makes every
+   request; it talks only to `personal.connectapi.garmin.com`, only to a fixed list of read paths,
+   at most 8 requests a pass (the token mint included), on app open and foreground behind the app
+   lock, throttled to the Apple Health sync's 15 minutes. The sync is deterministic: the Coach
+   has no Garmin tool and reads the rows. Spec: docs/wearables-subapp.md §26.
+2. **This is a new automatic egress**, the first that is not the AI model call or a lookup the
+   user started. It is sanctioned on three grounds: it reads data that already sits in Garmin's
+   cloud (nothing of ARC's goes the other way, and nothing new comes to rest in any cloud); it
+   goes to the vendor that holds the data and nobody else; and the owner turns it on by pasting a
+   key and off by Disconnect. CLAUDE.md §3 names it beside the model call.
+3. **The key lives in the iOS Keychain only**, `WHEN_UNLOCKED_THIS_DEVICE_ONLY` like the Coach's
+   key — never SQLite, so never the ARCB1 backup; never the export, a log, an error or the Coach's
+   context. It does not ride the device backup (unlike the backup key, which must): it reads the
+   whole Garmin history, and a new phone needs only a fresh paste. The token is held in memory
+   only and re-minted when under an hour remains, as Garmin's reference client does.
+4. **The data lands in `wearable_data`** as `source_device 'garmin'`, `source_raw_id
+   'gp:<metric>:<calendarDate>'`, each figure the Coach should read as its own `metric_type`. No
+   migration. A figure Apple Health already supplies for that day (sleep, resting HR, SpO2,
+   respiration, VO₂max) through the Garmin Connect app keeps the `hk:` row; HRV prefers Garmin
+   across sources, so a day with both never mixes methods (a night without the band still falls
+   back to whatever else measured it).
+
+**The key's terms, quoted second-hand.** As reported by the research pass of 2026-10-21, not
+read here: the key *"may be used only by you in connection with applications, services, or tools
+that you develop or operate for your own use"*, and it may not be shared with third parties.
+ARC fits that as written — a tool the owner operates for his own use, on his own phone, with no
+server and no other user. **The owner should save the full text Garmin shows when the key is
+created**, because that, not this paraphrase, is the agreement.
+
+**Why not the unofficial API.** For about 80% of what the spikes wanted it is now unnecessary,
+and it carried the Terms-of-Use breach, the sign-in ticket caught inside Garmin's login page, and
+1–4 breakages a year each needing an EAS build. Its one remaining advantage is **Training
+Readiness** (and Training Status, skin temperature, RR intervals), which the Personal API does not
+serve. That gap is accepted: ARC's Recovery pillar is its own derivation and does not need them.
+
+**Why not intervals.icu.** It was the clean fallback in `garmin-risk.md`. In October 2026
+Garmin restricted partners from sharing Garmin data onward (as reported by the same research
+pass, not read here), so a route that relays Garmin data through intervals.icu to ARC is exactly
+what that restriction covers. It also always meant the owner's wellness data at rest on that
+company's servers (§2). Reading from Garmin directly needs neither.
+
+**Consequences.** Recovery grades on the band's HRV; the owner stops typing it. Settings ›
+Garmin and Home's HRV cell say when the key is refused (expired or revoked) and stop trying until
+a new one is pasted. A first connect takes about two dozen opens to bring a year of history in.
+What only the phone can settle — the token response's real shape, the timestamp formats, the
+HRV range limit, the Connect Web path — is listed in docs/wearables-subapp.md §26.8. The routes
+weighed are summarised in `docs/spikes/garmin-direct.md`.
+
 ## 2026-10-21 — Provider-side web search
 
 **Context.** Device round 3, items 62 and 91, the owner verbatim: *"web search in food logging +

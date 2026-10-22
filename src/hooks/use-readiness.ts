@@ -4,6 +4,7 @@ import { useFocusEffect } from 'expo-router';
 import { getDb } from '@/lib/db/client';
 import { isHealthSyncEnabled } from '@/lib/db/repositories/user';
 import { isHealthKitSupported } from '@/lib/health/healthkit';
+import { subscribeGarminSync } from '@/lib/garmin/sync';
 import { subscribeHealthSync } from '@/lib/health/sync';
 import { deriveReadiness, type HealthLink, type ReadinessView } from '@/lib/home/readiness';
 import { subscribeStatusChange } from '@/lib/status/store';
@@ -44,6 +45,8 @@ export function useReadiness(): ReadinessView {
 
   useFocusEffect(reload);
   useEffect(() => subscribeHealthSync(reload), [reload]);
+  // And a Garmin pass landing (docs/wearables-subapp.md §26): HRV arrives that way now.
+  useEffect(() => subscribeGarminSync(reload), [reload]);
   // Re-subscribed to status changes on 2026-10-21 (items 61/80), for a
   // different reason from the one removed on 2026-09-23: Night out's drinks
   // stepper writes a MEAL from a sheet presented over Home, which never costs

@@ -358,6 +358,45 @@ function priorityOf(device: string): number {
   return index === -1 ? SOURCE_PRIORITY.length : index;
 }
 
+/**
+ * Per-metric exceptions to {@link SOURCE_PRIORITY}. One today: **HRV prefers
+ * Garmin** (2026-10-21, the Garmin Personal API link). The band's overnight
+ * RMSSD is the reading the owner was typing by hand, Garmin never writes HRV
+ * to Apple Health, and a Watch's SDNN is a different measure — so where both
+ * exist on a day, Home's Recovery, the Data tab and the Coach all take the
+ * Garmin figure, and a baseline is not built from two methods by accident.
+ */
+const METRIC_PRIORITY: Readonly<Record<string, readonly WearableDevice[]>> = {
+  hrv: ['garmin', ...SOURCE_PRIORITY.filter((device) => device !== 'garmin')],
+};
+
+/** The rank of a row for one metric — lower wins. */
+function priorityFor(metricType: string, device: string): number {
+  const order = METRIC_PRIORITY[metricType];
+  if (!order) return priorityOf(device);
+  const index = order.indexOf(device as WearableDevice);
+  return index === -1 ? order.length : index;
+}
+
+/**
+ * Whether `challenger` beats `incumbent` for one metric on one day. Source
+ * priority first; on a tie (both `garmin`), an Apple Health bucket (`hk:`)
+ * beats a Garmin Personal API row (`gp:`), matching the write-side rule in
+ * src/lib/garmin/mapping.ts `dropHealthSupplied`, so the transient tie between
+ * an HK pass and the next Garmin pass reads the same way every time.
+ */
+function beats(
+  metricType: string,
+  challenger: WearableDataRow,
+  incumbent: WearableDataRow
+): boolean {
+  const a = priorityFor(metricType, challenger.source_device);
+  const b = priorityFor(metricType, incumbent.source_device);
+  if (a !== b) return a < b;
+  const garminApi = (row: WearableDataRow) => (row.source_raw_id ?? '').startsWith('gp:');
+  return garminApi(incumbent) && !garminApi(challenger);
+}
+
 /** Display names for source_device values (chips, metric details). */
 const DEVICE_LABELS: Record<WearableDevice, string> = {
   oura: 'Oura',
@@ -406,7 +445,7 @@ export function dailyMetricSeries(
   const byDate = new Map<string, WearableDataRow>();
   for (const row of rows) {
     const current = byDate.get(row.date);
-    if (!current || priorityOf(row.source_device) < priorityOf(current.source_device)) {
+    if (!current || beats(metricType, row, current)) {
       byDate.set(row.date, row);
     }
   }
@@ -435,8 +474,7 @@ export function pickDailyMetric(
 
 /** Latest row for a metric regardless of window — "last known, as of" reads. */
 export function latestMetric(db: Database, metricType: string): DailyMetricPoint | null {
-  // The newest day's rows only — at most one per source_device (10 buckets),
-  // so the LIMIT can never clip a same-day contender.
+  // The newest day's rows only — every source's row for that day.
   const rows = db.all<WearableDataRow>(
     `SELECT * FROM wearable_data
      WHERE metric_type = ? AND date = (SELECT max(date) FROM wearable_data WHERE metric_type = ?)`,
@@ -447,7 +485,7 @@ export function latestMetric(db: Database, metricType: string): DailyMetricPoint
   let winner = rows[0]!;
   for (const row of rows) {
     if (row.date !== topDate) break;
-    if (priorityOf(row.source_device) < priorityOf(winner.source_device)) winner = row;
+    if (beats(metricType, row, winner)) winner = row;
   }
   return {
     date: winner.date,
@@ -1109,4 +1147,96 @@ export function stampHealthScopes(
      ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
     [newId(db), key, JSON.stringify(stamp)]
   );
+}
+
+// --- The Garmin Personal API link (2026-10-21, docs/wearables-subapp.md §26) --
+//
+// A fifth key in the same KV, and the third integration cursor that needed no
+// migration. Its SHAPE lives with the Garmin module (src/lib/garmin/sync.ts,
+// its only producer and reader); this file owns where it is stored. Nothing
+// secret is ever in it: the key lives in the Keychain only, the token in
+// memory only.
+
+/** health_sync_state.key for the Garmin link's cursor and status. */
+export const GARMIN_SYNC_KEY = 'garmin_personal_api';
+
+/** The parsed JSON under `key`, or null when absent or unreadable. */
+export function getSyncStateValue(db: Database, key: string): unknown {
+  const row = db.get<{ value: string }>('SELECT value FROM health_sync_state WHERE key = ?', [key]);
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+export function setSyncStateValue(db: Database, key: string, value: unknown): void {
+  db.run(
+    `INSERT INTO health_sync_state (id, key, value) VALUES (?, ?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+    [newId(db), key, JSON.stringify(value)]
+  );
+}
+
+export function deleteSyncStateValue(db: Database, key: string): void {
+  db.run('DELETE FROM health_sync_state WHERE key = ?', [key]);
+}
+
+/**
+ * `metric|date` for every Apple Health bucket (`hk:*`) of these metrics in
+ * `[first, last]` that came from `device` — by default the Garmin Connect
+ * app's own writes, which §4 buckets `garmin`. That is the one true duplicate:
+ * the same band, arriving twice, on the same source rank. A row from any other
+ * device is a different reading, and source priority arbitrates it on read as
+ * it always has.
+ */
+export function healthBucketKeys(
+  db: Database,
+  metricTypes: readonly string[],
+  first: string,
+  last: string,
+  device: WearableDevice = 'garmin'
+): Set<string> {
+  if (metricTypes.length === 0) return new Set();
+  const marks = metricTypes.map(() => '?').join(', ');
+  const rows = db.all<{ metric_type: string; date: string }>(
+    `SELECT DISTINCT metric_type, date FROM wearable_data
+     WHERE metric_type IN (${marks}) AND date >= ? AND date <= ?
+       AND source_device = ? AND source_raw_id GLOB ?`,
+    [...metricTypes, first, last, device, HK_BUCKET_GLOB]
+  );
+  return new Set(rows.map((r) => `${r.metric_type}|${r.date}`));
+}
+
+/**
+ * Write a Garmin pass's rows and remove the `gp:` rows it decided Apple Health
+ * now supplies. Only `garmin` rows with a `gp:` raw id can be deleted here,
+ * whatever is passed. Two transactions, not one — {@link upsertWearableRows}
+ * opens its own and SQLite does not nest them — and the order is harmless: a
+ * row is dropped only because an Apple Health row for the same metric and day
+ * is already there, so a reader between the two sees that row instead.
+ * Returns rows written plus rows removed.
+ */
+export function applyGarminRows(
+  db: Database,
+  keep: WearableUpsert[],
+  dropRawIds: readonly string[]
+): number {
+  let removed = 0;
+  const doomed = dropRawIds.filter((rawId) => rawId.startsWith('gp:'));
+  if (doomed.length > 0) {
+    db.transaction(() => {
+      for (const rawId of doomed) {
+        const existing = db.get<{ id: string }>(
+          `SELECT id FROM wearable_data WHERE source_device = 'garmin' AND source_raw_id = ?`,
+          [rawId]
+        );
+        if (!existing) continue;
+        db.run('DELETE FROM wearable_data WHERE id = ?', [existing.id]);
+        removed++;
+      }
+    });
+  }
+  return upsertWearableRows(db, keep) + removed;
 }

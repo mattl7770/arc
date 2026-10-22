@@ -57,6 +57,14 @@ import { deviceLabel } from '@/lib/db/repositories/wearables';
  * sparklines: the chart is the closer read of two of them, not a replacement
  * for the ledger. Ink only; the firewall holds — nothing here grades a value.
  *
+ * ## Garmin (2026-10-21, docs/wearables-subapp.md §26)
+ *
+ * The Personal API link fills rows that were already here (HRV, resting HR,
+ * blood oxygen, respiration, VO₂max) and adds one more ruled plate for the
+ * figures only Garmin has: sleep score, Body Battery, stress, lowest blood
+ * oxygen, HRV status. That plate is drawn only once the link is set up or has
+ * written something. Same plate, same ink — none of these is graded here.
+ *
  * ## No data, no number
  *
  * A metric with no reading renders an em-dash and says so in its descriptor
@@ -174,7 +182,8 @@ function MetricRow({ row, first }: { row: WearableMetricRow; first: boolean }) {
 
 export default function WearablesScreen() {
   const router = useRouter();
-  const { supported, enabled, lastSyncedAt, sections, trends, workouts, allEmpty } = useWearables();
+  const { supported, enabled, lastSyncedAt, garmin, sections, trends, workouts, allEmpty } =
+    useWearables();
 
   return (
     <Screen scroll>
@@ -317,6 +326,27 @@ export default function WearablesScreen() {
           ? `Last synced ${shortDayOfInstant(lastSyncedAt)} · sources labelled per device`
           : 'Never synced'}
       </Text>
+      {/* The Garmin Personal API link has its own clock (docs §26). A refused
+          key is said here too, as a pointer — the plate above it would
+          otherwise just go quietly stale. */}
+      {garmin.link === 'rejected' ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Garmin key expired or revoked. Open Garmin settings"
+          onPress={() => router.push('/settings-garmin')}
+          className="mt-1 min-h-[44px] flex-row items-center gap-1 active:opacity-60">
+          <Text className="font-mono text-[10px] text-ink">
+            Garmin key expired or revoked · Settings › Garmin
+          </Text>
+          <Ionicons name="chevron-forward" size={11} color={palette.inkMuted} />
+        </Pressable>
+      ) : garmin.link === 'connected' ? (
+        <Text className="mt-1 font-mono text-[10px] text-ink-muted">
+          {garmin.lastSyncedAt
+            ? `Garmin synced ${shortDayOfInstant(garmin.lastSyncedAt)}`
+            : 'Garmin not synced yet'}
+        </Text>
+      ) : null}
     </Screen>
   );
 }

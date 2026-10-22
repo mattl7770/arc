@@ -1,0 +1,54 @@
+{
+  "data": [
+    {
+      "uuid": "123e4567-e89b-12d3-a456-426655440019",
+      "userProfilePk": 987654321,
+      "calendarDate": "2026-10-19",
+      "source": "garmin",
+      "includesWellnessData": true,
+      "includesActivityData": true,
+      "movement": { "steps": { "goal": 10000, "value": 11250, "distanceInMeters": 8570 } },
+      "calories": { "burnedResting": 1710, "burnedActive": 640, "burnedTotal": 2350 },
+      "heartRate": { "minValue": 48, "maxValue": 151, "restingValue": 51, "alertCount": 0 },
+      "stress": { "avgLevel": 27, "maxLevel": 91, "qualifier": "balanced" },
+      "bodyBattery": {
+        "minValue": 18,
+        "maxValue": 86,
+        "chargedValue": 64,
+        "drainedValue": 68,
+        "latestValue": 22,
+        "endOfDayValue": 21
+      },
+      "respiration": { "avgValue": 15, "maxValue": 22, "minValue": 10 },
+      "pulseOx": { "avgValue": 95, "minValue": 89 }
+    },
+    {
+      "uuid": "123e4567-e89b-12d3-a456-426655440020",
+      "userProfilePk": 987654321,
+      "calendarDate": "2026-10-20",
+      "source": "garmin",
+      "includesWellnessData": true,
+      "heartRate": { "minValue": 49, "maxValue": 138, "restingValue": 53 },
+      "stress": { "avgLevel": -1, "maxLevel": -1, "qualifier": "unknown" },
+      "bodyBattery": { "minValue": 15, "maxValue": 72 }
+    },
+    {
+      "uuid": "123e4567-e89b-12d3-a456-426655440021",
+      "userProfilePk": 987654321,
+      "calendarDate": "2026-10-21",
+      "source": "garmin",
+      "includesWellnessData": true,
+      "heartRate": { "minValue": 50, "maxValue": 97, "restingValue": 54 },
+      "stress": { "avgLevel": 31, "maxLevel": 74, "qualifier": "balanced" },
+      "bodyBattery": { "minValue": 52, "maxValue": 79, "latestValue": 74 }
+    },
+    {
+      "uuid": "123e4567-e89b-12d3-a456-426655440018",
+      "userProfilePk": 987654321,
+      "calendarDate": "2026-10-18",
+      "source": "garmin",
+      "includesWellnessData": false,
+      "includesActivityData": false
+    }
+  ]
+}

@@ -22,6 +22,11 @@ screen says, in one line, when a glass cannot go out because water's write permi
 or refused (**§20.11**). The line clears on a return from the iOS Settings app too, and the
 glasses stalled behind it go out then. A glass corrected while the walk is still sending a
 backlog now reaches Health with the corrected amount (**§20.5**, the edit race).
+**Amended:** 2026-10-21 — **Garmin, directly** (**§26**). Garmin's official Personal API brings HRV
+(with its status and balanced range), sleep score, SpO2, respiration, stress, Body Battery and
+VO₂max straight from Garmin, on a personal key the owner pastes into Settings › Garmin. No
+migration: `gp:` rows beside the `hk:` ones, deduped against them. §12's "Body Battery … cannot
+leave Garmin Connect" and "the four that will never arrive" now hold for Apple Health only.
 **Read first:** CLAUDE.md §8 (wearables strategy) and §9 (DB conventions), `docs/project-status.md`.
 
 Apple Health is the decided ingestion hub (2026-07-24 ADR): it is on-device, every vendor's
@@ -693,6 +698,10 @@ Neither has *any* HealthKit type, so this is a platform fact, not a Garmin polic
 wait out. ARC's Recovery pillar is its own derivation and does not need them.
 
 ### The four that will never arrive
+
+> **2026-10-21: through Apple Health.** Garmin's Personal API now brings HRV, SpO2, respiration
+> and VO₂max (and Body Battery) directly — §26. The rest of this section stays true of Apple
+> Health and is kept as written.
 
 **HRV, blood oxygen, respiratory rate and VO2max are not exportable from Garmin Connect.** The
 Apple Health categories exist; Garmin does not offer toggles for them. This is a years-old,
@@ -2542,3 +2551,161 @@ minutes count twice. And of three copies where a fragment is inside one copy but
 end of another (they share under 80% of the fragment), the fragment stands alone. Both are rarer
 than the merges they replace, and both double-count rather than lose a session, which the inbox
 shows and a fill settles.
+
+---
+
+## 26. Garmin, directly: the official Personal API (2026-10-21, **no migration**)
+
+Garmin launched a Personal API on 2026-10-21: an owner creates a key for his own account on
+Garmin Connect Web and uses it from tools he runs himself. That closes most of §12's "four that
+will never arrive" without the unofficial API the 2026-09 spikes weighed. ADR: docs/decisions.md
+"Garmin via the official Personal API". Routes considered: `docs/spikes/garmin-direct.md`.
+
+### 26.1 The protocol
+
+- **Key → token.** `POST https://personal.connectapi.garmin.com/personalapitoken-service/personal-api/personal-api-key/token`
+  with `Authorization: ApiKey <key>` returns a bearer JWT that lives 24 hours. There is no refresh
+  token; a new one is minted by presenting the key again. The key itself lasts 30, 90 or 180 days
+  or a year (the owner picks), is shown once, and can be revoked on Connect Web.
+- **Reads.** `GET` on the same host with `Authorization: Bearer <jwt>`.
+- **The token response's shape was not in the spec.** `parseTokenResponse` accepts
+  `access_token` / `accessToken` / `token` / `jwt` and `expires_in` / `expiresIn`, and a bare JWT;
+  expiry comes from the JWT's own `exp` first. A field naming the key's own expiry is kept for
+  Settings when present. **The first real mint settles which shape it is** (§26.8).
+
+### 26.2 Where the code is
+
+```
+src/lib/garmin/
+  key-store.ts  ← the key, Keychain only (WHEN_UNLOCKED_THIS_DEVICE_ONLY), memory mirror
+  client.ts     ← the ONLY module that talks to Garmin: token mint/reuse/re-mint, the read-path
+                  allow-list, the per-pass request budget, typed errors. Injected fetch.
+  mapping.ts    ← PURE: responses → wearable_data rows, and the Apple Health dedup
+  sync.ts       ← the pass: plan (recent + backfill), run, dedup, write, state; single flight
+src/hooks/use-garmin.ts   ← the root runner (gated on the app lock) and the screens' view
+app/settings-garmin.tsx   ← paste the key, status, Sync now, Disconnect, instructions
+```
+
+The Coach has **no** Garmin tool and cannot reach the client. It reads the rows.
+
+### 26.3 The key and the token
+
+- **The key lives in the Keychain and nowhere else** — not SQLite (so not the ARCB1 backup,
+  which is a sealed copy of the database file), not the export, not a log, not an error message,
+  not the Coach's context. `WHEN_UNLOCKED_THIS_DEVICE_ONLY`, like the Coach's key and the opposite
+  of the backup key's `WHEN_UNLOCKED`: the backup key must travel with the device backup or the
+  snapshot is unreadable, while this one must not travel (it reads the owner's whole Garmin
+  history), and a new phone needs only a fresh paste because Garmin keeps the data.
+- **The token lives in memory only** and is re-minted when under an hour of its 24 remains
+  (Garmin's reference client does the same). A cold start mints once. A new key never reuses the
+  old key's token.
+- `db/garmin.test.mjs` §13 runs passes with a test key, then searches every table, the export
+  and the console output for the key and the token.
+
+### 26.4 When it runs, and how much it asks
+
+- **On open and on every foreground**, once the app lock has opened (the Coach pass's gate),
+  throttled to `AUTO_SYNC_THROTTLE_MIN` (15 minutes, Apple Health's own cadence) by
+  `lastAttemptAt`. Plus Settings › Garmin's Sync now and Home's HRV cell, which skip the
+  throttle.
+- **Each pass waits for the Apple Health pass** of the same foreground (bounded), so the dedup
+  below sees HealthKit's rows; and the Coach pass now waits for the Garmin pass too (bounded at
+  10 s), so the morning word has seen last night's HRV.
+- **Budget: 8 requests per pass, the mint included** (`GARMIN_REQUESTS_PER_PASS`). Garmin's rate
+  limits are undocumented, so ARC stays far under anything plausible.
+- **Recent:** one request per endpoint over the last 3 days (Garmin revises last night after a
+  late band sync), stretched to cover an absence, capped at 31 days. An absence longer than that
+  restarts the backfill, so no hole is left.
+- **Backfill:** what budget is left walks older history back a year — 31-day chunks for HRV,
+  sleep, Body Battery and activities (HRV's limit is undocumented, so it is held to the stated
+  31), and one request for a whole year of daily summaries. The endpoint with the least history
+  goes next, so Recovery's 30-day baseline fills in a few opens. A year takes about two dozen.
+
+### 26.5 Stops
+
+| Garmin says | ARC does |
+|---|---|
+| 401/403 at the mint | stop; status `rejected`; automatic passes stop; Settings › Garmin and Home's HRV cell say "Garmin key expired or revoked". A new key clears it. |
+| any other failure at the mint (a status ARC does not expect, a body it cannot read) | stop the pass (`error`): no cursor moves and nothing counts as synced, so history is never stepped over unread |
+| 401 on a read | drop the token, mint once, retry once; refused again → `rejected` as above |
+| 403 on a read | that endpoint refusing, not the key (the mint would have said so): skipped and named |
+| 429 or 5xx | stop; wait `Retry-After`, else 15 min doubling to a day; Sync now waits too |
+| any other 4xx on one request | skip that request, name the endpoint (Settings › Garmin says which), continue; a backfill chunk is stepped over |
+| a write that throws | `error`, with `lastAttemptAt` stamped so the throttle still holds |
+| a new key or Disconnect mid-pass | the old pass stops before its next request and writes no state; its rows stay |
+| fetch throws | stop quietly (`offline`); the next foreground retries |
+
+Rows fetched before a stop are written.
+
+### 26.6 The rows
+
+`source_device = 'garmin'`, `source_raw_id = 'gp:<metric_type>:<calendarDate>'`. Garmin files
+each figure under its own `calendarDate`, so there is no timezone guessing and §19 does not apply.
+
+| metric_type | from | note |
+|---|---|---|
+| `hrv` (ms) | hrv daily `lastNightAvg` | RMSSD, `metadata.method = 'rmssd'` |
+| `hrv_weekly_avg`, `hrv_baseline_low`, `hrv_baseline_high` (ms) | hrv daily | the balanced range as two types |
+| `hrv_status` (code) | hrv daily `status` | 1 poor · 2 low · 3 unbalanced · 4 balanced; NONE/INVALID write nothing |
+| `sleep_duration_min`, `sleep_deep_min`, `sleep_core_min`, `sleep_rem_min`, `sleep_awake_min` | sleep | Garmin's "light" is filed as core; no REM row from a device that cannot tell |
+| `sleep_score` (0–100) | sleep `sleepScores.overall.value` | a night with no score gets no row |
+| `spo2_pct`, `spo2_lowest_pct`, `respiratory_rate` | sleep | overnight figures |
+| `rhr`, `stress_avg`, `body_battery_high`, `body_battery_low` | daily summaries | stress's negative sentinels write nothing |
+| `body_battery_wake` | Body Battery report | the reading at the end of the night's SLEEP event, within 2 h |
+| `vo2max` (ml/kg/min) | activity search `vO2MaxValue` | the day's latest activity |
+
+**One endpoint per metric.** Two endpoints writing one raw id would flip its value depending on
+which chunk a pass fetched.
+
+**Every figure the Coach should read is its own `metric_type`**, because nothing reads wearable
+metadata (garmin-all-data.md §2's correction). The Garmin-only types are declared to the Coach's
+catalog (`GARMIN_API_METRICS` → read-tools.ts), so they arrive labelled — HRV status's label
+spells out its codes — rather than `inferred`. Payload, not schema: the tool descriptions are
+unchanged, so db/coach-eval.test.mjs §6's ceilings are untouched.
+
+**Not served by the Personal API:** Training Readiness, Training Status, skin temperature, RR
+intervals. Accepted.
+
+### 26.7 Dedup with Apple Health
+
+The band's Garmin Connect app also writes sleep, resting HR and steps to Apple Health, where §4
+buckets them `garmin` too — so a `gp:` row and an `hk:` row for one metric on one day would tie
+on source priority.
+
+- **Write side** (`dropHealthSupplied`): for `rhr`, `spo2_pct`, `respiratory_rate`, `vo2max` and
+  the whole sleep family (decided on `sleep_duration_min`, so one night is never assembled from
+  two sources), the Garmin row is written only when the Garmin Connect app has **not** already put
+  that metric into Apple Health for that day (an `hk:` row bucketed `garmin` — the same band
+  twice). Another device's `hk:` row (a Watch, a phone) is a different reading and does not
+  suppress it; source priority arbitrates on read as ever. If Garmin Connect's row arrives later, the next Garmin pass deletes its own
+  `gp:` row for that day. Garmin-only figures and HRV always pass.
+- **Read side**: on a same-device tie, an `hk:` row beats a `gp:` row (`beats` in
+  repositories/wearables.ts), so the window between an Apple Health pass and the next Garmin pass
+  reads the same way every time.
+- **HRV prefers Garmin** across devices (`METRIC_PRIORITY`): the band's RMSSD is what the owner
+  was typing, and a Watch's SDNN is a different measure. Home's Recovery, the Data tab and the
+  Coach all take the Garmin figure; a typed `hrv` (manual) loses to it, as it always did to a
+  device. **The limit:** on a night without the band, another source's HRV still fills that day,
+  so a baseline can mix methods when the owner wears both on different nights. Accepted for a
+  one-band owner; a per-method series is the refinement if it ever matters.
+- **Dedup is checked when a day is fetched.** A `gp:` row is removed only when its day is fetched
+  again; if Garmin Connect's Apple Health writes start after the backfill, older days can keep a
+  `gp:` stage row beside the `hk:` night until a full re-backfill. The read side's hk-beats-gp
+  rule covers each metric on its own.
+- The Apple Health re-window prune (§16) deletes only `hk:*` rows, so it never touches these.
+
+### 26.8 What only the phone can settle
+
+1. **The token response's real shape**, and whether it states the key's expiry (Settings then
+   shows the date; otherwise "Garmin emails you before the key expires").
+2. **That the band's figures arrive at all**: Pulse Ox must be set to *During Sleep* for SpO2;
+   Body Battery at wake depends on the report carrying a SLEEP event.
+3. **The timestamp formats.** The spec gives sleep and Body Battery timestamps as epoch ms in
+   one place and zoneless ISO strings in another; `gmtMs` reads both. A real pull confirms.
+4. **The HRV range limit.** Held to 31 days; a 400 on a backfill chunk is stepped over and the
+   endpoint named in the state (`skipped`).
+5. **Rate limits.** Undocumented. Eight requests a pass, at most every 15 minutes automatically.
+6. **The Connect Web path** in Settings' instructions (Settings › personalApiToken) is as
+   researched on 2026-10-21, not seen.
+7. **The fixtures are built from the spec, not from a real account** (`db/fixtures/garmin/`). The
+   owner can replace them with his own 7-night pull; the test names the values it expects.
