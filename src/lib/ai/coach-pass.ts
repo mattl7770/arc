@@ -35,6 +35,13 @@
  *   state block — only here, never in the chat context or Home's brief. They
  *   are facts; what, if anything, to say about them is this pass's call.
  *
+ *   IT MAY DRAFT A CHANGE, AND BRIEF THE DAY (2026-10-21, owner's decision).
+ *   The reply may end with up to three `PROPOSE tool {json} why` lines and, on
+ *   the first look of the day, three to five `BRIEF` lines. Each draft's card
+ *   is drawn here by the tool's own `confirmSummary`, and nothing executes:
+ *   he approves it later through the chat write path (proposals.ts). The
+ *   brief keeps only lines whose numbers the pass actually read.
+ *
  * The judgment itself is entirely the model's. Nothing here decides what a low
  * readiness morning, a stalled lift, or a missed week should mean — the
  * deterministic layer only decides WHEN to wake the model up.
@@ -57,6 +64,18 @@ import {
 
 import { apiKeyStore } from './api-key-store';
 import { computeFindings, findingsBlock } from './findings';
+import { parsePassLines } from './proposal-lines';
+import {
+  draftProposals,
+  findingsCitable,
+  PROPOSALS_PER_DAY,
+  proposalDirectiveFor,
+  vetBrief,
+  writeToolSignatures,
+  type DraftedProposal,
+  type ProposalDirective,
+  type RefusedProposal,
+} from './proposals';
 import { runCoachTurn, type FetchLike } from './model-client';
 import { getPassState } from './pass-schedule';
 import { buildCoachSystemPrompt } from './system-prompt';
@@ -195,6 +214,18 @@ export type CoachPassResult = {
    * records as seen, so the next pass counts them instead of re-listing them.
    */
   findingsShown: string[];
+  /**
+   * The reply's PROPOSE lines, each with its card already drawn by the tool's
+   * own `confirmSummary` — and nothing executed. The cap and the store are
+   * proposals.ts's (`recordProposals`), applied by pass-store.ts after the
+   * pass returns, as the nudge rules are.
+   */
+  proposals: { drafted: DraftedProposal[]; refused: RefusedProposal[] };
+  /**
+   * The model-voiced brief, lines whose numbers all trace to what the pass
+   * read — or null (not asked for, not written, or nothing survived the check).
+   */
+  brief: string[] | null;
 };
 
 /** The opening line: why this pass is running, in the model's terms. */
@@ -281,15 +312,96 @@ function nudgeInstructions(trigger: PassTrigger, nudges: NudgeDirective): string
   ];
 }
 
+// ── Coach proposals and the morning brief (2026-10-21, claude/cos-proposals) ──
+//
+// ONE delimited block, so the sibling branches that also grow the directive
+// merge beside it rather than through it. Like the nudge lines it rides the
+// pass's own user message — outside both chat ceilings in
+// db/coach-eval.test.mjs §6 and outside the cached prefix — and is measured in
+// db/coach-proposals.test.mjs. The rules it states (three a day, the card
+// drawn by code, the provenance of the brief's numbers) are ENFORCED by
+// proposals.ts; they are told to the model so it does not waste a line.
+
+/** What the pass is told beyond the nudges: its drafts, and whether to brief. */
+export type PassExtras = {
+  proposals: ProposalDirective;
+  /** The first look of the day writes Home's brief. */
+  brief: boolean;
+};
+
+function briefInstructions(today: string): string[] {
+  return [
+    '',
+    `Brief. This is your first look at ${today}, so also write the brief that opens Home today:`,
+    '3 to 5 lines, each beginning BRIEF: what matters today and why, citing their own numbers from',
+    'what you read in this pass. A line with a number you did not read is dropped. Write the brief',
+    'even when you SKIP the note, and do not repeat the one in the other.',
+  ];
+}
+
+function proposalInstructions(p: ProposalDirective): string[] {
+  const waiting = [
+    'Waiting on them:',
+    ...(p.pending.length === 0 ? ['  none'] : p.pending.map((line) => `  ${line}`)),
+    ...(p.refused.length > 0
+      ? [
+          'Not drafted from your last pass:',
+          ...p.refused.map(({ line, reason }) => `  ${line} (${reason})`),
+        ]
+      : []),
+  ];
+  const head = [
+    '',
+    'Drafts. You cannot change anything here, but you may draft a change for them to approve with',
+    'one tap, on Home and in the thread.',
+  ];
+  if (p.remaining === 0) {
+    return [
+      ...head,
+      `Today's ${PROPOSALS_PER_DAY} drafts are used: write no PROPOSE line.`,
+      ...waiting,
+    ];
+  }
+  return [
+    ...head,
+    `You may draft ${p.remaining} more today (${PROPOSALS_PER_DAY} a day). Draft only a change clearly`,
+    'worth their tap; most passes need none, and never one they recently declined. One line each:',
+    'PROPOSE tool_name {"its":"input as JSON, on one line"} one short sentence of why, citing their data',
+    '- Add "until HH:MM" after PROPOSE when it only makes sense before then; every draft ends with the day.',
+    ...(findingsCitable()
+      ? [
+          '- Add "finding <id>" after PROPOSE when the draft fixes a finding; it is dropped once that is resolved.',
+        ]
+      : []),
+    '- Code draws the card from the tool, exactly as in chat, and drops a draft it cannot draw. Do not',
+    '  mention drafts in your note: the app shows them.',
+    'The tools and their inputs, as in chat (? optional, n number, [..] a list of objects):',
+    ...writeToolSignatures().map((signature) => `  ${signature}`),
+    ...waiting,
+  ];
+}
+
+/** The whole block, in the order the directive prints it. */
+function extraInstructions(extras: PassExtras, today: string): string[] {
+  return [
+    ...(extras.brief ? briefInstructions(today) : []),
+    ...proposalInstructions(extras.proposals),
+    'Write BRIEF and PROPOSE lines bare, one per line, after your note (or SKIP), with no heading,',
+    'list or code block.',
+  ];
+}
+// ── end Coach proposals ───────────────────────────────────────────────────────
+
 /**
  * The instruction the pass runs under. Deliberately open — no scenario named.
- * `nudges` is null when nudges are off; the directive is then word for word
- * what it was before 0064.
+ * `nudges` is null when nudges are off; with `extras` null too, the directive
+ * is word for word what it was before 0064.
  */
 export function passDirective(
   trigger: PassTrigger,
   today: string,
-  nudges: NudgeDirective | null = null
+  nudges: NudgeDirective | null = null,
+  extras: PassExtras | null = null
 ): string {
   const waiting = isWaitingPass(trigger);
   const verdict = waiting
@@ -307,7 +419,7 @@ export function passDirective(
         'it something they can act on or reply to.',
         '',
         `If the day is unremarkable, reply with exactly ${PASS_SKIP} and nothing else — bare, on its own,`,
-        `with no sentence before or after it${nudges ? ' (NUDGE lines are the one exception)' : ''}. Silence on a quiet day is what makes the other days`,
+        `with no sentence before or after it${extras ? ' (the BRIEF, PROPOSE and NUDGE lines asked for below are the one exception)' : nudges ? ' (NUDGE lines are the one exception)' : ''}. Silence on a quiet day is what makes the other days`,
         'matter, so do not manufacture an observation to avoid saying it.',
       ];
 
@@ -325,6 +437,7 @@ export function passDirective(
     'nothing until you have them. Your reply is one thing only: the observation, or the sentinel.',
     '',
     ...verdict,
+    ...(extras ? extraInstructions(extras, today) : []),
     ...(nudges ? nudgeInstructions(trigger, nudges) : []),
   ].join('\n');
 }
@@ -340,6 +453,12 @@ export type RunPassOptions = {
    * paying Opus rates for "SKIP" every morning is indefensible.
    */
   model?: string;
+  /**
+   * Ask for the model-voiced brief: the first look of the logical day
+   * (pass-store.ts decides). Lines it writes without being asked are stripped
+   * and ignored.
+   */
+  brief?: boolean;
 };
 
 /** A pass that never reached the model: nothing said, nothing proposed. */
@@ -349,6 +468,8 @@ const FAILED: CoachPassResult = {
   toolCalls: [],
   nudges: EMPTY_NUDGE_REPLY,
   findingsShown: [],
+  proposals: { drafted: [], refused: [] },
+  brief: null,
 };
 
 /** The model the pass uses unless overridden — cheap, fast, good enough to triage. */
@@ -403,7 +524,15 @@ export async function runCoachPass(
     // owner turned the switch on; the same section the chat turn carries.
     const calendar = await calendarBlockFor(db, now, { dayStartsAt });
     // ===== end Calendar
+    // Inside the try, as the state block always was: a read that throws is a
+    // pass that failed to look, never an exception out of a pass.
+    const extras: PassExtras = {
+      proposals: proposalDirectiveFor(db, now),
+      brief: options.brief === true,
+    };
     const turnContext = buildTurnContext(db, now, { calendar });
+    // Held, because it is also the haystack the brief's numbers must come from.
+    const systemContext = findings.text ? `${turnContext}\n\n${findings.text}` : turnContext;
     const result = await runCoachTurn(
       {
         apiKey,
@@ -412,8 +541,10 @@ export async function runCoachPass(
       },
       {
         system: buildCoachSystemPrompt(),
-        systemContext: findings.text ? `${turnContext}\n\n${findings.text}` : turnContext,
-        messages: [{ role: 'user', content: passDirective(options.trigger, today, nudges) }],
+        systemContext,
+        messages: [
+          { role: 'user', content: passDirective(options.trigger, today, nudges, extras) },
+        ],
         // READ tools only, MINUS the generic one: with no write in the registry
         // there is nothing to gate, so an unattended pass cannot change
         // anything, and `query_records` is held back for the reasons at
@@ -454,7 +585,11 @@ export async function runCoachPass(
     // shipped as its own words — the isPassSkip lesson. What is left is the
     // note, and the note alone decides spoke vs silent, so a pass can say SKIP
     // and still plan a nudge.
-    const reply = parseNudgeReply(result.text);
+    //
+    // The PROPOSE and BRIEF lines come out before them, by the same rule and
+    // for the same reason (proposal-lines.ts), and leave a lead of their own.
+    const passLines = parsePassLines(result.text);
+    const reply = parseNudgeReply(passLines.text);
     const text = reply.text.trim();
     // A SKIP means silence, however the model punctuates it and whatever it
     // wrote above it — see isPassSkip for the rule and why it is that rule.
@@ -465,13 +600,27 @@ export async function runCoachPass(
     // opens "SKIP". An empty lead (nudge lines first) decides nothing — the
     // text after them is then the whole note.
     const lead = reply.lead?.trim() ?? '';
-    const skipped = isPassSkip(text) || (lead.length > 0 && isPassSkip(lead));
+    const ownLead = passLines.lead?.trim() ?? '';
+    const skipped =
+      isPassSkip(text) ||
+      (lead.length > 0 && isPassSkip(lead)) ||
+      (ownLead.length > 0 && isPassSkip(ownLead));
+    // Drafts get their cards NOW, at pass time, from the tools themselves —
+    // and nothing runs. A brief keeps only the lines whose numbers trace to
+    // the state block or a tool result this pass actually read.
+    const proposals = draftProposals(db, passLines.proposals, passLines.malformed, now);
+    const vetted = extras.brief
+      ? vetBrief(passLines.brief, [systemContext, ...result.toolCalls.map((call) => call.result)])
+          .kept
+      : [];
     return {
       message: skipped ? null : text,
       status: skipped ? 'silent' : 'spoke',
       toolCalls: result.toolCalls,
       nudges: nudges ? reply : EMPTY_NUDGE_REPLY,
       findingsShown: findings.shown,
+      proposals,
+      brief: vetted.length > 0 ? vetted : null,
     };
   } catch {
     // Offline, no network, a bad key, a refusal — the user never sees this. But

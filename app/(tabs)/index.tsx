@@ -16,6 +16,7 @@ import { StatusControl } from '@/components/status/status-control';
 import { Screen } from '@/components/ui/screen';
 import { palette } from '@/constants/theme';
 import { useCoachPassMessage } from '@/hooks/use-coach-pass';
+import { useCoachProposals } from '@/hooks/use-coach-proposals';
 import { useDailyBrief } from '@/hooks/use-daily-brief';
 import { useReadiness } from '@/hooks/use-readiness';
 import { useStatuses } from '@/hooks/use-statuses';
@@ -235,6 +236,11 @@ export default function HomeScreen() {
   // The one thing here the user did not ask for: the Coach's own daily pass,
   // shown only when it judged the day worth a word (it usually says nothing).
   const pass = useCoachPassMessage();
+  // …its brief and its drafts (Coach proposals, 2026-10-21), which outlive the
+  // in-memory note: they are stored, so a relaunch still shows them. An
+  // approved draft may have restructured today, so the mission re-reads.
+  const coach = useCoachProposals(mission.reload);
+  const showCoachCard = !!pass.message || !!coach.brief || coach.today.length > 0;
   // The Training row a session just finished ticked, while it can be taken
   // back (item 70, src/lib/exercise/training-tick-offer.ts).
   const tickUndo = useUndoOffer('training', todayISODate());
@@ -336,9 +342,17 @@ export default function HomeScreen() {
 
       {/* Above readiness, below the hero: what the Coach came to say outranks
           supporting evidence, but never the one action the day is built on. */}
-      {pass.message ? (
+      {showCoachCard ? (
         <View className="mt-6">
-          <CoachNote message={pass.message} onDismiss={pass.dismiss} />
+          <CoachNote
+            message={pass.message}
+            onDismiss={pass.dismiss}
+            brief={coach.brief}
+            proposals={coach.today}
+            busyId={coach.busyId}
+            onApprove={coach.approve}
+            onDecline={coach.decline}
+          />
         </View>
       ) : null}
 
@@ -375,9 +389,14 @@ export default function HomeScreen() {
         </View>
       ) : null}
 
-      <View className="mt-7">
-        <CoachBrief brief={brief} />
-      </View>
+      {/* The deterministic brief is the FALLBACK: while the Coach's own brief
+          for today exists it opens the Coach card above, and printing both
+          would be the day introduced twice. */}
+      {coach.brief ? null : (
+        <View className="mt-7">
+          <CoachBrief brief={brief} />
+        </View>
+      )}
 
       <View className="mt-7">
         <MetricsStrip metrics={readiness.metrics} />

@@ -13,14 +13,12 @@ import { deviceRegion, regionLine } from './region';
 import { COACH_WEB_SEARCH_MAX_USES } from './web-search';
 import {
   COACH_TOOLS,
-  DEFAULT_WRITE_META,
   humanizeToolName,
   toolByName,
   toWireTools,
   type CoachToolContext,
-  type WriteKind,
-  type WriteMeta,
 } from './tools';
+import { runGatedTool, type WriteConfirmation } from './write-gate';
 import type { CoachTurnResult } from './types';
 
 /**
@@ -49,27 +47,8 @@ export function isCoachKeyConfigured(): boolean {
   return apiKeyStore.has();
 }
 
-/** A write tool call awaiting the user's decision. */
-export type WriteConfirmation = {
-  tool: string;
-  /** The one human line to show: "Log weight 178.0 lb". */
-  summary: string;
-  /**
-   * What is being approved. Only `'delete'` changes the card's copy today — its
-   * fixed "This is written to your on-device record" line is false for a
-   * removal — but the card could never tell one write from another by anything
-   * except the tool NAME before this existed, which is why it kept a hardcoded
-   * allowlist of four names.
-   */
-  kind: WriteKind;
-  /**
-   * Whether the summary is already the whole consequence (the SHORT card).
-   * Declared by the tool, defaulted to false — the card's own proposal, made
-   * real: each tool now says its own weight beside the `confirmSummary` that is
-   * the only place that knows what that summary says.
-   */
-  selfEvident: boolean;
-};
+/** A write tool call awaiting the user's decision — defined in write-gate.ts. */
+export type { WriteConfirmation } from './write-gate';
 
 export type StreamOptions = {
   onToken: (chunk: string) => void;
@@ -206,91 +185,18 @@ export async function streamCoachReply(
         // written — no day, no time.
         const context: CoachToolContext = { now: clock(), clock };
 
-        // The line the user approved, held for the receipt below. Stays
-        // undefined for reads (nothing to receipt) and for any write that never
-        // reached `execute` — which is the entire mechanism: see the return.
-        let approvedSummary: string | undefined;
-
-        if (!tool.readOnly) {
-          let summary: string;
-          let meta: WriteMeta;
-          try {
-            summary =
-              tool.confirmSummary?.(input as Record<string, unknown>, db, context) ??
-              humanizeToolName(tool.name);
-            // AFTER the summary, and against the same `context`: the generic
-            // write path writes its staleness slot inside `confirmSummary`, and
-            // a tool's weight can depend on what that summary turned out to
-            // say. Fail closed — a tool that declares nothing gets the long
-            // card.
-            meta =
-              tool.confirmMeta?.(input as Record<string, unknown>, db, context) ??
-              DEFAULT_WRITE_META;
-          } catch (error) {
-            // Invalid input surfaces at summary time — report it, don't gate.
-            return { content: errorText(error), isError: true };
-          }
-          const approved = options.confirmWrite
-            ? await options.confirmWrite({
-                tool: name,
-                summary,
-                kind: meta.kind,
-                selfEvident: meta.selfEvident,
-              })
-            : false;
-          if (!approved) {
-            return {
-              // THE SCOPE OF A DECLINE IS ONE TOOL CALL, NOT THE REQUEST.
-              //
-              // This used to read "…Do not retry it; acknowledge and move on."
-              // Owner report, 2026-08-12: asked to *"come up with a recipe AND
-              // add the stuff to my grocery list"*, the Coach proposed
-              // save_recipe, had it declined, said "Understood, I won't save
-              // it" — and never attempted the grocery half at all. It read
-              // "move on" as "move on from the request", which is the wrong
-              // scope and the only reading the old sentence supported.
-              //
-              // Declining one write is a statement about that write. Whatever
-              // else the user asked for is still owed, unless it depended on
-              // the thing they refused — and only the model can judge that, so
-              // the wording says the rule and leaves the judgement where it
-              // belongs (the JUDGMENT IS YOURS clause in the system prompt).
-              content:
-                'The user declined THIS action. Do not retry it and do not re-ask. ' +
-                'The decline is about this one write, NOT about their whole request: ' +
-                'carry on with any other part of it that does not depend on what they refused.',
-              declined: true,
-              // What the card said, so the thread can show what was refused
-              // once the card is gone (CoachToolCall.declinedSummary).
-              declinedSummary: summary,
-            };
-          }
-          approvedSummary = summary;
-        }
-
-        try {
-          // `await` handles both sync tools (a plain string) and async ones
-          // (search_knowledge embeds the query on-device); a rejection lands in
-          // the catch below exactly like a synchronous throw.
-          const content = await tool.execute(db, input as Record<string, unknown>, context);
-          // THE RECEIPT, and the one line in this file that makes a claimed
-          // write and a real one distinguishable downstream.
-          //
-          // It is minted HERE and nowhere else, on the far side of `execute`, so
-          // it exists only when a tool actually ran to completion against the
-          // database. A declined write returned above; a throwing one lands in
-          // the catch below; a read never set `approvedSummary`. The model
-          // cannot reach this statement by writing a sentence, which is exactly
-          // the owner's failure mode ("saying that a recipe has been saved when
-          // the tool was not called"). The thread prints receipts, not prose.
-          //
-          // The text is the card's own summary — the line the user READ and
-          // approved — rather than a re-description of the result, so the record
-          // afterwards says the same thing the consent said.
-          return { content, ...(approvedSummary ? { receipt: approvedSummary } : {}) };
-        } catch (error) {
-          return { content: errorText(error), isError: true };
-        }
+        // The card, the gate, the execute and the receipt are write-gate.ts's:
+        // ONE path, shared with an approved Coach proposal (proposals.ts), so a
+        // tap on Home runs exactly what a tap in this thread runs. The rules
+        // that path carries — a decline scoped to one call, a receipt minted
+        // only past `execute` — are documented there.
+        return runGatedTool(
+          db,
+          tool,
+          input as Record<string, unknown>,
+          context,
+          options.confirmWrite
+        );
       },
     }
   );
@@ -303,10 +209,6 @@ export async function streamCoachReply(
     return { ...result, text: line, transcript: line };
   }
   return result;
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : 'Tool execution failed.';
 }
 
 // --- The honest mock (no key set) --------------------------------------------
