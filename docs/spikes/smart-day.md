@@ -18,6 +18,15 @@
 > - The turn-context "next" fix (§1.3) shipped: the chat Coach's state block now names what Home actually shows.
 >
 > Q2 ("which prompts ship first") is moot: there are no prompts. §5 (training learning) is Track 2 item 3 and is not part of this build.
+>
+> **Review fixes (2026-10-21, `db/smart-day.test.mjs` §3b).** What the first build got wrong about the record, and how each now reads:
+>
+> - **A past-day plan is settled against its own day.** It used to be marked `expired` wholesale before any done check, and its "since" questions were asked about *today*. `readDayPlan` now asks them about `plan.day` — `listMission(plan.day)`, meals / workouts / water dated `plan.day`, a weight measured inside `logicalDayUtcRange(plan.day)` — so what landed that day is `done` and only the rest `expired`, and the 14-day summary counts it as acted on.
+> - **`done` read off the record is a read, not an event, while the plan stands.** A pinned row ticked (or skipped) and a Coach item whose data arrived are `done` (`dismissed`) on every read — and are *recorded* only when the plan closes: its day ends (the next settle) or a pass replaces or clears it (`applyDayPlan` writes what the record answered as the plan ends). Chosen because the record can move back: the Undo of an auto-ticked Training row, or a weight deleted, puts the item back live; a `done` written at the first read would have stayed in history and kept the item closed. The events model has no `undone`, and adding one would be a 0067 `CHECK` change for a correction that need never be written. A tap on an `open_*` door (no data of its own) is still `done` at the tap — nothing can take a tap back.
+> - **`shown` for pins.** Home records `shown` for every live pin whose row the checklist draws, not only the hero (`shownKeys`), so "acted on" can no longer exceed "shown".
+> - **Night out's drinks are not a meal.** The stepper's drinks-only meal (`NIGHT_OUT_DRINKS_ONLY_MEAL_SQL`, nutrition.ts) does not clear a `log_meal` item; a meal the user also put food in does.
+> - **Home re-reads the plan when a Health or Garmin sync lands, and when the earliest live `until` passes** (one timer). The mission needs no sync listener — neither sync writes a mission row. The Coach card's proposals re-read on return to the foreground, so a model brief from yesterday cannot hide today's deterministic one.
+> - A `start_workout` item reads **Resume** while a live session is open; its tap already resumed that session.
 
 The owner's notes, verbatim:
 

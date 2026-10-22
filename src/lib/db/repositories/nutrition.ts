@@ -1825,6 +1825,19 @@ const STEPPER_ITEM_SQL = `mi.parent_item_id IS NULL AND mi.is_composite = 0
   AND json_type(mi.micros, '$.alcohol_g') IN ('integer', 'real')`;
 
 /**
+ * True for a meal (aliased `m`) that holds the stepper's drinks row and
+ * NOTHING else — the "Night out · 4 drinks" meal. It is a record of drinks,
+ * not of eating: the smart day's "a meal landed" must not read it as one
+ * (src/lib/db/repositories/day-plan.ts). A meal the user also put food in is a
+ * meal. `IS NOT 1`, because the stepper test is NULL (not false) on an item
+ * with no piece name or no micros.
+ */
+export const NIGHT_OUT_DRINKS_ONLY_MEAL_SQL = `(EXISTS (SELECT 1 FROM meal_items mi
+    WHERE mi.meal_id = m.id AND ${STEPPER_ITEM_SQL})
+  AND NOT EXISTS (SELECT 1 FROM meal_items mi
+    WHERE mi.meal_id = m.id AND (${STEPPER_ITEM_SQL}) IS NOT 1))`;
+
+/**
  * The drinks the Night-out stepper recorded on `date` — what it opens on when
  * its chip is tapped again. Null when it recorded none (or every such row has
  * since been deleted on meal-detail).

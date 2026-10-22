@@ -125,15 +125,17 @@ export type PlanEvent = 'shown' | 'started' | 'dismissed' | 'done' | 'expired' |
 
 /**
  * Everything {@link evaluatePlan} needs to know, gathered by the repository.
- * Each "since" means *on today's logical day and landed after the plan was
- * made* — data from before the plan cannot answer it.
+ * Each "since" means *on the PLAN's logical day and landed after the plan was
+ * made* — data from before the plan cannot answer it, and neither can data
+ * from a later day: yesterday's plan is judged against yesterday.
  */
 export type PlanOutcomes = {
   now: Date;
+  /** The logical day `now` falls on. A plan made for an earlier day is SETTLED. */
   today: string;
   /** Events already recorded for this plan, as `${item key}|${event}`. */
   events: ReadonlySet<string>;
-  /** Today's mission rows by id. */
+  /** The plan day's mission rows by id. */
   rows: ReadonlyMap<string, MissionItem>;
   weightSince: boolean;
   mealSince: boolean;
@@ -156,7 +158,14 @@ export type ItemState = 'live' | 'gone' | 'done' | 'dismissed' | 'expired' | 're
 
 export type EvaluatedItem = PlanItem & {
   state: ItemState;
-  /** The event this evaluation found that is not recorded yet — settle writes it. */
+  /**
+   * The event this evaluation found that is not recorded yet — settle writes it.
+   * A `done` or `dismissed` read off the record (data arrived, a pinned row
+   * ticked or skipped) is NOT one while the plan stands: the record can still
+   * move (the Undo of an auto-ticked Training row, a deleted weight), so it is
+   * re-read every time and written only when the plan closes — its day ends,
+   * or a pass replaces it ({@link evaluatePlan}).
+   */
   transition: 'done' | 'dismissed' | 'expired' | null;
 };
 
@@ -189,36 +198,64 @@ function dataArrived(item: PlanItem, outcomes: PlanOutcomes, madeAt: number): bo
   }
 }
 
-/** What has become of every item of `plan`, as of `outcomes.now`. */
+/**
+ * What has become of every item of `plan`, as of `outcomes.now`.
+ *
+ * A plan from an earlier day is SETTLED, not wiped: what landed on its day
+ * (the repository asks about `plan.day`, not today) is `done`, a pinned row
+ * skipped that day is `dismissed`, and only the rest expired with the day. So
+ * a weight logged at 07:40 on a plan Home never re-opened that day still
+ * counts as acted on in the 14-day summary.
+ */
 export function evaluatePlan(plan: DayPlan, outcomes: PlanOutcomes): EvaluatedItem[] {
   const madeAt = Date.parse(plan.madeAt);
+  const settled = plan.day !== outcomes.today;
   return plan.items.map((item): EvaluatedItem => {
     const closed = CLOSED.find((event) => outcomes.events.has(`${item.key}|${event}`));
     if (closed) return { ...item, state: closed as ItemState, transition: null };
-    // Yesterday's plan never reaches today: every open item of it expired with its day.
-    if (plan.day !== outcomes.today) return { ...item, state: 'expired', transition: 'expired' };
     // A destination with no data of its own was acted on the moment it was tapped.
     if (item.kind === 'do' && item.action && ACTION_SPEC[item.action].clearsOnTap) {
       if (outcomes.events.has(`${item.key}|started`))
         return { ...item, state: 'done', transition: 'done' };
     }
+    // Read off the record: recorded only once the plan's day is over (see EvaluatedItem).
+    const fromRecord = (state: 'done' | 'dismissed'): EvaluatedItem => ({
+      ...item,
+      state,
+      transition: settled ? state : null,
+    });
 
     if (item.kind === 'pin') {
       const row = item.entryId ? outcomes.rows.get(item.entryId) : undefined;
       if (!row) return { ...item, state: 'gone', transition: null };
-      if (row.status === 'completed') return { ...item, state: 'done', transition: 'done' };
-      if (row.status === 'skipped') return { ...item, state: 'dismissed', transition: 'dismissed' };
+      if (row.status === 'completed') return fromRecord('done');
+      if (row.status === 'skipped') return fromRecord('dismissed');
     } else {
       const arrived = dataArrived(item, outcomes, madeAt);
       if (arrived === 'gone') return { ...item, state: 'gone', transition: null };
-      if (arrived) return { ...item, state: 'done', transition: 'done' };
+      if (arrived) return fromRecord('done');
     }
 
-    if (outcomes.now.getTime() >= Date.parse(item.until)) {
+    if (settled || outcomes.now.getTime() >= Date.parse(item.until)) {
       return { ...item, state: 'expired', transition: 'expired' };
     }
     return { ...item, state: 'live', transition: null };
   });
+}
+
+/**
+ * Milliseconds until the earliest LIVE item's `until`, or null when nothing is
+ * live. Home sets one timer to it, so an item whose time passes while Home
+ * stays open leaves the screen then, not on the next focus.
+ */
+export function msUntilNextExpiry(items: readonly EvaluatedItem[], now: Date): number | null {
+  let earliest: number | null = null;
+  for (const item of items) {
+    if (item.state !== 'live') continue;
+    const until = Date.parse(item.until);
+    if (earliest === null || until < earliest) earliest = until;
+  }
+  return earliest === null ? null : Math.max(0, earliest - now.getTime());
 }
 
 // --- What Home shows --------------------------------------------------------------
@@ -257,6 +294,29 @@ export function coachRows(items: readonly EvaluatedItem[]): EvaluatedItem[] {
   return items.filter((item) => item.kind === 'do' && item.state === 'live');
 }
 
+/**
+ * The keys of the plan items on screen — what Home records `shown` for: the
+ * hero's item, every live Coach row when the checklist is drawn, and every live
+ * pin whose row the checklist draws. `drawnRowIds` is null when there is no
+ * checklist. A pin is counted as shown on the same footing it is counted as
+ * done, so "acted on" cannot outrun "shown".
+ */
+export function shownKeys(
+  items: readonly EvaluatedItem[],
+  top: HomeTop,
+  drawnRowIds: ReadonlySet<string> | null
+): Set<string> {
+  const keys = new Set<string>();
+  if (top !== null && top.kind !== 'mission') keys.add(top.item.key);
+  if (drawnRowIds === null) return keys;
+  for (const item of items) {
+    if (item.state !== 'live') continue;
+    if (item.kind === 'do' || (item.entryId !== undefined && drawnRowIds.has(item.entryId)))
+      keys.add(item.key);
+  }
+  return keys;
+}
+
 /** What a Coach item looks like to the components — no plan internals. */
 export type CoachItemView = {
   key: string;
@@ -271,7 +331,11 @@ export type CoachItemView = {
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
-export function toCoachItemView(item: EvaluatedItem): CoachItemView {
+/**
+ * `liveSessionOpen`: a `start_workout` tap while a session is open resumes
+ * THAT session ({@link destinationHref}), so its button says so.
+ */
+export function toCoachItemView(item: EvaluatedItem, liveSessionOpen = false): CoachItemView {
   const action = item.action ?? 'open_coach';
   const until = new Date(item.until);
   return {
@@ -279,7 +343,10 @@ export function toCoachItemView(item: EvaluatedItem): CoachItemView {
     title: item.title,
     reason: item.reason,
     action,
-    button: ACTION_SPEC[action].button,
+    button:
+      action === 'start_workout' && liveSessionOpen
+        ? ACTION_SPEC.resume_workout.button
+        : ACTION_SPEC[action].button,
     until: item.untilGiven ? `${pad(until.getHours())}:${pad(until.getMinutes())}` : null,
   };
 }
