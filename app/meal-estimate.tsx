@@ -50,6 +50,7 @@ import {
 } from '@/lib/media/meal-photo-store';
 import { downscaleJpeg, pickPhotoBase64 } from '@/lib/media/photo-library';
 import type { NewMealItem } from '@/lib/nutrition/types';
+import { apiKeyStore } from '@/lib/ai/api-key-store';
 import type { WebSearchSummary } from '@/lib/ai/web-search';
 import { joinNearbyMealWithUndo } from '@/lib/nutrition/undo-offers';
 
@@ -139,7 +140,14 @@ type Phase =
   | { kind: 'input' }
   | { kind: 'camera' }
   | { kind: 'estimating' }
-  | { kind: 'review'; title: string; notes: string | null; searches: WebSearchSummary[] }
+  | {
+      kind: 'review';
+      title: string;
+      notes: string | null;
+      searches: WebSearchSummary[];
+      /** The one line owed after the API refused search on this key, or null. */
+      notice: string | null;
+    }
   /** The request never left the phone, so it was kept (0057, backlog C3). The
    *  meal is already in today's list under `name`; this phase says so. */
   | { kind: 'queued'; name: string; photoKept: boolean }
@@ -204,6 +212,7 @@ export default function MealEstimateScreen() {
       title: estimate.title,
       notes: estimate.notes,
       searches: estimate.searches ?? [],
+      notice: apiKeyStore.takeWebSearchNotice(),
     });
   };
 
@@ -718,7 +727,7 @@ export default function MealEstimateScreen() {
             </Text>
           </View>
           {/* Where a looked-up figure came from (a chain's menu, a label). */}
-          <SearchedLines searches={phase.searches} />
+          <SearchedLines searches={phase.searches} notice={phase.notice} />
 
           {phase.notes ? (
             <View className="mt-2">

@@ -20,11 +20,13 @@ memory cannot tell them apart or know this year's menu.
    three searches; a meal names one or two things worth looking up, and the estimate is a call the
    user is waiting on. Settings › Coach has a **Web search** switch, ON by default (only "off" is
    stored, in the Keychain beside the model choice).
-3. **Version per model, no guessing.** `web_search_20260209` with `allowed_callers: ["direct"]` on
-   Sonnet 5 and Opus 5; the basic `web_search_20250305` on Haiku 4.5. Direct calls, not dynamic
-   filtering: filtering runs the search inside a code-execution container, which adds block types
-   and `caller` fields to the reply and is not ZDR-eligible, for a token saving that is small on a
-   menu lookup. A model the table does not know gets **no** search: a wrong tool type is a 400 that
+3. **Version per model, no guessing.** `web_search_20260209` on Sonnet 5 and Opus 5; the basic
+   `web_search_20250305` on Haiku 4.5. *(Amended the same day after review: this first sent
+   `allowed_callers: ["direct"]` to turn dynamic filtering off. The docs give filtering as built
+   into the 20260209 version and `["direct"]` as the field's default, so it turned nothing off and
+   was dropped. The client echoes every reply block verbatim, so filtering needs no modelling here.
+   A key that cannot search at all gets one retry without the tool, then no search for the
+   session: docs/ai-coach.md §2h.)* A model the table does not know gets **no** search: a wrong tool type is a 400 that
    takes the turn down. Every selectable model today is Claude, so there is no other provider to
    degrade for; that rule is the answer if one is ever added.
 4. **The wire is followed as documented.** `server_tool_use` and `web_search_tool_result` blocks

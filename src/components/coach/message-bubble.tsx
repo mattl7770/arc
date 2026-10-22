@@ -373,7 +373,9 @@ export function MessageBubble({ message, onRetry }: Props) {
         ) : null}
         {/* What the turn looked up on the web, and where the answer came from.
             Read off the persisted tool record, so a reload draws the same. */}
-        {!message.streaming ? <SearchedLines searches={webSearchesOf(message.toolCalls)} /> : null}
+        {!message.streaming ? (
+          <SearchedLines searches={webSearchesOf(message.toolCalls)} notice={message.notice} />
+        ) : null}
         {message.usageCaption && !message.streaming ? (
           <Text className="mt-0.5 font-mono text-[10px] tracking-[0.5px] text-ink-muted">
             {message.usageCaption}

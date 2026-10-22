@@ -61,7 +61,6 @@ export type WireServerTool = {
   type: string;
   name: string;
   max_uses: number;
-  allowed_callers?: string[];
 };
 
 /**
@@ -69,35 +68,36 @@ export type WireServerTool = {
  * version on Sonnet 5 and Opus 5; Haiku 4.5 takes the basic
  * `web_search_20250305` (the claude-api skill's server-tools table).
  *
- * `allowed_callers: ['direct']` on the newer version is deliberate. Its default
- * is dynamic filtering, which runs the search from inside a code-execution
- * container: the reply then carries code-execution blocks and `caller` fields
- * this client would have to model, and the request is not ZDR-eligible. A food
- * or menu lookup is short, so the token saving filtering buys is small. Direct
- * calls keep the reply to the two documented block types and behave the same on
- * all three models.
+ * The documented shape is `{ type, name: 'web_search' }` with optional
+ * `max_uses`, `allowed_domains` / `blocked_domains` and `user_location`; this
+ * sends `max_uses` and nothing else. Until 2026-10-21 it also sent
+ * `allowed_callers: ['direct']`, meant to turn the newer version's dynamic
+ * filtering off. The docs say otherwise: filtering is built into
+ * `web_search_20260209` and "activates automatically", and `['direct']` is the
+ * field's DEFAULT (the API treats it as identical to the field absent). So it
+ * bought nothing, and an extra field is one more thing a request can be
+ * refused for. With filtering on, a reply may carry blocks beyond the two the
+ * ledger reads; the client echoes every block verbatim and the ledger skips
+ * what it does not know, so nothing here has to model them.
  *
  * A model missing from this table gets NO search rather than a guessed version:
  * a wrong tool type is a 400 that takes the whole turn down with it. That is
  * also the answer for any provider the seam might one day route to — today
  * every selectable model is a Claude model (model-client.ts COACH_MODELS).
+ * A key that cannot use the tool at all is model-client.ts's
+ * `searchToolRefused`: one retry without it, then off for the session.
  */
-const TOOL_VERSION_BY_MODEL: Record<string, { type: string; direct: boolean }> = {
-  'claude-sonnet-5': { type: 'web_search_20260209', direct: true },
-  'claude-opus-5': { type: 'web_search_20260209', direct: true },
-  'claude-haiku-4-5': { type: 'web_search_20250305', direct: false },
+const TOOL_VERSION_BY_MODEL: Record<string, string> = {
+  'claude-sonnet-5': 'web_search_20260209',
+  'claude-opus-5': 'web_search_20260209',
+  'claude-haiku-4-5': 'web_search_20250305',
 };
 
 /** The server tool for `model`, or null when that model has no known version. */
 export function webSearchTool(model: string, maxUses: number): WireServerTool | null {
-  const version = TOOL_VERSION_BY_MODEL[model];
-  if (!version) return null;
-  return {
-    type: version.type,
-    name: WEB_SEARCH_TOOL_NAME,
-    max_uses: maxUses,
-    ...(version.direct ? { allowed_callers: ['direct'] } : {}),
-  };
+  const type = TOOL_VERSION_BY_MODEL[model];
+  if (!type) return null;
+  return { type, name: WEB_SEARCH_TOOL_NAME, max_uses: maxUses };
 }
 
 // --- Reading what came back ---------------------------------------------------

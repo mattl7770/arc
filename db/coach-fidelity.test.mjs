@@ -683,6 +683,136 @@ console.log('7. the whole turn stays in the thread: draft, card and answer, thro
       : bad('read-only bubble', JSON.stringify(lastOf(h)));
     h.unmount();
   }
+
+  // ===========================================================================
+  // 8. The phantom check reads the WHOLE turn now, and the draft ahead of a
+  // card is in it (review finding, phantom.mjs): a declined card whose draft
+  // reads "Added to your grocery list: milk, eggs." showed "Declined, not
+  // saved" AND the phantom accusation. A turn that called a write has said
+  // what happened (receipt, decline line, or its error), so only a turn that
+  // called NO write is examined — live and reloaded alike.
+  console.log('8. the draft ahead of a refused card is not a phantom claim, live or reloaded');
+  const CLAIMING_DRAFT = 'Draft below.\n\nAdded to your grocery list: milk, eggs.';
+  claimsCompletedWrite(CLAIMING_DRAFT)
+    ? ok('(the draft does read as a claim to the detector — which is why it must not see it)')
+    : bad('fixture no longer reads as a claim');
+  {
+    const { db, raw } = freshDb();
+    globalThis.__ARC_TEST_DB__ = db;
+    const h = renderHook(() => useCoachChat());
+    const { gates } = await turn(
+      h,
+      'add milk and eggs',
+      [
+        toolUseReply(CLAIMING_DRAFT, 'add_grocery_items', {
+          items: [{ name: 'Milk' }, { name: 'Eggs' }],
+        }),
+        textReply("Understood, I won't add them."),
+      ],
+      [false]
+    );
+    const bubble = lastOf(h);
+    gates.length === 1 &&
+    JSON.stringify(bubble.declined) === JSON.stringify([gates[0].card]) &&
+    !bubble.phantomWrite &&
+    raw.prepare('SELECT name FROM grocery_items').all().length === 0
+      ? ok('declined: the decline line shows, the phantom caption does not')
+      : bad('declined phantom', JSON.stringify(bubble));
+    h.unmount();
+    const reloaded = lastOf(renderHook(() => useCoachChat()));
+    reloaded.content.includes('Added to your grocery list') &&
+    !reloaded.phantomWrite &&
+    reloaded.declined?.length === 1
+      ? ok('…and a reloaded thread reaches the same verdict from the stored record')
+      : bad('declined phantom reload', JSON.stringify(reloaded));
+  }
+  {
+    // An ERRORED write: the card never draws (the input fails at summary time).
+    const { db } = freshDb();
+    globalThis.__ARC_TEST_DB__ = db;
+    const h = renderHook(() => useCoachChat());
+    await turn(h, 'add it', [
+      toolUseReply(CLAIMING_DRAFT, 'add_grocery_items', { items: [] }),
+      textReply('That did not go through.'),
+    ]);
+    const bubble = lastOf(h);
+    const calls = bubble.toolCalls ?? [];
+    calls.length === 1 && calls[0].isError === true && !bubble.phantomWrite
+      ? ok('errored: the failed write is the record, and no phantom caption is added')
+      : bad('errored phantom', JSON.stringify(bubble));
+    h.unmount();
+  }
+  {
+    // The control: the owner's report itself — a save claimed, no tool called.
+    const { db } = freshDb();
+    globalThis.__ARC_TEST_DB__ = db;
+    const h = renderHook(() => useCoachChat());
+    await turn(h, 'add milk and eggs', [textReply('Added to your grocery list: milk, eggs.')]);
+    lastOf(h).phantomWrite === true
+      ? ok('control: a claimed write with no tool call is still flagged')
+      : bad('control lost', JSON.stringify(lastOf(h)));
+    h.unmount();
+    lastOf(renderHook(() => useCoachChat())).phantomWrite === true
+      ? ok('…and still flagged after a reload')
+      : bad('control reload');
+  }
+
+  // ===========================================================================
+  // 9. A key that cannot search, through the real hook and service: the turn
+  // answers, the bubble carries the one quiet line, and the next turn neither
+  // sends the tool nor repeats the line.
+  console.log('9. a refused search tool: the Coach answers anyway and says so once');
+  {
+    const { WEB_SEARCH_UNAVAILABLE_LINE } = await import('../src/lib/ai/api-key-store.ts');
+    await apiKeyStore.setWebSearch(true);
+    const { db, raw } = freshDb();
+    globalThis.__ARC_TEST_DB__ = db;
+    const h = renderHook(() => useCoachChat());
+    const refused = {
+      ok: false,
+      status: 400,
+      text: async () =>
+        '{"type":"error","error":{"type":"invalid_request_error","message":"web search is not enabled"}}',
+      body: null,
+    };
+    const requests = [];
+    const queue = [refused, responseOf(textReply('Zone 2 is fine today.'))];
+    globalThis.__ARC_TEST_FETCH__ = async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return queue.shift();
+    };
+    h.result.send('what should I train?');
+    await until(
+      () => !h.result.isResponding && lastOf(h).role === 'assistant' && !lastOf(h).streaming
+    );
+    const searched = (req) => (req.tools ?? []).some((t) => t.name === 'web_search');
+    const bubble = lastOf(h);
+    requests.length === 2 && searched(requests[0]) && !searched(requests[1])
+      ? ok('the refused request is retried once, without the search tool')
+      : bad('hook retry', JSON.stringify(requests.map(searched)));
+    bubble.content === 'Zone 2 is fine today.' &&
+    bubble.notice === WEB_SEARCH_UNAVAILABLE_LINE &&
+    bubble.error === undefined
+      ? ok('the reply lands, with the one quiet line under it')
+      : bad('hook notice', JSON.stringify(bubble));
+    const rows = assistantRows(raw);
+    rows.length === 1 && !rows[0].content.includes('Web search')
+      ? ok('…which is not part of the reply: the persisted row is the model’s text alone')
+      : bad('notice persisted', JSON.stringify(rows));
+
+    const { requests: next } = await turn(h, 'and tomorrow?', [textReply('Rest.')]);
+    next.length === 1 && !searched(next[0]) && lastOf(h).notice === undefined
+      ? ok('the next turn sends no search tool and says nothing more about it')
+      : bad(
+          'hook latch',
+          JSON.stringify({ tools: next[0]?.tools?.length, notice: lastOf(h).notice })
+        );
+    apiKeyStore.isWebSearchOn() === true
+      ? ok('…and the stored Settings switch was never touched')
+      : bad('switch flipped');
+    h.unmount();
+    await apiKeyStore.setWebSearch(true);
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

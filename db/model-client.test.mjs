@@ -32,7 +32,9 @@ import {
   buildFoodEntryRequest,
   buildMealEstimationRequest,
   buildMealRevisionRequest,
+  parseMealEstimate,
 } from '../src/lib/nutrition/estimate.ts';
+import { WEB_SEARCH_UNAVAILABLE_LINE, apiKeyStore } from '../src/lib/ai/api-key-store.ts';
 
 let pass = 0;
 let fail = 0;
@@ -767,8 +769,8 @@ console.log('13. the request carries the search tool only when asked, on a model
   last.type === 'web_search_20260209' &&
   last.name === 'web_search' &&
   last.max_uses === 3 &&
-  JSON.stringify(last.allowed_callers) === '["direct"]'
-    ? ok('Sonnet 5: web_search_20260209, direct calls only, max_uses 3, after the registry')
+  JSON.stringify(Object.keys(last).sort()) === '["max_uses","name","type"]'
+    ? ok('Sonnet 5: web_search_20260209 as documented (type, name, max_uses 3), after the registry')
     : bad('sonnet search tool', JSON.stringify(sonnet.tools));
   last.cache_control === undefined && sonnet.tools[0].cache_control?.ttl === '1h'
     ? ok('…and the tool breakpoint stays on the last REGISTRY tool, where it always was')
@@ -851,7 +853,10 @@ console.log('14. a searched reply parses: query, results, citations, the billed 
 {
   const events = [
     ...START,
-    ...textEvents(0, 'Checking the NZ menu. '),
+    // No trailing space, as the model actually writes it: this fixture used to
+    // end the sentence with one, which is the only reason the glue
+    // ("…menu.A Big Mac…") never showed here.
+    ...textEvents(0, 'Checking the NZ menu.'),
     ...searchEvents(1, { result: MENU_RESULTS }),
     ...textEvents(3, 'A Big Mac is 492 kcal.', CITATION),
     ...finish('end_turn', { output_tokens: 60, server_tool_use: { web_search_requests: 1 } }),
@@ -875,10 +880,11 @@ console.log('14. a searched reply parses: query, results, citations, the billed 
       )
     : bad('activity', JSON.stringify({ activity, executed, calls: fetchImpl.calls.length }));
 
-  result.transcript === 'Checking the NZ menu. A Big Mac is 492 kcal.' &&
+  result.transcript === 'Checking the NZ menu.\n\nA Big Mac is 492 kcal.' &&
   tokens.join('') === result.transcript &&
+  result.text === result.transcript &&
   result.stopReason === 'end_turn'
-    ? ok('the text around a search streams and settles as one reply')
+    ? ok('the text around a search streams and settles as one reply, a seam where the search was')
     : bad('text', JSON.stringify(result.transcript));
   const search = result.toolCalls.find((c) => c.name === 'web_search');
   const record = search ? JSON.parse(search.result) : null;
@@ -901,6 +907,7 @@ console.log('14. a searched reply parses: query, results, citations, the billed 
   const acc = new MessageAccumulator(() => {});
   for (const e of events) acc.consume({ event: e.event, data: JSON.stringify(e.data) });
   const blocks = acc.finish().blocks;
+  blocks[0].text === 'Checking the NZ menu.' &&
   blocks[1].type === 'server_tool_use' &&
   blocks[1].input.query === 'big mac nutrition new zealand' &&
   blocks[2].type === 'web_search_tool_result' &&
@@ -1198,6 +1205,303 @@ console.log('18. the region comes from the phone’s time zone, then its region 
   typeof live.timeZone === 'string'
     ? ok(`with Intl present it reads this machine: ${regionLine(live)}`)
     : bad('live region', JSON.stringify(live));
+}
+
+console.log('19. the seam: text either side of a search never glues, and the echo is untouched');
+{
+  const SEARCH = { apiKey: 'sk-test', model: 'claude-sonnet-5' };
+  const WITH = { ...REQUEST, webSearch: { maxUses: 3 } };
+  const noTools = async () => ({ content: '{}' });
+
+  // The review's repro (glue.mjs), cited fragments and all.
+  const SHANNON = {
+    ...CITATION,
+    url: 'https://en.wikipedia.org/wiki/Claude_Shannon',
+    cited_text: 'born April 30, 1916',
+  };
+  const shannon = [
+    ...START,
+    ...textEvents(0, "I'll search for when Claude Shannon was born."),
+    ...searchEvents(1, {
+      query: 'claude shannon birth date',
+      result: [{ ...MENU_RESULTS[0], url: SHANNON.url }],
+    }),
+    ...textEvents(3, 'Based on the search results, '),
+    ...textEvents(4, 'Claude Shannon was born on April 30, 1916', SHANNON),
+    ...textEvents(5, '.'),
+    ...finish('end_turn', { server_tool_use: { web_search_requests: 1 } }),
+  ];
+  const tokens = [];
+  const r1 = await runCoachTurn({ ...SEARCH, fetchImpl: scriptedFetch([reply(shannon)]) }, WITH, {
+    onToken: (t) => tokens.push(t),
+    executeTool: noTools,
+  });
+  const expected =
+    "I'll search for when Claude Shannon was born.\n\nBased on the search results, Claude Shannon was born on April 30, 1916.";
+  r1.transcript === expected && tokens.join('') === expected
+    ? ok('"…was born.Based on…" is now "…was born.\\n\\nBased on…", streamed and settled alike')
+    : bad('shannon', JSON.stringify({ transcript: r1.transcript, streamed: tokens.join('') }));
+  r1.transcript.endsWith('results, Claude Shannon was born on April 30, 1916.')
+    ? ok('…while the cited fragments of one answer still join with nothing between them')
+    : bad('citation fragments', JSON.stringify(r1.transcript));
+
+  // The echo: the seam must never reach the blocks sent back to the API.
+  const searchedThenTool = [
+    ...START,
+    ...textEvents(0, 'Checking.'),
+    ...searchEvents(1, { result: MENU_RESULTS }),
+    ...textEvents(3, 'Found it.'),
+    ev('content_block_start', {
+      index: 4,
+      content_block: { type: 'tool_use', id: 'toolu_s', name: 'get_insights', input: {} },
+    }),
+    ev('content_block_stop', { index: 4 }),
+    ...finish('tool_use', { server_tool_use: { web_search_requests: 1 } }),
+  ];
+  const echoFetch = scriptedFetch([
+    reply(searchedThenTool),
+    reply([...START, ...textEvents(0, 'Done.'), ...finish('end_turn')]),
+  ]);
+  const r2 = await runCoachTurn({ ...SEARCH, fetchImpl: echoFetch }, WITH, {
+    onToken: () => {},
+    executeTool: noTools,
+  });
+  const echoed = echoFetch.calls[1].payload.messages.at(-2).content;
+  const echoedText = echoed.filter((b) => b.type === 'text').map((b) => b.text);
+  JSON.stringify(echoedText) === '["Checking.","Found it."]'
+    ? ok('the continuation echoes the text blocks byte for byte: no seam in what goes back')
+    : bad('echo altered', JSON.stringify(echoed));
+  r2.transcript === 'Checking.\n\nFound it.\n\nDone.'
+    ? ok('…and the transcript has one seam at the search and the usual one at the tool')
+    : bad('mixed transcript', JSON.stringify(r2.transcript));
+
+  // pause_turn: the seam is owed across the resume when the pause fell on a
+  // search, and NOT when it fell mid-text.
+  const pausedOnSearch = [
+    ...START,
+    ...textEvents(0, 'Looking at three menus.'),
+    ...searchEvents(1, { result: MENU_RESULTS }),
+    ...finish('pause_turn'),
+  ];
+  const r3 = await runCoachTurn(
+    {
+      ...SEARCH,
+      fetchImpl: scriptedFetch([
+        reply(pausedOnSearch),
+        reply([...START, ...textEvents(0, 'The NZ Big Mac is 492 kcal.'), ...finish('end_turn')]),
+      ]),
+    },
+    WITH,
+    { onToken: () => {}, executeTool: noTools }
+  );
+  r3.transcript === 'Looking at three menus.\n\nThe NZ Big Mac is 492 kcal.'
+    ? ok('a pause on a search still pays the seam when the resumed reply speaks')
+    : bad('pause seam', JSON.stringify(r3.transcript));
+  const pausedMidText = [
+    ...START,
+    ...searchEvents(0, { result: MENU_RESULTS }),
+    ...textEvents(2, 'NZ lists'),
+    ...finish('pause_turn'),
+  ];
+  const r4 = await runCoachTurn(
+    {
+      ...SEARCH,
+      fetchImpl: scriptedFetch([
+        reply(pausedMidText),
+        reply([...START, ...textEvents(0, ' it at 492 kcal.'), ...finish('end_turn')]),
+      ]),
+    },
+    WITH,
+    { onToken: () => {}, executeTool: noTools }
+  );
+  r4.transcript === 'NZ lists it at 492 kcal.'
+    ? ok(
+        '…a pause mid-sentence resumes the same sentence, no seam (and none before the first word)'
+      )
+    : bad('mid-text pause', JSON.stringify(r4.transcript));
+
+  // Thinking carries no prose, so it never splits text; whitespace already there is enough.
+  const acc = new MessageAccumulator(() => {});
+  for (const e of [
+    ...START,
+    ...textEvents(0, 'First.'),
+    ev('content_block_start', {
+      index: 1,
+      content_block: { type: 'thinking', thinking: '', signature: '' },
+    }),
+    ev('content_block_stop', { index: 1 }),
+    ...textEvents(2, ' Second, then a search:\n'),
+    ...searchEvents(3, { result: MENU_RESULTS }),
+    ...textEvents(5, 'Third.'),
+    ...finish('end_turn'),
+  ]) {
+    acc.consume({ event: e.event, data: JSON.stringify(e.data) });
+  }
+  acc.finish().text === 'First. Second, then a search:\nThird.'
+    ? ok('a thinking block adds no seam, and text already ending in whitespace needs none')
+    : bad('accumulator seams', JSON.stringify(acc.finish().text));
+
+  // The estimators read the STREAMED text and slice the JSON out of it: a seam
+  // ahead of the object must leave the parse exactly what it was.
+  const JSON_REPLY =
+    '{"title":"Big Mac","items":[{"name":"Big Mac","amount":1,"unit":"piece","kcal":492,' +
+    '"protein_g":26,"carbs_g":40,"fat_g":25,"confidence":"high"}],"notes":null}';
+  let streamed = '';
+  await runCoachTurn(
+    {
+      ...SEARCH,
+      fetchImpl: scriptedFetch([
+        reply([
+          ...START,
+          ...textEvents(0, 'Looking up the NZ menu.'),
+          ...searchEvents(1, { result: MENU_RESULTS }),
+          ...textEvents(3, JSON_REPLY),
+          ...finish('end_turn'),
+        ]),
+      ]),
+    },
+    {
+      system: 's',
+      messages: [{ role: 'user', content: 'a Big Mac' }],
+      tools: [],
+      webSearch: { maxUses: 2 },
+    },
+    { onToken: (t) => (streamed += t), executeTool: noTools }
+  );
+  streamed.includes('menu.\n\n{') &&
+  JSON.stringify(parseMealEstimate(streamed)) ===
+    JSON.stringify(parseMealEstimate(`Looking up the NZ menu.${JSON_REPLY}`))
+    ? ok('an estimator reply parses to the same estimate with the seam as without it')
+    : bad('estimator slice', streamed);
+}
+
+console.log('20. a key that cannot search: one retry without the tool, then off for the session');
+{
+  const SEARCH = { apiKey: 'sk-test', model: 'claude-sonnet-5' };
+  const WITH = { ...REQUEST, webSearch: { maxUses: 3 } };
+  const refused = () =>
+    streamResponse(
+      [
+        '{"type":"error","error":{"type":"invalid_request_error","message":"web search is not enabled for this organization"}}',
+      ],
+      { ok: false, status: 400 }
+    );
+  const hasSearch = (call) => (call.payload.tools ?? []).some((t) => t.name === 'web_search');
+  const noTools = async () => ({ content: '{}' });
+  await apiKeyStore.setWebSearch(true);
+  let unavailable = 0;
+  const handlers = {
+    onToken: () => {},
+    executeTool: noTools,
+    onWebSearchUnavailable: () => {
+      unavailable++;
+      apiKeyStore.markWebSearchUnavailable();
+    },
+  };
+
+  const f1 = scriptedFetch([
+    refused(),
+    reply([...START, ...textEvents(0, 'Answered without it.'), ...finish('end_turn')]),
+  ]);
+  const r1 = await runCoachTurn({ ...SEARCH, fetchImpl: f1 }, WITH, handlers);
+  f1.calls.length === 2 && hasSearch(f1.calls[0]) && !hasSearch(f1.calls[1])
+    ? ok('a 400 on a request carrying the search tool is retried ONCE, without the tool')
+    : bad('retry shape', JSON.stringify(f1.calls.map(hasSearch)));
+  r1.transcript === 'Answered without it.' && r1.stopReason === 'end_turn' && unavailable === 1
+    ? ok('…the turn answers instead of failing, and the caller is told once')
+    : bad('retry result', JSON.stringify({ r1, unavailable }));
+  JSON.stringify(f1.calls[1].payload.messages) === JSON.stringify(f1.calls[0].payload.messages)
+    ? ok('…with the same messages: only the tool is dropped')
+    : bad('retry changed messages');
+
+  // The session latch (api-key-store.ts): the stored switch is untouched.
+  apiKeyStore.isWebSearchOn() === true && apiKeyStore.isWebSearchUsable() === false
+    ? ok('latched off for the session in memory; the Settings switch still reads ON')
+    : bad('latch', `${apiKeyStore.isWebSearchOn()} ${apiKeyStore.isWebSearchUsable()}`);
+  const first = apiKeyStore.takeWebSearchNotice();
+  apiKeyStore.markWebSearchUnavailable();
+  first === WEB_SEARCH_UNAVAILABLE_LINE &&
+  first.startsWith("Web search isn't available on this API key") &&
+  apiKeyStore.takeWebSearchNotice() === null
+    ? ok(`one quiet line, once: "${first}"`)
+    : bad('notice', String(first));
+  await apiKeyStore.setWebSearch(true);
+  apiKeyStore.isWebSearchUsable() === true && apiKeyStore.takeWebSearchNotice() === null
+    ? ok('touching the switch clears the latch, so search is tried again')
+    : bad('latch reset');
+
+  // Within the turn the tool stays off: a tool round's next request goes without it.
+  const f2 = scriptedFetch([
+    refused(),
+    streamResponse([sseText(toolUseReplyEvents({}))]),
+    reply([...START, ...textEvents(0, 'Done.'), ...finish('end_turn')]),
+  ]);
+  unavailable = 0;
+  await runCoachTurn({ ...SEARCH, fetchImpl: f2 }, WITH, handlers);
+  f2.calls.length === 3 && !hasSearch(f2.calls[1]) && !hasSearch(f2.calls[2]) && unavailable === 1
+    ? ok('…and the rest of that turn does not send it again')
+    : bad('turn latch', JSON.stringify(f2.calls.map(hasSearch)));
+  await apiKeyStore.setWebSearch(true);
+
+  // When the plain request fails too, it was not the tool: its error, no latch.
+  unavailable = 0;
+  const f3 = scriptedFetch([refused(), refused()]);
+  let thrown = null;
+  try {
+    await runCoachTurn({ ...SEARCH, fetchImpl: f3 }, WITH, handlers);
+  } catch (e) {
+    thrown = e;
+  }
+  thrown instanceof ModelRequestError &&
+  thrown.status === 400 &&
+  f3.calls.length === 2 &&
+  unavailable === 0 &&
+  apiKeyStore.isWebSearchUsable()
+    ? ok('a retry that fails as well throws, and latches nothing')
+    : bad('double failure', JSON.stringify({ thrown: String(thrown), calls: f3.calls.length }));
+
+  // What is NOT retried.
+  const once = async (config, request, response) => {
+    const f = scriptedFetch([
+      response,
+      reply([...START, ...textEvents(0, 'x'), ...finish('end_turn')]),
+    ]);
+    try {
+      await runCoachTurn({ ...config, fetchImpl: f }, request, handlers);
+    } catch {
+      // expected
+    }
+    return f.calls.length;
+  };
+  unavailable = 0;
+  const auth = await once(
+    SEARCH,
+    WITH,
+    streamResponse(['{"error":{"type":"authentication_error","message":"bad key"}}'], {
+      ok: false,
+      status: 401,
+    })
+  );
+  const noSearch = await once(SEARCH, REQUEST, refused());
+  const unknownModel = await once({ ...SEARCH, model: 'some-other-model' }, WITH, refused());
+  auth === 1 && noSearch === 1 && unknownModel === 1 && unavailable === 0
+    ? ok('not retried: a 401, a 400 on a request without search, a model that sent no tool')
+    : bad('over-retry', JSON.stringify({ auth, noSearch, unknownModel }));
+
+  // A search that already RAN this turn proves the tool is accepted.
+  const f4 = scriptedFetch([
+    reply([...START, ...searchEvents(0, { result: MENU_RESULTS }), ...finish('pause_turn')]),
+    refused(),
+    reply([...START, ...textEvents(0, 'x'), ...finish('end_turn')]),
+  ]);
+  try {
+    await runCoachTurn({ ...SEARCH, fetchImpl: f4 }, WITH, handlers);
+  } catch {
+    // expected
+  }
+  f4.calls.length === 2 && unavailable === 0
+    ? ok('…nor a 400 after a search ran in the same turn (its blocks are in the history)')
+    : bad('post-search 400', String(f4.calls.length));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -238,6 +238,13 @@ export type CoachTurnHandlers = {
   /** Execute one tool call. Throwing here becomes an is_error tool result. */
   executeTool: (name: string, input: unknown) => Promise<ToolExecutionOutcome>;
   signal?: AbortSignal;
+  /**
+   * Called once when the API refused a request because of the search tool and
+   * the same request without it went through (see searchToolRefused). The rest
+   * of the turn runs without search; whether later turns do is the caller's
+   * call (the app latches it off for the session — api-key-store.ts).
+   */
+  onWebSearchUnavailable?: () => void;
 };
 
 /** A non-2xx API response, with the server's error type/message when present. */
@@ -251,6 +258,31 @@ export class ModelRequestError extends Error {
     this.status = status;
     this.errorType = errorType;
   }
+}
+
+/**
+ * Did the API refuse this request in a way the search tool could explain?
+ *
+ * Web search is ON by default (api-key-store.ts), and a key whose organization
+ * has not enabled it in the Console, or an API that refuses a field of the
+ * tool, answers EVERY request carrying it with a 400 — every Coach turn and
+ * every food estimate, the background queue's drain included, until the owner
+ * finds the switch. The error text is the provider's and is not matched on;
+ * the test is only "a 400 invalid request, on a request that really carried
+ * the tool". The caller proves the rest by retrying without it.
+ */
+function searchToolRefused(
+  error: unknown,
+  config: ModelClientConfig,
+  webSearch: WebSearchOptions | null
+): boolean {
+  return (
+    error instanceof ModelRequestError &&
+    error.status === 400 &&
+    (error.errorType === 'invalid_request_error' || error.errorType === null) &&
+    webSearch !== null &&
+    webSearchTool(config.model, webSearch.maxUses) !== null
+  );
 }
 
 /**
@@ -444,6 +476,15 @@ export function addUsage(a: Usage, b: Usage): Usage {
 export type AccumulatedMessage = {
   /** The reply's content blocks, in order, ready to echo back verbatim. */
   blocks: WireContentBlock[];
+  /**
+   * The reply's text as the reader got it: every text block in order, joined
+   * with '' EXCEPT where a non-text block (a search, its results) sat between
+   * them, which carries the same '\n\n' seam `onToken` streamed (see
+   * {@link MessageAccumulator}). Never echoed: `blocks` is what goes back.
+   */
+  text: string;
+  /** Where the text stood at the end of this reply — for a `pause_turn` resume. */
+  carry: TextCarry;
   /** The wire stop reason ('end_turn' | 'tool_use' | …), '' if never sent. */
   stopReason: string;
   /** What this round-trip cost, summed from message_start + message_delta. */
@@ -451,12 +492,41 @@ export type AccumulatedMessage = {
 };
 
 /**
+ * Where the turn's text stood when a reply began: its last character, and
+ * whether a non-text block has come since. A seam owed across a `pause_turn`
+ * resume is still paid — the paused reply can end on a search and the resumed
+ * one open on the text after it.
+ */
+export type TextCarry = { tail: string; afterNonText: boolean };
+
+/** Block kinds that do not break the text into pieces (they carry no prose). */
+const SEAMLESS_KINDS = new Set(['text', 'thinking', 'redacted_thinking']);
+
+/**
  * Folds a stream of Messages API SSE events into the final assistant message,
  * emitting text fragments through `onToken` as they arrive. Thinking blocks
  * are kept verbatim (empty text and all) so continuations can echo them.
+ *
+ * THE SEAM (2026-10-21). A searched reply is several text blocks with the
+ * search's `server_tool_use` and `web_search_tool_result` between them, and the
+ * sentence the model writes before a search rarely ends in a space: joined with
+ * '' the reader got "…when Claude Shannon was born.Based on the search
+ * results…" in the bubble, the `ai_messages` row and every later turn's
+ * history. So when a text block opens right after a non-text, non-thinking
+ * block, and the text so far is non-empty and does not end in whitespace, a
+ * '\n\n' goes through `onToken` and into {@link AccumulatedMessage.text} — the
+ * seam the loop already pays at a client tool boundary. Two text blocks back
+ * to back (one answer split by its citations) still join with ''. The seam
+ * lives only in the text: the blocks echoed to the API are never altered.
  */
 export class MessageAccumulator {
   private blocks: WireContentBlock[] = [];
+  // The seam owed ahead of a text block, by block index (see the class note).
+  private seams = new Map<number, string>();
+  // The last character of the turn's text so far ('' when none yet), and
+  // whether a non-text, non-thinking block has opened since it.
+  private tail: string;
+  private afterNonText: boolean;
   private partialJson = new Map<number, string>();
   private stopReason = '';
   // Usage arrives in two places: message_start carries the input side (and the
@@ -469,9 +539,15 @@ export class MessageAccumulator {
   // say "web search…" through the pause while the provider runs it.
   private readonly onServerTool: ((name: string) => void) | undefined;
 
-  constructor(onToken: (chunk: string) => void, onServerTool?: (name: string) => void) {
+  constructor(
+    onToken: (chunk: string) => void,
+    onServerTool?: (name: string) => void,
+    carry?: TextCarry
+  ) {
     this.onToken = onToken;
     this.onServerTool = onServerTool;
+    this.tail = carry?.tail.slice(-1) ?? '';
+    this.afterNonText = carry?.afterNonText ?? false;
   }
 
   consume(event: SseEvent): void {
@@ -490,6 +566,18 @@ export class MessageAccumulator {
         // A web search's `server_tool_use` streams its input exactly like a
         // client `tool_use` does: input_json_delta fragments, parsed at stop.
         const kind = this.blocks[index]!.type;
+        if (kind === 'text') {
+          if (this.afterNonText && this.tail !== '' && !/\s/.test(this.tail)) {
+            this.seams.set(index, '\n\n');
+            this.onToken('\n\n');
+            this.tail = '\n';
+          }
+          this.afterNonText = false;
+          const initial = (this.blocks[index] as WireTextBlock).text;
+          if (typeof initial === 'string' && initial !== '') this.tail = initial.slice(-1);
+        } else if (!SEAMLESS_KINDS.has(kind)) {
+          this.afterNonText = true;
+        }
         if (kind === 'tool_use' || kind === 'server_tool_use') {
           this.partialJson.set(index, '');
         }
@@ -506,6 +594,7 @@ export class MessageAccumulator {
         if (!block || !delta) break;
         if (delta.type === 'text_delta') {
           (block as WireTextBlock).text = ((block as WireTextBlock).text ?? '') + delta.text;
+          if (delta.text !== '') this.tail = delta.text.slice(-1);
           this.onToken(delta.text);
         } else if (delta.type === 'input_json_delta') {
           this.partialJson.set(index, (this.partialJson.get(index) ?? '') + delta.partial_json);
@@ -580,9 +669,16 @@ export class MessageAccumulator {
   }
 
   finish(): AccumulatedMessage {
+    let text = '';
+    this.blocks.forEach((block, index) => {
+      if (block?.type !== 'text') return;
+      text += (this.seams.get(index) ?? '') + (block as WireTextBlock).text;
+    });
     // Sparse indices can't happen on a well-formed stream; compact defensively.
     return {
       blocks: this.blocks.filter(Boolean),
+      text,
+      carry: { tail: this.tail, afterNonText: this.afterNonText },
       stopReason: this.stopReason,
       usage: this.usage,
     };
@@ -596,7 +692,8 @@ async function streamOnce(
   request: AgenticRequest,
   onToken: (chunk: string) => void,
   signal?: AbortSignal,
-  onServerTool?: (name: string) => void
+  onServerTool?: (name: string) => void,
+  carry?: TextCarry
 ): Promise<AccumulatedMessage> {
   const { url, headers, body } = buildMessagesRequest(config, request);
   const response = await config.fetchImpl(url, { method: 'POST', headers, body, signal });
@@ -622,7 +719,7 @@ async function streamOnce(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const parser = new SseParser();
-  const accumulator = new MessageAccumulator(onToken, onServerTool);
+  const accumulator = new MessageAccumulator(onToken, onServerTool, carry);
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -651,12 +748,6 @@ function abortError(): Error {
   err.name = 'AbortError';
   return err;
 }
-
-const textOf = (blocks: WireContentBlock[]): string =>
-  blocks
-    .filter((b): b is WireTextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
 
 /**
  * What the turn SETTLES on: the text the model produced after the last tool
@@ -762,6 +853,12 @@ export async function runCoachTurn(
   // Summed across every round-trip of the turn — one "how am I doing" can be
   // three calls, and only the total is meaningful to the user.
   let usage: Usage = { ...ZERO_USAGE };
+  // The search tool this turn sends. Dropped for the rest of the turn when the
+  // API refuses it (see searchToolRefused).
+  let webSearch = request.webSearch ?? null;
+  // Whether the last reply ended on a non-text block — with the text's tail,
+  // the seam state handed to the next reply (MessageAccumulator).
+  let afterNonText = false;
 
   for (let call = 0; call < MAX_MODEL_CALLS_PER_TURN; call++) {
     if (handlers.signal?.aborted) {
@@ -773,18 +870,38 @@ export async function runCoachTurn(
         : abortError();
     }
 
-    let reply: AccumulatedMessage;
-    try {
-      reply = await streamOnce(
+    const carry: TextCarry = { tail: (narration + answer).slice(-1), afterNonText };
+    const send = (search: WebSearchOptions | null) =>
+      streamOnce(
         config,
-        { ...request, messages },
+        { ...request, messages, webSearch: search },
         handlers.onToken,
         handlers.signal,
         // A search starting drives the same activity line a tool call does
         // ("web search…"): the stream stalls while the provider runs it, and
         // a silent stall reads as a hang. Nothing executes here.
-        (name) => handlers.onToolCall?.({ name, input: {} })
+        (name) => handlers.onToolCall?.({ name, input: {} }),
+        carry
       );
+    let reply: AccumulatedMessage;
+    try {
+      try {
+        reply = await send(webSearch);
+      } catch (error) {
+        // A refused search tool is retried ONCE without it. Only a request
+        // that actually carried the tool, and only before any search ran this
+        // turn (a search that ran proves the tool is accepted, and its blocks
+        // in the history would not survive the tool's removal).
+        if (!searchToolRefused(error, config, webSearch) || searches.calls().length > 0) {
+          throw error;
+        }
+        reply = await send(null);
+        // The plain request went through, so it WAS the tool: stop sending it.
+        // A retry that fails too throws its own error above — the request was
+        // bad for some other reason, and nothing is latched.
+        webSearch = null;
+        handlers.onWebSearchUnavailable?.();
+      }
     } catch (error) {
       // Tool calls already executed against the database — carry their record
       // out with the failure so the caller can persist the audit trail.
@@ -794,7 +911,8 @@ export async function runCoachTurn(
       throw error;
     }
     usage = addUsage(usage, reply.usage);
-    answer += textOf(reply.blocks);
+    answer += reply.text;
+    afterNonText = reply.carry.afterNonText;
     // Searches first: in a mixed round they were requested alongside (and
     // recorded before) the client tools run below.
     toolCalls.push(...searches.observe(reply.blocks));
@@ -804,7 +922,9 @@ export async function runCoachTurn(
     // back UNCHANGED, with no new user message and the same tools; the API
     // resumes where it stopped, and a resumed turn can pause again. Each resume
     // spends one of MAX_MODEL_CALLS_PER_TURN, which is the cap on that loop.
-    // No seam is added: the continuation finishes the same sentence.
+    // The loop adds no seam: a reply paused mid-text finishes the same
+    // sentence, and one paused on a search pays the accumulator's seam when
+    // its text resumes (the carry above).
     if (reply.stopReason === 'pause_turn') {
       messages.push({ role: 'assistant', content: reply.blocks });
       continue;
