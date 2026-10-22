@@ -15,8 +15,10 @@
  *   - WAIT, nothing was billed: no connection (the model client names a fetch
  *     that never got a response `network_error`), no key, an abort;
  *   - RETRY, counted and backed off by elapsed time, parked at the cap: a
- *     stream that died mid-reply, a 5xx, a 529 overloaded;
- *   - PARK at once, never re-sent by itself: a 401/403, a 429, any other 4xx,
+ *     stream that died mid-reply, a 5xx, a 529 overloaded, a 429 rate limit
+ *     (a rate limit lifts by itself; parking it at once left a meal waiting
+ *     on a tap for a limit that cleared a minute later);
+ *   - PARK at once, never re-sent by itself: a 401/403, any other 4xx,
  *     an unreadable reply, a refusal, a failure AFTER the model answered (it
  *     was billed; sending it again would bill it again), and anything this
  *     module cannot name — an unknown failure is not assumed to be free.
@@ -65,10 +67,12 @@ import {
   listPendingEstimates,
   markPendingEstimateFailed,
   pendingEstimateForMeal,
+  samePendingRequest,
 } from '@/lib/db/repositories/pending-estimates';
 import { attachMealPhoto, nativePhotoStore } from '@/lib/media/meal-photo-store';
 import {
   clearPendingEstimate,
+  clearPendingEstimateIfUnchanged,
   nativePendingEstimateStore,
   readPendingEstimatePhoto,
 } from '@/lib/media/pending-estimate-store';
@@ -135,7 +139,7 @@ export function classifyQueueFailure(error: unknown): QueueFailure {
     if (status === 0) return failure('interrupted', 'retry', true);
     if (status >= 500 || status === 408) return failure('server', 'retry', true);
     if (status === 401 || status === 403) return failure('auth', 'park', true);
-    if (status === 429) return failure('rate_limited', 'park', true);
+    if (status === 429) return failure('rate_limited', 'retry', true);
     return failure('rejected', 'park', false);
   }
   return failure('failed', 'park', false);
@@ -259,12 +263,26 @@ function toEstimateInput(row: PendingEstimateRow, base64Jpeg: string | null): Es
  * waits for the user, and a row backing off waits out its time, however often
  * the app is opened. That, with the classification above, is the whole fix for
  * the re-billing loop.
+ *
+ * ## The user can act while the model is answering (2026-10-21 review)
+ *
+ * A reply takes seconds, and in those seconds he can Enter by hand, fold a
+ * correction into the request, or delete the meal. So each row is re-read
+ * before it is sent (an earlier row's await may have outlasted a change), and
+ * again when the reply lands: the reply is applied only if the row is still
+ * there and still the SAME request (`samePendingRequest`: id, kind, words,
+ * file). Otherwise the reply is dropped — it answers a question nobody is
+ * asking any more — and the row, if any, is left for the next drain. The clear
+ * itself is conditional on that same state, so it can never take a request
+ * that was not the one answered.
  */
 export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise<DrainResult> {
   const nowMs = (deps.now ?? Date.now)();
-  const rows = listPendingEstimates(db).filter((row) => isPendingEstimateDue(row, nowMs));
+  const listed = listPendingEstimates(db).filter((row) => isPendingEstimateDue(row, nowMs));
   let applied = 0;
-  for (const row of rows) {
+  for (const queued of listed) {
+    const row = pendingEstimateForMeal(db, queued.meal_id);
+    if (!row || !isPendingEstimateDue(row, nowMs)) continue;
     // Set the moment the model call returns. A failure after it is a failure
     // of a request that was BILLED — never the network's — so it is parked
     // rather than sent (and billed) again.
@@ -296,11 +314,13 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
           instruction
         );
         answered = true;
+        // Superseded while the model answered: drop the reply (see the header).
+        if (!samePendingRequest(pendingEstimateForMeal(db, row.meal_id), row)) continue;
         const revised = groundMealEstimate(db, reply);
         // A revision touches the items and nothing else — the meal's date,
         // time, name and notes are the user's (replaceMealItems' own rule).
         replaceMealItems(db, row.meal_id, toMealItems(revised));
-        clearPendingEstimate(db, row, deps.pendingStore);
+        clearPendingEstimateIfUnchanged(db, row, deps.pendingStore);
         applied++;
         continue;
       }
@@ -317,6 +337,10 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
 
       const reply = await deps.estimators.estimate(input);
       answered = true;
+      // Superseded while the model answered — entered by hand (which already
+      // moved the photo onto the meal), a correction folded in, the meal
+      // deleted: drop the reply rather than overwrite him (see the header).
+      if (!samePendingRequest(pendingEstimateForMeal(db, row.meal_id), row)) continue;
       const grounded = groundMealEstimate(db, reply);
       // The placeholder's name was always provisional — the user's typed words,
       // or a plain statement that it was photographed. The model's title
@@ -344,7 +368,7 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
           deps.mealPhotoStore
         );
       }
-      clearPendingEstimate(db, row, deps.pendingStore);
+      clearPendingEstimateIfUnchanged(db, row, deps.pendingStore);
       applied++;
     } catch (error) {
       const failed: QueueFailure = answered
@@ -370,7 +394,7 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
   }
   const left = listPendingEstimates(db);
   return {
-    attempted: rows.length,
+    attempted: listed.length,
     applied,
     kept: left.length,
     parked: left.filter(isParked).length,
@@ -412,7 +436,29 @@ export function enterPendingEstimateByHand(
 /** One drain at a time. The app-open pass and the foreground listener can both
  *  fire within a frame of each other, and two drains would race on the same
  *  rows — the second would re-send a request the first has in flight. */
-let draining = false;
+let inFlight: Promise<DrainResult> | null = null;
+/** A drain was asked for while one ran (Try again on a parked row): the running
+ *  one passes over the queue once more before it settles. */
+let rerunRequested = false;
+
+/** The real estimators and directories. */
+function appDrainDeps(db: Database): DrainDeps {
+  return {
+    estimators: {
+      // His usual foods and his last corrections ride the user turn here too
+      // (items 73 and 86).
+      estimate: (input) =>
+        estimateMeal({
+          ...input,
+          usual: usualFoodsContextFor(db),
+          corrections: correctionsContextFor(db),
+        }),
+      revise: (meal, instruction) => reviseMeal(meal, instruction),
+    },
+    pendingStore: nativePendingEstimateStore(),
+    mealPhotoStore: nativePhotoStore(),
+  };
+}
 
 /**
  * The app's own drain: the real estimators, the real directories, and a no-op
@@ -420,31 +466,41 @@ let draining = false;
  * "back online" has no event in React Native without a netinfo dependency, and
  * returning to the app is the moment that matters anyway (a drain nobody is
  * present for helps nobody).
+ *
+ * Asked again while a drain runs, it does not start a second one; it asks the
+ * running one to pass over the queue once more and returns THAT drain's
+ * promise, so a caller that re-reads when it settles (the meal screen's Try
+ * again) re-reads after its own row was tried. Until 2026-10-21 it returned at
+ * once, having done nothing, and the row reset by Try again sat until the next
+ * foreground. `deps` is the tests' seam; the app passes nothing.
  */
-export async function runEstimateQueueDrain(db: Database): Promise<DrainResult> {
-  const idle: DrainResult = { attempted: 0, applied: 0, kept: 0, parked: 0 };
-  if (draining) return idle;
-  draining = true;
-  try {
-    if (listPendingEstimates(db).length === 0) return idle;
-    return await drainEstimateQueue(db, {
-      estimators: {
-        // His usual foods and his last corrections ride the user turn here too
-        // (items 73 and 86).
-        estimate: (input) =>
-          estimateMeal({
-            ...input,
-            usual: usualFoodsContextFor(db),
-            corrections: correctionsContextFor(db),
-          }),
-        revise: (meal, instruction) => reviseMeal(meal, instruction),
-      },
-      pendingStore: nativePendingEstimateStore(),
-      mealPhotoStore: nativePhotoStore(),
-    });
-  } catch {
-    return idle;
-  } finally {
-    draining = false;
+export function runEstimateQueueDrain(
+  db: Database,
+  deps: DrainDeps = appDrainDeps(db)
+): Promise<DrainResult> {
+  if (inFlight) {
+    rerunRequested = true;
+    return inFlight;
   }
+  const idle: DrainResult = { attempted: 0, applied: 0, kept: 0, parked: 0 };
+  inFlight = (async () => {
+    try {
+      let result = idle;
+      do {
+        rerunRequested = false;
+        if (listPendingEstimates(db).length === 0) {
+          result = idle;
+          continue;
+        }
+        result = await drainEstimateQueue(db, deps);
+      } while (rerunRequested);
+      return result;
+    } catch {
+      return idle;
+    } finally {
+      inFlight = null;
+      rerunRequested = false;
+    }
+  })();
+  return inFlight;
 }

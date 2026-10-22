@@ -18,8 +18,23 @@
  * sessions beat the one before it", which a zig-zag (7, 6, 7 reps at one load)
  * passes forever while getting nowhere: the rebound beat its dip. An advance
  * has to beat EACH of the up-to-three sessions before it, a new high-water mark.
+ *
+ * ## A deload starts a new block (2026-10-21 review)
+ *
+ * Both questions are asked within the current block ({@link blockStart}): the
+ * sessions since the last load drop of at least `LOAD_DROP_FRACTION`. Without
+ * it, 100 × 6 three times, then the deload's 90 × 6, 90 × 7, 90 × 8 compared
+ * each rebuild session with the heavier 100s, read every one as no new best,
+ * marked the lift Stalled and deloaded again to 81 kg while he was adding a
+ * rep a session.
  */
-import { ADVANCE_E1RM_PCT, ADVANCE_WINDOW, DELOAD_FRACTION, STALL_SESSIONS } from './constants';
+import {
+  ADVANCE_E1RM_PCT,
+  ADVANCE_WINDOW,
+  DELOAD_FRACTION,
+  LOAD_DROP_FRACTION,
+  STALL_SESSIONS,
+} from './constants';
 import { epley, effectiveReps } from './e1rm';
 import type { ProgressionSuggestion } from './types';
 
@@ -124,17 +139,44 @@ export function advanceRule(
 }
 
 /**
+ * Where the current block starts: the index of the last session whose load
+ * dropped by at least {@link LOAD_DROP_FRACTION} on the session before it (a
+ * deload, or a reset), or 0 when none did. The sessions before it belong to a
+ * heavier block the rebuild is not trying to beat. A missing load is never a
+ * drop.
+ */
+export function blockStart(sessions: readonly SessionTopSet[]): number {
+  for (let i = sessions.length - 1; i > 0; i--) {
+    const w = sessions[i]!.weightKg;
+    const prev = sessions[i - 1]!.weightKg;
+    if (w != null && prev != null && w <= prev * (1 - LOAD_DROP_FRACTION) + EPS) return i;
+  }
+  return 0;
+}
+
+/**
  * Whether `latest` advanced on the sessions before it (oldest to newest): it
- * beats EACH of the last {@link ADVANCE_WINDOW} of them. With nothing before
- * it, it did: the first session is the first best. "Each of three" is what
- * stops a rebound counting: 7, 6, 7 beats the 6 and not the first 7.
+ * beats EACH of the last {@link ADVANCE_WINDOW} of them within its own block
+ * ({@link blockStart}). With nothing before it, it did: the first session is
+ * the first best. "Each of three" is what stops a rebound counting: 7, 6, 7
+ * beats the 6 and not the first 7.
+ *
+ * The drop that opens a block is itself judged against the block it dropped
+ * from, so a deload (90 × 6 after 100 × 6) is not an advance and a lighter
+ * load for clearly more (90 × 12, rule 3) still is. Every session after it is
+ * judged within the new block: 90 × 7 beats the 90 × 6.
  */
 export function sessionAdvanced(
   latest: SessionTopSet,
   before: readonly SessionTopSet[],
   repRange: RepRange
 ): boolean {
-  return before.slice(-ADVANCE_WINDOW).every((b) => advanceRule(latest, b, repRange) != null);
+  const start = blockStart([...before, latest]);
+  const from = start === before.length ? blockStart(before) : start;
+  return before
+    .slice(from)
+    .slice(-ADVANCE_WINDOW)
+    .every((b) => advanceRule(latest, b, repRange) != null);
 }
 
 /** Per session, oldest to newest: whether it advanced on the ones before it. */
@@ -154,14 +196,15 @@ export function sinceBestOf(sessions: readonly SessionTopSet[], repRange: RepRan
 
 /**
  * THE stall rule: the engine's deload and the mark's **Stalled**, one
- * predicate. At least {@link STALL_SESSIONS} comparable sessions, no new best
- * in the last `STALL_SESSIONS - 1` of them, and every one of the last
- * `STALL_SESSIONS` below the top of the range. A lift that reached the top
- * recently is not stalled: its next step is a load jump. Pass
- * {@link comparableSessions}.
+ * predicate. At least {@link STALL_SESSIONS} comparable sessions in the
+ * current block ({@link blockStart}: a deload's rebuild has to stall on its
+ * own before it deloads again), no new best in the last `STALL_SESSIONS - 1`
+ * of them, and every one of the last `STALL_SESSIONS` below the top of the
+ * range. A lift that reached the top recently is not stalled: its next step is
+ * a load jump. Pass {@link comparableSessions}.
  */
 export function isStalled(sessions: readonly SessionTopSet[], repRange: RepRange): boolean {
-  if (sessions.length < STALL_SESSIONS) return false;
+  if (sessions.length - blockStart(sessions) < STALL_SESSIONS) return false;
   const belowTop = sessions.slice(-STALL_SESSIONS).every((s) => (s.reps ?? 0) < repRange.high);
   return belowTop && sinceBestOf(sessions, repRange) >= STALL_SESSIONS - 1;
 }

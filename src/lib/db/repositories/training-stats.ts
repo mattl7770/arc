@@ -149,7 +149,10 @@ function bestSetOf<T extends SetRow>(rows: readonly T[], basis: LoadBasis | null
 
 /**
  * Best working set per session for an exercise, oldest → newest, capped at
- * `limit` most-recent sessions — the input to progression + the e1RM trend.
+ * `limit` most-recent sessions, away ones included and marked — the input to
+ * progression + the e1RM trend. The engine (`progressionFor`) asks for every
+ * session and cuts its own window after dropping the away ones, so its window
+ * and the overload mark read the same home series.
  */
 export function exerciseSessionTops(
   db: Database,

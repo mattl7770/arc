@@ -334,6 +334,14 @@ export const ADVANCE_WINDOW = 3;
 export const ADVANCE_E1RM_PCT = 1;
 /** Deload cuts the working weight by this fraction. */
 export const DELOAD_FRACTION = 0.1;
+/**
+ * A load drop at least this large, session on session, starts a new block
+ * (`blockStart`, progression.ts): a deload or a reset, whose rebuild is
+ * compared with itself and not with the heavier sessions before it. Half the
+ * deload, so a 10% deload always counts, and well over plate rounding or a
+ * kg/lb round trip on any working load.
+ */
+export const LOAD_DROP_FRACTION = 0.05;
 
 // ---------------------------------------------------------------------------
 // Rest + warmups

@@ -1671,7 +1671,7 @@ console.log('22. three tables move together: every model has a price and a searc
   p('claude-opus-5-5').cacheRead === 0.2 &&
   p('claude-sonnet-5-5').input === 2 &&
   p('claude-sonnet-5-5').output === 10 &&
-  p('claude-sonnet-5-5').cacheRead === 0.1 &&
+  p('claude-sonnet-5-5').cacheRead === 0.2 &&
   p('claude-haiku-5-5').input === 0.1 &&
   p('claude-haiku-5-5').output === 0.5 &&
   p('claude-haiku-5-5').cacheRead === 0.01 &&

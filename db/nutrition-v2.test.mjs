@@ -77,6 +77,7 @@ import {
 } from '../src/lib/db/repositories/nutrition.ts';
 import {
   listPendingEstimates,
+  markPendingEstimateFailed,
   pendingEstimateForMeal,
   pendingEstimateMealIds,
   placeholderMealName,
@@ -91,6 +92,7 @@ import {
   enterPendingEstimateByHand,
   failureReason,
   isQueueableFailure,
+  runEstimateQueueDrain,
 } from '../src/lib/nutrition/estimate-queue.ts';
 import {
   sweepPendingEstimatePhotos,
@@ -1752,7 +1754,7 @@ console.log('25. C3: which failures are worth waiting on');
   c(new ModelRequestError(0, null, 'x')) === 'interrupted/retry/stop' &&
   c(new ModelRequestError(529, null, 'x')) === 'server/retry/stop' &&
   c(new ModelRequestError(401, null, 'x')) === 'auth/park/stop' &&
-  c(new ModelRequestError(429, null, 'x')) === 'rate_limited/park/stop' &&
+  c(new ModelRequestError(429, null, 'x')) === 'rate_limited/retry/stop' &&
   c(new ModelRequestError(400, null, 'x')) === 'rejected/park' &&
   c(new MealEstimateParseError('x')) === 'unreadable/park' &&
   c(new MealEstimateRefusedError('x')) === 'refused/park'
@@ -1801,7 +1803,6 @@ console.log('25b. the re-billing loop: a refused estimate is sent ONCE, not on e
     ['a refusal', () => new MealEstimateRefusedError('The model declined to estimate this meal.')],
     ['a 400', () => new ModelRequestError(400, 'invalid_request_error', 'bad request')],
     ['a 401', () => new ModelRequestError(401, 'authentication_error', 'invalid x-api-key')],
-    ['a 429', () => new ModelRequestError(429, 'rate_limit_error', 'rate limited')],
     ['an error nothing can name', () => new TypeError('Cannot read properties of undefined')],
   ];
   for (const [label, error] of permanent) {
@@ -9451,6 +9452,259 @@ console.log('105. a joined item edited or deleted is never a false correction');
     describeCorrection({ issue: 'item', before: [x], after: [x, y] }) === '- item off: missed "Butter" 10 g · 72 kcal'
       ? ok('an unmarked snapshot still reports a removed or a missed food')
       : bad('old snapshot changed meaning');
+  }
+}
+
+console.log('106. the queue while the user acts mid-drain (2026-10-21 review)');
+{
+  /** Estimators whose first reply waits for `release()`. */
+  const gated = (reply = REPLY) => {
+    let release;
+    const gate = new Promise((r) => (release = r));
+    const calls = [];
+    const answer = async (kind, payload) => {
+      calls.push({ kind, ...payload });
+      if (calls.length === 1) await gate;
+      return parseMealEstimate(reply);
+    };
+    return {
+      calls,
+      release: () => release(),
+      estimate: (input) => answer('estimate', { input }),
+      revise: (meal, instruction) => answer('revise', { meal, instruction }),
+    };
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const photoCount = (raw, mealId) =>
+    raw.prepare('SELECT count(*) AS c FROM meal_photos WHERE meal_id = ?').get(mealId).c;
+
+  // --- a correction over a waiting photo is folded in, not swapped in ---------
+  {
+    const { db } = freshDb();
+    const pendingStore = fakeStore();
+    const mealPhotoStore = fakeStore();
+    const fileName = writePendingEstimatePhoto('/9j/plate', pendingStore);
+    const { mealId } = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '19:40', name: placeholderMealName(null) },
+      { kind: 'photo', file_name: fileName, width: 800, height: 600 }
+    );
+    queueMealRevision(db, mealId, 'it was a big portion');
+    const row = pendingEstimateForMeal(db, mealId);
+    row.kind === 'photo' && row.file_name === fileName && row.description === 'it was a big portion'
+      ? ok('a correction queued over a waiting photo keeps the photo request, with his words added')
+      : bad('photo overwritten', JSON.stringify(row));
+    sweepPendingEstimatePhotos(db, pendingStore, new Set());
+    pendingStore.files.size === 1
+      ? ok('…so the sweep does not take the photo as an orphan')
+      : bad('photo swept');
+    const estimators = fakeEstimators();
+    await drainEstimateQueue(db, { estimators, pendingStore, mealPhotoStore });
+    estimators.calls.length === 1 &&
+    estimators.calls[0]?.input?.kind === 'photo' &&
+    estimators.calls[0]?.input?.description === 'it was a big portion' &&
+    latestMealPhoto(db, mealId)
+      ? ok('the drain sends the photo with the correction as its context, and lands the photo')
+      : bad('folded drain', JSON.stringify(estimators.calls.map((c) => c.input)));
+
+    // A text request keeps its words first, and a parked one is sent again.
+    const text = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '12:00', name: 'lunch' },
+      { kind: 'text', description: 'a chicken burrito' }
+    ).mealId;
+    markPendingEstimateFailed(db, pendingEstimateForMeal(db, text).id, 'x', 'park');
+    queueMealRevision(db, text, 'no sour cream');
+    const t = pendingEstimateForMeal(db, text);
+    t.kind === 'text' &&
+    t.description === 'a chicken burrito\nno sour cream' &&
+    t.attempts === 0 &&
+    !isParked(t)
+      ? ok('over a text request: "a chicken burrito\\nno sour cream", unparked')
+      : bad('text fold', JSON.stringify(t));
+  }
+
+  // --- Enter by hand while the estimate is in flight --------------------------
+  {
+    const { db, raw } = freshDb();
+    const pendingStore = fakeStore();
+    const mealPhotoStore = fakeStore();
+    const fileName = writePendingEstimatePhoto('/9j/plate', pendingStore);
+    const { mealId } = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '19:40', name: placeholderMealName(null) },
+      { kind: 'photo', file_name: fileName, width: 800, height: 600 }
+    );
+    const estimators = gated();
+    const drain = drainEstimateQueue(db, { estimators, pendingStore, mealPhotoStore });
+    await tick();
+    enterPendingEstimateByHand(db, mealId, { pendingStore, mealPhotoStore });
+    estimators.release();
+    const result = await drain;
+    const meal = getMeal(db, mealId);
+    meal.name === 'Photographed meal' &&
+    listMealItems(db, mealId).length === 0 &&
+    result.applied === 0
+      ? ok('Enter by hand mid-flight wins: the late reply is dropped, the meal stays his to fill in')
+      : bad('by hand overridden', JSON.stringify({ name: meal.name, result }));
+    photoCount(raw, mealId) === 1 && mealPhotoStore.files.size === 1
+      ? ok('…and the photo is on the meal once, not twice')
+      : bad('photo twice', String(photoCount(raw, mealId)));
+  }
+
+  // --- a correction queued while a correction is in flight --------------------
+  {
+    const { db } = freshDb();
+    const mealId = logMeal(db, { date: TODAY, time: '12:00', name: 'Lunch', kcal: 500 });
+    queueMealRevision(db, mealId, 'first correction');
+    const estimators = gated();
+    const drain = drainEstimateQueue(db, { estimators, pendingStore: null, mealPhotoStore: null });
+    await tick();
+    queueMealRevision(db, mealId, 'second correction');
+    estimators.release();
+    await drain;
+    const row = pendingEstimateForMeal(db, mealId);
+    row?.kind === 'revise' && row.description === 'second correction'
+      ? ok('a correction queued mid-drain survives the drain that answered the one before it')
+      : bad('second correction deleted', JSON.stringify(row));
+  }
+
+  // --- the meal deleted mid-flight ---------------------------------------------
+  {
+    const { db } = freshDb();
+    const { mealId } = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '12:00', name: 'lunch' },
+      { kind: 'text', description: 'lunch' }
+    );
+    const estimators = gated();
+    const drain = drainEstimateQueue(db, { estimators, pendingStore: null, mealPhotoStore: null });
+    await tick();
+    db.run('DELETE FROM meals WHERE id = ?', [mealId]);
+    estimators.release();
+    const result = await drain;
+    result.applied === 0 && result.parked === 0 && listPendingEstimates(db).length === 0
+      ? ok('a meal deleted mid-flight: the reply is dropped, nothing parked or resurrected')
+      : bad('deleted meal', JSON.stringify(result));
+  }
+
+  // --- a row changed by an earlier row's await is re-read before it is sent ---
+  {
+    const { db } = freshDb();
+    const first = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '08:00', name: 'breakfast' },
+      { kind: 'text', description: 'eggs' }
+    ).mealId;
+    const second = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '12:00', name: 'lunch' },
+      { kind: 'text', description: 'a burrito' }
+    ).mealId;
+    const estimators = gated();
+    const drain = drainEstimateQueue(db, { estimators, pendingStore: null, mealPhotoStore: null });
+    await tick();
+    queueMealRevision(db, second, 'no cheese');
+    estimators.release();
+    await drain;
+    estimators.calls[1]?.input?.description === 'a burrito\nno cheese' &&
+    !pendingEstimateForMeal(db, second) &&
+    !pendingEstimateForMeal(db, first)
+      ? ok('the next row is sent as it stands now, the correction included')
+      : bad('stale row sent', JSON.stringify(estimators.calls.map((c) => c.input?.description)));
+  }
+
+  // --- Try again while a drain runs: it is tried before that drain settles ----
+  {
+    const { db } = freshDb();
+    const parked = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '08:00', name: 'breakfast' },
+      { kind: 'text', description: 'eggs' }
+    ).mealId;
+    markPendingEstimateFailed(db, pendingEstimateForMeal(db, parked).id, 'x', 'park');
+    queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '12:00', name: 'lunch' },
+      { kind: 'text', description: 'a burrito' }
+    );
+    const estimators = gated();
+    const deps = { estimators, pendingStore: null, mealPhotoStore: null };
+    const running = runEstimateQueueDrain(db, deps);
+    await tick();
+    retryPendingEstimate(db, parked);
+    const again = runEstimateQueueDrain(db, deps);
+    estimators.release();
+    await again;
+    !pendingEstimateForMeal(db, parked) && listMealItems(db, parked).length > 0
+      ? ok('Try again during a running drain: the drain loops once more, and its row is applied')
+      : bad('try again ignored', JSON.stringify(pendingEstimateForMeal(db, parked)));
+    (await running) === (await again) && estimators.calls.length === 2
+      ? ok('…one drain, not two: the second caller waits on the first, which ran twice')
+      : bad('second drain', String(estimators.calls.length));
+  }
+
+  // --- a 429 is retried with the backoff, not parked --------------------------
+  {
+    const { db } = freshDb();
+    const { mealId } = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '12:00', name: 'lunch' },
+      { kind: 'text', description: 'a burrito' }
+    );
+    const calls = [];
+    let limited = true;
+    const estimators = {
+      estimate: async () => {
+        calls.push(1);
+        if (limited) throw new ModelRequestError(429, 'rate_limit_error', 'rate limited');
+        return parseMealEstimate(REPLY);
+      },
+      revise: async () => {
+        throw new Error('not this path');
+      },
+    };
+    const t0 = Date.now() + 60_000;
+    const at = (ms) => drainEstimateQueue(db, { estimators, pendingStore: null, mealPhotoStore: null, now: () => ms });
+    await at(t0);
+    const row = pendingEstimateForMeal(db, mealId);
+    row.attempts === 1 && !isParked(row) && row.last_error.startsWith('rate_limited: ')
+      ? ok('a 429 counts one attempt and waits out the backoff — it does not park')
+      : bad('429 parked', JSON.stringify(row));
+    pendingEstimateStatus(row).line === 'Estimate pending — will retry'
+      ? ok('…and the meal says it will retry, not that it is paused')
+      : bad('429 line', pendingEstimateStatus(row).line);
+    await at(t0 + 5_000);
+    calls.length === 1 ? ok('…inside the backoff, nothing is sent') : bad('429 re-sent early');
+    limited = false;
+    await at(t0 + QUEUE_BACKOFF_MS[0] + 1_000);
+    calls.length === 2 && !pendingEstimateForMeal(db, mealId) && listMealItems(db, mealId).length > 0
+      ? ok('…and once the limit lifts, the next drain past the backoff lands the estimate')
+      : bad('429 not retried', String(calls.length));
+    // Still capped: a limit that never lifts parks at QUEUE_MAX_ATTEMPTS.
+    const stuck = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '13:00', name: 'snack' },
+      { kind: 'text', description: 'an apple' }
+    ).mealId;
+    limited = true;
+    const DAY = 24 * 60 * 60_000;
+    for (let i = 0; i < 8; i++) await at(t0 + (i + 1) * DAY);
+    const s = pendingEstimateForMeal(db, stuck);
+    isParked(s) && s.attempts === QUEUE_MAX_ATTEMPTS
+      ? ok(`…a limit that never lifts parks after ${QUEUE_MAX_ATTEMPTS} counted tries`)
+      : bad('429 uncapped', JSON.stringify(s));
+  }
+
+  // --- the cold-start drain waits for the key (app/_layout.tsx) ---------------
+  {
+    const layout = readFileSync(new URL('../app/_layout.tsx', import.meta.url), 'utf8');
+    const bare = layout.match(/void runEstimateQueueDrain\(getDb\(\)\);/g) ?? [];
+    /void apiKeyStore\.hydrate\(\)\.then\(\s*\(\) => runEstimateQueueDrain\(getDb\(\)\),\s*\(\) => runEstimateQueueDrain\(getDb\(\)\)\s*\);/.test(
+      layout
+    ) && bare.length === 1
+      ? ok('the cold-start drain runs after apiKeyStore.hydrate() resolves; only the foreground one is bare')
+      : bad('cold drain before hydrate', `bare drains: ${bare.length}`);
   }
 }
 
