@@ -4,18 +4,21 @@
  * Owner, on the device, 2026-09-23: *"trends, prs, etc for exercises (i.e.
  * fitbod)"*. Everything a screen prints about how a lift is going is computed
  * here from the logged sets and nowhere else: the records grid, best at each
- * rep count, the per-session trend and its direction of travel, the PR stamp in
- * the live logger, the PR mark in the history and the self-review's records.
+ * rep count, the per-session trend and its direction of travel, the overload
+ * mark (whether the lift is moving) and the self-review's records.
  *
- * ## One rule, four surfaces
+ * ## Records are a reference; the overload mark is the signal (item 87)
  *
- * The live stamp ({@link stampFor} → {@link recordsBeaten}), the history's PR
- * mark ({@link recordSessionIds}) and the self-review's record line
- * ({@link e1rmRecordOf}) all ask {@link kindsBeating}, so a set stamped PR in the
- * gym is the session marked PR afterwards and the record the report lists. The
- * Records grid is drawn from the same list of kinds ({@link recordKindsFor} →
- * {@link recordCellsFor}), so every record the grid shows is one a set can
- * stamp — the grid cannot grow a record the stamp never checks.
+ * Until 2026-10-21 a set that beat any of ten records was stamped PR in the
+ * gym and its session marked PR in the history. In a 3-set double-progression
+ * block some record fires most sessions (an extra set beats "session volume"),
+ * so the stamp stopped meaning "you got stronger". The owner chose option C of
+ * docs/spikes/pr-vs-overload.md: the live stamp, the history's PR mark and the
+ * Train hub's % token are replaced by the overload mark ({@link overloadMarkOf}:
+ * Progressing / Holding / Stalled), and the records stay as facts. The Records
+ * grid ({@link recordKindsFor} → {@link recordCellsFor}) and the self-review's
+ * record line ({@link e1rmRecordOf}, which asks {@link kindsBeating}) are
+ * unchanged. {@link recordsBeaten} stays as the rule's public form.
  *
  * ## Three rules every function here keeps
  *
@@ -34,10 +37,17 @@
  *    set, and reps at different assistance are not one scale either
  *    ({@link loadRecordsApply}). Their grid shows rep counts as facts.
  */
-import { E1RM_MAX_RIR, E1RM_REP_CAP, PACE_PR_MIN_M } from './constants';
+import {
+  CAPABILITY_WINDOW_DAYS,
+  E1RM_MAX_RIR,
+  E1RM_REP_CAP,
+  PACE_PR_MIN_M,
+  STALL_SESSIONS,
+} from './constants';
 import { e1rmForSet } from './e1rm';
 import {
   dayLabel,
+  displayWeight,
   formatClock,
   formatDistance,
   formatPace,
@@ -45,10 +55,22 @@ import {
   parseClock,
   toCanonicalKg,
   toCanonicalMetres,
+  weightSpec,
 } from './format';
 import { loadRecordsApply, type LoadBasis } from './load-basis';
 import { hasMeasure, maskByMeasures, type Measures } from './measures';
+import {
+  advanceRule,
+  advancedFlags,
+  comparableSessions,
+  isStalled,
+  sessionAdvanced,
+  sessionStrength,
+  sinceBestOf,
+  type SessionTopSet,
+} from './progression';
 import type { PersonalRecords, SetType } from './types';
+import { shiftISODate } from '@/lib/db/date';
 import type { DateString } from '@/lib/db/types';
 import type { UnitPreferences } from '@/lib/user/types';
 
@@ -110,9 +132,9 @@ export const REP_MAX_CAP = 20;
  * sessions only, warmups never (0055).
  *
  * ONE definition, because two would drift: the records grid, best at each rep
- * count, the live PR stamp, the history's PR mark and the direction of travel
- * all have to agree exactly about which sets are comparable to the home
- * baseline, or a movement could show a record the stamp never saw.
+ * count, the record rule, the overload mark and the direction of travel all
+ * have to agree exactly about which sets are comparable to the home baseline,
+ * or a movement could show a record its own history never set.
  *
  * The asymmetry is 0055's whole argument: a false PR from a friendlier machine
  * raises every bar PERMANENTLY and the next home sessions then read as a stall,
@@ -452,7 +474,7 @@ export function recordCellsOf(
 }
 
 // ---------------------------------------------------------------------------
-// The PR rule — live stamp, history mark and report alike
+// The record rule — the self-review's record line, and recordsBeaten
 // ---------------------------------------------------------------------------
 
 /** The running bests one set is measured against. */
@@ -675,86 +697,10 @@ export function recordsBeaten(
   return kindsBeating(set, priorOf(history), soFar, ctx);
 }
 
-/** A set as the live logger holds it: typed strings (`DraftSet`'s shape). */
-export type TypedSet = {
-  key: number;
-  weight: string;
-  reps: string;
-  rpe: string;
-  time: string;
-  distance: string;
-  setType: SetType;
-  done: boolean;
-  storedWeightKg?: number | null;
-  storedWeightText?: string;
-};
-
-/** A live logger block, as far as the stamp needs it (`DraftBlock`'s shape). */
-export type TypedBlock = { exerciseId: string | null; sets: readonly TypedSet[] };
-
-/**
- * The live PR stamp for one set, from the live logger's own state — the whole
- * of what ticking a set asks, so it is tested as a function rather than as a
- * screen (the screen only reads `history` and passes this through).
- *
- *   * **Editing a past session stamps nothing**: a stamp is a claim about right
- *     now, and that set happened days ago. Nor does a free-text block, which
- *     has no movement to hold records.
- *   * **The session is every block of the same movement**, not the set's own
- *     block: bench → row → bench is one session of bench, and the second bench
- *     block must clear the records the first already set.
- *   * `set` is the set AS IT NOW READS — the ticked set, or a done set whose
- *     numbers were just edited, which is re-asked rather than left carrying a
- *     stamp for figures it no longer holds.
- */
-export function stampFor(input: {
-  set: TypedSet;
-  exerciseId: string | null;
-  measures: Measures;
-  blocks: readonly TypedBlock[];
-  history: readonly RecordRow[];
-  basis: LoadBasis | null;
-  away: boolean;
-  editing: boolean;
-  units: UnitPreferences;
-}): RecordKind[] {
-  if (input.editing || input.exerciseId == null) return [];
-  const session = input.blocks
-    .filter((b) => b.exerciseId === input.exerciseId)
-    .flatMap((b) => b.sets.filter((s) => s.done && s.key !== input.set.key))
-    .map((s) => candidateFromTyped(s, input.units));
-  return recordsBeaten(candidateFromTyped(input.set, input.units), input.history, session, {
-    away: input.away,
-    measures: input.measures,
-    basis: input.basis,
-  });
-}
-
-/**
- * The sessions that set at least one record at the time they were logged —
- * the PR mark in the detail screen's history. Walks the home sessions oldest
- * first, asks each set the live stamp's own question against everything before
- * its session and the sets before it in that session, then folds the session
- * in. Away sessions are neither marked nor folded. Returns workout ids.
- */
-export function recordSessionIds(rows: readonly RecordRow[], ctx: RecordContext): Set<string> {
-  const prior = emptyPrior();
-  const marked = new Set<string>();
-  for (const s of sessionsOldestFirst(rows)) {
-    const soFar = emptySoFar();
-    for (const set of s.sets) {
-      if (kindsBeating(set, prior, soFar, ctx).length > 0) marked.add(s.id);
-      addToSoFar(soFar, set);
-    }
-    addSession(prior, s.sets);
-  }
-  return marked;
-}
-
 /**
  * The self-review's "personal record set this period" for one movement: its
  * all-time best e1RM, the day it was first reached, and only when reaching it
- * BEAT an earlier best — the live stamp's `e1rm` kind, asked of the history.
+ * BEAT an earlier best — the record rule's `e1rm` kind, asked of the history.
  * Null for a movement whose best is still its first session (nothing was
  * beaten), for an assisted one, and for one with no e1RM at all.
  */
@@ -854,42 +800,6 @@ function recordKindParts(kind: RecordKind, reps: number | null): PhrasePart[] {
 /** How one record reads in a line: "best e1RM", "best at 5 reps". */
 export function recordKindLabel(kind: RecordKind, reps: number | null): string {
   return phraseText(recordKindParts(kind, reps));
-}
-
-/**
- * The live logger's PR line for one block, as parts: "Set 3: best e1RM,
- * heaviest · Set 4: best at 5 reps", with the set numbers and rep counts
- * marked as figures. Null when nothing was beaten.
- *
- * `rep_max` is dropped from a set that is also the heaviest ever: the heaviest
- * set on record is necessarily the best at its own rep count, and saying both
- * is one fact twice.
- */
-export function prSummaryParts(
-  sets: readonly { index: number; reps: number | null; kinds: readonly RecordKind[] }[]
-): PhrasePart[] | null {
-  const parts: PhrasePart[] = [];
-  for (const s of sets) {
-    const kinds = RECORD_KINDS.filter(
-      (k) => s.kinds.includes(k) && !(k === 'rep_max' && s.kinds.includes('weight'))
-    );
-    if (kinds.length === 0) continue;
-    if (parts.length > 0) parts.push({ text: ' · ' });
-    parts.push({ text: 'Set ' }, { text: String(s.index), measured: true }, { text: ': ' });
-    kinds.forEach((k, i) => {
-      if (i > 0) parts.push({ text: ', ' });
-      parts.push(...recordKindParts(k, s.reps));
-    });
-  }
-  return parts.length > 0 ? parts : null;
-}
-
-/** {@link prSummaryParts} as one string. */
-export function prSummary(
-  sets: readonly { index: number; reps: number | null; kinds: readonly RecordKind[] }[]
-): string | null {
-  const parts = prSummaryParts(sets);
-  return parts == null ? null : phraseText(parts);
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,7 +1091,7 @@ export function trendHeadline(
   return { value: last.value, label: 'Latest · away gym' };
 }
 
-/** "+4%", "−3%" or "level" — the Train hub's direction token (mono). */
+/** "+4%", "−3%" or "level": the direction's figure in a phrase (the hub row drew it until item 87). */
 export function trendToken(trend: Trend): string {
   if (trend.direction === 'level') return 'level';
   const pct = Math.round(Math.abs(trend.changePct));
@@ -1518,4 +1428,199 @@ export function trendView(
     emptyNote: drawn ? null : trendRangeEmptyNote(metric, rows, range, today),
     away: drawn && series.some((p) => p.away === true),
   };
+}
+
+// ---------------------------------------------------------------------------
+// The overload mark — is the lift moving? (item 87, docs/spikes/pr-vs-overload.md)
+// ---------------------------------------------------------------------------
+
+/** Where a lift stands, from its best set per home session. */
+export type OverloadMark = 'progressing' | 'holding' | 'stalled';
+
+export const OVERLOAD_MARK_LABEL: Record<OverloadMark, string> = {
+  progressing: 'Progressing',
+  holding: 'Holding',
+  stalled: 'Stalled',
+};
+
+/** What the mark needs to know about the movement. */
+export type OverloadMovement = {
+  measures: Measures;
+  basis: LoadBasis | null;
+  /** The engine's rep range for it (`REP_RANGE[mechanic]`). */
+  repRange: { low: number; high: number };
+};
+
+/** One movement's mark, and the two sessions a line about it describes. */
+export type OverloadReading = {
+  mark: OverloadMark;
+  /** Home sessions since the last one that advanced: 0 when the latest did. */
+  sinceBest: number;
+  latest: SessionTopSet;
+  previous: SessionTopSet;
+};
+
+/**
+ * The sessions a movement's mark is read from, or null when it can have none.
+ *
+ * None for a movement that does not count reps (a plank, a carry: every rule
+ * is about reps), anything covering distance (`directionMetricsFor`'s
+ * exclusion: whether a run is better longer or faster depends on what it was
+ * for) and an ASSISTED one (more assistance is an easier set, 0062).
+ *
+ * A lift is compared over exactly the sessions the engine compares
+ * (`comparableSessions`), which is what makes Stalled and the engine's deload
+ * one answer. A movement never logged with a load at home (a push-up, a
+ * bodyweight pull-up) is judged on reps alone, its load zero.
+ */
+function overloadSessions(
+  sessions: readonly SessionTopSet[],
+  movement: OverloadMovement
+): SessionTopSet[] | null {
+  const { measures, basis } = movement;
+  if (!hasMeasure(measures, 'reps') || hasMeasure(measures, 'distance')) return null;
+  if (!loadRecordsApply(basis)) return null;
+  const home = comparableSessions(sessions, true);
+  return home.some((s) => s.weightKg != null) ? comparableSessions(sessions) : home;
+}
+
+/**
+ * The overload mark for one movement, from its best set per session (oldest
+ * first, as `exerciseSessionTopsFrom` returns them, away sessions included and
+ * ignored here). Null with fewer than {@link STALL_SESSIONS} comparable home
+ * sessions, when the latest is more than {@link CAPABILITY_WINDOW_DAYS} days
+ * before `today`, and for a movement {@link overloadSessions} refuses.
+ *
+ *   Progressing  the latest session advanced
+ *   Holding      the one before it was the last advance; or longer, but one of
+ *                the last three reached the top of the range (a load jump next)
+ *   Stalled      `isStalled`: exactly when the engine prescribes a deload
+ */
+export function overloadMarkOf(
+  sessions: readonly SessionTopSet[],
+  movement: OverloadMovement,
+  today: DateString
+): OverloadReading | null {
+  const comparable = overloadSessions(sessions, movement);
+  if (comparable == null || comparable.length < STALL_SESSIONS) return null;
+  const latest = comparable[comparable.length - 1]!;
+  if (latest.date < shiftISODate(today, -CAPABILITY_WINDOW_DAYS)) return null;
+  const sinceBest = sinceBestOf(comparable, movement.repRange);
+  const mark: OverloadMark =
+    sinceBest === 0
+      ? 'progressing'
+      : isStalled(comparable, movement.repRange)
+        ? 'stalled'
+        : 'holding';
+  return { mark, sinceBest, latest, previous: comparable[comparable.length - 2]! };
+}
+
+/**
+ * The sessions that ADVANCED when they were logged: the History's mark, which
+ * replaced its PR mark. Never the first comparable session (it had nothing to
+ * advance on) and never an away one. Workout ids.
+ */
+export function advancedSessionIds(
+  sessions: readonly SessionTopSet[],
+  movement: OverloadMovement
+): Set<string> {
+  const comparable = overloadSessions(sessions, movement) ?? [];
+  const flags = advancedFlags(comparable, movement.repRange);
+  const out = new Set<string>();
+  comparable.forEach((s, i) => {
+    if (i > 0 && flags[i] && s.workoutId != null) out.add(s.workoutId);
+  });
+  return out;
+}
+
+const repsText = (n: number): string => `${n} ${n === 1 ? 'rep' : 'reps'}`;
+
+/**
+ * How `a` beat `b`, with its figures marked: "+1 rep at 82.5 kg", "+2.5 kg for
+ * 6 reps", "e1RM +3%". Null when it did not. The rule is {@link advanceRule}'s,
+ * so the words always name the reason it counts.
+ */
+export function advanceParts(
+  a: SessionTopSet,
+  b: SessionTopSet,
+  repRange: { low: number; high: number },
+  units: UnitPreferences
+): PhrasePart[] | null {
+  const rule = advanceRule(a, b, repRange);
+  if (rule == null) return null;
+  const aw = a.weightKg ?? 0;
+  const ar = a.reps ?? 0;
+  if (rule === 1) {
+    const step = displayWeight(aw, units) - displayWeight(b.weightKg ?? 0, units);
+    return [
+      { text: `+${formatWeight(weightSpec(units).toCanonical(step), units)}`, measured: true },
+      { text: ' for ' },
+      { text: repsText(ar), measured: true },
+    ];
+  }
+  if (rule === 2) {
+    const more: PhrasePart = { text: `+${repsText(ar - (b.reps ?? 0))}`, measured: true };
+    return aw > 0
+      ? [more, { text: ' at ' }, { text: formatWeight(aw, units), measured: true }]
+      : [more];
+  }
+  const pct = Math.round(((sessionStrength(a) - sessionStrength(b)) / sessionStrength(b)) * 100);
+  return [{ text: 'e1RM ' }, { text: `+${Math.max(1, pct)}%`, measured: true }];
+}
+
+/**
+ * The live logger's block line: how today's best set so far advances on the
+ * logged history, as parts ("+1 rep at 82.5 kg"), or null when it would not
+ * make today an advance. `today` is that set as a session top
+ * (`exerciseSessionTopsFrom` over the done sets, the ranking Finish saves by);
+ * `sessions` is the logged history, which by construction does not hold this
+ * session (a draft until Finish). Nothing when there is no earlier comparable
+ * session to advance on, and nothing for a movement with no mark.
+ */
+export function liveAdvanceOf(
+  today: SessionTopSet | null,
+  sessions: readonly SessionTopSet[],
+  movement: OverloadMovement,
+  units: UnitPreferences
+): PhrasePart[] | null {
+  const comparable = overloadSessions(sessions, movement);
+  if (today == null || comparable == null || comparable.length === 0) return null;
+  const loaded = comparable.some((s) => s.weightKg != null);
+  if (today.reps == null || (loaded && today.weightKg == null)) return null;
+  if (!sessionAdvanced(today, comparable, movement.repRange)) return null;
+  return advanceParts(today, comparable[comparable.length - 1]!, movement.repRange, units);
+}
+
+/**
+ * The line that heads exercise detail's Trend, after the mark itself: "no new
+ * best in 3 sessions · next: 45 kg × 6". `next` is the engine's own target on
+ * real plates (the logger's grey numbers), or null when it has no load step.
+ */
+export function overloadLineParts(
+  reading: OverloadReading,
+  repRange: { low: number; high: number },
+  next: { weightKg: number; reps: number } | null,
+  units: UnitPreferences
+): PhrasePart[] {
+  const parts: PhrasePart[] = [];
+  if (reading.mark === 'progressing') {
+    parts.push(
+      { text: 'last session ' },
+      ...(advanceParts(reading.latest, reading.previous, repRange, units) ?? [])
+    );
+  } else if (reading.sinceBest === 1) {
+    parts.push({ text: 'no new best last session' });
+  } else {
+    parts.push(
+      { text: 'no new best in ' },
+      { text: `${reading.sinceBest} sessions`, measured: true }
+    );
+  }
+  if (next) {
+    parts.push(
+      { text: ' · next: ' },
+      { text: `${formatWeight(next.weightKg, units)} × ${next.reps}`, measured: true }
+    );
+  }
+  return parts;
 }

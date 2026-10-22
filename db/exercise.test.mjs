@@ -97,7 +97,6 @@ import {
   prevPatch,
   prevSpoken,
   removeSetWithUndo,
-  restampMovement,
   setFigure,
   setHint,
   setRemovalWords,
@@ -560,7 +559,6 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
     distance: '',
     setType: 'normal',
     done: false,
-    pr: false,
     ...over,
   });
 
@@ -598,7 +596,7 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
         sets: [
           set(1, { weight: '80', reps: '8', rpe: '8', done: true }),
           set(2, { weight: '80', reps: '8', done: true }),
-          set(3, { weight: '85', reps: '6', rpe: '9', done: true, pr: true }),
+          set(3, { weight: '85', reps: '6', rpe: '9', done: true }),
           set(4, { weight: '85' }),
         ],
       },
@@ -654,9 +652,21 @@ console.log('10. the live draft survives a kill — and never reaches the stats'
   restored.startedAt === draft.startedAt && restored.restEndsAt === draft.restEndsAt
     ? ok('the clock and the rest timer come back as absolute instants, not from zero')
     : bad('instants');
-  restored.blocks[0].linkedToNext === true && restored.blocks[0].sets[2].pr === true
-    ? ok('the superset bind and the PR stamp survive too')
+  restored.blocks[0].linkedToNext === true
+    ? ok('the superset bind survives too')
     : bad('flags');
+  // A draft from a build that still stamped PRs (item 87 retired the stamp):
+  // it resumes, every set intact, with the stamp fields dropped.
+  const stamped = parseLiveDraft({
+    ...draft,
+    blocks: draft.blocks.map((b) => ({
+      ...b,
+      sets: b.sets.map((x) => (x.done ? { ...x, pr: true, prKinds: ['e1rm', 'weight'] } : x)),
+    })),
+  });
+  stamped && JSON.stringify(stamped) === JSON.stringify(draft)
+    ? ok('an old build’s draft with PR stamps resumes identical, the stamp fields dropped')
+    : bad('old stamped draft', JSON.stringify(stamped?.blocks[0].sets[2]));
   restored.away === true
     ? ok('…and so does the away-gym flag, which a v2 draft could not have carried')
     : bad('away flag lost on resume', JSON.stringify(restored.away));
@@ -1452,7 +1462,6 @@ console.log('13. leaving keeps a session; its order and its minutes are editable
     distance: '',
     setType: 'normal',
     done: false,
-    pr: false,
     ...over,
   });
   const live = (over, sets = [set(1, { weight: '80', reps: '8', done: true })]) => ({
@@ -1551,7 +1560,6 @@ console.log('14. the review round: every session is kept, and the decisions are 
     distance: '',
     setType: 'normal',
     done: false,
-    pr: false,
     ...over,
   });
   const block = (key, sets = [set(key)]) => ({
@@ -1772,7 +1780,6 @@ console.log('15. a Start taken straight back is dropped quietly (owner, 2026-09-
     distance: '',
     setType: 'normal',
     done: false,
-    pr: false,
     ...over,
   });
   const block = (key, exerciseId, name, sets) => ({
@@ -1902,7 +1909,7 @@ console.log('15. a Start taken straight back is dropped quietly (owner, 2026-09-
 
   // --- back to what Start put there reads as untouched ---------------------------
   const typedThenCleared = withSet({ weight: '' });
-  const tickedThenUnticked = withSet({ done: false, pr: false, prKinds: undefined });
+  const tickedThenUnticked = withSet({ done: false });
   const movedAndBack = {
     ...started,
     blocks: moveBlockSegment(moveBlockSegment(started.blocks, 4, -1), 4, 1),
@@ -1990,7 +1997,6 @@ console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and 
     distance: '',
     setType: 'normal',
     done: false,
-    pr: false,
     ...over,
   });
   const prevRow = (reps, weightKg, over) => ({
@@ -2224,7 +2230,7 @@ console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and 
         key: 1,
         sets: [ticked(1), ticked(2, { reps: '6' }), set(3), ticked(4), ticked(5)],
       },
-      { key: 2, prev: [], target: undefined, measures: 'reps,load', sets: [ticked(1, { pr: true })] },
+      { key: 2, prev: [], target: undefined, measures: 'reps,load', sets: [ticked(1)] },
     ],
     { basisOf: () => 'total', away: false, units: KG }
   );
@@ -2235,8 +2241,8 @@ console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and 
     ? ok('fix3: a ticked empty row takes the figure it shows (100 × 9); a typed one and an open one are left alone')
     : bad('settle fill', JSON.stringify(settledBlocks[0].sets));
   const lone = settledBlocks[1].sets[0];
-  !lone.done && !lone.pr
-    ? ok('…and a ticked row with nothing to show is un-ticked, its stamp with it')
+  !lone.done
+    ? ok('…and a ticked row with nothing to show is un-ticked')
     : bad('settle untick', JSON.stringify(lone));
   const untouched = [{ ...benchBlock, key: 1, sets: [set(1, { reps: '8', done: true })] }];
   settleDoneRows(untouched, { basisOf: () => null, away: false, units: KG }) === untouched
@@ -2289,19 +2295,13 @@ console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and 
     sets,
     ...over,
   });
-  // A stand-in stamp: beats a 100 kg record and every earlier set this session.
-  const ask = (session, _block, s) => {
-    const w = Number(s.weight);
-    const before = session.flatMap((b) => b.sets).map((x) => Number(x.weight));
-    return w > 100 && before.every((x) => w > x) ? ['heaviest'] : [];
-  };
   const start = [
     blockOf(
       1,
       'bench',
       'Bench Press',
       [
-        set(11, { weight: '110', reps: '5', done: true, pr: true, prKinds: ['heaviest'] }),
+        set(11, { weight: '110', reps: '5', done: true }),
         set(12, { weight: '105', reps: '6', done: true }),
         set(13, { weight: '100', reps: '6' }),
       ],
@@ -2321,35 +2321,25 @@ console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and 
   cut.blocks[0].linkedToNext === true && cut.blocks[1] === start[1]
     ? ok('…the superset bind is untouched, and the other block is the same object')
     : bad('bind kept');
-  const restamped = restampMovement(cut.blocks, 'bench', ask);
-  restamped[0].sets[0].pr === true && restamped[0].sets[0].prKinds?.[0] === 'heaviest'
-    ? ok('…and the 105 the 110 was out-lifting by now carries the stamp: PRs follow the delete')
-    : bad('restamp after delete', JSON.stringify(restamped[0].sets));
-  restamped[1] === cut.blocks[1]
-    ? ok('…another movement’s stamps are not asked again')
-    : bad('restamp scope');
-  setUndoStands(restamped, cut.removed) &&
+  setUndoStands(cut.blocks, cut.removed) &&
   setUndoStands(
-    restamped.map((b) =>
+    cut.blocks.map((b) =>
       b.key === 1 ? { ...b, sets: b.sets.map((s) => (s.key === 13 ? { ...s, reps: '7' } : s)) } : b
     ),
     cut.removed
   )
     ? ok('the Undo stands, and still stands after another row’s figure is edited')
     : bad('undo stands');
-  const back = restampMovement(undoSetRemoval(restamped, cut.removed), 'bench', ask);
-  back[0].sets.map((s) => s.key).join() === '11,12,13' &&
-  back[0].sets[0].pr === true &&
-  back[0].sets[1].pr === false &&
-  back[0].sets[1].prKinds === undefined
-    ? ok('Undo: the 110 back at set 1 with its stamp, and the 105’s stamp taken back')
+  const back = undoSetRemoval(cut.blocks, cut.removed);
+  back[0].sets.map((s) => s.key).join() === '11,12,13' && back[0].sets[0] === start[0].sets[0]
+    ? ok('Undo: the 110 back at set 1, the very set that left')
     : bad('undo', JSON.stringify(back[0].sets));
-  const grown = restamped.map((b) => (b.key === 1 ? { ...b, sets: [...b.sets, set(14)] } : b));
+  const grown = cut.blocks.map((b) => (b.key === 1 ? { ...b, sets: [...b.sets, set(14)] } : b));
   !setUndoStands(grown, cut.removed) && undoSetRemoval(grown, cut.removed) === grown
     ? ok('…a set added since closes it: putting one back would no longer be exact')
     : bad('undo closes on add');
   !setUndoStands(
-    restamped.filter((b) => b.key !== 1),
+    cut.blocks.filter((b) => b.key !== 1),
     cut.removed
   )
     ? ok('…and so does removing the exercise')
@@ -2362,15 +2352,6 @@ console.log('16. round 3 — per-set targets, the ✓ that logs them, Prev, and 
   setFigure(set(1), 'reps,load', KG) === null
     ? ok('the figure of a timed set is its clock; an empty row has none')
     : bad('figure');
-  const notDone = restampMovement(
-    [blockOf(1, 'bench', 'Bench', [set(1, { weight: '120', pr: true, prKinds: ['heaviest'] })])],
-    'bench',
-    ask
-  );
-  notDone[0].sets[0].pr === false && notDone[0].sets[0].prKinds === undefined
-    ? ok('a set not done carries no stamp after a restamp')
-    : bad('not-done stamp');
-
   // --- the draft carries the target and last time's set types ----------------
   const withTarget = {
     version: DRAFT_VERSION,
@@ -2457,7 +2438,6 @@ console.log('17. the session bar reads the one session and the one rest');
         distance: '',
         setType: 'normal',
         done: true,
-        pr: false,
       },
     ],
   };
@@ -2654,7 +2634,7 @@ console.log('17. the session bar reads the one session and the one rest');
   clearWorkoutDraft(db, 'live');
 }
 
-console.log('18. item 70 — a finished session ticks the earliest open Training row, with Undo');
+console.log('18. item 70 — a finished session ticks its own named Training row, else the earliest open one, with Undo');
 {
   const TODAY = '2026-10-21';
   const YESTERDAY = '2026-10-20';
@@ -2809,6 +2789,45 @@ console.log('18. item 70 — a finished session ticks the earliest open Training
       ? ok('…and the read-only choice a card shows agrees: a free session would take Mobility')
       : bad('trainingRowFor');
     void pull;
+  }
+
+  // --- the named row wins over the earliest (owner, 2026-10-21) ---------------
+  // §19.6 asked him: Zone 2 at 07:00 (unnamed) and Push Day at 18:00 (named),
+  // Push Day finished at 08:00. It used to tick Zone 2. His answer: the row
+  // named after the workout wins.
+  {
+    const { db, raw } = freshDb();
+    const push = routine(db, 'Push Day');
+    const pull = routine(db, 'Pull Day');
+    block(db, [
+      ['Zone 2', '07:00'],
+      ['Pull Day', '12:00'],
+      ['Push Day', '18:00'],
+    ]);
+    arriveDay(db, TODAY);
+    trainingRowFor(db, { date: TODAY, routineId: push, away: false }, TODAY)?.title === 'Push Day'
+      ? ok('the read-only choice names the later row named Push Day, not the earlier Zone 2')
+      : bad('named choice');
+    const t = tickTrainingForWorkout(db, session(db, { routineId: push }), TODAY);
+    t?.title === 'Push Day' && statusOf(raw, 'Zone 2') === 'pending' && statusOf(raw, 'Pull Day') === 'pending'
+      ? ok('Push Day finished ticks its own 18:00 row; Zone 2 and the Pull Day row stay open')
+      : bad('named wins', JSON.stringify(t));
+    // A second Push Day with its row done: the fallback is the earliest UNNAMED
+    // row, never the Pull Day row named for a different workout.
+    const again = tickTrainingForWorkout(db, session(db, { routineId: push }), TODAY);
+    again?.title === 'Zone 2' && statusOf(raw, 'Pull Day') === 'pending'
+      ? ok('…a second Push Day falls back to the earliest unnamed row, skipping the Pull Day row')
+      : bad('named fallback', JSON.stringify(again));
+    // A free session never takes a named row, however early.
+    trainingRowFor(db, { date: TODAY, routineId: null, away: false }, TODAY) === null &&
+    tickTrainingForWorkout(db, session(db), TODAY) === null &&
+    statusOf(raw, 'Pull Day') === 'pending'
+      ? ok('…and a free session with only the Pull Day row left ticks nothing')
+      : bad('free vs named');
+    const viaPull = tickTrainingForWorkout(db, session(db, { routineId: pull }), TODAY);
+    viaPull?.title === 'Pull Day'
+      ? ok('Pull Day still ticks its own row')
+      : bad('pull own', JSON.stringify(viaPull));
   }
 
   // --- a session for yesterday ------------------------------------------------

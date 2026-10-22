@@ -38,7 +38,6 @@
 import { clockFromISO, formatLocalDate } from '@/lib/db/date';
 import type { PrevSet } from '@/lib/db/repositories/training-stats';
 import { asMeasures, type Measures } from '@/lib/exercise/measures';
-import { RECORD_KINDS, type RecordKind } from '@/lib/exercise/records';
 import { settleDoneRows } from '@/lib/exercise/set-hints';
 import type { LoggingType, Mechanic, SetType, WorkoutKind } from '@/lib/exercise/types';
 import { DEFAULT_UNIT_PREFERENCES } from '@/lib/user/types';
@@ -111,14 +110,12 @@ export type DraftSet = {
   distance: string;
   setType: SetType;
   done: boolean;
-  pr: boolean;
-  /**
-   * WHICH records the set beat when it was stamped (2026-09-23) — what the
-   * block's PR line names ("Set 3: best e1RM, heaviest"). Optional and parsed
-   * leniently, so a draft written before it existed resumes with `pr` alone
-   * rather than being discarded: no version bump, the `ingestId` precedent.
+  /*
+   * `pr` and `prKinds` (2026-09-23) were the set's PR stamp. The stamp was
+   * retired for the block's Advanced line (item 87, 2026-10-21), which is read
+   * from the done sets rather than stored, so a draft that still carries them
+   * resumes with them dropped: no version bump, the parse was always lenient.
    */
-  prKinds?: RecordKind[];
   /**
    * For a set loaded from a stored session: the exact canonical kg it was read
    * with, and the display string it rendered as. An untouched weight writes back
@@ -154,9 +151,8 @@ export type DraftBlock = {
   prev: PrevSet[];
   /**
    * Best e1RM before this session. It WAS the bar a set had to beat to tag a
-   * PR; since 2026-09-23 the stamp is `stampFor` (src/lib/exercise/
-   * records.ts), which reads every record from the logged history instead. It
-   * is still written and parsed so a draft keeps its shape across builds.
+   * PR; the stamp itself was retired on 2026-10-21 (item 87). It is still
+   * written and parsed so a draft keeps its shape across builds.
    */
   bestE1rm: number | null;
   /** Grouped into a superset with the block below it (shared superset_group). */
@@ -169,7 +165,7 @@ export type DraftBlock = {
    * session shows the same targets it was started with, rather than targets
    * re-read against a history that may have moved. Optional and parsed
    * leniently, so a draft from before it existed resumes with last time's
-   * numbers alone: no version bump, the `prKinds` precedent. Absent when the
+   * numbers alone: no version bump, the `ingestId` precedent. Absent when the
    * engine has no load step to offer.
    */
   target?: SetTarget;
@@ -379,12 +375,7 @@ function parseSet(raw: unknown, index: number): DraftSet | null {
     distance: asString(raw.distance),
     setType: asOneOf(raw.setType, SET_TYPES, 'normal'),
     done: asBool(raw.done),
-    pr: asBool(raw.pr),
   };
-  if (Array.isArray(raw.prKinds)) {
-    const kinds = RECORD_KINDS.filter((k) => (raw.prKinds as unknown[]).includes(k));
-    if (kinds.length > 0) set.prKinds = kinds;
-  }
   if (raw.storedWeightKg !== undefined) set.storedWeightKg = asFiniteNumber(raw.storedWeightKg);
   if (typeof raw.storedWeightText === 'string') set.storedWeightText = raw.storedWeightText;
   return set;

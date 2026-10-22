@@ -42,7 +42,9 @@ import {
 } from '@/lib/db/repositories/workout-drafts';
 import type { Database } from '@/lib/db/database';
 import {
+  exerciseSessionTopsFrom,
   lastSessionSets,
+  liveAdvanceLines,
   personalRecords,
   workingSets,
   type PrevSet,
@@ -96,19 +98,13 @@ import {
 } from '@/lib/exercise/format';
 import { weightColumnHeading, type LoadBasis } from '@/lib/exercise/load-basis';
 import { DEFAULT_MEASURES, hasMeasure, type Measures } from '@/lib/exercise/measures';
-import {
-  phraseText,
-  prSummaryParts,
-  stampFor,
-  type RecordKind,
-  type TypedBlock,
-} from '@/lib/exercise/records';
+import { phraseText, type PhrasePart } from '@/lib/exercise/records';
+import type { SessionTopSet } from '@/lib/exercise/progression';
 import {
   hintFields,
   prevPatch,
   prevSpoken,
   removeSetWithUndo,
-  restampMovement,
   setHint,
   settleDoneRows,
   setRemovalWords,
@@ -144,8 +140,9 @@ import type { UnitPreferences } from '@/lib/user/types';
  * row shows its grey hint — the progression engine's target on a working row,
  * else last session's numbers (round 3, src/lib/exercise/set-hints.ts and
  * docs/exercise-subapp.md §17), which a ✓ on an untouched row logs — a mono
- * weight/reps/RPE entry, and a completion stamp that starts the rest timer and
- * marks a PR when the set beats a record (src/lib/exercise/records.ts). Weight
+ * weight/reps/RPE entry, and a completion stamp that starts the rest timer; a
+ * block says Advanced when its best set so far is a new best (item 87,
+ * src/lib/exercise/records.ts `liveAdvanceOf`). Weight
  * is entered in the user's unit and stored canonical kg. The free-form quick logger
  * (app/workout-log.tsx) stays for cardio / mobility / past sessions.
  *
@@ -169,9 +166,9 @@ import type { UnitPreferences } from '@/lib/user/types';
  * ## The away-gym flag (C13, migration 0055)
  *
  * One quiet chip beside the clock, off on every new session and never
- * remembered. On, the session is real training and unreal measurement: it tags
- * no PR here, sets none in `personalRecords`, steers no progression and seeds
- * no prefill, while freshness and weekly volume count it exactly as before —
+ * remembered. On, the session is real training and unreal measurement: it says
+ * no Advanced here, sets none in `personalRecords`, steers no progression
+ * and seeds no prefill, while freshness and weekly volume count it exactly as before —
  * they never read a weight. It stays on the e1RM chart, marked. The flag rides
  * the draft (`DRAFT_VERSION` 3) and is editable afterwards on a stored session,
  * which costs nothing because none of those reads is cached.
@@ -254,16 +251,6 @@ const SET_TYPES: SetType[] = ['normal', 'warmup', 'failure', 'drop'];
  * one seam to replace (db/render-stubs/gesture-handler.mjs).
  */
 const SetSwipe = ReanimatedSwipeable;
-
-/** The fields a PR stamp is a claim about — editing one on a done set asks again. */
-const RESTAMP_FIELDS: readonly (keyof LiveSet)[] = [
-  'weight',
-  'reps',
-  'rpe',
-  'time',
-  'distance',
-  'setType',
-];
 
 /** Recessed stock for an inline entry field: an input well, without the device. */
 const INPUT_WELL = 'justify-center border border-paper-deep bg-paper-dim px-1';
@@ -423,7 +410,6 @@ export function blankSet(from?: LiveSet, setType: SetType = 'normal'): LiveSet {
     distance: '',
     setType,
     done: false,
-    pr: false,
   };
 }
 
@@ -521,10 +507,10 @@ function freeTextBlock(name: string): LiveBlock {
  * changes, and each block's bind is read from its own group — both in
  * `storedBlockRuns` (src/lib/exercise/block-order.ts), which says why.
  *
- * Every set comes back `done` — it happened — and carries no PR flag: PRs are
- * awarded live, against the best e1RM *before* the session, and re-awarding
- * them while editing a two-week-old workout would be a stamp about the wrong
- * moment. A set that was always free text (a custom movement the logger never
+ * Every set comes back `done` — it happened — and the editor draws no Advanced
+ * line: that line is a claim about right now, and making it while editing a
+ * two-week-old workout would be a claim about the wrong moment. A set that
+ * was always free text (a custom movement the logger never
  * resolved) — or whose catalog movement has since been deleted (buildBlock
  * null) — comes back as a {@link freeTextBlock} carrying its stored name, so it
  * survives a Save instead of being silently erased by replaceWorkout's
@@ -553,7 +539,6 @@ function blocksFromWorkout(detail: WorkoutDetail, units: UnitPreferences): LiveB
         distance: s.distanceM == null ? '' : String(displayDistance(s.distanceM, units)),
         setType: s.setType,
         done: true,
-        pr: false,
         storedWeightKg: s.weightKg,
         storedWeightText: weightText,
       };
@@ -853,7 +838,8 @@ function WorkoutLive({
   );
   /**
    * What each block's weight figure counts (0062), for its column heading and
-   * the PR rule. Read from the catalog rather than carried on the draft, and
+   * the ranking of its best set (the Advanced line). Read from the catalog
+   * rather than carried on the draft, and
    * re-read on focus and whenever the set of movements changes: the block title
    * opens exercise-detail, which is where the owner corrects a wrong basis, and
    * coming back has to show the correction on the heading he was looking at.
@@ -1315,60 +1301,58 @@ function WorkoutLive({
   };
 
   /**
-   * Which records `set` (as it now reads) beats — `stampFor`
-   * (src/lib/exercise/records.ts) decides all of it: no stamp while editing a
-   * past session, none away (0055), "a record needs a previous best", and the
-   * session bar drawn from EVERY block of the movement. This only reads the
-   * logged history, which cannot contain this session (a draft until Finish).
+   * Each movement's logged sessions, best set each — what a block's Advanced
+   * line is measured against (item 87, `liveAdvanceLines`). Read once per set
+   * of movements on screen: the history cannot move while the session is open
+   * (a draft until Finish), so a keystroke never re-reads it. None while
+   * editing a stored session, which draws no line.
    */
-  const stampOf = (all: readonly TypedBlock[], block: LiveBlock, set: LiveSet): RecordKind[] => {
-    if (editing || block.exerciseId == null) return [];
-    try {
-      return stampFor({
-        set,
-        exerciseId: block.exerciseId,
-        measures: block.measures,
-        blocks: all,
-        history: workingSets(getDb(), block.exerciseId),
-        basis: basisOf(block),
+  const historyTops = useMemo(() => {
+    const out = new Map<string, SessionTopSet[]>();
+    if (editing) return out;
+    for (const id of new Set(blockIdsKey.split(',').filter(Boolean))) {
+      try {
+        out.set(
+          id,
+          exerciseSessionTopsFrom(
+            workingSets(getDb(), id),
+            Number.POSITIVE_INFINITY,
+            loadBases.get(id) ?? null
+          )
+        );
+      } catch (error) {
+        // A failed read costs the line, never the session.
+        console.warn('[exercise] history read failed', error);
+      }
+    }
+    return out;
+  }, [blockIdsKey, editing, loadBases]);
+  /** Each block's Advanced line, by block key: one per movement, at its best set. */
+  const advances = useMemo(
+    () =>
+      liveAdvanceLines({
+        blocks,
+        history: historyTops,
+        bases: loadBases,
         away,
         editing,
         units,
-      });
-    } catch (error) {
-      // A failed read must never block ticking a set off mid-session.
-      console.warn('[exercise] PR check failed', error);
-      return [];
-    }
-  };
+        today: todayISODate(),
+      }),
+    [blocks, historyTops, loadBases, away, editing, units]
+  );
 
   const patchSet = (blockKey: number, setKey: number, patch: Partial<Omit<LiveSet, 'key'>>) => {
     setDirty(true);
     // Anything typed into a refused row answers the refusal.
     setEmptyTick((t) => (t && t.setKey === setKey ? null : t));
-    // A DONE set whose numbers change is asked again (`stampOf`): a stamp is a
-    // claim about the figures on the row, and a corrected typo — 1100 back to
-    // 110, 5 reps to 6, a set cycled to warmup — must not keep a record it no
-    // longer holds, or gain one silently. Toggling `done` is toggleDone's.
-    const block = blocks.find((b) => b.key === blockKey);
-    const current = block?.sets.find((s) => s.key === setKey);
-    let restamp: Partial<LiveSet> = {};
-    if (
-      block &&
-      current?.done &&
-      !('done' in patch) &&
-      RESTAMP_FIELDS.some((field) => field in patch)
-    ) {
-      const kinds = stampOf(blocks, block, { ...current, ...patch });
-      restamp = { pr: kinds.length > 0, prKinds: kinds.length > 0 ? kinds : undefined };
-    }
     setBlocks((prev) =>
       prev.map((b) =>
         b.key !== blockKey
           ? b
           : {
               ...b,
-              sets: b.sets.map((s) => (s.key === setKey ? { ...s, ...patch, ...restamp } : s)),
+              sets: b.sets.map((s) => (s.key === setKey ? { ...s, ...patch } : s)),
             }
       )
     );
@@ -1383,27 +1367,17 @@ function WorkoutLive({
     );
   };
 
-  /** `stampOf` in the shape `restampMovement` asks with. */
-  const askStamp = (session: readonly TypedBlock[], block: LiveBlock, set: LiveSet) =>
-    stampOf(session, block, set);
-
   /**
    * Delete one set, with an Undo (round 3, 2026-10-21). The removal is
-   * `removeSetWithUndo`; a DONE set leaving re-asks the movement's stamps,
-   * because the set that held the session's best may have been the reason the
-   * one after it carried none. Binds are on blocks, so a superset is untouched.
+   * `removeSetWithUndo`. Binds are on blocks, so a superset is untouched, and
+   * the Advanced line is read from the sets as they stand, so it follows.
    */
   const removeSet = (blockKey: number, setKey: number) => {
     const result = removeSetWithUndo(blocks, blockKey, setKey, units);
     if (!result.removed) return;
-    const block = blocks.find((b) => b.key === blockKey);
     setDirty(true);
     setEmptyTick(null);
-    setBlocks(
-      result.removed.set.done
-        ? restampMovement(result.blocks, block?.exerciseId ?? null, askStamp)
-        : result.blocks
-    );
+    setBlocks(result.blocks);
     setRemovedSet(result.removed);
   };
 
@@ -1412,10 +1386,8 @@ function WorkoutLive({
     const removed = removedSet;
     setRemovedSet(null);
     if (!removed || !setUndoStands(blocks, removed)) return;
-    const back = undoSetRemoval(blocks, removed);
-    const block = back.find((b) => b.key === removed.blockKey);
     setDirty(true);
-    setBlocks(removed.set.done ? restampMovement(back, block?.exerciseId ?? null, askStamp) : back);
+    setBlocks(undoSetRemoval(blocks, removed));
   };
 
   /** Tap Prev (67): last time's numbers for this row, copied in. */
@@ -1482,29 +1454,14 @@ function WorkoutLive({
   };
 
   /**
-   * Flip the away-gym flag (0055).
-   *
-   * Turning it ON clears every PR stamp already earned this session, because
-   * the stamp is a claim the app has just stopped making: an away session sets
-   * no record, and a "PR" tag left standing on one would contradict the line of
-   * copy directly beneath the control. Turning it back off simply resumes
-   * detection from the next completed set — nothing is restored, because a set
-   * completed while the flag was on was never measured.
+   * Flip the away-gym flag (0055). The Advanced lines are read from the flag
+   * as it stands (`liveAdvanceLines`), so turning it on takes them down and
+   * turning it off puts back whatever the done sets now earn: nothing is
+   * stored on a set to clear.
    */
   const toggleAway = () => {
     setDirty(true);
-    setAway((prev) => {
-      const next = !prev;
-      if (next) {
-        setBlocks((bs) =>
-          bs.map((b) => ({
-            ...b,
-            sets: b.sets.map((s) => ({ ...s, pr: false, prKinds: undefined })),
-          }))
-        );
-      }
-      return next;
-    });
+    setAway((prev) => !prev);
   };
 
   /** Group / ungroup a block with the one below it into a superset. */
@@ -1516,12 +1473,12 @@ function WorkoutLive({
   };
 
   /**
-   * Toggle a set done; on completion start rest + stamp a PR if it beats a
-   * record.
+   * Toggle a set done; on completion start rest. The block's Advanced line
+   * follows from the done sets on the next render (item 87).
    *
    * **A tick logs what the row shows** (round 3, 2026-10-21). Every empty field
-   * takes the row's grey figure (`tickPatch`) — the target, or last time — and
-   * the stamp is asked of the set as it will be saved. A row with nothing typed
+   * takes the row's grey figure (`tickPatch`) — the target, or last time — so
+   * the set is ticked as it will be saved. A row with nothing typed
    * and nothing to offer is NOT ticked: until now it was, and Finish saved a set
    * with no numbers while the owner thought the grey ones had counted. The row
    * says why instead, and VoiceOver hears it.
@@ -1543,13 +1500,7 @@ function WorkoutLive({
       fill = patch;
     }
     setEmptyTick(null);
-    const prKinds = done ? stampOf(blocks, block, { ...set, ...fill }) : [];
-    patchSet(block.key, set.key, {
-      ...fill,
-      done,
-      pr: prKinds.length > 0,
-      prKinds: prKinds.length > 0 ? prKinds : undefined,
-    });
+    patchSet(block.key, set.key, { ...fill, done });
     if (done && !editing && block.restSec && block.restSec > 0) {
       setRestEndsAt(Date.now() + block.restSec * 1000);
       armRestAlert(block.restSec);
@@ -2088,6 +2039,7 @@ function WorkoutLive({
                         ? (block.target?.note ?? null)
                         : null
                     }
+                    advance={advances.get(block.key) ?? null}
                     emptySetKey={emptyTick?.blockKey === block.key ? emptyTick.setKey : null}
                     undo={
                       removedSet?.blockKey === block.key && setUndoStands(blocks, removedSet)
@@ -2288,6 +2240,7 @@ export function ExerciseBlock({
   spec,
   hints,
   targetNote,
+  advance,
   emptySetKey,
   undo,
   onUndo,
@@ -2309,6 +2262,11 @@ export function ExerciseBlock({
   hints: (SetHint | null)[];
   /** The engine's why for the targets, or null when no row shows one. */
   targetNote: string | null;
+  /**
+   * How this block's best set so far advances on the logged history ("+1 rep
+   * at 82.5 kg"), or null: `liveAdvanceLines`, drawn on one block per movement.
+   */
+  advance: PhrasePart[] | null;
   /** The row whose ✓ was just refused for being empty, or null. */
   emptySetKey: number | null;
   /** The Undo row for a set deleted from THIS block, or null. */
@@ -2324,20 +2282,6 @@ export function ExerciseBlock({
   onOpenDetail: () => void;
 }) {
   const cols = blockColumns(block.measures);
-  // The PR line names what each stamped set beat. A set stamped by a build that
-  // predates the names still carries `pr`, so the label is drawn from `pr` and
-  // the line only when there is something to say.
-  const anyPr = block.sets.some((s) => s.pr);
-  const prLine = prSummaryParts(
-    block.sets.map((s, i) => {
-      const reps = Number(s.reps);
-      return {
-        index: i + 1,
-        reps: s.reps.trim() !== '' && Number.isFinite(reps) ? reps : null,
-        kinds: s.pr ? (s.prKinds ?? []) : [],
-      };
-    })
-  );
   return (
     // Superset grouping is drawn by THE BIND at the call site (fused plates +
     // the seam chip), not by anything on the block itself. The old left rule
@@ -2616,22 +2560,24 @@ export function ExerciseBlock({
             (src/components/nutrition/undo-row.tsx): ruled, no timer, no accent. */}
         {undo ? <UndoRow offer={undo} onUndo={onUndo} first={block.sets.length === 0} /> : null}
 
-        {/* PR marker + add set. The mark is ink, never the accent or a signal
-            colour: it is neither a completion nor a verdict about the body. The
-            line beside it says which record — a why-line, so the words are in
-            the serif and only the figures ("3", "5 reps") in mono. */}
+        {/* Advanced + add set (item 87, replacing the per-set PR stamp). One
+            line per movement, on the block holding its best set so far, when
+            that set would make today a new best on each of the last three home
+            sessions. Ink, never the accent or a signal colour: a statement
+            about training, not a verdict about the body. Words in the serif,
+            figures ("+1 rep", "82.5 kg") in mono. */}
         <Divider />
         <View className="flex-row items-center gap-2 pt-1.5">
-          {anyPr ? (
+          {advance ? (
             <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
-              PR
+              Advanced
             </Text>
           ) : null}
-          {prLine ? (
+          {advance ? (
             <Text
-              accessibilityLabel={phraseText(prLine)}
+              accessibilityLabel={`Advanced: ${phraseText(advance)} on last time`}
               className="flex-1 font-serif text-[11px] leading-4 text-ink-muted">
-              {prLine.map((part, i) =>
+              {advance.map((part, i) =>
                 part.measured ? (
                   <Text key={i} className="font-mono text-[10px]">
                     {part.text}

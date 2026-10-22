@@ -56,9 +56,9 @@
  * exact — the block still holds exactly the sets the removal left. Editing a
  * figure on another row does not close it; adding or removing a set does.
  * Supersets are untouched by construction: a bind lives on the BLOCK and a
- * set removal never removes a block. PR stamps are asked again for the
- * movement whenever a DONE set leaves or comes back (`restampMovement`), since
- * a stamp is a claim about the session's other done sets.
+ * set removal never removes a block. Nothing is stamped on a set any more
+ * (item 87): the block's Advanced line is read from the done sets as they
+ * stand, so a set leaving or coming back needs no re-asking.
  */
 import type { PrevSet } from '@/lib/db/repositories/training-stats';
 import type { DraftBlock, DraftSet, SetTarget } from '@/lib/exercise/draft';
@@ -66,7 +66,6 @@ import { secondsToClock } from '@/lib/exercise/clock-entry';
 import { displayDistance, displayWeight, weightSpec } from '@/lib/exercise/format';
 import { loadRecordsApply, type LoadBasis } from '@/lib/exercise/load-basis';
 import { hasMeasure, type Measures } from '@/lib/exercise/measures';
-import type { RecordKind, TypedBlock } from '@/lib/exercise/records';
 import type { ProgressionSuggestion } from '@/lib/exercise/types';
 import type { UndoWords } from '@/lib/nutrition/undo-store';
 import type { UnitPreferences } from '@/lib/user/types';
@@ -134,6 +133,29 @@ export function snapLoadDirected(
   // figure is then the honest one.
   if (snapped <= 0) return kg;
   return spec.toCanonical(snapped);
+}
+
+/**
+ * The figure a session's target asks for, on real plates: a held load as it
+ * is, a progress rounded up and a deload rounded down ({@link snapLoadDirected}).
+ * The reps are the engine's session target. What a working row's grey load
+ * is, and what exercise detail's "next:" says (item 87), from one function.
+ */
+export function targetFigure(
+  target: SetTarget,
+  units: UnitPreferences,
+  basis: LoadBasis | null
+): { weightKg: number; reps: number } {
+  if (target.kind === 'hold') return { weightKg: target.weightKg, reps: target.reps };
+  return {
+    weightKg: snapLoadDirected(
+      target.weightKg,
+      units,
+      target.kind === 'progress' ? 'up' : 'down',
+      basis
+    ),
+    reps: target.reps,
+  };
 }
 
 /** Two loads are the same plate set to within rounding. */
@@ -226,13 +248,7 @@ export function setHint(input: {
         ? Math.min(prev.reps + 1, target.repHigh)
         : target.reps;
   } else {
-    weightKg = snapLoadDirected(
-      target.weightKg,
-      input.units,
-      target.kind === 'progress' ? 'up' : 'down',
-      input.basis
-    );
-    reps = target.reps;
+    ({ weightKg, reps } = targetFigure(target, input.units, input.basis));
   }
   return {
     weightKg,
@@ -336,7 +352,7 @@ export function settleDoneRow(
 ): DraftSet {
   if (!set.done || rowHasValue(set, measures)) return set;
   const patch = tickPatch(set, hint, measures, units);
-  return patch ? { ...set, ...patch } : { ...set, done: false, pr: false, prKinds: undefined };
+  return patch ? { ...set, ...patch } : { ...set, done: false };
 }
 
 /**
@@ -515,32 +531,4 @@ export function setRemovalWords(removed: SetRemoval): UndoWords {
     figure: removed.figure,
     spoken: `Undo removing set ${removed.number} of ${removed.name}`,
   };
-}
-
-/**
- * Ask every done set of one movement again, in session order, against the
- * done sets BEFORE it — the order the stamps were first earned in, since a set
- * is ticked after the ones above it. Run when a done set leaves or comes back:
- * a stamp is a claim about the session's other sets, so the set that held the
- * session's best going away can hand a stamp to the one after it, and coming
- * back takes it again. Sets not done carry no stamp. `ask` is the screen's
- * `stampFor` call, given only the earlier sets as the session.
- */
-export function restampMovement(
-  blocks: DraftBlock[],
-  exerciseId: string | null,
-  ask: (session: readonly TypedBlock[], block: DraftBlock, set: DraftSet) => RecordKind[]
-): DraftBlock[] {
-  if (exerciseId == null) return blocks;
-  const seen: DraftSet[] = [];
-  return blocks.map((b) => {
-    if (b.exerciseId !== exerciseId) return b;
-    const sets = b.sets.map((s) => {
-      if (!s.done) return s.pr || s.prKinds ? { ...s, pr: false, prKinds: undefined } : s;
-      const kinds = ask([{ exerciseId, sets: [...seen] }], b, s);
-      seen.push(s);
-      return { ...s, pr: kinds.length > 0, prKinds: kinds.length > 0 ? kinds : undefined };
-    });
-    return { ...b, sets };
-  });
 }

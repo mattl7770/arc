@@ -250,6 +250,7 @@ Cardio logged with kind `cardio` but no catalog movement still contributes nothi
 - **Dynamic double progression** within the routine's rep range (defaults: compound 6–10, isolation 8–15): any set that hit the top of range at RIR ≥ 1 gets +1 increment next time; others repeat.
 - Increments: barbell lower-body +5 lb, barbell upper-body +2.5 lb (displayed; stored kg), dumbbell → next catalog increment (5 lb steps), machine +5 lb. (ACSM 2-for-2 spirit, Hevy/StrongLifts numbers.)
 - **Stall = 3 consecutive sessions** on an exercise with no set progressing → suggest **−10%** and reset to bottom of range (StrongLifts' shipped rule).
+  > **Since 2026-10-21 (item 87, §20):** "no set progressing" is `isStalled` in `progression.ts`, the predicate the overload mark's **Stalled** reads too: no new best in the last two sessions, where a new best must beat **each** of the three sessions before it, and the last three all below the top of the range. A zig-zag (7, 6, 7 reps at one load) now deloads; the old "any session beat the one before it" read the rebound as progress.
 - Never-performed exercise: no target, placeholder "—, find your weight" (honest; converges in 2 sessions like FitBod's cold start anyway).
 
 ### 4.4 "Train today" recommendation
@@ -966,6 +967,8 @@ Not on Home (CLAUDE.md §5).
 
 ### 15.6 The PR rule — one function, four surfaces
 
+> **Superseded in part, 2026-10-21 (item 87, §20).** The owner chose option C of `docs/spikes/pr-vs-overload.md`: the **live PR stamp** and the **history's PR mark** are gone, replaced by the overload mark and its Advanced line. `stampFor`, `recordSessionIds`, `prSummaryParts` / `prSummary`, `restampMovement` and `DraftSet.pr` / `prKinds` are deleted (an old draft's stamp fields are dropped on resume). The rule below still stands where it is still read: the **Records grid** (`recordKindsFor` → `recordCellsFor`), the **self-review's record line** (`e1rmRecordOf` → `kindsBeating`) and `recordsBeaten`, its public form. The bullets about the stamp are history.
+
 The live stamp (`stampFor` → `recordsBeaten`), the history's mark (`recordSessionIds`) and the self-review's record line (`e1rmRecordOf`) all ask `kindsBeating` in `src/lib/exercise/records.ts`. The Records grid is drawn from the same list (`recordKindsFor` → `recordCellsFor` / `recordCellsOf`), so **every record on the grid is one a set can stamp, by construction** — a test walks every measure/basis pair and fails on a grid cell with no kind or a kind with no cell. (Until the review the screen chose its own cells: Set volume, Session volume, Session reps and a loaded lift's Most reps sat on the grid and never stamped, and a plank's grid carried a Top set and a Set volume it could never fill.)
 
 - **Kinds by what the movement measures and counts** (`recordKindsFor`):
@@ -991,6 +994,8 @@ The live stamp (`stampFor` → `recordsBeaten`), the history's mark (`recordSess
 - **The line is prose with its figures in mono.** `prSummaryParts` marks the set number and rep counts as measured; the screen sets the words in the serif and only those runs in mono ("Serif speaks, mono measures"). The same for the Trend's direction line (`trendPhraseParts`: "+4%" and "3 sessions" in mono).
 
 ### 15.7 Trends and the direction of travel
+
+> **Since 2026-10-21 (item 87, §20)** the Train hub row no longer draws the `+4%` / `−3%` / `level` token: the overload mark stands there instead. The direction below is unchanged; VoiceOver still hears it after the mark, and it stays under exercise detail's chart.
 
 `sessionSeriesFrom` gives one value per session for `e1rm · top_weight · volume · reps · session_reps · duration · distance`; `trendMetricsFor` chooses which a movement offers from what it measures. `trendOf` compares the latest **home** session with the mean of up to three home sessions before it and reads *level* within ±2%. A mean of three, because one bad Tuesday is not a direction; home only, because a stiffer machine is not a regression. Away sessions stay on the chart, hollow.
 
@@ -1137,7 +1142,7 @@ Finish also drops a live set with no figure in it, and says "Nothing to save yet
 
 ### 17.3 Tap Prev (67)
 
-The Prev cell is a 44pt button when there is a last time for the row. A tap copies last time's numbers in whole (`prevPatch`), overwriting what was typed. A load last time left empty (a bodyweight dip) is emptied too. RPE and the set type are left alone. A done set re-asks its PR stamp, as any edit to its figures does.
+The Prev cell is a 44pt button when there is a last time for the row. A tap copies last time's numbers in whole (`prevPatch`), overwriting what was typed. A load last time left empty (a bodyweight dip) is emptied too. RPE and the set type are left alone. *(Until 2026-10-21 a done set re-asked its PR stamp here; the stamp is retired, §20.)*
 
 ### 17.4 Delete a set, with Undo (69)
 
@@ -1145,7 +1150,7 @@ The owner chose **swipe left to delete**. Each row sits in `react-native-gesture
 
 The Undo follows the estimate review's rule (`review-undo.ts`): screen state, never the draft; one offer at a time; no timer; drawn as `UndoRow` under the block's table ("Removed set 3 of Bench Press · 8 × 135 lb"). It stands while putting the set back is exact: the block still holds exactly the sets the removal left. Editing another row's figures does not close it; adding or deleting a set, or removing the exercise, does.
 
-**Consistency.** A superset bind lives on the block, and deleting a set never removes a block, so binds cannot change. A **done** set leaving or coming back re-asks the movement's PR stamps in session order, each against the done sets before it (`restampMovement`): the set that held the session's best going away can hand the stamp to the one after it, and an Undo takes it back. Watch pairing reads the saved workout, not the draft, so it is untouched. The same screen is the logged-session editor, so all of this works there too, where no stamps are drawn.
+**Consistency.** A superset bind lives on the block, and deleting a set never removes a block, so binds cannot change. *(A done set leaving or coming back used to re-ask the movement's PR stamps, `restampMovement`; since §20 nothing is stored on a set, and the block's Advanced line is read from the done sets as they stand.)* Watch pairing reads the saved workout, not the draft, so it is untouched. The same screen is the logged-session editor, so all of this works there too, where no stamps are drawn.
 
 ### 17.5 Add with AI, always (68)
 
@@ -1166,7 +1171,7 @@ Catalog first still holds, by order: the matches come before the row. From an em
 
 ### 17.7 The study (87)
 
-`docs/spikes/progressive-overload.md`: PR stamps against a per-set ahead / on-target / short mark compared with the row's own target. It recommends keeping strength PRs and adding the mark, and asks the owner which he meant. Not built.
+`docs/spikes/progressive-overload.md`: PR stamps against a per-set ahead / on-target / short mark compared with the row's own target. It recommends keeping strength PRs and adding the mark, and asks the owner which he meant. Not built. *(2026-10-21: the owner chose the session mark, `docs/spikes/pr-vs-overload.md` option C, built as §20. The per-set ▲ ● ▽ mark is "not now".)*
 
 ### 17.8 Tests
 
@@ -1201,16 +1206,18 @@ Tests: db/exercise.test.mjs §17 (reading, both clocks, placement, the announcem
 
 Owner: *"exercise protocol should auto complete when i finish exercising"*. His decision: finishing any session today ticks the **earliest open Training row** of today's mission, with Undo. A row that names a saved workout is ticked only by that saved workout; any other session goes on to the next open Training row that names no different workout, or ticks nothing. No migration.
 
-### 18.1 The rule, as built (`src/lib/db/repositories/training-tick.ts`)
+> **Amended 2026-10-21 (§19.6's question, answered; §20.6):** a row named after the finished workout **wins over the earliest open row**. With *Zone 2 (07:00, unnamed)* and *Push Day (18:00, named)* open, finishing Push Day ticks Push Day. Any other session, and a second Push Day once its row is done, still takes the earliest open row that names no workout.
+
+### 19.1 The rule, as built (`src/lib/db/repositories/training-tick.ts`)
 
 - **Training row**: a row Home labels TRAINING (`toMissionItem(row).category`), which is a `training_block` protocol's items.
 - **Open**: `pending`, planned, not removed. Done, skipped and partial rows are never touched. A carried row is open and on today's list, so it takes its turn; ticking it settles the debt as late, as a hand tick does.
-- **Earliest**: Home's own order (time, untimed last, then insertion).
+- **Earliest**: Home's own order (time, untimed last, then insertion), after the rows named for this session's own workout (the 2026-10-21 amendment: `eligibleTrainingRows` lists those first).
 - **Names a saved workout**: there is no link field between a protocol item and a saved workout, so a row names one when its title **is** that workout's name, trimmed and case-folded, otherwise exact (never a substring: `Push` is not `Push Day`). The session matches through its `routine_id`. Archived workouts still count as names.
 - **The tick is the normal tick**: `setMissionStatus(…, 'completed', today)` (so `done_on`, carried-debt settling and everything else behave as on Home), then `rederiveDaysAhead`, and on the app side the reminder re-sync, which clears a delivered nudge for the row.
 - **The link**: the ticked row's `value.by_workout` holds the session's id. `setMissionStatus` now removes it on any other status, as it removes `done_on`, so it is only ever on a row that the session's tick still holds.
 
-### 18.2 What never ticks, and why
+### 19.2 What never ticks, and why
 
 | Case | Ticks? | Why |
 | --- | --- | --- |
@@ -1222,26 +1229,84 @@ Owner: *"exercise protocol should auto complete when i finish exercising"*. His 
 | A second call for the same session | No | Refused while any row carries the session's mark. |
 | A day status | No effect | Nothing here reads `day_statuses` (the Status rule). |
 
-### 18.3 The finish paths
+### 19.3 The finish paths
 
 All four call it **after the commit, in their own guard**, like pair-on-save, so a tick problem can never report the session as unsaved: the live logger (new sessions only, including a filled-in watch blank), the free-form logger, the photo import (all through `tickTrainingAfterSave`, `src/lib/exercise/training-tick-offer.ts`), and the Coach's `log_workout`. The Coach's card names the row before the gate (`Log workout · 40 min · ticks Training: Zone 2`), and its receipt carries `tickedTraining`. The Coach tab's after-turn re-sync covers the reminder.
 
 **The approval covers exactly the tick** (fix3, 2026-10-21). The card now runs `arriveDay` before it reads, as execute's tick always did: the Coach tab can be the first thing to touch today, and a card read over a day not yet arrived named no row while execute, arriving it, ticked one. And execute no longer re-chooses: the card's row rides on the tool context (`CoachToolContext.trainingRow`, the staleness slot's pattern), and `tickTrainingForWorkout(…, only)` ticks that row only, while it is still an open Training row this session may tick. A card that named none ticks nothing. If he ticked, skipped or removed the named row while the card was open, nothing else is ticked in its place (two open rows: it used to tick the second), and the result says so (`trainingNotTicked`), because the receipt is the card's own line.
 
-### 18.4 Undo, and delete
+### 19.4 Undo, and delete
 
 The logger closes as it saves, so the Undo takes the shared slot (`undo-store.ts`, scope `training`) and is drawn as the food Undo's `UndoRow` on whichever screen the logger returns to: **Home** (under the open-session line) or the **Train hub** (under the title). It reads *Ticked Training: Zone 2 · Undo*. No timer; leaving the screen closes it. Undo re-opens exactly that row, and refuses with *Could not untick Zone 2 — it has changed since.* if he has since changed the row himself.
 
 `deleteWorkout` re-opens the row its session ticked, and only while it still holds the mark: a row he un-ticked and ticked again by hand is his and stays. It runs after the DELETE and its own failure is swallowed (the session is gone; a stale tick is one tap on Home). The session screen re-syncs reminders when a row re-opened; the Coach's `delete_record` goes through the same repository, and since fix3 its card says so (`… · re-opens Training: Zone 2`, read by `workoutTickTitles`), so the approval covers the row as well as the session. Deleting a **past** session re-opens that past day's row too, and that is deliberate: it takes back what the session gave, which is not a backfill (the tick it undoes was the session's own, made on its own day).
 
-### 18.5 Tests
+### 19.5 Tests
 
 - `db/exercise.test.mjs` §17: the earliest open row and no supplement; the mark and `done_on`; two and three sessions in a day; an edit not re-ticking; skipped and hand-done rows passed over; Away; a named row matching (case-folded), a free session falling through it, a different saved workout ticking nothing, Pull Day skipping an earlier Push Day; the read-only choice agreeing; a session for yesterday; a status changing nothing; delete re-opening only its own tick, not a hand re-tick, and nothing for a session that ticked nothing; the Undo's words, scope, untick, re-sync and refusal; the app helper; each finish path wired (pinned from source), and pairing never ticking.
 - `db/coach-tools.test.mjs` §49: the card names the row, a past date names none, execute ticks and reports it, nothing left means nothing said, `delete_record` re-opens it. Since fix3 the card and execute share one context, as the service runs them, and it adds: the delete card naming the row it re-opens (and nothing for a session that ticked nothing); a card on a day not yet arrived naming the row execute ticks; an execute with no card ticking nothing; and a named row ticked by hand while the card was open, after which execute ticks nothing else and says so.
 - `db/screens-render.test.mjs` §36: Home and the hub draw the row; its Undo, pressed through the element tree, re-opens the row and both screens stop drawing it.
 
-### 18.6 What only a phone can settle
+### 19.6 What only a phone can settle
 
 - **Where he lands.** Finish goes back to whatever pushed the logger. From the Train tab and from Home's Resume line the row is there; from a notification tap that landed elsewhere the offer waits, undrawn, until the next Home or Train visit (it closes on leaving either). Whether that late Undo reads right, or should be dropped, is a device call.
-- **The literal earliest rule.** With rows *Zone 2 (07:00, unnamed)* and *Push Day (18:00, named)*, finishing Push Day at 08:00 ticks Zone 2: the earliest eligible row wins over an exact name. That is his rule as written; whether he wants the named row to win when the session matches it is a question for him.
+- ~~**The literal earliest rule.** With rows *Zone 2 (07:00, unnamed)* and *Push Day (18:00, named)*, finishing Push Day at 08:00 ticks Zone 2: the earliest eligible row wins over an exact name. That is his rule as written; whether he wants the named row to win when the session matches it is a question for him.~~ **Answered 2026-10-21: the named row wins** (§20.6).
 - **Undo placement on Home.** One unruled line between the open-session line and the hero. Whether it reads as the receipt for the session he just finished, or as noise above the hero.
+
+## 20. Phase 15 — the overload mark replaces the PR stamp (item 87, 2026-10-21)
+
+Owner, verbatim: *"idea study: swap prs for progressive overload indication"*. The study is `docs/spikes/pr-vs-overload.md`. His decisions (2026-10-21): **option C**; **Q1 no** (a set that beats the all-time best gets no stamp of its own in the gym; it is one tap away in Records); **Q2 yes** (Stalled and the deload always agree, so a zig-zag now deloads); the per-set ▲ ● ▽ mark against the grey target, **not now**. No migration: everything is computed from `workout_sets`.
+
+### 20.1 The mark, as built
+
+Per movement, from **home sessions only**, each session represented by its best set as the engine ranks it (`exerciseSessionTopsFrom`).
+
+- **`advanceRule(a, b, range)`** (`src/lib/exercise/progression.ts`) says which rule makes `a` beat `b`: **1** more load with the reps still at or above the bottom of the range; **2** more reps at the same load (within 0.01 kg) without a lower effort-adjusted e1RM; **3** e1RM up by at least `ADVANCE_E1RM_PCT` (1%). A missing load is zero, so a movement done for reps alone is judged by rule 2 alone.
+- **`sessionAdvanced`**: a session beats **each** of the up-to-`ADVANCE_WINDOW` (3) sessions before it. The first session advances vacuously (it is the first best); the History never marks it.
+- **`sinceBestOf`**: sessions since the last advance, 0 when the latest advanced.
+- **`isStalled`**, THE stall rule: at least `STALL_SESSIONS` (3) comparable sessions, `sinceBest ≥ 2`, and the last three all below the top of the range.
+- **`overloadMarkOf`** (`src/lib/exercise/records.ts`): **Progressing** when `sinceBest = 0`; **Stalled** when `isStalled`; otherwise **Holding** (`sinceBest = 1`, or longer with one of the last three at the top of the range, where the engine's next step is a load jump).
+- **No mark**: fewer than three comparable home sessions; the latest more than `CAPABILITY_WINDOW_DAYS` (42) before today; an **assisted** movement; anything covering **distance**; anything that does not count **reps** (a plank, a carry).
+- **Which sessions are compared** (`comparableSessions`): a loaded lift is compared over exactly the sessions the engine compares (home, with reps and a load). A movement never logged with a load at home (a push-up, a bodyweight pull-up) is read on reps alone.
+
+### 20.2 One predicate, two readers, and the behaviour that changed
+
+The engine's deload branch (`suggestProgression`) now asks `isStalled` over its own `comparableSessions`, so **Stalled is exactly when the engine deloads**: a test walks every prefix of the spike's three examples and checks mark, engine and predicate agree. The old test was "did any of the last three sessions beat the one before it", which a zig-zag passes forever.
+
+**Behaviour change, as the owner approved:** 50 kg × 7 · 7 · 6 · 7 used to get *hold 50 × 8* and now gets *deload 45 × 6*. A second, smaller change follows from rule 1: the old rule could deload on the very session of a load jump (80 × 9, 80 × 9, then 82.5 × 6: no e1RM gain across the three), and that session is now an advance, so the engine holds. Every existing progression test still passes unchanged (`db/training-engine.test.mjs` §3's flat 100 × 6 · 6 · 6 deload, and the away test's real stall): neither pinned the zig-zag case, so none needed rewriting; §15 adds the cases that do.
+
+Two seams stay deliberately outside the promise. A lift whose last session is more than 42 days old has no mark, while the engine still answers it; and a movement the engine progresses by reps or time ("Progress reps or time") can read Stalled with no deload to offer.
+
+### 20.3 Where it shows (ink only, no accent, no signal colour)
+
+- **Train hub row** (`app/exercise.tsx`): the mark in the label voice where the `+4%` token stood. VoiceOver: "Stalled." then the direction (`trendPhrase`), which is still computed. The hub reads eight sessions a movement; the mark is exact with five comparable ones, so it can differ from detail's only when four or more of the eight were away (the trend's own edge). `trainedExercises(db, today)` carries it as `overload`.
+- **Exercise detail** (`app/exercise-detail.tsx`): one line heads the Trend, the mark then `overloadLineParts`: *Stalled · no new best in 3 sessions · next: 45 kg × 6*, *Holding · no new best last session*, *Progressing · last session +1 rep at 82.5 kg · next: 82.5 kg × 8*. "next" is the engine's own target put on real plates by `targetFigure` (`set-hints.ts`, the function the logger's grey load now uses too), omitted when the engine has no load step. The % direction lines stay under the chart. In **History**, a session that advanced says **ADVANCED** (`advancedSessionIds`), replacing PR.
+- **Live logger** (`app/workout-live.tsx`): the per-set PR stamp and its "Set 3: best e1RM" line are gone. One block-level line, **Advanced · +1 rep at 82.5 kg**, appears when the movement's best done working set so far (across every block of it, ranked as Finish saves it) would advance on each of the last three logged home sessions (`liveAdvanceLines` → `liveAdvanceOf`). Drawn once per movement, on the block holding that set; nothing away, nothing in the editor, nothing with no earlier session to advance on. The history is read once per set of movements on screen, never per keystroke.
+- **Records grid** and the **self-review's record line** are unchanged: records stay as facts.
+
+### 20.4 What was deleted
+
+`stampFor`, `TypedSet` / `TypedBlock`, `recordSessionIds`, `prSummaryParts` / `prSummary` (records.ts), `restampMovement` (set-hints.ts), the logger's `stampOf` / `RESTAMP_FIELDS` / restamp-on-delete / clear-on-Away, and `DraftSet.pr` / `prKinds`. A draft written by an older build resumes with those fields dropped (the parse was always lenient; `DRAFT_VERSION` stays 3). `kindsBeating`, `recordsBeaten`, `e1rmRecordOf` and the grid code stay.
+
+### 20.5 The Coach
+
+`get_training_recommendation`'s exercises carry `mark` (`progressing` / `holding` / `stalled`) and `sinceBest`, from `overloadMarkFrom`, the hub's and detail's own assembly. Omitted where there is no mark. Payload, not schema: the description and input schema are untouched, so `db/coach-eval.test.mjs` §6's ceilings did not move. The Coach decides what a stall means; the mark only says one happened. This branch leaves the recommendation's selection logic alone (a sibling branch changes it).
+
+### 20.6 The auto-tick amendment (item 70)
+
+Owner, 2026-10-21, answering §19.6: **a Training row whose name matches the finished workout wins over the earliest open row**; otherwise the earliest open row. `eligibleTrainingRows` (`training-tick.ts`) now lists the rows named for this session's saved workout first, then the unnamed rows, each in Home's order; a row named for a different workout is still never eligible. `trainingRowFor` and the tick read the same list, so the Coach's card and execute agree. The Coach's `log_workout` names no saved workout, so its card never names a named row (pinned in `db/coach-tools.test.mjs` §49) and its wording is unchanged.
+
+### 20.7 Tests
+
+- `db/training-engine.test.mjs` §15: the spike's three worked examples (the bench after a load jump: Progressing through S5, rule 1 at S4 where the old token read −4%, rule 2 at S5, the engine's 82.5 × 8; the zig-zag overhead press: Stalled at S3 and S4, the rebound beating S3 and not S2, the new deload to 45 × 6 against the old rule's hold; the Romanian deadlift: Stalled while the old PR rule would stamp a session-volume PR); mark ⇔ engine ⇔ `isStalled` on every prefix; Holding at one and at two-at-the-top; the grinder, the below-range jump, rule 3's "e1RM +6%", the equal set; the 42/43-day window; assisted, distance, no reps; an away session after a stall; reps alone; the live line and `liveAdvanceLines` (bench → row → bench, warm-up and open sets ignored, away and editing refused); the hub row and the engine through a real database. §10 and §13 lost the deleted functions' assertions.
+- `db/exercise.test.mjs` §16 (the delete/Undo assertions without stamps, an old build's stamped draft resuming identical) and §18 (the named row winning over Zone 2, the fallback to the earliest unnamed row skipping a row named for another workout, a free session never taking a named row).
+- `db/coach-tools.test.mjs` §49 (the Coach's free session skipping an earlier named row) and §50 (the zig-zag's `mark: stalled`, `sinceBest: 3` beside the deload; no mark on a lift with no history; description and schema untouched).
+- `db/screens-render.test.mjs` §41: the hub row's Stalled and its VoiceOver line; detail's heading line, its place above the figure, and ADVANCED in History once a load jump lands; the logger's Advanced line, nothing on a rebound, away or in the editor; ink-only classes pinned from source. The screen walk's resumed-PR case now asserts an old stamped draft draws no PR line.
+
+### 20.8 What only a phone can settle
+
+- **Whether "Stalled" reads as information or as a scold** in the gym and on the hub, and whether Holding is understood as normal.
+- **The Advanced line's timing**: it appears the moment a set ticks; whether that is a reward he notices mid-session or noise in the block's footer.
+- **The deload change in practice**: a zig-zag now gets a 10% drop in the grey numbers. Whether that is the call he wants the first time it happens, or the Coach should be the one to say it.
+- **The heading line's length** at 375pt: *Stalled · no new best in 3 sessions · next: 120 lb × 6* may wrap.
+- **The hub row** with the mark in the label voice where a mono figure was: whether the column still scans.

@@ -4050,7 +4050,76 @@ console.log('49. item 70 — log_workout ticks today’s Training row; delete_re
         JSON.stringify({ card, result, m: rowOf('Mobility'), z: rowOf('Zone 2') })
       );
 }
+{
+  // 2026-10-21: a row named after a saved workout belongs to that workout. The
+  // Coach's log_workout names no saved workout, so its card skips the named
+  // row even when it is the earliest, and names the unnamed one after it.
+  const { createRoutine } = await import('../src/lib/db/repositories/routines.ts');
+  const { arriveDay } = await import('../src/lib/db/seed.ts');
+  const { db } = freshDb();
+  createRoutine(db, { name: 'Push Day', notes: null, exercises: [] });
+  createProtocolWithVersion(
+    db,
+    { name: 'Block', type: 'training_block' },
+    {
+      items: [
+        { title: 'Push Day', scheduled_time: '07:00', dose: null, notes: null },
+        { title: 'Zone 2', scheduled_time: '18:00', dose: null, notes: null },
+      ],
+    }
+  );
+  arriveDay(db, TODAY);
+  const card = toolByName('log_workout').confirmSummary(
+    { kind: 'cardio', duration_min: 30 },
+    db,
+    { now: NOW }
+  );
+  card === 'Log workout · 30 min · ticks Training: Zone 2'
+    ? ok(`the Coach's free session skips the earlier row named Push Day ("${card}")`)
+    : bad('named row skipped', card);
+}
 
+console.log('50. item 87 — get_training_recommendation says whether each lift is moving');
+{
+  const { createRoutine } = await import('../src/lib/db/repositories/routines.ts');
+  const { db, raw } = freshDb();
+  // The zig-zag from docs/spikes/pr-vs-overload.md: 50 kg × 7, 7, 6, 7.
+  [
+    [12, 7, 9],
+    [9, 7, 9.5],
+    [6, 6, 9],
+    [3, 7, 9.5],
+  ].forEach(([back, reps, rpe]) => {
+    const date = shiftISODate(TODAY, -back);
+    const id = logWorkout(db, { date, kind: 'strength' }, [
+      { exercise: 'Overhead Press', exerciseId: 'overhead-press', reps, weightKg: 50, rpe },
+    ]);
+    raw.prepare('UPDATE workouts SET created_at = ? WHERE id = ?').run(`${date}T12:00:00.000Z`, id);
+  });
+  createRoutine(db, {
+    name: 'Press',
+    notes: null,
+    exercises: [
+      { exerciseId: 'overhead-press', targetSets: 3, repLow: 6, repHigh: 10, restSec: null },
+      { exerciseId: 'barbell-bench-press', targetSets: 3, repLow: 6, repHigh: 10, restSec: null },
+    ],
+  });
+  const rec = run('get_training_recommendation', db);
+  const exercises = rec.recommendation.exercises ?? [];
+  const ohp = exercises.find((e) => e.name === 'Overhead Press');
+  const bench = exercises.find((e) => e.name === 'Barbell Bench Press');
+  ohp?.mark === 'stalled' && ohp.sinceBest === 3 && ohp.target.kind === 'deload'
+    ? ok('the zig-zag reads mark "stalled", sinceBest 3, beside the engine’s deload: one rule')
+    : bad('ohp payload', JSON.stringify(ohp));
+  bench && !('mark' in bench) && !('sinceBest' in bench)
+    ? ok('…and a lift with no history carries no mark at all, rather than a guess')
+    : bad('bench payload', JSON.stringify(bench));
+  const desc = toolByName('get_training_recommendation').description;
+  const props = toolByName('get_training_recommendation').inputSchema.properties ?? {};
+  !/\bmark\b|stall|sinceBest/i.test(desc) && !('mark' in props)
+    ? ok('payload only: the description and the schema are untouched (the §6 ceilings cannot move)')
+    : bad('schema moved');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

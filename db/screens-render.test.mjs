@@ -2416,7 +2416,8 @@ const db = getDb();
       render('workout-live (session editor)', WorkoutLiveScreen, { workoutId: benchSession.id }),
       ['Session', 'lb\nTotal']
     );
-    // A resumed session keeps its PR stamps AND says which record each beat.
+    // A session resumed from a build that still stamped PRs (item 87 retired
+    // the stamp): the old fields are dropped, and no PR line is drawn.
     saveWorkoutDraft(db, 'live', {
       version: DRAFT_VERSION,
       startedAt: Date.now() - 20 * 60_000,
@@ -2453,14 +2454,14 @@ const db = getDb();
         },
       ],
     });
-    const resumedPr = render('workout-live (resumed PR)', WorkoutLiveScreen, { resume: '1' });
-    expect('workout-live (resumed PR)', resumedPr, [
-      'PR',
-      // The whole line, for VoiceOver…
-      'aria-label="Set 1: best e1RM, heaviest"',
-      // …drawn as prose with its figure as a nested run (the mono one): the
-      // words are no longer set in the measuring face.
-      '>Set <span',
+    const resumedPr = render('workout-live (resumed, old PR stamp)', WorkoutLiveScreen, {
+      resume: '1',
+    });
+    expect('workout-live (resumed, old PR stamp)', resumedPr, ['Barbell Bench Press']);
+    refute('workout-live (resumed, old PR stamp)', resumedPr, [
+      '>PR<',
+      'best e1RM, heaviest',
+      'Set 1: best',
     ]);
     clearWorkoutDraft(db, 'live');
 
@@ -10344,6 +10345,181 @@ console.log('\n45. Smart day — the Coach’s plan at the top of Home, and its 
   });
   expect('coach item hero (until)', hero, ['until 14:00', '>Log a meal<', 'Eat lunch']);
   refute('coach item hero (no reason)', hero, ['The Coach:']);
+}
+
+console.log('\n46. Item 87 — Progressing / Holding / Stalled replaces the PR stamp and the hub’s %');
+{
+  // The zig-zag from docs/spikes/pr-vs-overload.md, in pounds: 135 × 7 · 7 · 6
+  // · 7. Romanian Deadlift is used by no other section, so its history is
+  // exactly this. The latest session is today, so the hub lists it first.
+  clearWorkoutDraft(db, 'live');
+  const today = todayISODate();
+  const rdl = (reps, lb, rpe) => ({
+    exercise: 'Romanian Deadlift',
+    exerciseId: 'romanian-deadlift',
+    reps,
+    weightKg: lbToKg(lb),
+    rpe,
+  });
+  const logged = (back, sets) => {
+    const date = shiftISODate(today, -back);
+    const id = logWorkout(db, { date, kind: 'strength' }, sets);
+    const at = back === 0 ? new Date().toISOString() : `${date}T12:00:00.000Z`;
+    db.run('UPDATE workouts SET created_at = ? WHERE id = ?', [at, id]);
+    return id;
+  };
+  const ids = [
+    logged(9, [rdl(7, 135, 9), rdl(6, 135, 9)]),
+    logged(6, [rdl(7, 135, 9.5)]),
+    logged(3, [rdl(6, 135, 9)]),
+    logged(0, [rdl(7, 135, 9.5), rdl(6, 135, 9.5)]),
+  ];
+
+  // THE HUB ROW: the mark where the % token stood; VoiceOver hears the mark,
+  // then the direction it still knows.
+  const hub = render('exercise hub (overload mark)', ExerciseScreen);
+  expect('exercise hub (overload mark)', hub, [
+    'Romanian Deadlift',
+    '>Stalled<',
+    'Stalled. level with the previous 3 sessions. Open records and history.',
+  ]);
+  refute('exercise hub (overload mark)', hub, ['>level<']);
+  readFileSync(new URL('../app/exercise.tsx', import.meta.url), 'utf8').includes('trendToken')
+    ? bad('the hub still draws the % token')
+    : ok('the hub no longer draws the % token at all');
+
+  // EXERCISE DETAIL: one line heads the Trend — the mark, why, and the
+  // engine's own next step on real plates (135 × 0.9 = 121.5, down to 120).
+  const stalled = render('exercise detail (stalled)', ExerciseDetailScreen, {
+    id: 'romanian-deadlift',
+  });
+  expect('exercise detail (stalled)', stalled, [
+    'aria-label="Stalled. no new best in 3 sessions · next: 120 lb × 6"',
+    '>Stalled<',
+    '3 sessions',
+    '120 lb × 6',
+  ]);
+  stalled.indexOf('no new best in') > stalled.indexOf('>Trend<') &&
+  stalled.indexOf('no new best in') < stalled.indexOf('>Latest<')
+    ? ok('detail: the line heads the Trend, above its figure and chart')
+    : bad('detail: line placement');
+  refute('exercise detail (stalled)', stalled, ['>Advanced<', '>PR<']);
+
+  // A load jump that holds the range: an advance on each of the three before
+  // it, though its e1RM is lower than the best. History marks it ADVANCED.
+  ids.push(logged(0, [rdl(6, 140, 8)]));
+  db.run('UPDATE workouts SET created_at = ? WHERE id = ?', [
+    new Date(Date.now() + 60_000).toISOString(),
+    ids[4],
+  ]);
+  const moving = render('exercise detail (progressing)', ExerciseDetailScreen, {
+    id: 'romanian-deadlift',
+  });
+  expect('exercise detail (progressing)', moving, [
+    '>Progressing<',
+    'aria-label="Progressing. last session +5 lb for 6 reps · next: 140 lb × 7"',
+    '>Advanced<',
+  ]);
+  (moving.match(/>Advanced</g) ?? []).length === 1
+    ? ok('History: the one session that advanced says ADVANCED, and no row says PR')
+    : bad('history advanced count', String((moving.match(/>Advanced</g) ?? []).length));
+  refute('exercise detail (progressing)', moving, ['>PR<']);
+  deleteWorkout(db, ids.pop());
+
+  // THE LIVE LOGGER: today's best set so far would be a new best on each of
+  // the last three — one block line, "Advanced · +5 lb for 7 reps".
+  const draftWith = (sets, over = {}) =>
+    saveWorkoutDraft(db, 'live', {
+      version: DRAFT_VERSION,
+      startedAt: Date.now() - 20 * 60_000,
+      routineId: null,
+      ingestId: null,
+      restEndsAt: null,
+      away: false,
+      blocks: [
+        {
+          key: 1,
+          exerciseId: 'romanian-deadlift',
+          name: 'Romanian Deadlift',
+          loggingType: 'weight_reps',
+          measures: 'reps,load',
+          mechanic: 'compound',
+          restSec: 120,
+          prev: [],
+          bestE1rm: null,
+          linkedToNext: false,
+          sets: sets.map(([weight, reps, rpe, done], i) => ({
+            key: i + 1,
+            weight,
+            reps,
+            rpe,
+            time: '',
+            distance: '',
+            setType: 'normal',
+            done,
+          })),
+        },
+      ],
+      ...over,
+    });
+  draftWith([
+    ['135', '7', '9', true],
+    ['140', '7', '8', true],
+    ['140', '', '', false],
+  ]);
+  const advanced = render('workout-live (advanced)', WorkoutLiveScreen, { resume: '1' });
+  expect('workout-live (advanced)', advanced, [
+    '>Advanced<',
+    'aria-label="Advanced: +5 lb for 7 reps on last time"',
+  ]);
+  refute('workout-live (advanced)', advanced, ['>PR<']);
+
+  // Not yet: 135 × 7 again is a rebound, not a new best.
+  draftWith([['135', '7', '9.5', true]]);
+  refute(
+    'workout-live (rebound)',
+    render('workout-live (rebound)', WorkoutLiveScreen, { resume: '1' }),
+    ['>Advanced<', 'aria-label="Advanced:']
+  );
+  // Away: the same advancing set, no line (0055).
+  draftWith([['140', '7', '8', true]], { away: true });
+  refute(
+    'workout-live (advanced, away)',
+    render('workout-live (advanced, away)', WorkoutLiveScreen, { resume: '1' }),
+    ['>Advanced<']
+  );
+  clearWorkoutDraft(db, 'live');
+  // The editor: a stored session draws no line, whatever it holds.
+  refute(
+    'workout-live (editor, overload)',
+    render('workout-live (editor, overload)', WorkoutLiveScreen, { workoutId: ids[3] }),
+    ['>Advanced<']
+  );
+
+  // Ink only (Conformed Set): neither line uses the accent or a signal colour.
+  const liveSrc = readFileSync(new URL('../app/workout-live.tsx', import.meta.url), 'utf8');
+  const detailSrc = readFileSync(new URL('../app/exercise-detail.tsx', import.meta.url), 'utf8');
+  // The classes of the JSX that draws each: the logger's footer line, the
+  // detail's heading line, the hub's mark.
+  const hubSrc = readFileSync(new URL('../app/exercise.tsx', import.meta.url), 'utf8');
+  const between = (src, from, to) => {
+    const a = src.indexOf(from);
+    const b = src.indexOf(to, a);
+    return a < 0 || b < 0 ? null : src.slice(a, b);
+  };
+  const drawn = [
+    between(liveSrc, '{advance ? (', 'accessibilityLabel={`Add a set to'),
+    between(detailSrc, '{overload ? (', ') : null}'),
+    between(hubSrc, '{x.overload ? (', ') : null}'),
+  ];
+  const classes = drawn.flatMap((src) => [...(src ?? '').matchAll(/className="([^"]*)"/g)].map((m) => m[1]));
+  drawn.every((src) => src != null) &&
+  classes.length >= 4 &&
+  classes.every((c) => !/accent|signal|pine|stamp/.test(c)) &&
+  classes.some((c) => /text-ink/.test(c))
+    ? ok('the mark and the Advanced line are ink: no accent, no signal colour, in all three places')
+    : bad('mark colour', JSON.stringify(classes));
+  for (const id of ids) deleteWorkout(db, id);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

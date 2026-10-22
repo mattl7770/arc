@@ -313,8 +313,25 @@ export function progressionIncrementKg(
   return big ? lb(5) : lb(2.5);
 }
 
-/** Consecutive stalled sessions before suggesting a deload. */
+/**
+ * Consecutive sessions the stall rule reads (`isStalled`, progression.ts): a
+ * lift is stalled, and deloaded, when the last this-many are all below the top
+ * of the range and none of the last this-many-minus-one set a new best. Also
+ * the fewest home sessions the overload mark is drawn from.
+ */
 export const STALL_SESSIONS = 3;
+/**
+ * How many earlier home sessions a session must beat, each of them, to count
+ * as an ADVANCE (item 87, docs/spikes/pr-vs-overload.md). Each of three, not
+ * the last one, so a rebound (7, 6, 7 reps) is not a new best.
+ */
+export const ADVANCE_WINDOW = 3;
+/**
+ * The e1RM gain that is an advance on its own (rule 3), percent. Under one rep
+ * at 8 reps (about 2.6%) and one small plate on a mid-weight lift (about
+ * 1.3%), over a kg/lb round trip's jitter.
+ */
+export const ADVANCE_E1RM_PCT = 1;
 /** Deload cuts the working weight by this fraction. */
 export const DELOAD_FRACTION = 0.1;
 
