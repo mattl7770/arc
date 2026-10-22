@@ -68,6 +68,7 @@ import type { MealRow, NutritionTargetsRow } from '@/lib/nutrition/types';
 import { experimentReadout, splitReadoutNotes } from '@/lib/experiments/readout';
 
 import { EXPERIMENT_ABANDON_NOTE, RECURRING_REMINDER_NOTE } from '../domains/status-domains';
+import { computeFindings, INSIGHTS_FINDINGS_MAX } from '../findings';
 import { computeInsights, dueRemindersFor, generateDailyBrief } from '../insights';
 import {
   accumulatedSeries,
@@ -1369,11 +1370,22 @@ const getInsights: CoachTool = {
     'and cite its numbers rather than recomputing.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   readOnly: true,
-  execute: (db, _input, context) =>
-    json({
+  // `findings` rides the RESULT, never the schema (the schema ceiling is
+  // db/coach-eval.test.mjs §6): the record-hygiene and medical-attention
+  // detectors (src/lib/ai/findings.ts) — facts with their rows, never advice,
+  // and never in the brief. Capped so a full lab panel's worth of out-of-range
+  // markers cannot swamp the call; the rest are counted, most serious first.
+  execute: (db, _input, context) => {
+    const findings = computeFindings(db, context.now);
+    return json({
       insights: computeInsights(db, context.now),
       briefLine: generateDailyBrief(db, context.now),
-    }),
+      ...(findings.length > 0 ? { findings: findings.slice(0, INSIGHTS_FINDINGS_MAX) } : {}),
+      ...(findings.length > INSIGHTS_FINDINGS_MAX
+        ? { findingsNotShown: findings.length - INSIGHTS_FINDINGS_MAX }
+        : {}),
+    });
+  },
 };
 
 // --- get_protocols -----------------------------------------------------------

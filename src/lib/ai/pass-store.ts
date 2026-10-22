@@ -374,6 +374,7 @@ export const coachPassStore = {
         markPassRan(db, now, {
           evening: plan.trigger.kind === 'checkin' && plan.trigger.part === 'evening',
           spoke: result.message !== null,
+          findingsShown: result.findingsShown,
         });
       }
       if (plan.checkinKey) recordCheckin(db, plan.checkinKey, now);
