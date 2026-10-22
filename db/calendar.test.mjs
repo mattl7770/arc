@@ -459,7 +459,7 @@ console.log('\n6. the per-turn context carries it as its own section');
   );
   check(
     pas.includes('const calendar = await calendarBlockFor(db, now, { dayStartsAt });') &&
-      pas.includes('systemContext: buildTurnContext(db, now, { calendar }),'),
+      pas.includes('const turnContext = buildTurnContext(db, now, { calendar });'),
     'the daily pass reads it too, on the same logical day it is planning'
   );
 }
