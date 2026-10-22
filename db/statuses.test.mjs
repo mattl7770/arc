@@ -1192,7 +1192,7 @@ console.log('\n13. THE RULE: Night out changes no protocol, mission or reminder 
   !/repositories\/(mission|mission-generate|protocols|reminders)/.test(nightOut) &&
   !/repositories\/(mission|mission-generate|protocols|reminders)/.test(store) &&
   /saveNightOutDrinks\(getDb\(\)/.test(store) &&
-  /recordNightOut\(db, today, drinks\)/.test(nightOut)
+  /recordNightOut\(db, date, drinks\)/.test(nightOut)
     ? ok('night-out.ts and the store import no mission/protocol/reminder repository')
     : bad('a plan repository is reachable from the Night out write');
 }
@@ -1326,6 +1326,50 @@ console.log('\n15. the morning after: re-counting Night out past the day boundar
   fresh.started === true && fresh.date === D1
     ? ok('…and a Night out first set at 01:15 starts on the new day, as before')
     : bad('first at 01:15', JSON.stringify(fresh));
+}
+
+console.log('\n16. the stepper’s night is decided when it OPENS (2026-10-21 fix round)');
+{
+  // Opened at 11:59 on last night's 4, saved at 12:00:30: a fresh clock reads a
+  // new evening, which used to start a second Night out with the 6 on top of
+  // the 4 (10 drinks recorded across two nights for one).
+  const D = '2026-10-17';
+  const D1 = '2026-10-18';
+  const { db } = freshDb();
+  saveNightOutDrinks(db, D, { count: 4, kind: 'beer' }, new Date(2026, 9, 17, 22, 30));
+  const opened = nightOutStepper(db, D1, new Date(2026, 9, 18, 11, 59));
+  opened.date === D && opened.lastNight === true
+    ? ok('the stepper opened at 11:59 names the night it chose: last night')
+    : bad('stepper target', JSON.stringify(opened));
+  const saved = saveNightOutDrinks(db, D1, { count: 6, kind: 'beer' }, new Date(2026, 9, 18, 12, 0, 30), opened);
+  saved.started === false &&
+  saved.date === D &&
+  db.all('SELECT * FROM day_statuses').length === 1 &&
+  dayAlcohol(db, D)?.drinks === 6 &&
+  dayAlcohol(db, D1) === null
+    ? ok('…and its Save at 12:00:30 re-counts THAT night: 6 on last night, no second Night out, no message')
+    : bad('save past noon', JSON.stringify({ saved, d: dayAlcohol(db, D), d1: dayAlcohol(db, D1) }));
+
+  // The other crossing: a first Night out opened at 23:59 and saved after the
+  // day turned is still the evening the panel showed — started, with its
+  // sentence, on that day.
+  const { db: late } = freshDb();
+  const tonight = nightOutStepper(late, D, new Date(2026, 9, 17, 23, 59));
+  const first = saveNightOutDrinks(late, D1, { count: 3, kind: 'wine' }, new Date(2026, 9, 18, 0, 0, 30), tonight);
+  tonight.lastNight === false &&
+  first.started === true &&
+  first.date === D &&
+  dayAlcohol(late, D)?.drinks === 3 &&
+  dayAlcohol(late, D1) === null
+    ? ok('a first Night out opened at 23:59 and saved at 00:00:30 starts on the evening it was opened')
+    : bad('save past midnight', JSON.stringify(first));
+
+  // The store hands the stepper's night back, from the sheet to the Save.
+  const store = readFileSync(new URL('../src/lib/status/store.ts', import.meta.url), 'utf8');
+  /saveNightOutDrinks\(getDb\(\), todayISODate\(\), drinks, new Date\(\), night\)/.test(store) &&
+  /night: \{ date, lastNight \}/.test(store)
+    ? ok('the store reads the night when the stepper opens and saves to it')
+    : bad('store does not carry the stepper’s night');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

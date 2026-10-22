@@ -28,6 +28,7 @@ import { openSessionLine } from '@/lib/exercise/draft';
 import { runUndo } from '@/lib/nutrition/undo-store';
 import { alcoholLastNightLine, type DrinksInput } from '@/lib/nutrition/drinks';
 import type { RailChip } from '@/lib/status/chips';
+import type { NightOutTarget } from '@/lib/status/night-out';
 import { endOpenStatus, toggleStatus } from '@/lib/status/store';
 
 /**
@@ -216,7 +217,8 @@ export default function HomeScreen() {
   const onStatusChip = useCallback(
     // With drinks it is Night out's stepper: the first save carries its
     // sentence like any chip; a re-count returns null and stays on Home.
-    (chip: RailChip, drinks?: DrinksInput) => carryToCoach(toggleStatus(chip, drinks)),
+    (chip: RailChip, drinks?: DrinksInput, night?: NightOutTarget | null) =>
+      carryToCoach(toggleStatus(chip, drinks, night)),
     [carryToCoach]
   );
   const onStatusEnd = useCallback(

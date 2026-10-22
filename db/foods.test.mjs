@@ -48,6 +48,7 @@ import {
 import { itemForPortion, macrosForAmount } from '../src/lib/nutrition/servings.ts';
 import { foodDeleteConsequence } from '../src/lib/nutrition/food-delete.ts';
 import {
+  emptyFoodForm,
   foodEditConsequence,
   foodFormFromRow,
   readFoodForm,
@@ -1371,6 +1372,52 @@ console.log('19. the food form — the basis chip converts, and unknown micros s
   describedServing.micros.sodium_mg === '100'
     ? ok('a described (create-mode) form converts its per-100 texts too: 200 → 500 per 250 ml')
     : bad('describe convert', JSON.stringify(describedServing));
+  // TYPED FIGURES DON'T DRIFT on a small serving (2026-10-21 fix round): 0.3 /
+  // 0.1 per 100 g in a 5 g serving print as 0.02 / 0.01, which used to convert
+  // back as 0.4 / 0.2 — and Save per serving wrote those.
+  {
+    const typedForm = { ...emptyFoodForm('Spice'), servingName: 'tsp', servingAmount: '5', kcal: '7', protein: '0.3', fat: '0.1', micros: { sodium_mg: '0.7' } };
+    const createOpts = { barcode: null, source: 'user' };
+    const tsp = switchEntryBasis(typedForm, 'serving');
+    const there = switchEntryBasis(tsp, 'per100');
+    tsp?.protein === '0.02' &&
+    tsp.fat === '0.01' &&
+    there?.protein === '0.3' &&
+    there.fat === '0.1' &&
+    there.kcal === '7' &&
+    there.micros.sodium_mg === '0.7' &&
+    there.typed === undefined
+      ? ok('typed 0.3 / 0.1 per 100 g → 0.02 / 0.01 per 5 g serving → back to 0.3 / 0.1 exactly, nothing carried')
+      : bad('typed round trip', JSON.stringify([tsp, there]));
+    const savedPerServing = readFoodForm(tsp, createOpts);
+    savedPerServing.ok &&
+    savedPerServing.food.protein_g_100g === 0.3 &&
+    savedPerServing.food.fat_g_100g === 0.1 &&
+    savedPerServing.food.kcal_100g === 7 &&
+    JSON.parse(savedPerServing.food.micros).sodium_mg === 0.7
+      ? ok('…and Save while the chip reads per serving writes the typed 0.3 / 0.1 / 7, not 0.4 / 0.2 / 7')
+      : bad('typed save per serving', JSON.stringify(savedPerServing));
+    // Typed over, or the serving changed: the carried figure no longer applies.
+    const retyped = readFoodForm({ ...tsp, protein: '0.05' }, createOpts);
+    const resized = readFoodForm({ ...tsp, servingAmount: '10' }, createOpts);
+    retyped.ok &&
+    retyped.food.protein_g_100g === 1 &&
+    retyped.food.fat_g_100g === 0.1 &&
+    resized.ok &&
+    resized.food.protein_g_100g === 0.2
+      ? ok('a figure typed over per serving, or a serving resized, is read from the field as it stands')
+      : bad('stale carry', JSON.stringify([retyped, resized]));
+    // Typed PER SERVING the other way: back to the typed text, the per-100
+    // figure saved from it.
+    const typedServing = { ...typedForm, entryBasis: 'serving', protein: '0.33', fat: '', micros: {} };
+    const asPer100 = switchEntryBasis(typedServing, 'per100');
+    const servingBack = switchEntryBasis(asPer100, 'serving');
+    asPer100?.protein === '6.6' &&
+    servingBack?.protein === '0.33' &&
+    readFoodForm(asPer100, createOpts).food?.protein_g_100g === 6.6
+      ? ok('typed 0.33 per serving → 6.6 per 100 g → 0.33 per serving again')
+      : bad('serving-typed round trip', JSON.stringify([asPer100, servingBack]));
+  }
   const screen = readFileSync(new URL('../app/food-new.tsx', import.meta.url), 'utf8');
   screen.includes('onPress={() => chooseBasis(key)}') &&
   screen.includes('switchEntryBasis(form, next, editing ? { food: editing } : undefined)') &&

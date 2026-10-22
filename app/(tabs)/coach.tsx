@@ -41,6 +41,7 @@ import {
   seedFromTap,
   talkAboutReminder,
 } from '@/lib/status/composer-seed';
+import type { NightOutTarget } from '@/lib/status/night-out';
 import { endOpenStatus, toggleStatus } from '@/lib/status/store';
 
 /**
@@ -342,12 +343,12 @@ export default function CoachScreen() {
   }, [navigation, seededPrompt]);
 
   const onStatusChip = useCallback(
-    (chip: RailChip, drinks?: DrinksInput) => {
+    (chip: RailChip, drinks?: DrinksInput, night?: NightOutTarget | null) => {
       // The row is written inside `toggleStatus`, BEFORE this line — so on a
       // plane the fact lands and only the turn fails. A null means the write
       // threw and nothing happened, which is better than a half-done gesture —
       // or that it was a Night-out re-count, which is bookkeeping, not a turn.
-      const next = toggleStatus(chip, drinks);
+      const next = toggleStatus(chip, drinks, night);
       if (next) chat.send(next.prompt);
     },
     [chat]

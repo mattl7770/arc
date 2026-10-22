@@ -354,9 +354,12 @@ function FoodEntryForm({
     original: editing ? { food: editing, form: opened } : undefined,
   });
   // A micro typed and cleared again is no change: compare without the blanks.
+  // Nor is what the basis chip carries for a typed figure (`typed`): it is
+  // bookkeeping about the texts, which are compared themselves.
   const comparable = (f: FoodForm) =>
     JSON.stringify({
       ...f,
+      typed: undefined,
       micros: MICROS.map((m) => (f.micros[m.key] ?? '').trim()),
     });
   const changed = comparable(form) !== comparable(opened);

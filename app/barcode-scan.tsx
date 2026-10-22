@@ -337,7 +337,10 @@ export function LabelRows({ food }: { food: FoodRow }) {
  * With a fresh reading, its own verdict is the one shown: it was judged with
  * what only the reading knows (alcohol, polyols, both columns). Without one —
  * a cached food opened offline — the ROW is asked (`energyLooksWrong`,
- * `drinkLooksPerServing`), so a food cached before this round still says so.
+ * `drinkLooksPerServing`), so a food cached before this round still says so —
+ * as a STORED row (`storedRow`), which keeps no polyols: a cached sugar-free
+ * sweet whose only excess is carbohydrate is not called inconsistent while the
+ * re-read is in flight, or for good offline (2026-10-21 fix round).
  */
 export function LabelNotes({
   food,
@@ -349,7 +352,11 @@ export function LabelNotes({
   healed: boolean;
 }) {
   const lines: string[] = [];
-  if (label ? label.doubtful : energyLooksWrong(food) || drinkLooksPerServing(food)) {
+  if (
+    label
+      ? label.doubtful
+      : energyLooksWrong(food, { storedRow: true }) || drinkLooksPerServing(food)
+  ) {
     lines.push(`Label data looks inconsistent — check per 100 ${food.basis}.`);
   }
   if (healed) lines.push('Updated from Open Food Facts just now — the saved figures were different.');

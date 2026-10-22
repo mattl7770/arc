@@ -350,11 +350,24 @@ export type EnergyExtras = {
   abv?: number | null;
   /** Polyols, g per 100 (OFF's `polyols_100g`) — counted inside carbohydrate. */
   polyols?: number | null;
+  /** OFF lists an alcohol figure at all, usable or not — so alcohol is
+   *  plausible even where `abv` could not be read. */
+  alcoholListed?: boolean;
+  /**
+   * Judged from a STORED row, which keeps neither alcohol nor polyols, not
+   * from a reading that knows them. Then any of the carbohydrate may be
+   * polyols, so the low estimate counts it at their 2.4 kcal/g: a cached
+   * sugar-free sweet is not flagged for carbohydrate the reading would have
+   * explained. The low estimate can only fall, so a cached row is never
+   * flagged for over-shooting where its fresh reading was not.
+   */
+  storedRow?: boolean;
 };
 
 /**
  * Whether a food's energy disagrees with its own macros. Pure, on the stored
- * per-100 columns, so a cached row is judged as a fresh read is. It only ever
+ * per-100 columns, so a cached row is judged by the same rule as a fresh read
+ * — with what only the reading knew marked unknown (`storedRow`). It only ever
  * adds a line asking the user to check the label; it changes no number.
  *
  * The estimate is 4P + 4C + 9F, with what OFF can add (2026-10-21 review —
@@ -364,21 +377,27 @@ export type EnergyExtras = {
  * - **polyols** at 2.4 kcal/g instead of carbohydrate's 4, when known (labels
  *   count them inside carbohydrate);
  * - **fibre** read both ways, because labels disagree: US carbohydrate includes
- *   it, EU does not. The LOW estimate counts it inside carbohydrate at 2 kcal/g,
- *   the HIGH one beside it at 2 kcal/g.
+ *   it, EU does not. The LOW estimate counts it inside carbohydrate at 0 kcal/g
+ *   (a US label's energy often gives insoluble fibre nothing: Fiber One is 200
+ *   kcal with 83 g carbohydrate, 47 of it fibre), the HIGH one beside it at
+ *   2 kcal/g.
  *
  * Then, on anything over 20 kcal per 100 with all three macros recorded:
  * - the macros OVER-shooting the label (even the low estimate more than 35 %
  *   above it) is flagged — no unrecorded ingredient ADDS macros without energy;
  * - the macros UNDER-shooting it (the high estimate more than 35 % below) is
- *   flagged only when alcohol is KNOWN. Unknown alcohol is the commonest reason
- *   a label's energy exceeds its macros (a vodka is 231 kcal with no macros at
- *   all), so without it an under-shoot is not evidence.
+ *   flagged unless alcohol is unknown AND plausible: a drink (measured in ml),
+ *   or a product listing an alcohol figure it could not be read from. Unknown
+ *   alcohol is the commonest reason a drink's energy exceeds its macros (a
+ *   vodka is 231 kcal with no macros at all), so there an under-shoot is not
+ *   evidence; in a solid it is a typo — 450 kcal with 6 g carbohydrate that
+ *   should be 60, fat 2.8 for 28 (2026-10-21 fix round).
  * 35 % is the margin that was already here: macro rounding to whole grams and
  * the general Atwater factors routinely put a correct label 10–20 % off.
  */
 export function energyLooksWrong(
   food: {
+    basis: AmountUnit;
     kcal_100g: number | null;
     protein_g_100g: number | null;
     carbs_g_100g: number | null;
@@ -389,15 +408,20 @@ export function energyLooksWrong(
 ): boolean {
   const { kcal_100g: kcal, protein_g_100g: p, carbs_g_100g: c, fat_g_100g: f } = food;
   if (kcal == null || p == null || c == null || f == null || kcal <= 20) return false;
-  const abv = extras.abv != null && extras.abv >= 0 && extras.abv <= 100 ? extras.abv : null;
-  const polyols = extras.polyols != null ? Math.min(Math.max(extras.polyols, 0), c) : 0;
+  const stored = extras.storedRow === true;
+  const abv =
+    !stored && extras.abv != null && extras.abv >= 0 && extras.abv <= 100 ? extras.abv : null;
+  const polyols =
+    !stored && extras.polyols != null ? Math.min(Math.max(extras.polyols, 0), c) : 0;
   const fibre = food.fiber_g_100g != null ? Math.max(food.fiber_g_100g, 0) : 0;
   const carbs4 = c - polyols; // the carbohydrate counted at 4 kcal/g
   const base = 4 * p + 9 * f + KCAL_PER_G_POLYOL * polyols + (abv ?? 0) * KCAL_PER_ABV_POINT;
-  const low = base + 4 * Math.max(carbs4 - fibre, 0) + KCAL_PER_G_FIBRE * Math.min(fibre, carbs4);
+  const low = base + (stored ? KCAL_PER_G_POLYOL : 4) * Math.max(carbs4 - fibre, 0);
   const high = base + 4 * carbs4 + KCAL_PER_G_FIBRE * fibre;
   if ((low - kcal) / kcal > 0.35) return true;
-  return abv !== null && (kcal - high) / kcal > 0.35;
+  const alcoholMayExplain =
+    abv === null && (food.basis === 'ml' || (!stored && extras.alcoholListed === true));
+  return !alcoholMayExplain && (kcal - high) / kcal > 0.35;
 }
 
 /**
@@ -500,6 +524,9 @@ export function readOffProduct(response: unknown, barcode: string): OffRead | nu
   // energy (`energyLooksWrong`); it is not stored.
   const abvRaw = offNum(nutriments, 'alcohol_100g');
   const abv = abvRaw != null && abvRaw <= 100 ? abvRaw : null;
+  // Any alcohol key at all, read or not: then alcohol is plausible, and an
+  // energy the macros fall short of is not called a typo.
+  const alcoholListed = Object.keys(nutriments).some((key) => /^alcohol(_|$)/.test(key));
 
   /**
    * One nutrient per 100 of the basis.
@@ -636,13 +663,14 @@ export function readOffProduct(response: unknown, barcode: string): OffRead | nu
         doubtful ||
         energyLooksWrong(
           {
+            basis,
             kcal_100g: food.kcal_100g ?? null,
             protein_g_100g: food.protein_g_100g ?? null,
             carbs_g_100g: food.carbs_g_100g ?? null,
             fat_g_100g: food.fat_g_100g ?? null,
             fiber_g_100g: food.fiber_g_100g ?? null,
           },
-          { abv, polyols: read('polyols', rescaled).value }
+          { abv, polyols: read('polyols', rescaled).value, alcoholListed }
         ) ||
         drinkLooksPerServing(
           { basis, kcal_100g: food.kcal_100g ?? null, serving_amount: q },

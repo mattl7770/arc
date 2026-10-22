@@ -51,7 +51,35 @@ export type FoodForm = {
   fat: string;
   fiber: string;
   micros: Partial<Record<MicroKey, string>>;
+  /**
+   * Figures the basis chip converted from what was TYPED, by field (a macro's
+   * field name, or a micro's key). Absent when there are none — a form opened
+   * from a row has none. See {@link TypedFigure}.
+   */
+  typed?: Partial<Record<string, TypedFigure>>;
 };
+
+/**
+ * A typed figure the basis chip converted (2026-10-21 fix round): the text as
+ * typed, the basis it was typed on, the serving it was converted by, and the
+ * 2 dp text the chip printed (`shown`). While the field still shows `shown` and
+ * the serving is unchanged, the chip converts back to the typed text itself and
+ * Save writes the typed value — not the print's: protein 0.3 per 100 g is 0.02
+ * in a 5 g serving, and 0.02 is 0.4 per 100 g.
+ */
+export type TypedFigure = { text: string; basis: EntryBasis; serving: number; shown: string };
+
+/** The carried figure for `key`, if the field still shows what the chip printed
+ *  from it and the serving it was converted by still stands. */
+function liveTyped(
+  form: FoodForm,
+  key: string,
+  text: string,
+  serving: number | null
+): TypedFigure | undefined {
+  const carried = form.typed?.[key];
+  return carried && carried.shown === text && carried.serving === serving ? carried : undefined;
+}
 
 export function emptyFoodForm(name: string = ''): FoodForm {
   return {
@@ -133,7 +161,9 @@ const MACRO_FIELDS = [
  * A field nobody has typed over (its text is still what the stored figure
  * prints as on this basis) is converted from the STORED number, not its 2 dp
  * text, so per 100 → per serving → per 100 lands on exactly the text it
- * opened with, and Save writes the stored value back unchanged.
+ * opened with, and Save writes the stored value back unchanged. A field that
+ * WAS typed is carried the same way (`typed`, {@link TypedFigure}): converted
+ * from the typed number, and back to its typed text exactly.
  *
  * Null when it cannot convert: figures are filled and there is no serving
  * size above zero to convert them by. The screen says why and stays put.
@@ -154,21 +184,33 @@ export function switchEntryBasis(
   }
   const food = original && original.food.basis === form.unit ? original.food : undefined;
   const storedMicros = parseMicros(food?.micros);
-  const convert = (text: string, stored: number | null | undefined): string => {
+  const typed: Partial<Record<string, TypedFigure>> = {};
+  const convert = (key: string, text: string, stored: number | null | undefined): string => {
+    // Converted from a typed figure and untouched since: back to it as typed
+    // (with two bases, the way back is always to the basis it was typed on).
+    const carried = liveTyped(form, key, text, serving);
+    if (carried) return carried.text;
     if (food && stored != null && text === storedText(stored, form.entryBasis, serving)) {
       return storedText(stored, next, serving);
     }
     const t = text.trim();
     if (t === '' || !validNumber(t)) return text;
     const n = Number(t);
-    return numText(next === 'serving' ? (n * serving) / 100 : (n * 100) / serving);
+    const shown = numText(next === 'serving' ? (n * serving) / 100 : (n * 100) / serving);
+    typed[key] = { text, basis: form.entryBasis, serving, shown };
+    return shown;
   };
-  const out: FoodForm = { ...form, entryBasis: next, micros: { ...form.micros } };
-  for (const [field, column] of MACRO_FIELDS) out[field] = convert(form[field], food?.[column]);
+  const { typed: carriedBefore, ...rest } = form;
+  void carriedBefore;
+  const out: FoodForm = { ...rest, entryBasis: next, micros: { ...form.micros } };
+  for (const [field, column] of MACRO_FIELDS) {
+    out[field] = convert(field, form[field], food?.[column]);
+  }
   for (const m of MICROS) {
     const text = form.micros[m.key];
-    if (text !== undefined) out.micros[m.key] = convert(text, storedMicros[m.key]);
+    if (text !== undefined) out.micros[m.key] = convert(m.key, text, storedMicros[m.key]);
   }
+  if (Object.keys(typed).length > 0) out.typed = typed;
   return out;
 }
 
@@ -268,7 +310,19 @@ export function readFoodForm(
   // chip printed from the stored figure (`switchEntryBasis`) for this serving.
   const verbatim = original !== undefined && unit === original.food.basis;
   const factor = entryBasis === 'serving' && servingUsable ? 100 / serving : 1;
-  const per100 = (text: string, opened: string | undefined, stored: number | null): number | null => {
+  const per100 = (
+    key: string,
+    text: string,
+    opened: string | undefined,
+    stored: number | null
+  ): number | null => {
+    // Shown by the basis chip from a typed figure, untouched since: the TYPED
+    // value is written, not its 2 dp print converted back (`TypedFigure`).
+    const carried = servingUsable ? liveTyped(form, key, text, serving) : undefined;
+    if (carried && carried.basis !== entryBasis && validNumber(carried.text)) {
+      const n = Number(carried.text.trim());
+      return carried.basis === 'per100' ? n : round2((n * 100) / carried.serving);
+    }
     if (verbatim && entryBasis === 'per100' && opened !== undefined && text === opened) {
       return stored;
     }
@@ -288,11 +342,11 @@ export function readFoodForm(
 
   const o = original?.food;
   const of = original?.form;
-  const kcal = per100(form.kcal, of?.kcal, o?.kcal_100g ?? null);
-  const protein = per100(form.protein, of?.protein, o?.protein_g_100g ?? null);
-  const carbs = per100(form.carbs, of?.carbs, o?.carbs_g_100g ?? null);
-  const fat = per100(form.fat, of?.fat, o?.fat_g_100g ?? null);
-  const fiber = per100(form.fiber, of?.fiber, o?.fiber_g_100g ?? null);
+  const kcal = per100('kcal', form.kcal, of?.kcal, o?.kcal_100g ?? null);
+  const protein = per100('protein', form.protein, of?.protein, o?.protein_g_100g ?? null);
+  const carbs = per100('carbs', form.carbs, of?.carbs, o?.carbs_g_100g ?? null);
+  const fat = per100('fat', form.fat, of?.fat, o?.fat_g_100g ?? null);
+  const fiber = per100('fiber', form.fiber, of?.fiber, o?.fiber_g_100g ?? null);
 
   if (kcal !== null && kcal > 950) {
     return { ok: false, problem: `kcal per 100 ${unit} can’t exceed 950 (pure fat is ~884).` };
@@ -304,7 +358,12 @@ export function readFoodForm(
   const storedMicros = parseMicros(o?.micros);
   const micros: Micros = {};
   for (const m of MICROS) {
-    const v = per100(form.micros[m.key] ?? '', of?.micros[m.key] ?? '', storedMicros[m.key] ?? null);
+    const v = per100(
+      m.key,
+      form.micros[m.key] ?? '',
+      of?.micros[m.key] ?? '',
+      storedMicros[m.key] ?? null
+    );
     if (v !== null) micros[m.key] = v;
   }
 

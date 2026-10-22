@@ -57,6 +57,13 @@ export type RatedItem = {
   protein_g: number | null;
   carbs_g: number | null;
   fat_g: number | null;
+  /**
+   * Joined by a combine AFTER he called the estimate off (`combineMeals`): on
+   * the plate, but never part of the estimate being corrected, so an edit or a
+   * delete of it is not a correction (`changesBetween`). Absent, never false,
+   * on every other row, so a snapshot written before it reads unchanged.
+   */
+  joined?: true;
 };
 
 /** A rated-off meal whose items changed: what it was, and what it became. */
@@ -98,22 +105,31 @@ export function serializeRatedItems(items: readonly RatedItem[]): string {
  * is a set of what was on the plate, not a list: a combine appends the joined
  * meal's items to a rating's snapshots (`combineMeals`), while the meal itself
  * lists them by when they were logged, and that difference of order is not a
- * correction. Null equals only null.
+ * correction. Nor is the `joined` mark: the meal's own rows never carry it.
+ * Null equals only null.
  */
 export function sameRatedItems(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return a === b;
   const canon = (text: string) =>
     (parseRatedItems(text) ?? [])
-      .map((item) => JSON.stringify(item))
+      .map((item) => {
+        const { joined, ...figures } = item;
+        void joined;
+        return JSON.stringify(figures);
+      })
       .sort()
       .join('\n');
   return canon(a) === canon(b);
 }
 
-/** A stored snapshot with `extra` items appended; null stays null. */
+/** A stored snapshot with `extra` items appended, each marked `joined`; null
+ *  stays null. */
 export function withRatedItems(text: string | null, extra: readonly RatedItem[]): string | null {
   if (text === null) return null;
-  return serializeRatedItems([...(parseRatedItems(text) ?? []), ...extra]);
+  return serializeRatedItems([
+    ...(parseRatedItems(text) ?? []),
+    ...extra.map((item): RatedItem => ({ ...item, joined: true })),
+  ]);
 }
 
 const numOrNull = (value: unknown): number | null =>
@@ -143,6 +159,7 @@ export function parseRatedItems(text: string | null): RatedItem[] | null {
         protein_g: numOrNull(r.protein_g),
         carbs_g: numOrNull(r.carbs_g),
         fat_g: numOrNull(r.fat_g),
+        ...(r.joined === true ? { joined: true as const } : {}),
       },
     ];
   });
@@ -162,8 +179,16 @@ function phrase(i: RatedItem): string {
   return p ? `${quoted(i)} ${p} · ${kcal(i)}` : `${quoted(i)} ${kcal(i)}`;
 }
 
-/** The changes between two snapshots, before order first, as phrases. Rounded:
- *  a change below the last printed digit is not a change. */
+/**
+ * The changes between two snapshots, before order first, as phrases. Rounded:
+ * a change below the last printed digit is not a change.
+ *
+ * A before-row marked `joined` still claims its after-row, so the food is not
+ * read as "missed", but it says nothing: edited or deleted, it was never part
+ * of the estimate he called off. An identical after-row is claimed before a
+ * merely same-named one, so a joined food sharing a name with an estimated one
+ * cannot pair with the wrong row and pass the other's figures off as a fix.
+ */
 function changesBetween(
   beforeRows: readonly RatedItem[],
   afterRows: readonly RatedItem[]
@@ -172,16 +197,29 @@ function changesBetween(
   const before = beforeRows.filter((i) => !isStandIn(i.name));
   const after = afterRows.filter((i) => !isStandIn(i.name));
   const key = (i: RatedItem) => foodKey({ food_id: null, name: i.name });
+  const sameName = (a: RatedItem, b: RatedItem) => key(a) === key(b);
+  const identical = (a: RatedItem, b: RatedItem) =>
+    sameName(a, b) && phrase(a) === phrase(b) && macros(a) === macros(b);
   const taken = new Set<number>();
+  const pairs = new Map<RatedItem, number>();
+  for (const matches of [identical, sameName]) {
+    for (const b of before) {
+      if (pairs.has(b)) continue;
+      const index = after.findIndex((a, n) => !taken.has(n) && matches(a, b));
+      if (index === -1) continue;
+      taken.add(index);
+      pairs.set(b, index);
+    }
+  }
   const removed: RatedItem[] = [];
   const changes: string[] = [];
   for (const b of before) {
-    const index = after.findIndex((a, n) => !taken.has(n) && key(a) === key(b));
-    if (index === -1) {
+    if (b.joined) continue;
+    const index = pairs.get(b);
+    if (index === undefined) {
       removed.push(b);
       continue;
     }
-    taken.add(index);
     const a = after[index]!;
     if (portion(a) !== portion(b)) {
       changes.push(`${phrase(b)} → ${[portion(a) ?? 'no amount', kcal(a)].join(' · ')}`);
@@ -189,7 +227,7 @@ function changesBetween(
       changes.push(`${quoted(b)} ${kcal(b)} · ${macros(b)} → ${kcal(a)} · ${macros(a)}`);
     }
   }
-  const added = after.filter((_, n) => !taken.has(n));
+  const added = after.filter((a, n) => !taken.has(n) && !a.joined);
   // A food swapped for another: paired in order, the rest said on their own.
   const swaps = Math.min(removed.length, added.length);
   for (let n = 0; n < swaps; n += 1) changes.push(`${phrase(removed[n]!)} → ${phrase(added[n]!)}`);

@@ -23,6 +23,7 @@ import {
 } from '@/lib/nutrition/drinks';
 import { displayStatus, type RailChip } from '@/lib/status/chips';
 import { statusLine } from '@/lib/status/line';
+import type { NightOutTarget } from '@/lib/status/night-out';
 import { currentNightOutDrinks } from '@/lib/status/store';
 
 /**
@@ -130,9 +131,9 @@ export function StatusControl({
   /**
    * Off → on, or a tap on an on-chip. The sheet closes either way. For a chip
    * that asks for drinks (Night out) it is called only from the stepper's
-   * Save, with the count — see {@link DrinksPanel}.
+   * Save, with the count and the night it opened on — see {@link DrinksPanel}.
    */
-  onToggle: (chip: RailChip, drinks?: DrinksInput) => void;
+  onToggle: (chip: RailChip, drinks?: DrinksInput, night?: NightOutTarget | null) => void;
   onEnd: (chip: RailChip & { openId: string }) => void;
 }) {
   const [sheet, setSheet] = useState(false);
@@ -149,6 +150,9 @@ export function StatusControl({
     /** Save re-counts and sends nothing: the chip is on, or it is last night's. */
     editing: boolean;
     lastNight: boolean;
+    /** The night it opened on, which its Save writes whatever the clock says
+     *  by then (null: the read failed, and the Save decides). */
+    night: NightOutTarget | null;
   } | null>(null);
   if (hidden) return null;
 
@@ -260,7 +264,7 @@ export function StatusControl({
                 disabled={disabled}
                 onSave={(input) => {
                   setSheet(false);
-                  onToggle(drinks.chip, input);
+                  onToggle(drinks.chip, input, drinks.night);
                 }}
                 onBack={() => setDrinks(null)}
               />
@@ -280,7 +284,7 @@ export function StatusControl({
                       // Save then re-counts (src/lib/status/night-out.ts).
                       // Nothing recorded: 0 while it is a re-count (the count
                       // was removed on meal-detail), the owner's default else.
-                      const { recorded, lastNight } = currentNightOutDrinks();
+                      const { recorded, lastNight, night } = currentNightOutDrinks();
                       const editing = chip.openId !== null || lastNight;
                       setDrinks({
                         chip,
@@ -288,6 +292,7 @@ export function StatusControl({
                         kind: recorded?.kind ?? 'beer',
                         editing,
                         lastNight,
+                        night,
                       });
                       return;
                     }

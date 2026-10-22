@@ -546,7 +546,12 @@ things that read it are a record and two surfaces that print it.
   on the way home or over the next morning, while a Night out tapped in the
   afternoon is far likelier a new evening; a wall-clock hour, because "the
   morning after" is a time of day whatever the boundary is.
-  `db/statuses.test.mjs` §15.
+  `db/statuses.test.mjs` §15. **Which night is decided when the stepper
+  opens** (2026-10-21 fix round): `nightOutStepper` returns the day it chose,
+  the sheet hands it back with the count, and `saveNightOutDrinks` writes that
+  night rather than re-reading the clock — opened at 11:59 on last night's 4
+  and saved at 12:00:30 used to start a second Night out with the 6 on top.
+  §16.
 - **The record is a meal**, the fewest new concepts: *"Night out · 4 drinks"*,
   one item counted in drinks (0059's `piece_name`), in ml, with its ethanol under
   `alcohol_g` in the item's micros JSON — 14 g a standard drink. So kcal and
