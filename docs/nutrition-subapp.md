@@ -939,20 +939,33 @@ The one nutrition path that *does* use the network already degrades rather than 
 
 **NULL, not 0.** A placeholder that read `0 kcal` would be a fabricated measurement and would sum into the day as a fact. NULL is "not recorded" — which the Eat tab already draws as an em-dash, and which already (correctly) drops the day out of countdown mode, because energy that is genuinely unknown cannot be subtracted from a target. The row says **`Estimate pending — offline`** rather than `Nothing recorded — tap to fill it in`, which would be advice the user cannot act on.
 
-### Which failures are worth waiting on
+### Which failures are worth waiting on — and which are never re-sent (rewritten 2026-10-21)
 
-`isQueueableFailure` queues a **transport** failure — the request never reached the API — and nothing else:
+**The bug this section used to allow.** A queued estimate that failed for a reason waiting cannot fix — an unreadable reply, a refusal, a 400/401/429 — stayed in the queue and was **re-sent, and re-billed, on every app open and every foreground, with no cap** (`listPendingEstimates` had no filter and `markPendingEstimateFailed` only counted). Proved before the fix by counting model calls across five opens: five calls for each of an unreadable reply, a 400, a 401 and a 429. After: one.
 
-| failure | queues? | why |
-| --- | --- | --- |
-| `expo/fetch` rejecting (`TypeError: Network request failed`) | **yes** | the phone never got out |
-| `ModelRequestError` with `status === 0` | **yes** | "no HTTP response" — a stream that died mid-reply is what a dropping connection looks like from inside the client |
-| `ModelRequestError` with an HTTP status (400/401/429/5xx) | no | the API **answered**; queueing re-bills the same rejection tomorrow |
-| `MealEstimateParseError` | no | the same request produces the same nonsense |
-| `MealEstimationUnavailableError` | no | no key, or a binary without `expo/fetch`; waiting adds neither |
-| `AbortError` | no | the user left the screen |
+Every failure is now classified once (`classifyQueueFailure`, `src/lib/nutrition/estimate-queue.ts`) into a code and one of three dispositions, carried in the row's existing `attempts` / `last_error` columns — **no migration**. The rules and the sentences live in `src/lib/nutrition/queue-status.ts`.
 
-`MealEstimateParseError` is new in this round and exists only for that table: the parser's four throws used to be bare `Error`s, indistinguishable from a network failure.
+| failure | code | disposition | why |
+| --- | --- | --- | --- |
+| the fetch rejected — the client now names it `ModelRequestError(0, 'network_error')` | `offline` | **wait**: retried on the next drain, not counted | nothing left the phone, nothing was billed; a week offline must not park a meal |
+| no key / no `expo/fetch` (`MealEstimationUnavailableError`) | `no_key` | **wait** | nothing was sent; adding a key fixes it |
+| `AbortError` | `aborted` | **wait** | the user left the screen |
+| any other status-0 `ModelRequestError` — a stream that died mid-reply (`stream_error`), an `overloaded_error` mid-stream | `interrupted` | **retry**: counted, backed off | transient, but the model may have started — so it may have been billed |
+| HTTP 5xx, 529 overloaded, 408 | `server` | **retry** | transient |
+| HTTP 401 / 403 | `auth` | **park** | the API answered; the same key gets the same answer |
+| HTTP 429 | `rate_limited` | **park** | rate or credit limit; re-sending on every open is the loop this fixes |
+| any other 4xx | `rejected` | **park** | the request itself is refused |
+| `MealEstimateParseError` | `unreadable` | **park** | the same request produces the same nonsense, billed each time |
+| `MealEstimateRefusedError` (new: `stop_reason: "refusal"` used to be a bare `Error`) | `refused` | **park** | declined the same way, billed each time |
+| anything AFTER the model answered (grounding, the write) | `apply_failed` | **park** | it was billed; sending it again bills it again |
+| anything else | `failed` | **park** | **the default flipped**: an error nothing can name is no longer assumed to be a free network failure |
+
+- **Retry** adds one to `attempts` and waits by **elapsed time** from `updated_at` (the row's trigger stamps it on every write), not by open count: 2 minutes, 10 minutes, 1 hour, 6 hours. The fifth counted failure parks it (`QUEUE_MAX_ATTEMPTS = 5`), a little over seven hours after the first. Ten opens in a minute send it once.
+- **Park** sets `attempts` to the cap at once. **Parked is one fact: `attempts >= 5`.** The drain sends only DUE rows (`isPendingEstimateDue`), so a parked row is never sent again by itself.
+- `last_error` is `<code>: <ErrorName>: <message>`, written by the one writer and read back into a plain sentence; the exception never reaches the screen.
+- A drain stops at the first `offline`, `no_key`, `aborted`, `interrupted`, `server`, `auth` or `rate_limited` (the rest of the queue would meet the same answer) and carries on past a row-specific park.
+
+`isQueueableFailure` — what the photo / describe / revise screens ask before they queue a failed interactive estimate — stays what it meant: `offline` or `interrupted` (no connection, or one that dropped mid-reply), which is what the queued screen's *"No connection, so the estimate is waiting"* says. A 5xx on an interactive estimate still shows its error and a retry (the drain retries one it meets). The one change on that path: a refusal or an unnamed error now shows its error, where before it was queued — and then re-billed on every open.
 
 ### The drain APPLIES; it does not park a second review
 
@@ -960,12 +973,17 @@ An interactive estimate lands in a review because **nothing has been written yet
 
 **A queued revision is re-grounded on what is there now.** The queue stores the *correction*, never a snapshot of the items. On drain the meal's current items are read and sent as the "before", so a hand-edit made while offline is what the correction applies to rather than something it silently overwrites with a day-old picture of the meal. A revision still replaces items only — date, time, name and notes are untouched (`replaceMealItems`' own rule).
 
-**Nothing expires.** A row that fails again counts the attempt and records why. The two reasons a drain fails are "still offline" (waiting fixes it) and "no key yet" (Settings fixes it); deleting the user's meal on his behalf fixes neither. The escape hatch is the one he already has — delete the placeholder, and CASCADE takes the request with it.
+**Nothing expires, and nothing is silently dropped.** A parked row holds the user's photo or his words, and the meal he can see, so it stays. It says so where he looks:
+
+- **The Eat tab and History** read `pendingEstimateStatuses`: a waiting meal still says `Estimate pending — offline` (or `— needs an API key`, `— will retry`); a parked one says **`Estimate paused — tap to retry or enter it`**.
+- **The meal screen** draws a `Queued estimate` (or `Queued correction`) plate above the totals: the plain sentence (*"The model answered, but its answer could not be read as an estimate. It is kept here, with what you sent, and is not sent again by itself."*), what he sent in his own words, and — when parked — **Try again** (`retryPendingEstimate`: attempts back to 0, then one drain at once) and **Enter by hand** (`enterPendingEstimateByHand`: the request goes, a queued photo moves onto the meal through `attachMealPhoto`, the meal keeps its name and its NULL macros for him to fill in). A request still waiting offers Enter by hand only; it will send itself.
+- Deleting the placeholder still CASCADEs the request away, as before.
 
 ### Verification
 
 - `db/nutrition-v2.test.mjs` §23–29 — the source scan and a full catalog→meal→day round trip with nothing to connect to; the OFF degrade; the placeholder's NULL macros and the day's `0 kcal / 1 meal` reading; the whole classifier table; **offline → attempt counted → restart → reconnect → items land**, with the placeholder asserted NULL at every step; a queued photo's bytes re-read, sent, and landed in `meal-photos/`; the CASCADE, the orphan sweep, and a photo whose file vanished degrading to its words; a queued revision sent against an item added *after* it was queued.
 - `db/screens-render.test.mjs` §5b — the Eat tab rendered over a real placeholder: the user's words as the name, `Estimate pending — offline` on the row, and no number in the row at all.
+- **The re-billing fix (2026-10-21):** `db/nutrition-v2.test.mjs` §25 (the whole classification table — code, disposition, stop) and **§25b**, which counts model calls: an unreadable reply, a refusal, a 400, a 401, a 429 and an unnamed error each cost **one** call across five opens a day apart and are parked with the row and meal kept; a reply that could not be applied, one call; a 529 opened ten times in a minute, one call, then capped at five over days; the backoff schedule against the row's stamp; offline tried every open and never parked; a parked row not blocking the next; and the screens' lines, Try again and Enter by hand. §26 now asserts an offline drain records why and counts nothing. `db/screens-render.test.mjs` §41 renders a parked meal on the Eat tab and its meal screen (the sentence, both actions, no exception text) and a waiting one (Enter by hand only).
 
 ### What only a device can judge
 

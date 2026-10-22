@@ -13,12 +13,19 @@ import {
   DEFAULT_MODEL,
   MessageAccumulator,
   ModelRequestError,
+  NETWORK_ERROR,
+  STREAM_ERROR,
   SseParser,
   buildMessagesRequest,
+  isCoachModel,
   runCoachTurn,
+  setModelUsageSink,
+  withConversationBreakpoint,
 } from '../src/lib/ai/model-client.ts';
 import {
   COACH_WEB_SEARCH_MAX_USES,
+  hasWebSearchDecision,
+  webSearchTool,
   isWebSearchCall,
   searchedLine,
   WebSearchLedger,
@@ -26,7 +33,7 @@ import {
 } from '../src/lib/ai/web-search.ts';
 import { deriveRegion, deviceRegion, regionLine, regionOfLocale } from '../src/lib/ai/region.ts';
 import { toolDigest } from '../src/lib/ai/history-window.ts';
-import { estimateCost, usageCaption } from '../src/lib/ai/cost.ts';
+import { estimateCost, PRICES, usageCaption } from '../src/lib/ai/cost.ts';
 import {
   MEAL_ESTIMATION_SYSTEM_PROMPT,
   NO_ESTIMATOR_OPTIONS,
@@ -1630,6 +1637,434 @@ console.log('21. a search input that arrives whole, and a search block not named
   JSON.parse(all[1].result).found.length === 2
     ? ok('the ledger records a search by its result as well as by its name, and never a code tool')
     : bad('ledger tolerance', JSON.stringify(all));
+}
+
+// --- Track 0, 2026-10-21: current models, the conversation cache, the sink ----
+
+console.log('22. three tables move together: every model has a price and a search decision');
+{
+  // The drift this pins: a model added to the picker without a PRICES row lost
+  // its cost line in silence, and one without a TOOL_VERSION_BY_MODEL row lost
+  // web search in silence. Each id must have both — a search "decision" may be
+  // an explicit null, never an absence.
+  const unpriced = COACH_MODELS.filter((m) => !PRICES[m.id]).map((m) => m.id);
+  unpriced.length === 0
+    ? ok(`every one of the ${COACH_MODELS.length} COACH_MODELS ids has a PRICES row`)
+    : bad('model without a price', unpriced.join(', '));
+  const undecided = COACH_MODELS.filter((m) => !hasWebSearchDecision(m.id)).map((m) => m.id);
+  undecided.length === 0
+    ? ok('…and an explicit web-search decision (a version, or a deliberate null)')
+    : bad('model without a search decision', undecided.join(', '));
+  ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'].every((id) => isCoachModel(id))
+    ? ok('Opus 5.5, Sonnet 5.5 and Haiku 5.5 are selectable')
+    : bad('5.5 models missing', JSON.stringify(COACH_MODELS.map((m) => m.id)));
+  DEFAULT_MODEL === 'claude-sonnet-5'
+    ? ok('the default is unchanged (the usage policy decides defaults later)')
+    : bad('default moved', DEFAULT_MODEL);
+
+  // The prices, as the live pricing page listed them on 2026-10-21.
+  const p = (id) => PRICES[id];
+  p('claude-opus-5-5').input === 4 &&
+  p('claude-opus-5-5').output === 20 &&
+  p('claude-opus-5-5').cacheRead === 0.2 &&
+  p('claude-sonnet-5-5').input === 2 &&
+  p('claude-sonnet-5-5').output === 10 &&
+  p('claude-sonnet-5-5').cacheRead === 0.1 &&
+  p('claude-haiku-5-5').input === 0.1 &&
+  p('claude-haiku-5-5').output === 0.5 &&
+  p('claude-haiku-5-5').cacheRead === 0.01 &&
+  p('claude-haiku-5-5').longPrompt?.overTokens === 100_000 &&
+  p('claude-haiku-5-5').longPrompt?.input === 0.5 &&
+  p('claude-sonnet-5').input === 2 &&
+  p('claude-sonnet-5').cacheRead === 0.2
+    ? ok('prices: Opus 5.5 $4/$20 (reads $0.20), Sonnet 5.5 $2/$10 (reads $0.10), Haiku 5.5 $0.10/$0.50, tiered past 100k')
+    : bad('price table', JSON.stringify(PRICES));
+
+  // Search: a version where the docs say so, null where they do not.
+  webSearchTool('claude-opus-5-5', 3)?.type === 'web_search_20260209' &&
+  webSearchTool('claude-sonnet-5-5', 3)?.type === 'web_search_20260209' &&
+  webSearchTool('claude-haiku-5-5', 3) === null &&
+  hasWebSearchDecision('claude-haiku-5-5')
+    ? ok('search: the 5.5 Opus and Sonnet take web_search_20260209; Haiku 5.5 is a deliberate no')
+    : bad('search versions');
+  const haikuNote = COACH_MODELS.find((m) => m.id === 'claude-haiku-5-5')?.note ?? '';
+  haikuNote.includes('no web search')
+    ? ok('…and the picker says so on Haiku 5.5, rather than leaving a switch that does nothing')
+    : bad('haiku note', haikuNote);
+}
+
+console.log('23. cost: per-model cache reads, 5-minute writes, and the Haiku 5.5 long-prompt card');
+{
+  // Opus 5.5 reads at 0.05× input — a multiple this module used to assume was 0.1×.
+  const warm = { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 10_000, cacheWriteTokens: 0 };
+  // 1000×4/M + 10000×0.20/M + 100×20/M = 0.004 + 0.002 + 0.002
+  Math.abs(estimateCost(warm, 'claude-opus-5-5') - 0.008) < 1e-9
+    ? ok('Opus 5.5: cache reads at $0.20/M, not 0.1× of $4')
+    : bad('opus 5.5 cost', String(estimateCost(warm, 'claude-opus-5-5')));
+  // Writes split by TTL: 2,000 at 5 minutes (1.25×), 8,000 at an hour (2×).
+  const cold = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 10_000,
+    cacheWrite5mTokens: 2_000,
+  };
+  // Sonnet 5: 2000×2/M×1.25 + 8000×2/M×2 = 0.005 + 0.032
+  Math.abs(estimateCost(cold, 'claude-sonnet-5') - 0.037) < 1e-9 &&
+  Math.abs(
+    estimateCost({ ...cold, cacheWrite5mTokens: undefined }, 'claude-sonnet-5') - 0.04
+  ) < 1e-9
+    ? ok('a write broken down by TTL is priced by TTL; one with no breakdown at the hour rate')
+    : bad('ttl write cost', String(estimateCost(cold, 'claude-sonnet-5')));
+  // Haiku 5.5's card is chosen per REQUEST by prompt size.
+  const small = { inputTokens: 60_000, outputTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  const big = { ...small, inputTokens: 120_000 };
+  Math.abs(estimateCost(small, 'claude-haiku-5-5') - (60_000 * 0.1 + 1000 * 0.5) / 1e6) < 1e-12 &&
+  Math.abs(estimateCost(big, 'claude-haiku-5-5') - (120_000 * 0.5 + 1000 * 2.5) / 1e6) < 1e-12
+    ? ok('Haiku 5.5: a 60k prompt at $0.10/$0.50, a 120k prompt at $0.50/$2.50 on every token')
+    : bad('haiku tiers');
+}
+
+console.log('24. the conversation cache: a third breakpoint on the latest user message');
+{
+  const countMarks = (payload) => {
+    let n = 0;
+    const walk = (v) => {
+      if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === 'object') {
+        if (v.cache_control) n++;
+        Object.values(v).forEach(walk);
+      }
+    };
+    walk(payload.system);
+    walk(payload.tools ?? []);
+    walk(payload.messages);
+    return n;
+  };
+  // The rendered order of every breakpoint's TTL: tools → system → messages.
+  const ttlOrder = (payload) => {
+    const ttls = [];
+    const take = (b) => b?.cache_control && ttls.push(b.cache_control.ttl ?? '5m');
+    (payload.tools ?? []).forEach(take);
+    payload.system.forEach(take);
+    for (const m of payload.messages) if (Array.isArray(m.content)) m.content.forEach(take);
+    return ttls;
+  };
+  /** Messages with every cache marker removed and a single text block read as a string. */
+  const stripped = (messages) =>
+    messages.map((m) => {
+      if (!Array.isArray(m.content)) return m;
+      const content = m.content.map(({ cache_control, ...rest }) => rest);
+      return content.length === 1 && content[0].type === 'text' && Object.keys(content[0]).length === 2
+        ? { ...m, content: content[0].text }
+        : { ...m, content };
+    });
+
+  // a. A turn that can round trip marks its latest user message — and only it.
+  const history = [
+    { role: 'user', content: 'Earlier question' },
+    { role: 'assistant', content: 'Earlier answer' },
+    { role: 'user', content: 'How is my training?' },
+  ];
+  const input = JSON.stringify(history);
+  const payload = JSON.parse(buildMessagesRequest(CONFIG(null), { ...REQUEST, messages: history }).body);
+  const last = payload.messages.at(-1);
+  Array.isArray(last.content) &&
+  last.content.length === 1 &&
+  last.content[0].type === 'text' &&
+  last.content[0].text === 'How is my training?' &&
+  last.content[0].cache_control?.type === 'ephemeral' &&
+  last.content[0].cache_control?.ttl === '5m'
+    ? ok('the latest user message carries a 5-minute breakpoint on its (only) text block')
+    : bad('no conversation breakpoint', JSON.stringify(last));
+  payload.messages[0].content === 'Earlier question' && payload.messages[1].content === 'Earlier answer'
+    ? ok('…and nothing else in the history is marked or reshaped')
+    : bad('history touched', JSON.stringify(payload.messages));
+  countMarks(payload) === 3
+    ? ok('three breakpoints in all (system, last tool, conversation) — inside the API’s four')
+    : bad('breakpoint count', String(countMarks(payload)));
+  ttlOrder(payload).join(',') === '1h,1h,5m'
+    ? ok('rendered 1h, 1h, 5m: no 5-minute entry ahead of an hour-long one')
+    : bad('ttl order', ttlOrder(payload).join(','));
+  JSON.stringify(stripped(payload.messages)) === input && JSON.stringify(history) === input
+    ? ok('minus the marker the history is byte-identical, and the caller’s array is untouched')
+    : bad('history changed', JSON.stringify(payload.messages));
+
+  // b. A one-shot call (no client tools) is one request: no write it could read.
+  const oneShot = JSON.parse(
+    buildMessagesRequest(CONFIG(null), { ...REQUEST, tools: [], messages: history }).body
+  );
+  oneShot.messages.at(-1).content === 'How is my training?' && countMarks(oneShot) === 1
+    ? ok('a one-shot request (no tools) adds no conversation breakpoint')
+    : bad('one-shot marked', JSON.stringify(oneShot.messages.at(-1)));
+
+  // c. Across a tool round trip the marker MOVES forward; it never accumulates.
+  const fetchImpl = scriptedFetch([
+    streamResponse([sseText(toolUseReplyEvents({}))]),
+    streamResponse([sseText(textReplyEvents('Training is on track.'))]),
+  ]);
+  await runCoachTurn(CONFIG(fetchImpl), REQUEST, {
+    onToken: () => {},
+    executeTool: async () => ({ content: '{"ok":true}' }),
+  });
+  const second = fetchImpl.calls[1].payload;
+  const tail = second.messages.at(-1);
+  const echoed = second.messages.at(-2);
+  tail.role === 'user' &&
+  tail.content.at(-1).type === 'tool_result' &&
+  tail.content.at(-1).cache_control?.ttl === '5m' &&
+  second.messages[0].content === 'How is my training?' &&
+  countMarks(second) === 3
+    ? ok('round trip 2: the marker is on the tool_result turn; the first question is plain again')
+    : bad('round-trip marker', JSON.stringify(second.messages));
+  echoed.role === 'assistant' &&
+  echoed.content[0].type === 'thinking' &&
+  echoed.content[0].signature === 'sig-abc' &&
+  echoed.content.at(-1).type === 'tool_use'
+    ? ok('…and the assistant turn between them is echoed as it streamed (thinking included)')
+    : bad('assistant echo altered', JSON.stringify(echoed));
+  echoed.content.every((b) => !('cache_control' in b))
+    ? ok('…carrying no marker: a thinking block can never be given one')
+    : bad('assistant block marked');
+
+  // d. A pause_turn resume sends the paused assistant content back UNCHANGED:
+  // the marker stays on the latest USER message instead.
+  const paused = [
+    ...START,
+    ...textEvents(0, 'Looking at menus. '),
+    ...searchEvents(1, { result: MENU_RESULTS }),
+    ...finish('pause_turn', { server_tool_use: { web_search_requests: 1 } }),
+  ];
+  const resumed = [...START, ...textEvents(0, 'Done.'), ...finish('end_turn')];
+  const pauseFetch = scriptedFetch([reply(paused), reply(resumed)]);
+  await runCoachTurn(
+    { apiKey: 'sk-test', model: 'claude-sonnet-5', fetchImpl: pauseFetch },
+    { ...REQUEST, webSearch: { maxUses: 3 } },
+    { onToken: () => {}, executeTool: async () => ({ content: '{}' }) }
+  );
+  const resumeMsgs = pauseFetch.calls[1].payload.messages;
+  resumeMsgs.at(-1).role === 'assistant' &&
+  resumeMsgs.at(-1).content.every((b) => !('cache_control' in b)) &&
+  resumeMsgs[0].content[0].cache_control?.ttl === '5m' &&
+  countMarks(pauseFetch.calls[1].payload) === 3
+    ? ok('pause_turn: the paused assistant content goes back unmarked; the user turn holds the marker')
+    : bad('pause marker', JSON.stringify(resumeMsgs));
+
+  // e. A block that cannot carry a marker is left alone, never guessed at.
+  withConversationBreakpoint([{ role: 'user', content: '   ' }])[0].content === '   ' &&
+  JSON.stringify(
+    withConversationBreakpoint([
+      { role: 'user', content: [{ type: 'thinking', thinking: '', signature: 's' }] },
+    ])
+  ) === JSON.stringify([{ role: 'user', content: [{ type: 'thinking', thinking: '', signature: 's' }] }])
+    ? ok('an empty text or a thinking block gets no marker')
+    : bad('unmarkable block marked');
+
+  // f. The estimate accounts for the cache: a warm second round trip is
+  // priced at the read rate, and the turn's total is the sum of its requests.
+  const usage1 = { input_tokens: 1400, cache_read_input_tokens: 9000, cache_creation_input_tokens: 1500, cache_creation: { ephemeral_5m_input_tokens: 1500 } };
+  const usage2 = { input_tokens: 120, cache_read_input_tokens: 10_500 };
+  const withUsage = (events, usage, out) =>
+    events.map((e) =>
+      e.data.type === 'message_start'
+        ? { ...e, data: { ...e.data, message: { usage } } }
+        : e.data.type === 'message_delta'
+          ? { ...e, data: { ...e.data, usage: { output_tokens: out } } }
+          : e
+    );
+  const priced = scriptedFetch([
+    streamResponse([sseText(withUsage(toolUseReplyEvents({}), usage1, 40))]),
+    streamResponse([sseText(withUsage(textReplyEvents('ok'), usage2, 60))]),
+  ]);
+  const turn = await runCoachTurn(CONFIG(priced), REQUEST, {
+    onToken: () => {},
+    executeTool: async () => ({ content: '{}' }),
+  });
+  const r1 = { inputTokens: 1400, outputTokens: 40, cacheReadTokens: 9000, cacheWriteTokens: 1500, cacheWrite5mTokens: 1500 };
+  const r2 = { inputTokens: 120, outputTokens: 60, cacheReadTokens: 10_500, cacheWriteTokens: 0 };
+  const expected = estimateCost(r1, DEFAULT_MODEL) + estimateCost(r2, DEFAULT_MODEL);
+  turn.usage.cacheReadTokens === 19_500 &&
+  turn.usage.cacheWrite5mTokens === 1500 &&
+  Math.abs(turn.estimatedUsd - expected) < 1e-12
+    ? ok('the turn’s estimate sums its requests: cache reads at the read rate, the 5m write at 1.25×')
+    : bad('turn cost', JSON.stringify({ usage: turn.usage, usd: turn.estimatedUsd, expected }));
+  // Haiku 5.5: two 60k requests are two small-card requests, not one 120k one.
+  const h1 = { inputTokens: 60_000, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  const big = scriptedFetch([
+    streamResponse([sseText(withUsage(toolUseReplyEvents({}), { input_tokens: 60_000 }, 10))]),
+    streamResponse([sseText(withUsage(textReplyEvents('ok'), { input_tokens: 60_000 }, 10))]),
+  ]);
+  const haikuTurn = await runCoachTurn(
+    { apiKey: 'sk-test', model: 'claude-haiku-5-5', fetchImpl: big, callType: 'chat' },
+    REQUEST,
+    { onToken: () => {}, executeTool: async () => ({ content: '{}' }) }
+  );
+  Math.abs(haikuTurn.estimatedUsd - 2 * estimateCost(h1, 'claude-haiku-5-5')) < 1e-12 &&
+  haikuTurn.estimatedUsd < estimateCost(haikuTurn.usage, 'claude-haiku-5-5')
+    ? ok('Haiku 5.5: a turn is priced request by request — pricing the sum would overstate it')
+    : bad('haiku per-request', JSON.stringify(haikuTurn));
+}
+
+console.log('25. the usage sink: every billed round trip is reported, and a sink cannot break a call');
+{
+  const records = [];
+  const previous = setModelUsageSink((r) => records.push(r));
+  const fetchImpl = scriptedFetch([
+    streamResponse([sseText(toolUseReplyEvents({}))]),
+    streamResponse([sseText(textReplyEvents('Training is on track.'))]),
+  ]);
+  // Usage on both replies, so both are billed round trips.
+  const billed = (events, input, out) =>
+    events.map((e) =>
+      e.data.type === 'message_start'
+        ? { ...e, data: { ...e.data, message: { usage: { input_tokens: input } } } }
+        : e.data.type === 'message_delta'
+          ? { ...e, data: { ...e.data, usage: { output_tokens: out } } }
+          : e
+    );
+  const twoTrips = scriptedFetch([
+    streamResponse([sseText(billed(toolUseReplyEvents({}), 500, 20))]),
+    streamResponse([sseText(billed(textReplyEvents('Fine.'), 700, 30))]),
+  ]);
+  await runCoachTurn({ ...CONFIG(twoTrips), callType: 'pass' }, REQUEST, {
+    onToken: () => {},
+    executeTool: async () => ({ content: '{}' }),
+  });
+  records.length === 2 &&
+  records.every((r) => r.callType === 'pass' && r.model === DEFAULT_MODEL) &&
+  records[0].usage.inputTokens === 500 &&
+  records[1].usage.inputTokens === 700 &&
+  Math.abs(records[1].usd - estimateCost(records[1].usage, DEFAULT_MODEL)) < 1e-12
+    ? ok('two round trips → two records, each with its OWN usage, call type, model and price')
+    : bad('sink records', JSON.stringify(records));
+  void fetchImpl;
+
+  // A call site that lost its type at runtime is filed as 'other', not dropped.
+  records.length = 0;
+  await runCoachTurn(CONFIG(scriptedFetch([streamResponse([sseText(billed(textReplyEvents('x'), 10, 1))])])), { ...REQUEST, tools: [] }, {
+    onToken: () => {},
+    executeTool: async () => ({ content: '' }),
+  });
+  records.length === 1 && records[0].callType === 'other'
+    ? ok('a call with no call type is recorded under "other", never silently skipped')
+    : bad('untyped call', JSON.stringify(records));
+
+  // An HTTP error was not billed: nothing reported.
+  records.length = 0;
+  try {
+    await runCoachTurn(
+      { ...CONFIG(scriptedFetch([streamResponse(['{"error":{"type":"invalid_request_error","message":"bad"}}'], { ok: false, status: 400 })])), callType: 'chat' },
+      REQUEST,
+      { onToken: () => {}, executeTool: async () => ({ content: '' }) }
+    );
+  } catch {
+    // expected
+  }
+  records.length === 0
+    ? ok('a refused request (HTTP 400) reports nothing — it billed nothing')
+    : bad('400 reported', JSON.stringify(records));
+
+  // A stream that dies mid-reply WAS billed for what it streamed: reported,
+  // and the failure still thrown.
+  records.length = 0;
+  const dying = {
+    ok: true,
+    status: 200,
+    body: {
+      getReader: () => {
+        let sent = false;
+        return {
+          read: async () => {
+            if (!sent) {
+              sent = true;
+              return {
+                done: false,
+                value: new TextEncoder().encode(
+                  sseText([{ event: 'message_start', data: { type: 'message_start', message: { usage: { input_tokens: 900 } } } }])
+                ),
+              };
+            }
+            throw new TypeError('The network connection was lost.');
+          },
+        };
+      },
+    },
+    text: async () => '',
+  };
+  let thrown = null;
+  try {
+    await runCoachTurn({ ...CONFIG(async () => dying), callType: 'meal_estimate' }, { ...REQUEST, tools: [] }, {
+      onToken: () => {},
+      executeTool: async () => ({ content: '' }),
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  records.length === 1 &&
+  records[0].usage.inputTokens === 900 &&
+  thrown instanceof ModelRequestError &&
+  thrown.status === 0 &&
+  thrown.errorType === STREAM_ERROR &&
+  thrown.message === 'The network connection was lost.'
+    ? ok('a stream that dies mid-reply is reported (it was billed) and fails as a named stream_error')
+    : bad('dying stream', JSON.stringify({ records, thrown: String(thrown), type: thrown?.errorType }));
+
+  // A fetch that never got a response is a named network_error, not billed.
+  records.length = 0;
+  let offline = null;
+  try {
+    await runCoachTurn(
+      { ...CONFIG(async () => Promise.reject(new TypeError('Network request failed'))), callType: 'chat' },
+      REQUEST,
+      { onToken: () => {}, executeTool: async () => ({ content: '' }) }
+    );
+  } catch (error) {
+    offline = error;
+  }
+  offline instanceof ModelRequestError &&
+  offline.status === 0 &&
+  offline.errorType === NETWORK_ERROR &&
+  offline.message === 'Network request failed' &&
+  records.length === 0
+    ? ok('a fetch that rejects becomes ModelRequestError(0, network_error), message kept, nothing reported')
+    : bad('network error shape', String(offline));
+  // An abort stays an abort.
+  const controller = new AbortController();
+  let abortErr = null;
+  try {
+    await runCoachTurn(
+      {
+        ...CONFIG(async () => {
+          controller.abort();
+          const e = new Error('aborted');
+          e.name = 'AbortError';
+          throw e;
+        }),
+        callType: 'chat',
+      },
+      REQUEST,
+      { onToken: () => {}, executeTool: async () => ({ content: '' }), signal: controller.signal }
+    );
+  } catch (error) {
+    abortErr = error;
+  }
+  abortErr?.name === 'AbortError' && !(abortErr instanceof ModelRequestError)
+    ? ok('…and an abort is still an AbortError, not a network failure')
+    : bad('abort wrapped', String(abortErr));
+
+  // THE FAILURE PATH: a sink that throws never fails the call.
+  setModelUsageSink(() => {
+    throw new Error('ledger is broken');
+  });
+  const survived = await runCoachTurn(
+    { ...CONFIG(scriptedFetch([streamResponse([sseText(billed(textReplyEvents('Still here.'), 10, 2))])])), callType: 'chat' },
+    { ...REQUEST, tools: [] },
+    { onToken: () => {}, executeTool: async () => ({ content: '' }) }
+  );
+  survived.text === 'Still here.' && survived.stopReason === 'end_turn'
+    ? ok('a sink that throws is swallowed: the call returns its answer')
+    : bad('sink broke the call', JSON.stringify(survived));
+  setModelUsageSink(previous);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

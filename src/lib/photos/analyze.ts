@@ -363,7 +363,7 @@ export async function readPhotos(
   const req = buildPhotoReadingRequest(input);
   let text = '';
   const result = await runCoachTurn(
-    { apiKey, model, fetchImpl, maxTokens: PHOTO_READING_MAX_TOKENS },
+    { apiKey, model, fetchImpl, maxTokens: PHOTO_READING_MAX_TOKENS, callType: 'photo_reading' },
     { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
     {
       onToken: (chunk) => {

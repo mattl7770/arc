@@ -209,15 +209,16 @@ function DayMacroCell({ label, figure }: { label: string; figure: DayFigure }) {
 function DayMealRow({
   meal,
   itemCount,
-  estimatePending,
+  estimateLine,
   first,
   select,
   onPress,
 }: {
   meal: MealRow;
   itemCount: number;
-  /** A queued AI estimate still owes this meal its numbers (0057). */
-  estimatePending: boolean;
+  /** A queued AI estimate still owes this meal its numbers (0057): its line
+   *  (queue-status.ts), or null when nothing is owed. */
+  estimateLine: string | null;
   first: boolean;
   /** Set while meals are being chosen to combine; absent otherwise. */
   select?: { checked: boolean };
@@ -230,6 +231,7 @@ function DayMealRow({
       .filter(Boolean)
       .join(' · ');
   const choosing = select !== undefined;
+  const estimatePending = estimateLine !== null;
   const locked = choosing && estimatePending;
   return (
     <View>
@@ -258,7 +260,7 @@ function DayMealRow({
             // numbers: "tap to fill it in" would be advice about a meal that is
             // already being filled.
             <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
-              Estimate pending — offline
+              {estimateLine}
             </Text>
           ) : meal.kcal == null ? (
             <Text className="mt-0.5 font-serif text-[13px] leading-5 text-ink-secondary">
@@ -498,7 +500,11 @@ export default function NutritionHistoryScreen() {
                   key={meal.id}
                   meal={meal}
                   itemCount={view.itemCounts[meal.id] ?? 0}
-                  estimatePending={view.pendingEstimates.has(meal.id)}
+                  estimateLine={
+                    view.pendingEstimates.has(meal.id)
+                      ? (view.pendingEstimateLines[meal.id] ?? 'Estimate pending — offline')
+                      : null
+                  }
                   first={index === 0}
                   select={
                     combine.choice ? { checked: combine.choice.chosen.has(meal.id) } : undefined

@@ -19,6 +19,7 @@ import { navColors } from '@/constants/theme';
 import { useAppLock } from '@/hooks/use-app-lock';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { coachPassStore } from '@/lib/ai/pass-store';
+import { installSpendLedger } from '@/lib/ai/spend-store';
 import { autoBackupIfDue } from '@/lib/backup/snapshot';
 import { getDb } from '@/lib/db/client';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
@@ -70,6 +71,15 @@ import { useCoachPassRunner } from '@/hooks/use-coach-pass';
  * The whole tree sits under an ErrorBoundary because the data layer opens SQLite
  * synchronously and throws on failure.
  */
+/**
+ * The spend ledger's sink (src/lib/ai/spend-store.ts), installed when this
+ * module loads — before any screen, pass or drain can make a model call — so
+ * every billed round trip from any feature is recorded. At module scope, not
+ * in an effect: an effect runs after the first render, and the first render
+ * is not guaranteed to be before the first call.
+ */
+installSpendLedger(getDb);
+
 const arcNavTheme: Theme = {
   ...DefaultTheme,
   colors: { ...DefaultTheme.colors, ...navColors },
@@ -449,6 +459,9 @@ export default function RootLayout() {
           <Stack.Screen name="settings-profile" />
           <Stack.Screen name="settings-units" />
           <Stack.Screen name="settings-coach" />
+          {/* What the Coach costs (the spend ledger), pushed from Settings ›
+              Coach; the usage level joins it with the usage policy. */}
+          <Stack.Screen name="settings-coach-usage" />
           {/* The encrypted snapshot's own surface (docs/backups-subapp.md):
               status, the automatic-backup toggle, the recovery code, and the
               restore that replaces the database. */}

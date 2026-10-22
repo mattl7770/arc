@@ -31,6 +31,10 @@ import {
 } from '@/lib/db/repositories/food-log-ratings';
 import { getFood } from '@/lib/db/repositories/foods';
 import { saveMealAsTemplate } from '@/lib/db/repositories/meal-templates';
+import {
+  pendingEstimateForMeal,
+  retryPendingEstimate,
+} from '@/lib/db/repositories/pending-estimates';
 import { saveMealAsRecipe } from '@/lib/db/repositories/recipes';
 import {
   clearItemCount,
@@ -57,6 +61,8 @@ import {
 } from '@/lib/nutrition/review-rows';
 import { mealPhotoViews, type MealPhotoView } from '@/lib/media/meal-photo-store';
 import { confirmCaffeine } from '@/lib/nutrition/caffeine-confirm';
+import { enterPendingEstimateByHand, runEstimateQueueDrain } from '@/lib/nutrition/estimate-queue';
+import { pendingEstimateStatus } from '@/lib/nutrition/queue-status';
 import { deleteMealWithUndo, removeItemWithUndo } from '@/lib/nutrition/undo-offers';
 import { closeUndo, onMeal, runUndo } from '@/lib/nutrition/undo-store';
 import {
@@ -79,6 +85,7 @@ import type {
   MealItemWithServing,
   MealRow,
   NewMealItem,
+  PendingEstimateRow,
 } from '@/lib/nutrition/types';
 
 /** The fractions a person actually says, for "I ate half the pizza" (C4). */
@@ -233,7 +240,23 @@ type MealState = {
   addOns: Record<string, UsualAddOn[]>;
   /** Was this estimate right? (0066, item 86) — undefined until he says. */
   rating: MealRating | undefined;
+  /** The queued AI request this meal is waiting on (0057), or undefined — the
+   *  overwhelmingly common case. */
+  pending: PendingEstimateRow | undefined;
 };
+
+/**
+ * The queued request, read so a database that has not reached 0057 costs the
+ * screen this one plate rather than the screen (the Eat tab's same guard).
+ */
+function readPending(id: string): PendingEstimateRow | undefined {
+  try {
+    return pendingEstimateForMeal(getDb(), id);
+  } catch (error) {
+    console.warn('[meal-detail] pending estimate unavailable', error);
+    return undefined;
+  }
+}
 
 /** The inline portion-editor's state for one item. `food` is the catalog food
  * if still present (enables the serving stepper + accurate re-derive). */
@@ -300,6 +323,7 @@ function readMeal(id: string): MealState {
     photos: mealPhotoViews(db, id),
     addOns: mealAddOns(db, id),
     rating: getMealRating(db, id),
+    pending: readPending(id),
   };
 }
 
@@ -331,6 +355,69 @@ function MacroCell({ label, grams }: { label: string; grams: number | null }) {
         {grams != null ? <Text className="font-mono text-[10px] text-ink-muted">g</Text> : null}
       </View>
     </>
+  );
+}
+
+/**
+ * Where this meal's queued estimate stands, in a plain sentence
+ * (src/lib/nutrition/queue-status.ts), with what the user sent — his words —
+ * so a request that has stopped is never a mystery and never silently gone.
+ *
+ * A PARKED request offers Try again (one more send, at once) and Enter by hand
+ * (the request goes; the meal, its name and any photo stay, for him to fill
+ * in). A request still waiting offers Enter by hand only: it will be sent by
+ * itself, and a second button would only race it.
+ */
+function PendingEstimatePlate({
+  pending,
+  onRetry,
+  onByHand,
+}: {
+  pending: PendingEstimateRow;
+  onRetry: () => void;
+  onByHand: () => void;
+}) {
+  const status = pendingEstimateStatus(pending);
+  const words = pending.description?.trim() ?? '';
+  const revise = pending.kind === 'revise';
+  return (
+    <Block device="plate">
+      <SectionLabel label={revise ? 'Queued correction' : 'Queued estimate'} />
+      <Text className="mt-2 font-serif text-[14px] leading-6 text-ink">{status.sentence}</Text>
+      {words !== '' ? (
+        <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
+          {revise ? 'Your correction' : 'What you sent'}: “{words}”
+        </Text>
+      ) : pending.file_name ? (
+        <Text className="mt-1 font-serif text-[13px] leading-5 text-ink-secondary">
+          What you sent: a photo, kept with the request.
+        </Text>
+      ) : null}
+      <View className="mt-2">
+        {status.parked ? (
+          <ActionRow
+            first
+            icon="refresh-outline"
+            label="Try again"
+            detail="Send the request once more, now"
+            accessibilityLabel="Try the estimate again"
+            onPress={onRetry}
+          />
+        ) : null}
+        <ActionRow
+          first={!status.parked}
+          icon="create-outline"
+          label="Enter by hand"
+          detail={
+            revise
+              ? 'Drop the queued correction and edit the items yourself'
+              : 'Stop waiting and fill this meal in yourself — nothing you logged is lost'
+          }
+          accessibilityLabel={revise ? 'Drop the queued correction' : 'Enter this meal by hand'}
+          onPress={onByHand}
+        />
+      </View>
+    </Block>
   );
 }
 
@@ -460,7 +547,7 @@ export default function MealDetailScreen() {
   // screen is left (src/hooks/use-undo-offer.ts).
   const undo = useUndoOffer('meal', mealId);
 
-  const { meal, items, photos, addOns, rating } = state;
+  const { meal, items, photos, addOns, rating, pending } = state;
   const today = todayISODate();
 
   /** Open the inline portion editor for a logged item, prefilled from its
@@ -1104,6 +1191,30 @@ export default function MealDetailScreen() {
           place={photos.length > 1 ? { index, of: photos.length } : null}
         />
       ))}
+
+      {/* The queued estimate this meal is waiting on (0057), and — when it has
+          stopped by itself — the user's two ways out (2026-10-21, the
+          re-billing fix). Before the totals, because it is why they are
+          empty. A ruled plate: a record of one request, with its actions as
+          the closing rows. */}
+      {pending ? (
+        <View className="mt-5">
+          <PendingEstimatePlate
+            pending={pending}
+            onRetry={() => {
+              retryPendingEstimate(getDb(), mealId);
+              reload();
+              // One more drain, now, for this request; the screen re-reads
+              // when it settles, whatever it did.
+              void runEstimateQueueDrain(getDb()).then(reload, reload);
+            }}
+            onByHand={() => {
+              enterPendingEstimateByHand(getDb(), mealId);
+              reload();
+            }}
+          />
+        </View>
+      ) : null}
 
       {/* Totals — the meal's own columns: item sums when itemized, the typed
           numbers when free-form. */}

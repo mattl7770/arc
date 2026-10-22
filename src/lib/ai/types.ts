@@ -106,6 +106,13 @@ export type CoachUsage = {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   /**
+   * The part of `cacheWriteTokens` written at the 5-minute TTL
+   * (`usage.cache_creation.ephemeral_5m_input_tokens`), which bills at 1.25×
+   * rather than the 1-hour cache's 2×. Absent when the API sent no breakdown;
+   * src/lib/ai/cost.ts then prices every write at the 1-hour rate.
+   */
+  cacheWrite5mTokens?: number;
+  /**
    * Provider-side web searches the turn ran (2026-10-21), billed per search on
    * top of tokens. Absent on a turn that searched nothing, and on every row
    * written before search existed.
@@ -138,4 +145,10 @@ export type CoachTurnResult = {
   stopReason: CoachStopReason;
   /** What the turn cost, summed over its round-trips. */
   usage?: CoachUsage;
+  /**
+   * The turn's estimated USD, priced request by request and summed
+   * (src/lib/ai/cost.ts) — null when the model has no price. Not the same as
+   * pricing `usage`: Haiku 5.5's rate card is chosen per request.
+   */
+  estimatedUsd?: number | null;
 };

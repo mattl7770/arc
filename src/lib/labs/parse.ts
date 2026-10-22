@@ -425,7 +425,13 @@ export async function extractLabReport(
   const req = buildLabParseRequest(base64Pdf);
   let streamed = '';
   const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl, maxTokens: LAB_PARSE_MAX_TOKENS },
+    {
+      apiKey,
+      model: apiKeyStore.getModel(),
+      fetchImpl,
+      maxTokens: LAB_PARSE_MAX_TOKENS,
+      callType: 'lab_parse',
+    },
     {
       system: req.system,
       messages: req.messages as unknown as WireMessage[],

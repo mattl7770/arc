@@ -384,8 +384,16 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // warm prefix re-read from paying full price for it, and those differ
           // by 20×.
           // Registry calls only: searches are counted by the caption itself,
-          // from the billed `webSearchRequests`.
-          const caption = usageCaption(result.usage, apiKeyStore.getModel(), tools.length);
+          // from the billed `webSearchRequests`. The dollar figure is the
+          // turn's requests priced one by one (model-client.ts), the same
+          // figures the spend ledger keeps — this caption is the in-thread view
+          // of the ledger, not a second, differently-rounded count.
+          const caption = usageCaption(
+            result.usage,
+            apiKeyStore.getModel(),
+            tools.length,
+            result.estimatedUsd
+          );
           // Owed once after the API refused the search tool on this key — by
           // this turn or by an estimate made since (api-key-store.ts).
           const notice = apiKeyStore.takeWebSearchNotice();
