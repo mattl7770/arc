@@ -88,20 +88,33 @@ export function recordNightOut(
  * ({@link nightOutDay}) — a re-count of last night's row through
  * `setNightOutDrinks` on that day, which starts no status and so sends no
  * sentence. Returns the day written and whether a status was started.
+ *
+ * `target` is the night the stepper OPENED on ({@link nightOutStepper}), and
+ * when given it is honoured rather than re-decided: opened at 11:59 on last
+ * night's 4 and saved at 12:00:30, a fresh clock would read a new evening and
+ * start a second Night out on top of the first (2026-10-21 fix round). The
+ * save writes the night the panel said it would. Without one — a caller that
+ * never showed a stepper — the night is decided now, as before.
  */
 export function saveNightOutDrinks(
   db: Database,
   today: string,
   drinks: DrinksInput,
-  now: Date = new Date()
+  now: Date = new Date(),
+  target: NightOutTarget | null = null
 ): { date: string; started: boolean } {
-  const date = nightOutDay(db, today, now);
-  if (date !== today) {
+  const date = target?.date ?? nightOutDay(db, today, now);
+  const lastNight = target ? target.lastNight : date !== today;
+  if (lastNight) {
     setNightOutDrinks(db, date, drinks);
     return { date, started: false };
   }
-  return { date, ...recordNightOut(db, today, drinks) };
+  return { date, ...recordNightOut(db, date, drinks) };
 }
+
+/** The night a stepper opened on: its day, and whether that is last night's
+ *  (a re-count) rather than tonight's. */
+export type NightOutTarget = { date: string; lastNight: boolean };
 
 /** What the stepper opens on: the recorded count and kind, or null for none. */
 export function recordedDrinks(
@@ -115,13 +128,14 @@ export function recordedDrinks(
 /**
  * What the stepper opens on, and for which night: the recorded drinks of
  * {@link nightOutDay}, and whether that is last night's (`lastNight`) — then
- * its Save is a re-count, whatever today's chip says.
+ * its Save is a re-count, whatever today's chip says. `date` is the day it
+ * chose, which the Save hands back to {@link saveNightOutDrinks} as its target.
  */
 export function nightOutStepper(
   db: Database,
   today: string,
   now: Date = new Date()
-): { recorded: { count: number; kind: DrinkKind } | null; lastNight: boolean } {
+): { recorded: { count: number; kind: DrinkKind } | null } & NightOutTarget {
   const date = nightOutDay(db, today, now);
-  return { recorded: recordedDrinks(db, date), lastNight: date !== today };
+  return { recorded: recordedDrinks(db, date), date, lastNight: date !== today };
 }

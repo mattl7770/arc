@@ -36,7 +36,7 @@ import {
 import { nightOutPrompt, type DrinkKind, type DrinksInput } from '@/lib/nutrition/drinks';
 
 import { endPromptFor, promptFor, reaskFor, type RailChip } from './chips';
-import { nightOutStepper, saveNightOutDrinks } from './night-out';
+import { nightOutStepper, saveNightOutDrinks, type NightOutTarget } from './night-out';
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -89,10 +89,15 @@ export type StatusPrompt = {
  * which is strictly better than a half-done gesture.
  *
  * With `drinks` — Night out, from the drinks stepper — it is
- * {@link saveNightOut} instead, which returns null for a re-count too.
+ * {@link saveNightOut} instead, which returns null for a re-count too; `night`
+ * is the night the stepper opened on, which that Save honours.
  */
-export function toggleStatus(chip: RailChip, drinks?: DrinksInput): StatusPrompt | null {
-  if (drinks !== undefined) return saveNightOut(drinks);
+export function toggleStatus(
+  chip: RailChip,
+  drinks?: DrinksInput,
+  night?: NightOutTarget | null
+): StatusPrompt | null {
+  if (drinks !== undefined) return saveNightOut(drinks, night ?? null);
   if (chip.openId !== null) return { prompt: reaskFor(chip.label), send: true };
   try {
     const today = todayISODate();
@@ -133,7 +138,10 @@ export function endOpenStatus(chip: RailChip & { openId: string }): StatusPrompt
  * the day, through `saveNightOutDrinks` (`recordNightOut`), which touches
  * nothing else. The morning after, it re-counts LAST night's row instead and
  * starts nothing (`nightOutDay`, src/lib/status/night-out.ts), so a count
- * corrected at 01:15 is a correction, not a second night out.
+ * corrected at 01:15 is a correction, not a second night out. Which night is
+ * decided when the stepper OPENS (`currentNightOutDrinks`) and handed back
+ * here as `night`, so a Save that lands after noon still writes the night the
+ * panel showed.
  *
  * The FIRST save returns the sentence to send — a fact with the count
  * (`nightOutPrompt`), the same order as every chip: the row lands, then the
@@ -145,10 +153,10 @@ export function endOpenStatus(chip: RailChip & { openId: string }): StatusPrompt
  * Emits either way, so the door and anything reading the day's nutrition
  * (Home's readiness pillars) re-read without losing focus.
  */
-function saveNightOut(drinks: DrinksInput): StatusPrompt | null {
+function saveNightOut(drinks: DrinksInput, night: NightOutTarget | null): StatusPrompt | null {
   let started = false;
   try {
-    started = saveNightOutDrinks(getDb(), todayISODate(), drinks).started;
+    started = saveNightOutDrinks(getDb(), todayISODate(), drinks, new Date(), night).started;
   } catch (error) {
     console.warn('[status] could not record night out', error);
     emit();
@@ -161,16 +169,20 @@ function saveNightOut(drinks: DrinksInput): StatusPrompt | null {
 /**
  * What the drinks stepper opens on — the recorded count, or null — and whether
  * it is last night's, the morning after (`nightOutStepper`); then its Save
- * re-counts that night. Nothing recorded and not last night on any failure.
+ * re-counts that night. `night` is the night it chose, for the Save to hand
+ * back to {@link toggleStatus}. Nothing recorded, not last night, and no night
+ * (the Save decides) on any failure.
  */
 export function currentNightOutDrinks(): {
   recorded: { count: number; kind: DrinkKind } | null;
   lastNight: boolean;
+  night: NightOutTarget | null;
 } {
   try {
-    return nightOutStepper(getDb(), todayISODate());
+    const { recorded, date, lastNight } = nightOutStepper(getDb(), todayISODate());
+    return { recorded, lastNight, night: { date, lastNight } };
   } catch (error) {
     console.warn('[status] could not read the night out drinks', error);
-    return { recorded: null, lastNight: false };
+    return { recorded: null, lastNight: false, night: null };
   }
 }

@@ -1494,7 +1494,9 @@ export type CombinedMeals = {
  * fix is already recorded): those items were never part of the estimate he
  * called off, so a correction window still open on the meal screen must not
  * read them as a "missed" food (`settleMealRating`), and a fix already
- * recorded keeps saying exactly what it said.
+ * recorded keeps saying exactly what it said. Each appended entry is marked
+ * `joined` (`withRatedItems`), so editing or deleting one there instead of
+ * Undo is not reported to the estimator as a correction either.
  *
  * `options.keepId` names the meal that survives instead of the earliest — the
  * auto-join's, so a food logged near a meal never changes that meal's id,

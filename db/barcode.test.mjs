@@ -1110,17 +1110,18 @@ console.log('14. Item 81 review — a late heal, a single small figure, alcohol 
     : bad('ambiguous', JSON.stringify(pot));
 
   // (d) ALCOHOL AND POLYOLS (probe T5, T8). Correct labels are not flagged.
-  const r = (k, p, c, f, fiber = null) => ({
+  const r = (k, p, c, f, fiber = null, basis = 'g') => ({
+    basis,
     kcal_100g: k,
     protein_g_100g: p,
     carbs_g_100g: c,
     fat_g_100g: f,
     fiber_g_100g: fiber,
   });
-  !energyLooksWrong(r(43, 0.5, 3.6, 0)) &&
-  !energyLooksWrong(r(83, 0.1, 2.6, 0)) &&
-  !energyLooksWrong(r(231, 0, 0, 0)) &&
-  !energyLooksWrong(r(43, 0.5, 3.6, 0), { abv: 4.5 }) &&
+  !energyLooksWrong(r(43, 0.5, 3.6, 0, null, 'ml')) &&
+  !energyLooksWrong(r(83, 0.1, 2.6, 0, null, 'ml')) &&
+  !energyLooksWrong(r(231, 0, 0, 0, null, 'ml')) &&
+  !energyLooksWrong(r(43, 0.5, 3.6, 0, null, 'ml'), { abv: 4.5 }) &&
   !energyLooksWrong(r(240, 0, 98, 0), { polyols: 95 }) &&
   !energyLooksWrong(r(260, 13, 74, 5, 29))
     ? ok('beer, wine and vodka (alcohol unknown or known), a polyol mint and a US-label bran cereal read clean')
@@ -1131,6 +1132,92 @@ console.log('14. Item 81 review — a late heal, a single small figure, alcohol 
   energyLooksWrong(r(50, 10, 10, 10))
     ? ok('macros that over-shoot, or an under-shoot alcohol cannot explain, are still flagged')
     : bad('true flags');
+
+  // (d2) 2026-10-21 fix round. A SOLID whose macros under-shoot its energy is
+  // a typo again — unknown alcohol excuses only a drink, or a product listing
+  // an alcohol figure; a US high-fibre label's low estimate counts fibre at 0;
+  // and a stored row (no polyols kept) is not flagged for carbohydrate alone.
+  energyLooksWrong(r(450, 5, 6, 20)) &&
+  energyLooksWrong(r(520, 8, 60, 2.8)) &&
+  !energyLooksWrong(r(450, 5, 6, 20, null, 'ml')) &&
+  !energyLooksWrong(r(450, 5, 6, 20), { alcoholListed: true }) &&
+  energyLooksWrong(r(450, 5, 6, 20), { abv: 0, alcoholListed: true })
+    ? ok('a carbs typo (450 kcal, C 6 for 60) and a fat typo (F 2.8 for 28) on a solid are flagged; a drink or a listed alcohol excuses it')
+    : bad('under-shoot on a solid');
+  !energyLooksWrong(r(200, 6.7, 83, 3.3, 47))
+    ? ok('Fiber One (200 kcal, C 83 incl. 47 fibre) reads clean: the low estimate gives fibre 0 kcal')
+    : bad('US high-fibre label flagged');
+  !energyLooksWrong(r(240, 0, 98, 0), { storedRow: true }) &&
+  !energyLooksWrong(r(160, 0, 64, 0.5), { storedRow: true }) &&
+  energyLooksWrong(r(240, 0, 98, 0)) &&
+  energyLooksWrong(r(50, 10, 10, 10), { storedRow: true }) &&
+  energyLooksWrong(r(450, 5, 6, 20), { storedRow: true }) &&
+  energyLooksWrong(r(100, 0, 60, 0), { storedRow: true })
+    ? ok('a cached sugar-free mint or gum (polyols not stored) is clean; protein/fat excess, a solid under-shoot and carbohydrate even polyols cannot pay for still flag')
+    : bad('stored-row verdict');
+
+  // The fresh path on the reviewer's 27 products: the 26 ordinary ones stay
+  // clean (Fiber One newly so), and so do beer, wine, vodka and the polyol
+  // sweets.
+  {
+    const P = (per, q, n) => ({
+      status: 1,
+      product: {
+        product_name: 'Product',
+        nutrition_data_per: per,
+        serving_size: q + (per === '100ml' ? ' ml' : ' g'),
+        serving_quantity: q,
+        nutriments: n,
+      },
+    });
+    const both = (q, k, p, c, f, more = {}) => ({
+      'energy-kcal_100g': k, proteins_100g: p, carbohydrates_100g: c, fat_100g: f,
+      'energy-kcal_serving': +((k * q) / 100).toFixed(1), proteins_serving: +((p * q) / 100).toFixed(1),
+      carbohydrates_serving: +((c * q) / 100).toFixed(1), fat_serving: +((f * q) / 100).toFixed(1), ...more,
+    });
+    const products = {
+      'beer 5%': P('100ml', 330, both(330, 43, 0.5, 3.6, 0, { alcohol_100g: 5 })),
+      'beer, no abv': P('100ml', 330, both(330, 43, 0.5, 3.6, 0)),
+      'wine 12.5%': P('100ml', 150, both(150, 83, 0.1, 2.6, 0, { alcohol_100g: 12.5 })),
+      'vodka 40%': P('100ml', 30, both(30, 231, 0, 0, 0, { alcohol_100g: 40 })),
+      'sugar-free mints': P('100g', 2, { 'energy-kcal_100g': 240, proteins_100g: 0, carbohydrates_100g: 98, fat_100g: 0, polyols_100g: 97 }),
+      'sugar-free gum': P('100g', 1.5, { 'energy-kcal_100g': 160, proteins_100g: 0, carbohydrates_100g: 64, fat_100g: 0.5, polyols_100g: 63 }),
+      cola: P('100ml', 330, both(330, 42, 0, 10.6, 0)),
+      'whole milk': P('100ml', 250, both(250, 64, 3.3, 4.8, 3.6)),
+      'peanut butter': P('100g', 32, both(32, 588, 25, 20, 50, { fiber_100g: 6 })),
+      'EU bran': P('100g', 40, both(40, 334, 14, 48, 3.5, { fiber_100g: 27 })),
+      'Fiber One (US)': P('100g', 40, both(40, 200, 6.7, 83, 3.3, { fiber_100g: 47 })),
+      'greek yoghurt': P('100g', 170, both(170, 97, 9, 3.9, 5)),
+      'protein bar': P('100g', 60, both(60, 350, 33, 38, 12, { fiber_100g: 15, polyols_100g: 12 })),
+      'diet cola': P('100ml', 330, { 'energy-kcal_100g': 0.4, proteins_100g: 0, carbohydrates_100g: 0, fat_100g: 0, 'energy-kcal_serving': 1.3, proteins_serving: 0, carbohydrates_serving: 0, fat_serving: 0 }),
+      'oat drink': P('100ml', 250, both(250, 46, 1, 6.6, 1.5, { fiber_100g: 0.8 })),
+      'cream liqueur 17%': P('100ml', 50, both(50, 327, 3, 20, 13, { alcohol_100g: 17 })),
+      'cream 35%': P('100ml', 15, both(15, 340, 2, 3, 35)),
+      'soda, abv 0': P('100ml', 330, both(330, 42, 0, 10.6, 0, { alcohol_100g: 0 })),
+      kombucha: P('100ml', 330, both(330, 18, 0, 4, 0, { alcohol_100g: 0.5 })),
+      honey: P('100g', 21, both(21, 304, 0.3, 82, 0)),
+      'olive oil': P('100ml', 15, both(15, 824, 0, 0, 91.6)),
+      bread: P('100g', 40, both(40, 247, 13, 41, 3.4, { fiber_100g: 7 })),
+      soup: P('100ml', 500, both(500, 38, 1.2, 5, 1.4, { fiber_100g: 0.9 })),
+      milkshake: P('100ml', 500, both(500, 85, 3.4, 12, 2.5)),
+      water: P('100ml', 500, both(500, 0, 0, 0, 0)),
+      tuna: P('100g', 95, both(95, 116, 26, 0, 1)),
+      crisps: P('100g', 150, both(150, 536, 6.6, 53, 33, { fiber_100g: 4.4 })),
+    };
+    const flagged = Object.entries(products)
+      .filter(([, response]) => {
+        const read = readOffProduct(response, '5000000000999');
+        return read?.kind !== 'food' || read.label.doubtful;
+      })
+      .map(([name]) => name);
+    Object.keys(products).length === 27 && flagged.length === 0
+      ? ok('all 27 of the reviewer’s products read clean on the fresh path — drinks, polyol sweets and Fiber One included')
+      : bad('fresh path flags an ordinary product', flagged.join(', '));
+    const typo = readOffProduct(P('100g', 40, both(40, 450, 5, 6, 20)), '5000000000998');
+    typo?.kind === 'food' && typo.label.doubtful === true
+      ? ok('…while a solid with C 6 where the label means 60 reads doubtful on the fresh path')
+      : bad('fresh typo', JSON.stringify(typo?.label));
+  }
   const lager = readOffProduct(
     {
       status: 1,
@@ -1218,7 +1305,7 @@ console.log('14. Item 81 review — a late heal, a single small figure, alcohol 
   scan.includes('if (controller.signal.aborted) return;') &&
   scan.includes('onPress={() => editFood(phase.food)}') &&
   scan.includes('if (healed && added !== undefined) setStaleAdd({ name: healed.name, mealId: added });') &&
-  scan.includes('if (label ? label.doubtful : energyLooksWrong(food) || drinkLooksPerServing(food)) {') &&
+  /\? label\.doubtful\s+: energyLooksWrong\(food, \{ storedRow: true \}\) \|\| drinkLooksPerServing\(food\)/.test(scan) &&
   !scan.includes('product whose two sets of figures disagree is not cached')
     ? ok('barcode-scan: the heal keeps the portion, Edit aborts it, a late heal names the item added, the reading’s verdict wins')
     : bad('heal wiring');

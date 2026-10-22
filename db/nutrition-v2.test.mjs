@@ -9104,5 +9104,79 @@ console.log('104. the rating through a combine and an auto-join — kept, moved,
   }
 }
 
+// ---------------------------------------------------------------------------
+// 105. A JOINED item edited or deleted instead of Undo (2026-10-21 fix round,
+//     item 1): the combine marks what it appended to an Off rating's
+//     snapshots, and a change to a marked row is never a correction.
+// ---------------------------------------------------------------------------
+console.log('105. a joined item edited or deleted is never a false correction');
+{
+  const ratings = await import('../src/lib/db/repositories/food-log-ratings.ts');
+  const { describeCorrection } = await import('../src/lib/nutrition/ratings.ts');
+  const salad = { name: 'Salad', amount: 300, kcal: 400, protein_g: 20, carbs_g: 20, fat_g: 20 };
+  const flatWhite = { name: 'Flat white', amount: 240, unit: 'ml', kcal: 120, protein_g: 6, carbs_g: 9, fat_g: 6 };
+  /** Lunch rated off (portion), then a coffee logged near it auto-joins. */
+  const joined = () => {
+    const { db } = freshDb();
+    const lunch = logMealWithItems(db, { date: TODAY, time: '13:00', name: 'Lunch', items: [salad] }).mealId;
+    ratings.rateMeal(db, lunch, 'bad');
+    ratings.setRatingIssue(db, lunch, 'portion');
+    const snack = logMealWithItems(db, { date: TODAY, time: '12:50', name: 'Coffee', items: [flatWhite] }).mealId;
+    undoOffers.joinNearbyMealWithUndo(db, snack);
+    closeUndo();
+    const item = (name) => listMealItems(db, lunch).find((i) => i.name === name);
+    return { db, lunch, item };
+  };
+  {
+    const { db, lunch, item } = joined();
+    const stored = db.get('SELECT before_items FROM food_log_ratings').before_items;
+    JSON.parse(stored).map((i) => `${i.name}:${i.joined ?? '-'}`).join(',') === 'Salad:-,Flat white:true'
+      ? ok('the combine marks the appended Flat white `joined`, and only it')
+      : bad('joined mark', stored);
+    nutritionRepoModule.removeMealItem(db, item('Flat white').id);
+    ratings.settleMealRating(db, lunch);
+    ratings.ratingCorrections(db).length === 0 && ratings.correctionsContextFor(db) === null
+      ? ok('deleting the joined Flat white (instead of Undo) reports nothing — it used to read "was not there"')
+      : bad('deleted joined item became a correction', ratings.correctionsContextFor(db));
+  }
+  {
+    const { db, lunch, item } = joined();
+    nutritionRepoModule.updateMealItemPortion(db, item('Flat white').id, {
+      amount: 350, kcal: 175, protein_g: 9, carbs_g: 13, fat_g: 9,
+    });
+    ratings.settleMealRating(db, lunch);
+    const quiet = ratings.correctionsContextFor(db) === null;
+    nutritionRepoModule.updateMealItemPortion(db, item('Salad').id, {
+      amount: 200, kcal: 267, protein_g: 13, carbs_g: 13, fat_g: 13,
+    });
+    ratings.settleMealRating(db, lunch);
+    const lines = ratings.correctionsContextFor(db)?.split('\n').slice(1) ?? [];
+    quiet &&
+    lines.length === 1 &&
+    lines[0] === '- portion off: "Salad" 300 g · 400 kcal → 200 g · 267 kcal'
+      ? ok('editing the joined Flat white says nothing; the real fix that follows is the one example')
+      : bad('edited joined item', JSON.stringify(lines));
+  }
+  // A joined food sharing a name with an estimated one: deleting the ESTIMATED
+  // one is still a correction, and pairs with the right row.
+  {
+    const fw = (amount, kcal, extra = {}) => ({ name: 'Flat white', amount, unit: 'ml', kcal, protein_g: 6, carbs_g: 9, fat_g: 6, ...extra });
+    const line = describeCorrection({ issue: 'item', before: [fw(240, 120), fw(300, 150, { joined: true })], after: [fw(300, 150)] });
+    const none = describeCorrection({ issue: 'item', before: [fw(240, 120), fw(300, 150, { joined: true })], after: [fw(240, 120)] });
+    line === '- item off: "Flat white" 240 ml · 120 kcal was not there' && none === null
+      ? ok('same-named joined and estimated foods each pair with their own row')
+      : bad('name collision', JSON.stringify([line, none]));
+  }
+  // A snapshot written before the mark reads exactly as it did.
+  {
+    const x = { name: 'Toast', amount: 40, unit: 'g', kcal: 100, protein_g: 4, carbs_g: 18, fat_g: 1 };
+    const y = { name: 'Butter', amount: 10, unit: 'g', kcal: 72, protein_g: 0, carbs_g: 0, fat_g: 8 };
+    describeCorrection({ issue: 'item', before: [x, y], after: [x] }) === '- item off: "Butter" 10 g · 72 kcal was not there' &&
+    describeCorrection({ issue: 'item', before: [x], after: [x, y] }) === '- item off: missed "Butter" 10 g · 72 kcal'
+      ? ok('an unmarked snapshot still reports a removed or a missed food')
+      : bad('old snapshot changed meaning');
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

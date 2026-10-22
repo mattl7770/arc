@@ -2089,13 +2089,13 @@ const db = getDb();
       'Save 4 drinks',
     ]);
     refute('drinks-panel (the morning after)', lastNight, ['Logged on today']);
-    /const \{ recorded, lastNight \} = currentNightOutDrinks\(\);/.test(controlSource) &&
+    /const \{ recorded, lastNight, night \} = currentNightOutDrinks\(\);/.test(controlSource) &&
     /const editing = chip\.openId !== null \|\| lastNight;/.test(controlSource)
       ? ok('the sheet opens last night’s count as a re-count the morning after')
       : bad('status-control does not carry last night’s Night out');
     /<StatusRail[\s\S]*if \(chip\.asksDrinks\)[\s\S]*setDrinks\(/.test(controlSource) &&
-    /onToggle\(drinks\.chip, input\)/.test(controlSource)
-      ? ok('the sheet opens the stepper for Night out and hands its count to onToggle')
+    /onToggle\(drinks\.chip, input, drinks\.night\)/.test(controlSource)
+      ? ok('the sheet opens the stepper for Night out and hands its count, and the night it opened on, to onToggle')
       : bad('status-control no longer routes Night out through the stepper');
 
     // The next morning's fact, under the pillars — and Home passes it.
@@ -8390,6 +8390,18 @@ console.log('\n34. 2026-10-21 — Done, the label both ways, a food edited, a di
     render('barcode-scan notes (fresh reading wins)', LabelNotes, {}, {
       food: { ...milk, basis: 'g', kcal_100g: 240, protein_g_100g: 0, carbs_g_100g: 98, fat_g_100g: 0 },
       label: { read: 'per100', servingDropped: null, doubtful: false },
+      healed: false,
+    }),
+    ['inconsistent']
+  );
+  // …and with NO reading (offline, or before the re-read lands) the same mint
+  // is not called inconsistent either: its only excess is carbohydrate, which
+  // the polyols the row does not keep can explain (2026-10-21 fix round).
+  refute(
+    'barcode-scan notes (cached sugar-free mint)',
+    render('barcode-scan notes (cached sugar-free mint)', LabelNotes, {}, {
+      food: { ...milk, basis: 'g', serving_amount: 2, kcal_100g: 240, protein_g_100g: 0, carbs_g_100g: 98, fat_g_100g: 0 },
+      label: null,
       healed: false,
     }),
     ['inconsistent']
