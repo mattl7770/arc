@@ -538,7 +538,9 @@ console.log('8. create_experiment warns when a watched metric cannot be read bac
     name: 'Mood test',
     hypothesis: 'Feels better',
     intervention: 'Morning walk',
-    metrics: ['sleep score', 'general vibe'],
+    // "sleep score" became readable with the Garmin link (sleep_score), so the
+    // unreadable example is a name nothing in ARC records.
+    metrics: ['focus score', 'general vibe'],
     duration_days: 14,
   });
   vague.unreadableMetrics?.length === 2 && vague.note.includes('qualitative')

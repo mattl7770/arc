@@ -9978,8 +9978,11 @@ console.log('\n42. Calendar context — the Settings › Coach switch, off until
   calendarSwitch && !/\schecked(=|\s|>)/.test(calendarSwitch)
     ? ok('settings-coach: the Calendar switch is OFF on a fresh install')
     : bad('settings-coach: Calendar switch not found or on by default', calendarSwitch);
-  // No access sentence before iOS has answered (the check runs in an effect).
-  refute('settings-coach (calendar)', screen, ['iOS has calendar access off', 'This build of ARC']);
+  // With the switch off iOS is never asked (not even a permission check), so no
+  // access sentence. The only fact read is whether the build carries the module
+  // — and this headless render has none, so it says so at once.
+  refute('settings-coach (calendar)', screen, ['iOS has calendar access off']);
+  expect('settings-coach (calendar, no module here)', screen, ['This build of ARC can’t read calendars yet.']);
 
   setCalendarContextOn(db, true);
   const onScreen = render('settings-coach (calendar on)', SettingsCoachScreen);

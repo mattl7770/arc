@@ -481,8 +481,11 @@ console.log('\n7. read-only by construction, and the app.json plugin');
       code.includes('requestCalendarPermissions(false)'),
     'one request call in the seam, for FULL access (writeOnly false)'
   );
-  const settings = readFileSync(new URL('../app/settings-coach.tsx', import.meta.url), 'utf8');
-  check(settings.includes('requestCalendarAccess()'), 'the Settings switch is the caller that asks');
+  // The Settings switch's state lives in its hook (src/hooks/use-calendar-setting.ts).
+  const settings = readFileSync(new URL('../src/hooks/use-calendar-setting.ts', import.meta.url), 'utf8');
+  const screen = readFileSync(new URL('../app/settings-coach.tsx', import.meta.url), 'utf8');
+  check(settings.includes('requestCalendarAccess()') && screen.includes('useCalendarSetting()'),
+    'the Settings switch is the caller that asks');
   const { readdirSync, statSync } = await import('node:fs');
   const walk = (dir) =>
     readdirSync(dir).flatMap((name) => {
@@ -494,9 +497,17 @@ console.log('\n7. read-only by construction, and the app.json plugin');
     (f) => !f.endsWith('lib/calendar/calendar.ts') && readFileSync(f, 'utf8').includes('requestCalendarAccess(')
   );
   check(
-    askers.length === 1 && askers[0].endsWith('app/settings-coach.tsx'),
+    askers.length === 1 && askers[0].endsWith('src/hooks/use-calendar-setting.ts'),
     'and the only one: nothing else in src/ or app/ can raise the iOS prompt',
     askers.join(', ')
+  );
+  const hookUsers = [...walk(`${root}src`), ...walk(`${root}app`)].filter(
+    (f) => !f.endsWith('use-calendar-setting.ts') && readFileSync(f, 'utf8').includes('useCalendarSetting(')
+  );
+  check(
+    hookUsers.length === 1 && hookUsers[0].endsWith('app/settings-coach.tsx'),
+    'and that hook is mounted by Settings › Coach alone',
+    hookUsers.join(', ')
   );
 
   const app = JSON.parse(readFileSync(new URL('../app.json', import.meta.url), 'utf8'));
@@ -517,6 +528,81 @@ console.log('\n7. read-only by construction, and the app.json plugin');
   );
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   check(pkg.dependencies['expo-calendar'] === '~57.0.6', 'expo-calendar ~57.0.6 is the dependency');
+}
+
+console.log('\n8. the switch OFF asks iOS nothing — not even a permission check');
+{
+  // Drive the REAL hook (db/hook-runner.mjs stands in for react) with the seam
+  // replaced by a counter, so any call to iOS is seen.
+  const { register } = await import('node:module');
+  const hookRunner = new URL('./hook-runner.mjs', import.meta.url).href;
+  const LOADER = `
+const stub = (source) => ({ url: 'data:text/javascript,' + encodeURIComponent(source), shortCircuit: true });
+const STUBS = new Map([
+  ['react', { url: ${JSON.stringify(hookRunner)}, shortCircuit: true }],
+  ['react-native', stub('export const AppState = { addEventListener: (_e, fn) => { globalThis.__CAL__.foreground.push(fn); return { remove() {} }; } };')],
+  ['@/lib/db/client', stub('export const getDb = () => globalThis.__CAL__.db;')],
+  ['@/lib/calendar/context', stub('export const clearCalendarCache = () => {};')],
+  ['@/lib/calendar/calendar', stub(\`
+    const c = () => globalThis.__CAL__;
+    export const calendarModuleAvailable = () => { c().calls.push('available'); return c().module; };
+    export const calendarAccess = async () => { c().calls.push('check'); return c().access; };
+    export const requestCalendarAccess = async () => { c().calls.push('request'); return c().answer; };
+  \`)],
+]);
+export async function resolve(specifier, context, next) {
+  return STUBS.get(specifier) ?? next(specifier, context);
+}
+`;
+  register('data:text/javascript,' + encodeURIComponent(LOADER), import.meta.url);
+  const { renderHook } = await import('./hook-runner.mjs');
+  const { useCalendarSetting } = await import('../src/hooks/use-calendar-setting.ts');
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  const { db } = freshDb();
+  const cal = { db, calls: [], foreground: [], module: true, access: 'granted', answer: 'denied' };
+  globalThis.__CAL__ = cal;
+
+  const off = renderHook(() => useCalendarSetting());
+  await tick();
+  cal.foreground.forEach((fn) => fn('active'));
+  check(off.result[0] === false && !cal.calls.includes('check') && !cal.calls.includes('request') &&
+    cal.foreground.length === 0 && off.result[1] === null,
+    'OFF: no permission check on mount, no foreground listener, no access sentence', JSON.stringify(cal.calls));
+  off.unmount();
+
+  cal.calls = [];
+  cal.module = false;
+  const oldBuild = renderHook(() => useCalendarSetting());
+  check(oldBuild.result[1] === 'unavailable' && !cal.calls.includes('check'),
+    'OFF in a build without the module: still disabled, from the module check alone');
+  oldBuild.unmount();
+
+  cal.calls = [];
+  cal.module = true;
+  const refusing = renderHook(() => useCalendarSetting());
+  refusing.result[2](true);
+  await tick();
+  check(cal.calls.filter((x) => x === 'request').length === 1 && !cal.calls.includes('check') &&
+    refusing.result[0] === false && refusing.result[1] === 'denied',
+    'turning it on asks once; a refusal leaves it OFF, says why, and checks nothing more', JSON.stringify(cal.calls));
+  refusing.unmount();
+
+  cal.calls = [];
+  cal.answer = 'granted';
+  const granting = renderHook(() => useCalendarSetting());
+  granting.result[2](true);
+  await tick();
+  await tick();
+  check(granting.result[0] === true && cal.calls.includes('check') && cal.foreground.length === 1,
+    'ON: iOS’s answer is checked, and re-checked on every foreground', JSON.stringify(cal.calls));
+  granting.result[2](false);
+  cal.calls = [];
+  cal.foreground.length = 0;
+  await tick();
+  check(granting.result[0] === false && !cal.calls.includes('check') && getCalendarContextOn(db) === false,
+    'back OFF: stored off, and the checks stop');
+  granting.unmount();
+  delete globalThis.__CAL__;
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

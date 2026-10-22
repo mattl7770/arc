@@ -74,6 +74,11 @@ export type GarminMetricSpec = {
   label: string;
   unit: string;
   decimals: number;
+  /**
+   * Set when the value is a CODE, not a quantity: code → word. The Coach's
+   * catalog then counts days per status and never averages the codes.
+   */
+  categories?: Readonly<Record<number, string>>;
 };
 
 /**
@@ -89,6 +94,7 @@ export const GARMIN_API_METRICS: readonly GarminMetricSpec[] = [
     label: 'Garmin HRV status (1 poor, 2 low, 3 unbalanced, 4 balanced)',
     unit: 'code',
     decimals: 0,
+    categories: HRV_STATUS_WORDS,
   },
   { metricType: 'hrv_weekly_avg', label: 'Garmin HRV 7-day average', unit: 'ms', decimals: 0 },
   {

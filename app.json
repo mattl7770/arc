@@ -79,7 +79,7 @@
       [
         "expo-calendar",
         {
-          "calendarPermission": "When you turn on Calendar in ARC's Coach settings, ARC reads the next 7 days of your events (titles, times, places and calendar names) and includes them in the Coach's requests to its AI model, so it can plan around travel and busy days. ARC never changes your calendar and never stores your events.",
+          "calendarPermission": "When you turn on Calendar in ARC's Coach settings, ARC reads the next 7 days of your events (titles, times, places and calendar names) and includes them in the Coach's requests to its AI model, so it can plan around travel and busy days. ARC never changes your calendar.",
           "remindersPermission": "ARC does not use your reminders and never asks to read them."
         }
       ],

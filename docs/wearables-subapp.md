@@ -2630,8 +2630,9 @@ The Coach has **no** Garmin tool and cannot reach the client. It reads the rows.
 | 401 on a read | drop the token, mint once, retry once; refused again → `rejected` as above |
 | 403 on a read | that endpoint refusing, not the key (the mint would have said so): skipped and named |
 | 429 or 5xx | stop; wait `Retry-After`, else 15 min doubling to a day; Sync now waits too |
-| any other 4xx on one request | skip that request, name the endpoint (Settings › Garmin says which), continue; a backfill chunk is stepped over |
-| a write that throws | `error`, with `lastAttemptAt` stamped so the throttle still holds |
+| any other 4xx on one request | skip that request, name the endpoint (Settings › Garmin says which), continue; a backfill chunk is stepped over. **A refused recent window is not coverage:** it is held per endpoint (`refused`), and that endpoint's next recent request reaches back to the refused day — still one request, inside the usual throttle — for up to 31 days, after which it is stepped over like a backfill chunk. The other endpoints, and `lastSyncedAt`, move on |
+| a write that throws | `error`, with `lastAttemptAt` stamped so the throttle still holds — but no backfill cursor, no `refused` entry and no `lastSyncedAt` moves, since nothing the pass fetched is on disk: the next pass asks for the same ranges |
+| a redirect (any 3xx, or a reply whose final URL is off `personal.connectapi.garmin.com`) | every request goes out with `redirect: 'error'`, so the key or token never follows one off-host (a fetch that honours it throws → `offline`); a reply that was redirected anyway is refused unread — a skipped request on a read, a token error (`error`, the pass stops) at the mint |
 | a new key or Disconnect mid-pass | the old pass stops before its next request and writes no state; its rows stay |
 | fetch throws | stop quietly (`offline`); the next foreground retries |
 
