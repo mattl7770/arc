@@ -1,5 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useFocusEffect, useIsFocused, useNavigation, useRoute, useRouter } from 'expo-router';
+import {
+  useFocusEffect,
+  useIsFocused,
+  useNavigation,
+  useNavigationContainerRef,
+  useRoute,
+  useRouter,
+} from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
@@ -8,13 +15,16 @@ import { palette } from '@/constants/theme';
 import { getDb } from '@/lib/db/client';
 import { subscribeWorkoutDrafts } from '@/lib/db/repositories/workout-drafts';
 import {
+  barHearsSlot,
   LIVE_LOGGER_RESUME,
   readOpenLiveSession,
+  sameSessionBar,
   sessionBarOnScreen,
   sessionBarView,
   type OpenLiveSession,
   type SessionBarView,
 } from '@/lib/exercise/session-bar';
+import { restTapTarget, type NavStateLike } from '@/lib/notifications/taps';
 
 /**
  * The workout in progress, as one slim line (item 71, owner: *"should be able
@@ -55,9 +65,11 @@ import {
  */
 
 /**
- * The open session, kept current. Read on mount, re-read whenever a draft is
- * written or cleared anywhere (`subscribeWorkoutDrafts`) and when the host
- * regains focus. `enabled` false reads and hears nothing — a tab root's
+ * The open session, kept current. Read on mount, re-read whenever the LIVE
+ * slot is written or cleared anywhere (`subscribeWorkoutDrafts`; a manual
+ * logger's writes are not the bar's) and when the host regains focus — and
+ * the session already held is kept when the read would draw the same bar, so
+ * a keystroke in the logger re-renders no host (`sameSessionBar`). `enabled` false reads and hears nothing — a tab root's
  * `Screen` never draws the bar, so it should not pay for it either.
  */
 function useOpenLiveSession(enabled: boolean): OpenLiveSession | null {
@@ -72,13 +84,19 @@ function useOpenLiveSession(enabled: boolean): OpenLiveSession | null {
     }
   }, [enabled]);
   const [session, setSession] = useState(read);
+  const refresh = useCallback(() => {
+    const next = read();
+    setSession((prev) => (sameSessionBar(prev, next) ? prev : next));
+  }, [read]);
   useEffect(() => {
     if (!enabled) return;
-    return subscribeWorkoutDrafts(() => setSession(read()));
-  }, [enabled, read]);
+    return subscribeWorkoutDrafts((key) => {
+      if (barHearsSlot(key)) refresh();
+    });
+  }, [enabled, refresh]);
   // Focus is the belt to the subscription's braces: nothing writes the slot
   // without announcing it, but a host coming back into view re-reads anyway.
-  useFocusEffect(useCallback(() => setSession(read()), [read]));
+  useFocusEffect(refresh);
   return session;
 }
 
@@ -142,9 +160,37 @@ export function TabSessionBar() {
  * The bar itself. One button, 44pt — the whole line is the target. `inset`
  * is the bottom safe-area padding, given only at a pushed screen's foot (the
  * tab bar carries the inset under the tab bar's copy).
+ *
+ * **A tap never stacks a second logger over the first** (review, 2026-10-21).
+ * The logger pushes screens of its own (an exercise's detail, which draws this
+ * bar at its foot), and Home can be pushed over it; a bare push from there put
+ * a second logger on the stack, and the first then read "session ended". So
+ * the tap asks the question the "Rest complete" tap asks (`restTapTarget`,
+ * src/lib/notifications/taps.ts): a live logger lower in the stack is gone
+ * back to, as it was (`dismissTo` with its own params); with none, the
+ * session is resumed by a push, as Home's Resume row does.
  */
 export function SessionBar({ view, inset = 0 }: { view: SessionBarView; inset?: number }) {
   const router = useRouter();
+  const navRef = useNavigationContainerRef();
+  const open = () => {
+    let state: NavStateLike | undefined;
+    try {
+      state = navRef.isReady() ? (navRef.getRootState() as NavStateLike | undefined) : undefined;
+    } catch {
+      // No state to read: the stored session decides, as for the rest tap.
+      state = undefined;
+    }
+    const target = restTapTarget(state, true);
+    if (target.kind === 'return') {
+      router.dismissTo({
+        pathname: LIVE_LOGGER_RESUME.pathname,
+        params: target.params as Record<string, string>,
+      });
+    } else if (target.kind === 'resume') {
+      router.push(LIVE_LOGGER_RESUME);
+    }
+  };
   return (
     <View className="bg-paper-hi" style={inset > 0 ? { paddingBottom: inset } : undefined}>
       {/* The bar's top edge, as the logger's rest line draws its own: a filled
@@ -153,7 +199,7 @@ export function SessionBar({ view, inset = 0 }: { view: SessionBarView; inset?: 
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={view.accessibilityLabel}
-        onPress={() => router.push(LIVE_LOGGER_RESUME)}
+        onPress={open}
         className="min-h-[44px] flex-row items-center gap-3 px-5 active:bg-paper-dim">
         <Text className="shrink font-serif text-[14px] text-ink" numberOfLines={1}>
           {view.name}

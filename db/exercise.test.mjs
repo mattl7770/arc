@@ -30,10 +30,12 @@ import {
 } from '../src/lib/db/repositories/workout-drafts.ts';
 import { createRoutine, deleteRoutine } from '../src/lib/db/repositories/routines.ts';
 import {
+  barHearsSlot,
   LIVE_LOGGER_RESUME,
   LIVE_LOGGER_ROUTE,
   readOpenLiveSession,
   restRemainingSec,
+  sameSessionBar,
   sessionBarOnScreen,
   sessionBarView,
 } from '../src/lib/exercise/session-bar.ts';
@@ -2524,6 +2526,57 @@ console.log('17. the session bar reads the one session and the one rest');
   stop();
   saveWorkoutDraft(db, 'live', draft());
   heard === beforeRefusal + 1 ? ok('an unsubscribed bar hears nothing more') : bad('unsubscribe');
+  // --- it hears only its own slot, and re-renders only for a change it draws ----------
+  // (review, 2026-10-21). Every keystroke in either logger writes its slot, and
+  // each mounted bar host re-read and re-rendered on each one.
+  const readOpenLiveSessionWith = (d, value) => {
+    saveWorkoutDraft(d, 'live', value);
+    return readOpenLiveSession(d);
+  };
+  const keys = [];
+  const stopKeys = subscribeWorkoutDrafts((key) => keys.push(key));
+  saveWorkoutDraft(db, 'manual', { version: DRAFT_VERSION, sets: [] });
+  saveWorkoutDraft(db, 'live', draft());
+  clearWorkoutDraft(db, 'manual');
+  clearWorkoutDraft(db, 'live');
+  stopKeys();
+  JSON.stringify(keys) === JSON.stringify(['manual', 'live', 'manual', 'live'])
+    ? ok('each write and clear announces WHICH slot changed')
+    : bad('announced keys', JSON.stringify(keys));
+  barHearsSlot('live') && !barHearsSlot('manual')
+    ? ok('the bar listens to the live slot only — a manual logger’s keystrokes are not its business')
+    : bad('barHearsSlot');
+
+  saveWorkoutDraft(db, 'live', draft());
+  const held = readOpenLiveSession(db);
+  // A keystroke: a set's reps change, nothing the bar draws does.
+  saveWorkoutDraft(db, 'live', draft({ blocks: [{ ...block, sets: [{ ...block.sets[0], reps: '9' }] }] }));
+  const typed = readOpenLiveSession(db);
+  // An identical write (the same text again).
+  saveWorkoutDraft(db, 'live', draft());
+  const same = readOpenLiveSession(db);
+  typed !== held && sameSessionBar(held, typed) && sameSessionBar(held, same)
+    ? ok('a keystroke or an identical write draws the same bar, so the host keeps its session object')
+    : bad('same bar');
+  !sameSessionBar(held, readOpenLiveSessionWith(db, draft({ restEndsAt: T0 + 90_000 }))) &&
+  !sameSessionBar(held, readOpenLiveSessionWith(db, draft({ startedAt: T0 + 1 }))) &&
+  !sameSessionBar(held, readOpenLiveSessionWith(db, draft({ sessionId: 'another' }))) &&
+  !sameSessionBar(held, readOpenLiveSessionWith(db, draft({ ingestId: 'watch-1' }))) &&
+  !sameSessionBar(held, null) &&
+  !sameSessionBar(null, held) &&
+  sameSessionBar(null, null)
+    ? ok('a new rest, start, session, watch fill or the session ending each redraw the bar')
+    : bad('different bar');
+  const hostSource = readFileSync(
+    new URL('../src/components/exercise/session-bar.tsx', import.meta.url),
+    'utf8'
+  );
+  /if \(barHearsSlot\(key\)\) refresh\(\);/.test(hostSource) &&
+  /setSession\(\(prev\) => \(sameSessionBar\(prev, next\) \? prev : next\)\)/.test(hostSource)
+    ? ok('the hosts ignore the manual slot and keep the session they have when the bar would not change')
+    : bad('host wiring');
+  clearWorkoutDraft(db, 'live');
+
   clearWorkoutDraft(db, 'live');
 }
 

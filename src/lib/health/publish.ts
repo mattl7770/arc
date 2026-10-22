@@ -1020,6 +1020,10 @@ export function logWaterCapture(
  * and the Coach's `log_metric`, which by the parity rule calls what the keypad
  * calls. Every other metric is `logMetric` unchanged, so a weight still goes out
  * on the next sync.
+ *
+ * Returns `logMetric`'s feed id, which {@link removeLogCapture} deletes by: the
+ * quick-log box's Undo (2026-10-21) takes the capture back through the Log
+ * tab's own removal, record and Apple Health together.
  */
 export function logMetricCapture(
   db: Database,
@@ -1027,12 +1031,13 @@ export function logMetricCapture(
   metricKey: MetricKey,
   canonical: number,
   deps: WaterPublishDeps = NATIVE_WATER_DEPS
-): void {
-  logMetric(db, date, metricKey, canonical);
+): string {
+  const id = logMetric(db, date, metricKey, canonical);
   const target = metricByKey(metricKey)?.target;
   if (target?.kind === 'wearable' && target.metricType === WATER_PUBLISH_METRIC.metricType) {
     void publishWaterOnLog(db, deps);
   }
+  return id;
 }
 
 // --- Where a glass cannot go yet ------------------------------------------------------

@@ -110,12 +110,23 @@ function alt(tokens: string[]): string {
     .join('|');
 }
 
-type Hit = { value: number; unit?: string };
+/** A bound number, its unit if one was typed, and the stretch of the line that bound it. */
+type Hit = { value: number; unit?: string; start: number; end: number };
+
+function hitOf(m: RegExpExecArray, unit: string | undefined): Hit {
+  return {
+    value: Number(m[1]),
+    unit: unit?.toLowerCase(),
+    start: m.index,
+    end: m.index + m[0].length,
+  };
+}
 
 /**
  * Find a number *bound to* this metric: adjacent to one of its keywords, or (for
- * the few unambiguous `inferUnits`) adjacent to that unit. Returns the number
- * and the matched unit, if any. Undefined if the metric isn't referenced.
+ * the few unambiguous `inferUnits`) adjacent to that unit. Returns the number,
+ * the matched unit, if any, and where the binding sits on the line. Undefined if
+ * the metric isn't referenced.
  */
 function matchMetric(text: string, metric: MetricDescriptor): Hit | undefined {
   const unitKeys = metric.units ? Object.keys(metric.units) : [];
@@ -128,21 +139,81 @@ function matchMetric(text: string, metric: MetricDescriptor): Hit | undefined {
     // Separator excludes "-" so a stray minus doesn't get eaten as spacing.
     const kwFirst = new RegExp(`\\b(?:${kw})\\b[\\s:=]*${NUM}${unitGroup}`, 'i');
     const a = kwFirst.exec(text);
-    if (a) return { value: Number(a[1]), unit: a[2]?.toLowerCase() };
+    if (a) return hitOf(a, a[2]);
     // number (+ optional unit) then keyword: "16 oz water", "48 resting".
     const numFirst = new RegExp(`${NUM}${unitGroup}\\s*\\b(?:${kw})\\b`, 'i');
     const b = numFirst.exec(text);
-    if (b) return { value: Number(b[1]), unit: b[2]?.toLowerCase() };
+    if (b) return hitOf(b, b[2]);
   }
 
   if (metric.inferUnits?.length) {
     // number then an unambiguous unit, no keyword needed: "180 lb", "48 bpm".
     const infer = new RegExp(`${NUM}\\s*(${alt(metric.inferUnits)})\\b`, 'i');
     const m = infer.exec(text);
-    if (m) return { value: Number(m[1]), unit: m[2]!.toLowerCase() };
+    if (m) return hitOf(m, m[2]);
   }
 
   return undefined;
+}
+
+// --- Is the measurement the whole line? ---------------------------------------
+//
+// Adjacency decides WHICH number a metric takes; it does not decide whether
+// the line was a measurement at all. "oatmeal with 8 oz water" binds "8 oz
+// water", "chicken thighs resting 10 min then 200g rice" binds "resting 10",
+// and "bw 1 banana" binds "bw 1": each a measurement nobody took, filed in
+// place of the words, which were lost (review, 2026-10-21). So a line files as
+// a metric only when, with the binding taken out, nothing is left but the
+// words a measurement line carries anyway: "log", "my", "this morning", a
+// clock time. Anything else on it means the line was about something else.
+
+/** Words a measurement line may carry beside its keyword, number and unit. */
+const FILLER = [
+  'this afternoon',
+  'this evening',
+  'this morning',
+  'logged',
+  'log',
+  'my',
+  'of',
+  'at',
+  'today',
+  'tonight',
+  'morning',
+  'now',
+  'just',
+  'drank',
+];
+const FILLER_RE = new RegExp(`\\b(?:${FILLER.map(escapeRegExp).join('|')})\\b`, 'gi');
+/** "7am", "7:30 pm", "07:30": when it was taken, which the line may say. */
+const CLOCK_RE = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b/gi;
+/** Separators, and the percent sign "bf 15%" writes. */
+const PUNCT_RE = /[\s,.;:!=%()\-–—]+/g;
+
+/**
+ * True when `input` is a measurement of `metricKey` and nothing else: the
+ * number {@link parseCommand} binds to that metric, its keyword and unit, and
+ * at most the filler above. "weight 178", "16 oz water", "hrv 48 this
+ * morning", "log rhr 52 at 7am" are whole; "oatmeal with 8 oz water" and
+ * "took 2 pills, weight 181" are not. Screen time has its own whole-line
+ * grammar, so a parse of it is whole by construction.
+ *
+ * Both the Log tab's command field and the quick-log box gate on this before
+ * filing a metric. The parser itself is unchanged, so a whole line files
+ * exactly the value it filed before.
+ */
+export function isWholeMetricLine(input: string, metricKey: MetricKey): boolean {
+  const text = input.trim();
+  if (metricKey === 'screen_time') return parseScreenTime(text) !== null;
+  const metric = METRICS.find((m) => m.key === metricKey);
+  if (!metric) return false;
+  const hit = matchMetric(text, metric);
+  if (!hit) return false;
+  const rest = `${text.slice(0, hit.start)} ${text.slice(hit.end)}`
+    .replace(CLOCK_RE, ' ')
+    .replace(FILLER_RE, ' ')
+    .replace(PUNCT_RE, '');
+  return rest === '';
 }
 
 /**

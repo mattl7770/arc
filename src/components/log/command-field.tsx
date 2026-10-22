@@ -10,7 +10,7 @@ import { logNote } from '@/lib/db/repositories/logs';
 import { recordScreenTime } from '@/lib/db/repositories/screen-time';
 import { logMetricCapture } from '@/lib/health/publish';
 import { isLoggableCanonical, metricByKey } from '@/lib/log/metrics';
-import { parseCommand } from '@/lib/log/parse';
+import { isWholeMetricLine, parseCommand } from '@/lib/log/parse';
 import { screenTimeFiling } from '@/lib/screen-time/entry';
 import { noteTypedScreenTime } from '@/lib/screen-time/receipt-store';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
@@ -75,12 +75,18 @@ export function CommandField({ onLogged }: { onLogged: () => void }) {
         // morning. Out of range, it falls to the note below.
         result.metric !== 'screen_time' &&
         metric &&
+        // The measurement must be the whole line (2026-10-21): "felt rough,
+        // resting 10 min after the walk" binds "resting 10", but it is a note,
+        // and filing it would put a resting HR of 10 into the readiness
+        // baselines and drop the words. Shared with the quick-log box.
+        isWholeMetricLine(trimmed, result.metric) &&
         isLoggableCanonical(metric, result.canonical)
       ) {
         // A parsed "water 16 oz" goes to Apple Health now, like a vessel tap.
         logMetricCapture(db, date, result.metric, result.canonical);
       } else {
-        // A plain note, or a parsed-but-out-of-range value ("weight 0",
+        // A plain note, a measurement inside a sentence ("took 2 pills,
+        // weight 181"), or a parsed-but-out-of-range value ("weight 0",
         // "bf 150") — never lose the input; keep the raw text as a note.
         logNote(db, date, trimmed);
       }

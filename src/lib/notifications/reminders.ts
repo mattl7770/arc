@@ -33,7 +33,13 @@
  * without tracking per-row identifiers. (This header said reminders were the
  * only thing ARC schedules until 2026-09-25; that stopped being true with C10.)
  * The rest timer (./rest-timer.ts) is the one notification outside this pass,
- * and a resync also wipes it — a documented, accepted cost.
+ * and **the pass leaves it alone** (review, 2026-10-21): "all" is every pending
+ * request EXCEPT a rest alert, told by the tag `buildRestAlert` writes
+ * (`isRestAlert`). It used to wipe it too — accepted while a resync mid-rest
+ * was rare, but the session bar made it routine: a user who goes Home
+ * mid-rest and ticks an item resyncs, and never got the buzz; a cold relaunch
+ * did the same to the alert the resumed logger adopts. See
+ * {@link cancelOwnedRequests}.
  *
  * **iOS keeps only the 64 soonest pending notifications per app** and drops
  * the rest without a word. Nothing guarded the total before 0064. Now every
@@ -56,6 +62,7 @@ import {
   type PresentedNotification,
 } from './delivered';
 import { protocolReminderKey, protocolRemindersDue } from './protocol-reminders';
+import { isRestAlert } from './rest-timer';
 
 /**
  * How many notifications one sync will leave pending. iOS keeps 64 and drops
@@ -190,6 +197,10 @@ type NotificationsModule = {
   getPermissionsAsync(): Promise<PermissionResult>;
   requestPermissionsAsync(): Promise<PermissionResult>;
   cancelAllScheduledNotificationsAsync(): Promise<void>;
+  getAllScheduledNotificationsAsync?(): Promise<
+    { identifier: string; content?: { data?: Record<string, unknown> | null } }[]
+  >;
+  cancelScheduledNotificationAsync?(identifier: string): Promise<void>;
   scheduleNotificationAsync(request: {
     content: NotificationContent;
     trigger: ReminderTrigger;
@@ -234,7 +245,19 @@ export function notificationsAvailable(): boolean {
 export type ReminderSyncDeps = {
   /** Is `expo-notifications` in the RUNNING binary at all? */
   available(): boolean;
+  /**
+   * Cancel EVERY pending request, the rest alert included. The fallback only:
+   * the pass cancels through `pending` when it has it, and comes here when it
+   * has not, or when that list cannot be read or a cancel fails — an orphaned
+   * reminder that fires twice is worse than one missed rest buzz.
+   */
   cancelAll(): Promise<void>;
+  /**
+   * What is pending, and how to cancel one request. Optional, as `delivered`
+   * is: a recorder without it (every suite written before 2026-10-21) gets the
+   * cancel-all it always had.
+   */
+  pending?: PendingDeps | null;
   ensurePermission(): Promise<boolean>;
   schedule(request: { content: NotificationContent; trigger: ReminderTrigger }): Promise<void>;
   /**
@@ -245,12 +268,80 @@ export type ReminderSyncDeps = {
   delivered?: DeliveredDeps | null;
 };
 
+/** One pending request, as the OS lists it: its identifier and its payload. */
+export type PendingRequest = { identifier: string; data?: Record<string, unknown> | null };
+
+/** The OS schedule, as the two calls the pass needs. */
+export type PendingDeps = {
+  scheduled(): Promise<PendingRequest[]>;
+  cancel(identifier: string): Promise<void>;
+};
+
+/** `expo-notifications`' own two calls, or null in a binary without them. */
+function nativePendingDeps(): PendingDeps | null {
+  const mod = notifications;
+  if (
+    !mod ||
+    typeof mod.getAllScheduledNotificationsAsync !== 'function' ||
+    typeof mod.cancelScheduledNotificationAsync !== 'function'
+  ) {
+    return null;
+  }
+  return {
+    scheduled: async () =>
+      ((await mod.getAllScheduledNotificationsAsync?.()) ?? []).map((request) => ({
+        identifier: request.identifier,
+        data: request.content?.data ?? null,
+      })),
+    cancel: async (identifier) => {
+      await mod.cancelScheduledNotificationAsync?.(identifier);
+    },
+  };
+}
+
+/**
+ * Clear what the sync pass owns: every pending request but a rest alert
+ * (./rest-timer.ts, tagged `kind: 'rest-timer'`), which belongs to the live
+ * logger — it adopts and cancels it by id, and nothing in the DB could
+ * reschedule it. Everything else goes, including requests with no payload or
+ * one this build does not recognise, so the pass still leaves no orphaned
+ * reminder behind. Returns the identifiers cancelled.
+ *
+ * With no `pending` seam, or when the list cannot be read or any cancel
+ * fails, it falls back to `cancelAll`: the schedule stays an exact mirror of
+ * the DB, at the cost of that one rest buzz.
+ */
+export async function cancelOwnedRequests(deps: ReminderSyncDeps): Promise<string[] | 'all'> {
+  const pending = deps.pending;
+  if (pending) {
+    try {
+      const owned = (await pending.scheduled())
+        .filter((request) => !isRestAlert(request.data ?? undefined))
+        .map((request) => request.identifier);
+      let failed = false;
+      for (const identifier of owned) {
+        try {
+          await pending.cancel(identifier);
+        } catch {
+          failed = true;
+        }
+      }
+      if (!failed) return owned;
+    } catch {
+      // Unreadable schedule: fall through to the cancel-all.
+    }
+  }
+  await deps.cancelAll();
+  return 'all';
+}
+
 /** The real thing: a no-op on every count when the module is absent. */
 export const NATIVE_REMINDER_DEPS: ReminderSyncDeps = {
   available: () => notificationsAvailable(),
   cancelAll: async () => {
     await notifications?.cancelAllScheduledNotificationsAsync();
   },
+  pending: nativePendingDeps(),
   ensurePermission: async () => (notifications ? ensurePermission(notifications) : false),
   schedule: async (request) => {
     await notifications?.scheduleNotificationAsync(request);
@@ -681,7 +772,8 @@ function isISODay(value: unknown): value is string {
 }
 
 /**
- * One sync: cancel everything, then schedule the four sources inside
+ * One sync: cancel everything but a pending rest alert
+ * ({@link cancelOwnedRequests}), then schedule the four sources inside
  * {@link NOTIFICATION_BUDGET}.
  *
  * **How the budget is spent.** iOS's own rule is "the 64 soonest win", and the
@@ -726,8 +818,9 @@ async function runReminderSyncPass(
   }
 
   try {
-    // Always clear first so a removed/cleared reminder can't linger on the OS.
-    await deps.cancelAll();
+    // Always clear first so a removed/cleared reminder can't linger on the OS
+    // — everything the pass owns, which is everything but a pending rest alert.
+    await cancelOwnedRequests(deps);
 
     const timed = listActiveReminders(db)
       .map((reminder) => ({ reminder, trigger: reminderTrigger(reminder, now) }))
