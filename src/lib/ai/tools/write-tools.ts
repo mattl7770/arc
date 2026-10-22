@@ -200,6 +200,13 @@ const DATE_PROPERTY = {
 //   5. THE THING IS HIS. A metric he named (resting HR is not HRV), a capture
 //      type he named — a supplement excepted, which is what "took X" means
 //      when he names no other kind.
+//   6. IT HAPPENED. A message that negates, hedges, plans or asks ("didn't
+//      take magnesium", "going to weigh in", "should I take zinc?") states no
+//      act, so nothing in it saves at once — the model may still draft a card,
+//      or log nothing. Word-based and deliberately blunt (`negatedOrHedged`):
+//      a cue ANYWHERE in the message refuses, because "magnesium? no, didn't"
+//      puts the negation after the thing. A miss is one extra card; the other
+//      direction is a silent write of something that never happened.
 //
 // A `time` keeps its card too: "this morning" → "08:00" is a figure he did
 // not type, and judging which clock spellings match is not worth a false yes.
@@ -222,11 +229,79 @@ function wordsIn(text: string): string[] {
  * the user typed this turn? `texts` are stored words (absent ones skipped);
  * `figures` are stored numbers (null/absent skipped).
  */
+/**
+ * Rule 6's cues, matched as whole words or phrases: negation, a plan, a
+ * question, a condition. "no" is a cue too ("no magnesium today"), except in
+ * the few fixed phrases that report an act went fine ("no issues").
+ */
+const HEDGE_CUES = [
+  'no',
+  'not',
+  'never',
+  'none',
+  'nothing',
+  'didnt',
+  'havent',
+  'hasnt',
+  'dont',
+  'doesnt',
+  'wasnt',
+  'isnt',
+  'wont',
+  'cant',
+  'couldnt',
+  'shouldnt',
+  'skip',
+  'skipped',
+  'skipping',
+  'forgot',
+  'forget',
+  'missed',
+  'will',
+  'shall',
+  'gonna',
+  'going to',
+  'about to',
+  'planning',
+  'plan to',
+  'want to',
+  'wanna',
+  'should',
+  'could',
+  'would',
+  'can i',
+  'may i',
+  'maybe',
+  'might',
+  'perhaps',
+  'probably',
+  'if',
+  'unless',
+  'later',
+  'tomorrow',
+  'tonight',
+];
+/** "no" that reports how an act went rather than denying it. */
+const NO_THAT_REPORTS = ['no issues', 'no issue', 'no problems', 'no problem', 'no side effects'];
+
+/**
+ * Rule 6: does his message negate, hedge, plan or ask rather than report?
+ * Any `n't` contraction counts, as does a question mark anywhere.
+ */
+function negatedOrHedged(userText: string): boolean {
+  let text = userText.toLowerCase().replace(/[’‘`]/g, "'");
+  if (text.includes('?')) return true;
+  if (/[a-z]n't(?![a-z])/.test(text) || /(^|[^a-z])can't(?![a-z])/.test(text)) return true;
+  for (const phrase of NO_THAT_REPORTS) text = text.split(phrase).join(' ');
+  return HEDGE_CUES.some((cue) => phraseIn(cue, text));
+}
+
 function saidThisTurn(
   turn: AutoSaveTurn,
   texts: (string | undefined)[],
   figures: (number | null | undefined)[]
 ): boolean {
+  if (negatedOrHedged(turn.userText)) return false;
   const saidFigures = figuresIn(turn.userText);
   const saidWords = new Set(wordsIn(turn.userText));
   const said = (value: number) => saidFigures.some((n) => Math.abs(n - value) < 1e-9);

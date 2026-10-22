@@ -16,6 +16,7 @@
  *   A8  the registry: exactly five tools qualify, none of it rides the wire
  *   A9  a unit, a metric or a capture type he did not type keeps its card
  *   A10 a retry: what the superseded attempt saved is told, and not saved twice
+ *   A11 a negated, planned, hedged or asked statement never saves at once
  *
  * The model is a scripted wire (the SSE shape model-client parses). No
  * network, no API key (a placeholder string only), no model call.
@@ -644,6 +645,65 @@ console.log('A10. a retry: what the superseded attempt saved is told, and not sa
   state.saved === 1 && state.landedTools.has('log_capture') && autoSaveTurn(said, retry.calls).landedTools.size === 0
     ? ok('what saved at once there counts toward the cap; a declined call is not a landed one')
     : bad('seeded state', JSON.stringify({ saved: state.saved, tools: [...state.landedTools] }));
+}
+
+// =============================================================================
+console.log('A11. a negated, planned, hedged or asked statement never saves at once');
+{
+  const { db: ndb, raw: nraw } = freshDb();
+  clearUndoOffers();
+  const magnesium = ['log_capture', { type: 'supplement', title: 'Magnesium' }];
+  const weight = ['log_metric', { metric: 'weight', value: 178 }];
+  const water = ['log_metric', { metric: 'water', value: 500, unit: 'ml' }];
+  const meal = ['log_meal', { name: 'Salmon and rice' }];
+  const NOT_AN_ACT = [
+    ['supplement, negated', "I didn't take magnesium today", magnesium],
+    ['supplement, curly apostrophe', 'I didn’t take magnesium', magnesium],
+    ['supplement, no apostrophe', 'didnt take magnesium', magnesium],
+    ['supplement, negation after the thing', 'magnesium - no, forgot it', magnesium],
+    ['supplement, skipped', 'skipped magnesium', magnesium],
+    ['supplement, planned', 'going to take magnesium', magnesium],
+    ['supplement, asked', 'should I take magnesium', magnesium],
+    ['supplement, question mark', 'magnesium now?', magnesium],
+    ['metric, negated', 'did not weigh 178 today', weight],
+    ['metric, hedged', 'weight maybe 178', weight],
+    ['metric, conditional', 'if my weight is 178 tomorrow', weight],
+    ['meal, future', 'I will have salmon and rice for dinner', meal],
+    ['meal, negated', "haven't had the salmon and rice", meal],
+    ['meal, asked', 'can I have salmon and rice', meal],
+    ['water, planned', 'gonna drink 500 ml of water', water],
+    ['water, negated', 'never drank the 500 ml of water', water],
+    ['water, might', 'might drink 500 ml of water later', water],
+  ];
+  for (const [label, said, [name, input]] of NOT_AN_ACT) {
+    const before = nraw.prepare('SELECT COUNT(*) AS n FROM log_entries').get().n;
+    const { cards, calls } = await turn(ndb, said, [[name, input]], { approve: false });
+    cards.length === 1 &&
+    calls[0]?.declined === true &&
+    nraw.prepare('SELECT COUNT(*) AS n FROM log_entries').get().n === before
+      ? ok(`${label} ("${said}"): a card`)
+      : bad(`${label} saved at once`, JSON.stringify({ cards, call: calls[0] }));
+  }
+  // His plain reports still save at once — and "no issues" reports how an act
+  // went, so it does not count as a negation (a fixed phrase list, no parsing).
+  const ACTS = [
+    ['supplement', 'took my magnesium', magnesium],
+    ['supplement, "no issues"', 'took my magnesium, no issues', magnesium],
+    ['metric', 'weight 178 this morning', weight],
+    ['meal', 'lunch was salmon and rice', meal],
+    ['water', 'drank 500 ml of water', water],
+  ];
+  for (const [label, said, [name, input]] of ACTS) {
+    const { cards, calls } = await turn(ndb, said, [[name, input]]);
+    cards.length === 0 && calls[0] && wasSavedAtOnce(calls[0])
+      ? ok(`${label} ("${said}"): still saved at once`)
+      : bad(`${label} lost its save-at-once`, JSON.stringify({ cards, call: calls[0] }));
+  }
+  // "no issues" does not launder a real negation beside it.
+  const { cards } = await turn(ndb, "didn't take magnesium, no issues", [magnesium], { approve: false });
+  cards.length === 1
+    ? ok('"no issues" beside a real negation is still a card')
+    : bad('no issues laundered a negation', JSON.stringify(cards));
 }
 
 await apiKeyStore.clearKey();
