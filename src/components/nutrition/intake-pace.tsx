@@ -16,14 +16,17 @@ import { palette } from '@/constants/theme';
 import { linePath, stepPath } from '@/lib/charts/geometry';
 import { fmtInt } from '@/lib/nutrition/format';
 import {
+  bandStatus,
   chartWindow,
   clockAt,
   CURVE_MIN_DAYS,
   DAY_BAND,
+  expectedCurvePoints,
   expectedShareAt,
   intakePace,
   landingRange,
   minuteOfNow,
+  paceClockStart,
   paceWords,
   todayIntake,
   type CurveMeal,
@@ -64,7 +67,9 @@ import type { SignalLevel } from '@/types/home';
  *
  * The NOW dot on each chart is filled with the grade the macro bar above it
  * already wears (`macroGrade`, FB2) — passed in, never recomputed, so the dot and
- * the bar cannot disagree. Everything else is ink. The pace WORDS are measured
+ * the bar cannot disagree. Same verdict, not the same paint: the dot takes the
+ * standard `signal.*` swatch cut, because the bars' `bar` cut is theirs alone
+ * (docs/project-status.md §3). Everything else is ink. The pace WORDS are measured
  * against the learned curve while the bar's colour is graded on Home's fixed
  * pace anchors; the two answer different questions (where today is against a
  * usual day of HIS, and where the day is projected to land), and the colour
@@ -107,7 +112,8 @@ function hourTicks(start: number, end: number, dayStartsAt: string): ChartTick[]
 
 /** The running total as step points from the axis start to now. Untimed meals
  *  are eaten but have no hour: they step up at now, the one instant they are
- *  certainly before. */
+ *  certainly before. A meal timed AFTER now was still eaten by now, so it steps
+ *  up at now too — the line never runs on past the NOW dot. */
 function runningPoints(
   intake: TodayIntake,
   metric: 'kcal' | 'protein_g',
@@ -118,7 +124,7 @@ function runningPoints(
   let last = start;
   let total = 0;
   for (const step of intake.steps) {
-    const x = Math.max(start, step.minute);
+    const x = Math.max(start, Math.min(step.minute, nowMinute));
     points.push({ x, y: step[metric] });
     last = x;
     total = step[metric];
@@ -129,17 +135,14 @@ function runningPoints(
   return points;
 }
 
-function expectedPoints(curve: ExpectedCurve, goal: number, start: number, end: number) {
-  const points: { x: number; y: number }[] = [];
-  for (let m = start; m <= end; m += 60) points.push({ x: m, y: goal * curve.shares[m / 60]! });
-  return points;
-}
-
-/** "1,160 kcal left · 920–1,400 more lands the day in range" and its siblings. */
+/** "1,160 kcal left · 920–1,400 more lands the day in range" and its siblings.
+ *  Past the top only when {@link bandStatus} says over — exactly the top edge
+ *  is in range, as the fold says. */
 function landingLine(eaten: number, goal: number): string {
   const { min, max } = landingRange(eaten, goal);
   const left = goal - eaten;
-  if (max === 0) return `${fmtInt(eaten - goal * (1 + DAY_BAND))} kcal past the top of the range`;
+  if (bandStatus(eaten, goal) === 'over')
+    return `${fmtInt(eaten - goal * (1 + DAY_BAND))} kcal past the top of the range`;
   if (min === 0) return `In range now · up to ${fmtInt(max)} more stays in it`;
   return `${fmtInt(left)} kcal left · ${fmtInt(min)}–${fmtInt(max)} more lands the day in range`;
 }
@@ -167,8 +170,19 @@ export function IntakeByHour(props: IntakeByHourProps) {
   const nowMinute = minuteOfNow(now, dayStartsAt);
   const clock = clockAt(nowMinute, dayStartsAt);
   const share = expectedShareAt(curves.kcal, nowMinute);
-  const pace = timezoneChanged ? null : intakePace(intake.total.kcal, goals.kcal, share);
-  const folded = pace ? paceWords(pace, 'kcal') : 'not paced — timezone changed today';
+  // Before the default curve's first anchor nothing is expected, and Home
+  // withholds its verdict there — so this says when the clock starts instead.
+  const opens = timezoneChanged ? null : paceClockStart(curves.kcal);
+  const waitsUntil = opens !== null && nowMinute < opens ? clockAt(opens, dayStartsAt) : null;
+  const pace =
+    timezoneChanged || waitsUntil !== null
+      ? null
+      : intakePace(intake.total.kcal, goals.kcal, share);
+  const folded = pace
+    ? paceWords(pace, 'kcal')
+    : waitsUntil !== null
+      ? `pace starts at ${waitsUntil}`
+      : 'not paced — timezone changed today';
 
   return (
     <View className="mt-4">
@@ -187,7 +201,14 @@ export function IntakeByHour(props: IntakeByHourProps) {
         <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={14} color={palette.inkMuted} />
       </Pressable>
       {open ? (
-        <IntakeCharts {...props} intake={intake} nowMinute={nowMinute} clock={clock} pace={pace} />
+        <IntakeCharts
+          {...props}
+          intake={intake}
+          nowMinute={nowMinute}
+          clock={clock}
+          pace={pace}
+          waitsUntil={waitsUntil}
+        />
       ) : null}
     </View>
   );
@@ -203,11 +224,14 @@ function IntakeCharts({
   nowMinute,
   clock,
   pace,
+  waitsUntil,
 }: IntakeByHourProps & {
   intake: TodayIntake;
   nowMinute: number;
   clock: string;
   pace: PaceReading | null;
+  /** The default curve's first anchor, while now is still before it. */
+  waitsUntil: string | null;
 }) {
   const [start, end] = chartWindow(curves.kcal, intake.steps, nowMinute);
   const ticks = hourTicks(start, end, dayStartsAt);
@@ -242,7 +266,11 @@ function IntakeCharts({
             {showExpected ? (
               <ChartLine
                 variant="expected"
-                d={linePath(expectedPoints(curves.kcal, kcalGoal, start, end), scale.x, scale.y)}
+                d={linePath(
+                  expectedCurvePoints(curves.kcal, kcalGoal, start, end),
+                  scale.x,
+                  scale.y
+                )}
               />
             ) : null}
             <ChartRule scale={scale} x={nowMinute} tone="now" />
@@ -265,6 +293,10 @@ function IntakeCharts({
       {pace ? (
         <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-secondary">
           {paceLine(pace, clock, curves.kcal.source)}
+        </Text>
+      ) : waitsUntil !== null ? (
+        <Text className="mt-0.5 font-mono text-[11px] leading-4 text-ink-secondary">
+          {`Nothing is expected before ${waitsUntil} on the default day — no pace until then`}
         </Text>
       ) : null}
 
@@ -300,7 +332,7 @@ function IntakeCharts({
                     <ChartLine
                       variant="expected"
                       d={linePath(
-                        expectedPoints(curves.protein_g, proteinGoal, start, end),
+                        expectedCurvePoints(curves.protein_g, proteinGoal, start, end),
                         scale.x,
                         scale.y
                       )}

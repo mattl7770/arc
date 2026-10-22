@@ -38,10 +38,13 @@ import type { SignalLevel } from '@/types/home';
  *
  * Nothing here is coloured by default. A trend of HRV or weight is a
  * measurement, not a graded state, so it is ink. The ONE coloured mark in the
- * set is a {@link ChartDot} handed a `SignalLevel`, which fills with the macro
- * bars' own `bar` cut — the Eat tab's "now" dot carries the same verdict the
- * kcal bar above it already wears (FB2), and cannot invent another. There is no
- * colour prop, so no caller can hand a chart the accent.
+ * set is a {@link ChartDot} handed a `SignalLevel`, which fills with that
+ * state's standard `signal.*` SWATCH cut — the non-text fill. The Eat tab's
+ * "now" dot carries the same verdict the kcal bar above it already wears (FB2),
+ * and cannot invent another; it does not borrow the bar's paint, because the
+ * `bar` cut is the macro bars' alone ("nothing else takes it",
+ * docs/project-status.md §3). There is no colour prop, so no caller can hand a
+ * chart the accent.
  *
  * ## Sizing
  *
@@ -245,18 +248,18 @@ export function ChartRule({
   return null;
 }
 
-/** The fill a dot takes. A `SignalLevel` takes the macro bars' `bar` cut — the
- *  one coloured mark in this file, and only a verdict computed elsewhere. */
+/** The fill a dot takes. A `SignalLevel` takes the standard `signal.*` swatch
+ *  cut (the non-text fill; `unknown` is the metadata ink) — the one coloured
+ *  mark in this file, and only a verdict computed elsewhere. Never the `bar`
+ *  cut, which is the macro bars' alone. */
 function dotFill(tone: SignalLevel | 'ink' | 'muted'): string {
   switch (tone) {
     case 'ink':
       return palette.ink;
     case 'muted':
       return palette.inkMuted;
-    case 'unknown':
-      return palette.signalInk.unknown;
     default:
-      return palette.signalBar[tone];
+      return palette.signal[tone];
   }
 }
 

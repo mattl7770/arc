@@ -8931,15 +8931,23 @@ console.log('\n36. Items 95/84 — intake by the hour, the weight trendline, the
   if (open !== null) {
     const dashed = (open.match(/stroke-dasharray="4 3"/g) || []).length;
     check2(dashed === 2, 'the expected curve is dashed on both charts (2)', String(dashed));
-    // The NOW dots wear the grades handed in — the bars' own `bar` cut — and
-    // nothing else on either chart takes a signal colour.
+    // The NOW dots wear the grades handed in — on the standard SWATCH cut, the
+    // non-text fill — and nothing else on either chart takes a signal colour.
     check2(
-      open.includes(`fill="${palette.signalBar.good}"`) &&
-        open.includes(`fill="${palette.signalBar.caution}"`),
-      'the kcal dot wears the kcal bar’s grade, the protein dot the protein bar’s'
+      open.includes(`fill="${palette.signal.good}"`) &&
+        open.includes(`fill="${palette.signal.caution}"`),
+      'the kcal dot wears the kcal bar’s grade, the protein dot the protein bar’s — swatch cut'
+    );
+    // The `bar` cut is the macro bars' alone ("nothing else takes it",
+    // project-status §3 and theme.ts): a chart dot must never borrow it.
+    const barCut = Object.values(palette.signalBar).filter((hex) => open.includes(hex));
+    check2(
+      barCut.length === 0,
+      'no chart mark takes the macro bars’ `bar` cut — it stays exclusive to MacroBar',
+      barCut.join(', ')
     );
     check2(
-      !open.includes(palette.pine) && !open.includes(palette.signalBar.poor),
+      !open.includes(palette.pine) && !open.includes(palette.signal.poor),
       'no accent and no other signal colour anywhere in the charts (the firewall)'
     );
     check2(!open.includes('NaN'), 'no NaN in any coordinate');
@@ -8991,6 +8999,74 @@ console.log('\n36. Items 95/84 — intake by the hour, the weight trendline, the
     'Your usual day is done eating by 21:30 — this one reads in range',
     'In range now · up to 340 more stays in it',
   ]);
+
+  // EXACTLY the top edge (2,640 of 2,400) is IN range — bandStatus counts the
+  // edges — so the landing line must not call it "0 kcal past the top".
+  const topEdge = render('intake by the hour (day closed, top edge)', IntakeByHour, {}, {
+    ...base,
+    meals: [...todayMeals, { date: today, time: '19:10', kcal: 1340, protein_g: 60 }],
+    now: new Date(2026, 9, 21, 21, 30),
+    initiallyOpen: true,
+  });
+  expect('intake by the hour (day closed, top edge)', topEdge, [
+    'this one reads in range',
+    'In range now · up to 0 more stays in it',
+  ]);
+  refute('intake by the hour (day closed, top edge)', topEdge, ['past the top of the range']);
+  const pastTop = render('intake by the hour (day closed, past the top)', IntakeByHour, {}, {
+    ...base,
+    meals: [...todayMeals, { date: today, time: '19:10', kcal: 1440, protein_g: 60 }],
+    now: new Date(2026, 9, 21, 21, 30),
+    initiallyOpen: true,
+  });
+  expect('intake by the hour (day closed, past the top)', pastTop, [
+    '100 kcal past the top of the range',
+    'this one reads 100 kcal over range',
+  ]);
+
+  // The DEFAULT curve before its first anchor expects nothing, and Home
+  // withholds its verdict there — so a breakfast is not "ahead" of it.
+  const early = render('intake by the hour (default curve, before 10:00)', IntakeByHour, {}, {
+    ...base,
+    meals: [{ date: today, time: '08:00', kcal: 500, protein_g: 30 }],
+    curves: { kcal: defaultCurve('00:00', 3), protein_g: defaultCurve('00:00', 3) },
+    now: new Date(2026, 9, 21, 9, 30),
+    initiallyOpen: true,
+  });
+  expect('intake by the hour (default curve, before 10:00)', early, [
+    'pace starts at 10:00',
+    'Nothing is expected before 10:00 on the default day',
+  ]);
+  refute('intake by the hour (default curve, before 10:00)', early, [
+    'kcal ahead',
+    'kcal behind',
+    'on pace',
+  ]);
+
+  // A meal timed AFTER now was still eaten by now: the step line stops at the
+  // NOW dot, never runs on past it with the dot floating above.
+  const future = render('intake by the hour (meal timed after now)', IntakeByHour, {}, {
+    ...base,
+    meals: [{ date: today, time: '19:00', kcal: 800, protein_g: 20 }],
+    initiallyOpen: true,
+  });
+  if (future !== null) {
+    const kcalChart = future.slice(
+      future.indexOf('data-testid="intake-chart-kcal"'),
+      future.indexOf('data-testid="intake-chart-protein"')
+    );
+    const step = /d="(M[^"]* H[^"]*)"/.exec(kcalChart)?.[1] ?? '';
+    const hs = [...step.matchAll(/H(-?[\d.]+)/g)].map((m) => Number(m[1]));
+    const vs = [...step.matchAll(/V(-?[\d.]+)/g)].map((m) => Number(m[1]));
+    const cx = Number(/<circle[^>]*cx="([^"]+)"/.exec(kcalChart)?.[1]);
+    const cy = Number(/<circle[^>]*cy="([^"]+)"/.exec(kcalChart)?.[1]);
+    // Paths print to one decimal, the circle's centre does not — hence 0.06.
+    check2(
+      hs.length > 0 && Math.max(...hs) <= cx + 0.06 && Math.abs(vs[vs.length - 1] - cy) < 0.06,
+      'a meal timed 19:00 seen at 14:00 steps up AT now — the line ends on the dot, not past it',
+      `${step} · dot ${cx},${cy}`
+    );
+  }
 
   // THE WEIGHT RECORD — the Data row now opens it; seven daily weigh-ins.
   const before = new Set(db.all('SELECT id FROM body_metrics').map((r) => r.id));
