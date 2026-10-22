@@ -765,7 +765,16 @@ const wire = (text, capture) => async (_url, init) => {
     },
   };
 };
-const directiveOf = (request) => request.messages[0].content;
+// The directive is the pass's one user message. Since the conversation cache
+// breakpoint (2026-10-21, model-client.ts `withConversationBreakpoint`) a
+// request that can round trip sends that message as one text block carrying
+// the marker rather than as a bare string — the same content to the API.
+const directiveOf = (request) => {
+  const content = request.messages[0].content;
+  return typeof content === 'string'
+    ? content
+    : content.map((block) => (block.type === 'text' ? block.text : '')).join('');
+};
 
 console.log('N1. the NUDGE grammar: strict lines out, the note left, nothing guessed');
 {

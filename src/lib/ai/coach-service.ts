@@ -124,6 +124,7 @@ export async function streamCoachReply(
       // does not), with no native dependency. Structurally a FetchLike; the
       // cast bridges Expo's own response typings.
       fetchImpl: expoFetch as unknown as FetchLike,
+      callType: 'chat',
     },
     {
       // STATIC, and takes no arguments — it is the cached prefix, so anything

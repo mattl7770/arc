@@ -30,6 +30,7 @@ import { deviceRegion, regionLine } from '@/lib/ai/region';
 import {
   ESTIMATOR_WEB_SEARCH_MAX_USES,
   webSearchesOf,
+  webSearchTool,
   type WebSearchOptions,
   type WebSearchSummary,
 } from '@/lib/ai/web-search';
@@ -256,6 +257,20 @@ export class MealEstimateParseError extends Error {
 }
 
 /**
+ * Thrown when the model's safety classifiers declined the request
+ * (`stop_reason: "refusal"`). Named for the same reason as the parse error: the
+ * offline queue must PARK it, not retry it — the same request is declined the
+ * same way, and each attempt is billed (2026-10-21). The message is the one
+ * the screens have always printed.
+ */
+export class MealEstimateRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MealEstimateRefusedError';
+  }
+}
+
+/**
  * Whether the estimation path can run — a model key is configured (same key the
  * Coach uses). The UI reads this to keep the "Describe or snap" affordance
  * honest; re-render via the Coach's useSessionKeySet() so it stays current.
@@ -315,9 +330,16 @@ export const NO_ESTIMATOR_OPTIONS: EstimatorOptions = { webSearch: false, region
 /**
  * The live options: the Settings switch (off for the session once the API has
  * refused the search tool on this key), and the region from the phone's settings.
+ * Search is also off for a model that takes no search tool (Haiku 5.5,
+ * web-search.ts), so the prompt never says "web search is available" on a
+ * request that cannot carry it.
  */
 export function currentEstimatorOptions(): EstimatorOptions {
-  return { webSearch: apiKeyStore.isWebSearchUsable(), region: regionLine(deviceRegion()) };
+  const searchable = webSearchTool(apiKeyStore.getModel(), ESTIMATOR_WEB_SEARCH_MAX_USES) !== null;
+  return {
+    webSearch: apiKeyStore.isWebSearchUsable() && searchable,
+    region: regionLine(deviceRegion()),
+  };
 }
 
 /**
@@ -974,9 +996,9 @@ export async function estimateMeal(
   if (!apiKey || !fetchImpl) throw new MealEstimationUnavailableError();
 
   const req = buildMealEstimationRequest(input, currentEstimatorOptions());
-  const turn = await runEstimatorTurn({ apiKey, fetchImpl }, req, signal);
+  const turn = await runEstimatorTurn({ apiKey, fetchImpl }, req, 'meal_estimate', signal);
   if (turn.refused) {
-    throw new Error('The model declined to estimate this meal.');
+    throw new MealEstimateRefusedError('The model declined to estimate this meal.');
   }
   return { ...parseMealEstimate(turn.text), searches: turn.searches };
 }
@@ -990,11 +1012,17 @@ export async function estimateMeal(
 async function runEstimatorTurn(
   connection: { apiKey: string; fetchImpl: FetchLike },
   req: MealEstimationRequest,
+  callType: 'meal_estimate' | 'meal_revision' | 'food_estimate',
   signal?: AbortSignal
 ): Promise<{ text: string; refused: boolean; searches: WebSearchSummary[] }> {
   let text = '';
   const result = await runCoachTurn(
-    { apiKey: connection.apiKey, model: apiKeyStore.getModel(), fetchImpl: connection.fetchImpl },
+    {
+      apiKey: connection.apiKey,
+      model: apiKeyStore.getModel(),
+      fetchImpl: connection.fetchImpl,
+      callType,
+    },
     {
       system: req.system,
       ...(req.systemContext ? { systemContext: req.systemContext } : {}),
@@ -1286,9 +1314,9 @@ export async function reviseMeal(
   if (!apiKey || !fetchImpl) throw new MealEstimationUnavailableError();
 
   const req = buildMealRevisionRequest(meal, instruction, currentEstimatorOptions());
-  const turn = await runEstimatorTurn({ apiKey, fetchImpl }, req, signal);
+  const turn = await runEstimatorTurn({ apiKey, fetchImpl }, req, 'meal_revision', signal);
   if (turn.refused) {
-    throw new Error('The model declined to revise this meal.');
+    throw new MealEstimateRefusedError('The model declined to revise this meal.');
   }
   return { ...parseMealEstimate(turn.text), searches: turn.searches };
 }
@@ -1510,9 +1538,9 @@ export async function estimateFoodEntry(
   if (!apiKey || !fetchImpl) throw new MealEstimationUnavailableError();
 
   const req = buildFoodEntryRequest(description, currentEstimatorOptions());
-  const turn = await runEstimatorTurn({ apiKey, fetchImpl }, req, signal);
+  const turn = await runEstimatorTurn({ apiKey, fetchImpl }, req, 'food_estimate', signal);
   if (turn.refused) {
-    throw new Error('The model declined to describe this food.');
+    throw new MealEstimateRefusedError('The model declined to describe this food.');
   }
   return { ...parseFoodEntry(turn.text), searches: turn.searches };
 }

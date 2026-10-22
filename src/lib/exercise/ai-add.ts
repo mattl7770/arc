@@ -340,7 +340,7 @@ export async function addExerciseWithAI(
   const req = buildAiExerciseRequest(query);
   let text = '';
   const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
+    { apiKey, model: apiKeyStore.getModel(), fetchImpl, callType: 'exercise_ai' },
     { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
     {
       onToken: (chunk) => {

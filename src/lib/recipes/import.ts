@@ -753,7 +753,7 @@ async function runExtractionTurn(
   const req = buildRecipeExtractionRequest(input);
   let text = '';
   const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl },
+    { apiKey, model: apiKeyStore.getModel(), fetchImpl, callType: 'recipe_import' },
     { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
     {
       onToken: (chunk) => {

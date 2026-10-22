@@ -5,24 +5,28 @@
  * The owner's constraint is short: *"AI-dependent estimates queue until back
  * online."* Three decisions carry it.
  *
- * ## 1. What counts as "offline"
+ * ## 1. What counts as "offline" — and what the drain does with each failure
  *
- * Not every failure is worth waiting on. {@link isQueueableFailure} says yes to
- * a TRANSPORT failure — the request never reached the API — and no to
- * everything else:
+ * Every failure is classified ONCE, by {@link classifyQueueFailure}, into a
+ * code and a disposition (src/lib/nutrition/queue-status.ts has the whole
+ * rule and why it exists — the drain used to re-send, and re-bill, a request
+ * the API had already refused, on every app open, forever):
  *
- *   - an abort (the user left the screen) — there is nothing to retry;
- *   - {@link MealEstimationUnavailableError} — no key, or a binary without
- *     `expo/fetch`; waiting does not add either;
- *   - {@link MealEstimateParseError} — the model answered and the answer was
- *     unusable; the same request will produce the same nonsense;
- *   - a {@link ModelRequestError} carrying an HTTP status — a 400, a 401, a 429
- *     means we DID reach the API. That is a key, a quota or a request problem,
- *     and queueing it would re-bill the same rejection tomorrow.
+ *   - WAIT, nothing was billed: no connection (the model client names a fetch
+ *     that never got a response `network_error`), no key, an abort;
+ *   - RETRY, counted and backed off by elapsed time, parked at the cap: a
+ *     stream that died mid-reply, a 5xx, a 529 overloaded;
+ *   - PARK at once, never re-sent by itself: a 401/403, a 429, any other 4xx,
+ *     an unreadable reply, a refusal, a failure AFTER the model answered (it
+ *     was billed; sending it again would bill it again), and anything this
+ *     module cannot name — an unknown failure is not assumed to be free.
  *
- * Everything else queues, including a `ModelRequestError` with status 0: that is
- * the code for "no HTTP response" — a stream that died mid-reply — which is
- * what a connection dropping actually looks like from inside the client.
+ * {@link isQueueableFailure} — what the interactive screens ask before they
+ * queue a failed estimate — is narrower than "transient": no connection, or a
+ * connection that dropped mid-reply. That is what it always meant, and what the
+ * queued screen's "No connection, so the estimate is waiting" says; a 5xx on an
+ * interactive estimate still shows its error and a retry. A missing key is
+ * answered on the screen, which says where to add one, rather than queued.
  *
  * ## 2. The drain APPLIES; it does not park a second review
  *
@@ -48,7 +52,7 @@
  * offline → restart → reconnect cycle with no network and no file system.
  */
 import type { Database } from '@/lib/db/database';
-import { ModelRequestError } from '@/lib/ai/model-client';
+import { ModelRequestError, NETWORK_ERROR } from '@/lib/ai/model-client';
 import { usualFoodsContextFor } from '@/lib/db/repositories/food-history';
 import { correctionsContextFor } from '@/lib/db/repositories/food-log-ratings';
 import {
@@ -60,6 +64,7 @@ import {
 import {
   listPendingEstimates,
   markPendingEstimateFailed,
+  pendingEstimateForMeal,
 } from '@/lib/db/repositories/pending-estimates';
 import { attachMealPhoto, nativePhotoStore } from '@/lib/media/meal-photo-store';
 import {
@@ -81,18 +86,71 @@ import {
   type MealEstimateComponent,
   type MealEstimateItem,
   MealEstimateParseError,
+  MealEstimateRefusedError,
   MealEstimationUnavailableError,
   type MealRevisionSubject,
   reviseMeal,
 } from './estimate';
+import {
+  composeLastError,
+  isParked,
+  isPendingEstimateDue,
+  type QueueDisposition,
+  type QueueFailureCode,
+} from './queue-status';
 
-/** Is this failure worth keeping the request for? See the header. */
+/** One failure, classified — see the header and queue-status.ts. */
+export type QueueFailure = {
+  code: QueueFailureCode;
+  disposition: QueueDisposition;
+  /** The rest of the queue would meet the same answer: stop this drain. */
+  stopDrain: boolean;
+};
+
+const failure = (
+  code: QueueFailureCode,
+  disposition: QueueDisposition,
+  stopDrain: boolean
+): QueueFailure => ({ code, disposition, stopDrain });
+
+/**
+ * Classify a failure of the MODEL call. A failure after the model answered is
+ * not this function's question: the drain files it as `apply_failed` (parked),
+ * because that request was billed.
+ */
+export function classifyQueueFailure(error: unknown): QueueFailure {
+  if (error instanceof Error && error.name === 'AbortError')
+    return failure('aborted', 'wait', true);
+  if (error instanceof MealEstimationUnavailableError) return failure('no_key', 'wait', true);
+  if (error instanceof MealEstimateParseError) return failure('unreadable', 'park', false);
+  if (error instanceof MealEstimateRefusedError) return failure('refused', 'park', false);
+  if (error instanceof ModelRequestError) {
+    const { status, errorType } = error;
+    // Status 0 is "no HTTP response". The client names the case where the
+    // request never left (NETWORK_ERROR): free to retry, so it is not counted.
+    if (status === 0 && errorType === NETWORK_ERROR) return failure('offline', 'wait', true);
+    // Any other status-0 failure began a reply — a dropped stream, or an error
+    // event mid-stream (`overloaded_error`, `api_error`). Transient, but it may
+    // have been billed, so it is counted.
+    if (status === 0) return failure('interrupted', 'retry', true);
+    if (status >= 500 || status === 408) return failure('server', 'retry', true);
+    if (status === 401 || status === 403) return failure('auth', 'park', true);
+    if (status === 429) return failure('rate_limited', 'park', true);
+    return failure('rejected', 'park', false);
+  }
+  return failure('failed', 'park', false);
+}
+
+/**
+ * Is this failure worth keeping the request for? What the interactive screens
+ * ask: yes for no connection, or one that dropped mid-reply — the cases their
+ * "No connection" screen describes — and no for everything else, every code
+ * the drain would park included. (A 5xx is retried by the drain, but on an
+ * interactive estimate the user is there to retry it himself.)
+ */
 export function isQueueableFailure(error: unknown): boolean {
-  if (error instanceof MealEstimationUnavailableError) return false;
-  if (error instanceof MealEstimateParseError) return false;
-  if (error instanceof ModelRequestError) return error.status === 0;
-  if (error instanceof Error && error.name === 'AbortError') return false;
-  return true;
+  const { code } = classifyQueueFailure(error);
+  return code === 'offline' || code === 'interrupted';
 }
 
 /** A failure reason short enough for `pending_estimates.last_error`. */
@@ -114,15 +172,21 @@ export type DrainDeps = {
   /** Where a drained photo is moved to, so it lands on the meal exactly as an
    *  interactive capture does (0033's retention included). */
   mealPhotoStore: PhotoFileStore | null;
+  /** The clock the backoff is read against (ms since the epoch); the tests
+   *  move it forward instead of waiting. */
+  now?: () => number;
 };
 
 export type DrainResult = {
-  /** Entries the drainer tried this pass. */
+  /** Entries the drainer tried this pass (due ones only — a parked or
+   *  backing-off row is not tried). */
   attempted: number;
   /** Entries whose estimate landed on their meal. */
   applied: number;
-  /** Entries still in the queue afterwards. */
+  /** Entries still in the queue afterwards, parked ones included. */
   kept: number;
+  /** Of those, entries parked — waiting on the user, not on the network. */
+  parked: number;
 };
 
 /** The estimator items, as `meal_items` rows. One place, so a queued estimate
@@ -190,11 +254,21 @@ function toEstimateInput(row: PendingEstimateRow, base64Jpeg: string | null): Es
  * Work the queue once, oldest first. Never throws: this runs on app open and on
  * every foreground, and a queue that can take the app down with it is worse
  * than the failure it was built for.
+ *
+ * Only DUE rows are sent (queue-status.ts `isPendingEstimateDue`): a parked row
+ * waits for the user, and a row backing off waits out its time, however often
+ * the app is opened. That, with the classification above, is the whole fix for
+ * the re-billing loop.
  */
 export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise<DrainResult> {
-  const rows = listPendingEstimates(db);
+  const nowMs = (deps.now ?? Date.now)();
+  const rows = listPendingEstimates(db).filter((row) => isPendingEstimateDue(row, nowMs));
   let applied = 0;
   for (const row of rows) {
+    // Set the moment the model call returns. A failure after it is a failure
+    // of a request that was BILLED — never the network's — so it is parked
+    // rather than sent (and billed) again.
+    let answered = false;
     try {
       const meal = getMeal(db, row.meal_id);
       if (!meal) {
@@ -217,13 +291,12 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
         // counted (0059) and every item's fiber and micros are shown, whether
         // or not the phone was online when the correction was typed.
         const before = assembleMealItems(listMealItems(db, row.meal_id));
-        const revised = groundMealEstimate(
-          db,
-          await deps.estimators.revise(
-            { name: meal.name, items: loggedToRevisionItems(before) },
-            instruction
-          )
+        const reply = await deps.estimators.revise(
+          { name: meal.name, items: loggedToRevisionItems(before) },
+          instruction
         );
+        answered = true;
+        const revised = groundMealEstimate(db, reply);
         // A revision touches the items and nothing else — the meal's date,
         // time, name and notes are the user's (replaceMealItems' own rule).
         replaceMealItems(db, row.meal_id, toMealItems(revised));
@@ -242,7 +315,9 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
         continue;
       }
 
-      const grounded = groundMealEstimate(db, await deps.estimators.estimate(input));
+      const reply = await deps.estimators.estimate(input);
+      answered = true;
+      const grounded = groundMealEstimate(db, reply);
       // The placeholder's name was always provisional — the user's typed words,
       // or a plain statement that it was photographed. The model's title
       // replaces it, and the model's caveat becomes the meal's note, which is
@@ -272,13 +347,66 @@ export async function drainEstimateQueue(db: Database, deps: DrainDeps): Promise
       clearPendingEstimate(db, row, deps.pendingStore);
       applied++;
     } catch (error) {
-      markPendingEstimateFailed(db, row.id, failureReason(error));
-      // A transport failure means the rest of the queue will fail the same way;
-      // stop rather than spend the remaining requests proving it.
-      if (isQueueableFailure(error)) break;
+      const failed: QueueFailure = answered
+        ? { code: 'apply_failed', disposition: 'park', stopDrain: false }
+        : classifyQueueFailure(error);
+      try {
+        markPendingEstimateFailed(
+          db,
+          row.id,
+          composeLastError(failed.code, failureReason(error)),
+          failed.disposition
+        );
+      } catch {
+        // The row could not be updated either. Stop: a drain that cannot record
+        // a failure must not go on sending requests it cannot account for.
+        break;
+      }
+      // No connection, no key, a key the API refuses, a server that is down:
+      // the rest of the queue would meet the same answer, so stop rather than
+      // spend the remaining requests proving it.
+      if (failed.stopDrain) break;
     }
   }
-  return { attempted: rows.length, applied, kept: listPendingEstimates(db).length };
+  const left = listPendingEstimates(db);
+  return {
+    attempted: rows.length,
+    applied,
+    kept: left.length,
+    parked: left.filter(isParked).length,
+  };
+}
+
+/**
+ * Enter by hand: the user stops waiting on the model for this meal. The queued
+ * request goes; NOTHING ELSE does. A queued photo moves onto the meal through
+ * the one writer (0033), exactly as a drained one would, so the plate he
+ * photographed is still there to look at while he types what was on it; the
+ * meal keeps its name (his own words, when he typed any) and its NULL macros,
+ * which the meal screen draws as "fill it in". A queued correction leaves the
+ * meal's items as they stand. Returns whether there was a request to drop.
+ */
+export function enterPendingEstimateByHand(
+  db: Database,
+  mealId: string,
+  stores: { pendingStore: PhotoFileStore | null; mealPhotoStore: PhotoFileStore | null } = {
+    pendingStore: nativePendingEstimateStore(),
+    mealPhotoStore: nativePhotoStore(),
+  }
+): boolean {
+  const row = pendingEstimateForMeal(db, mealId);
+  if (!row) return false;
+  const base64Jpeg = readPendingEstimatePhoto(row.file_name, stores.pendingStore);
+  if (base64Jpeg && row.kind === 'photo') {
+    attachMealPhoto(
+      db,
+      mealId,
+      { base64Jpeg, width: row.width, height: row.height, source: 'camera' },
+      stores.mealPhotoStore
+    );
+  }
+  clearPendingEstimate(db, row, stores.pendingStore);
+  return true;
 }
 
 /** One drain at a time. The app-open pass and the foreground listener can both
@@ -294,7 +422,7 @@ let draining = false;
  * present for helps nobody).
  */
 export async function runEstimateQueueDrain(db: Database): Promise<DrainResult> {
-  const idle: DrainResult = { attempted: 0, applied: 0, kept: 0 };
+  const idle: DrainResult = { attempted: 0, applied: 0, kept: 0, parked: 0 };
   if (draining) return idle;
   draining = true;
   try {

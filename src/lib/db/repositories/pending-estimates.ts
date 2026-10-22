@@ -28,6 +28,12 @@
 import type { Database } from '../database';
 import { newId } from '../id';
 import type { DateString, TimeString } from '../types';
+import {
+  pendingEstimateStatus,
+  QUEUE_MAX_ATTEMPTS,
+  type PendingEstimateStatus,
+  type QueueDisposition,
+} from '@/lib/nutrition/queue-status';
 import type { NewPendingEstimate, PendingEstimateRow } from '@/lib/nutrition/types';
 
 /** What a queued new-meal request needs to stand as a visible placeholder. */
@@ -151,6 +157,26 @@ export function pendingEstimateMealIds(db: Database, date: string): Set<string> 
   return new Set(rows.map((r) => r.meal_id));
 }
 
+/**
+ * The same day's waiting meals with WHERE each stands — what the Eat tab's row
+ * line reads, so a parked estimate says it is paused rather than "offline"
+ * (2026-10-21). Keyed by meal id; the keys are exactly
+ * {@link pendingEstimateMealIds}.
+ */
+export function pendingEstimateStatuses(
+  db: Database,
+  date: string
+): Map<string, PendingEstimateStatus> {
+  const rows = db.all<Pick<PendingEstimateRow, 'meal_id' | 'attempts' | 'last_error'>>(
+    `SELECT pe.meal_id AS meal_id, pe.attempts AS attempts, pe.last_error AS last_error
+     FROM pending_estimates pe
+     JOIN meals m ON m.id = pe.meal_id
+     WHERE m.date = ?`,
+    [date]
+  );
+  return new Map(rows.map((r) => [r.meal_id, pendingEstimateStatus(r)]));
+}
+
 /** Every queued file name — the pending directory's reconcile set, so a file
  *  whose row has gone (the meal was deleted) is reclaimed. */
 export function pendingEstimateFileNames(db: Database): string[] {
@@ -162,22 +188,53 @@ export function pendingEstimateFileNames(db: Database): string[] {
 }
 
 /**
- * Record a failed attempt. The row STAYS — nothing here expires a queue entry,
- * because the two reasons a drain fails are "still offline" (waiting fixes it)
- * and "no key / a refusal" (a visit to Settings fixes it), and deleting the
- * user's meal on his behalf fixes neither. The escape hatch is deleting the
+ * Record a failed attempt, as the drain classified it (src/lib/nutrition/
+ * queue-status.ts says what each disposition means):
+ *
+ *   - `wait`  — nothing was sent: the reason is recorded, `attempts` is not;
+ *   - `retry` — one more counted attempt, which also starts its backoff (the
+ *     row's trigger stamps `updated_at`, the clock the backoff reads);
+ *   - `park`  — `attempts` goes straight to the cap, which is what "parked" is.
+ *
+ * The row STAYS in every case — nothing here expires a queue entry. It holds
+ * the user's photo or words, and deleting his meal on his behalf fixes nothing.
+ * The ways out are his: Try again ({@link retryPendingEstimate}), Enter by hand
+ * (estimate-queue.ts `enterPendingEstimateByHand`), or deleting the
  * placeholder, which CASCADEs this row away.
  */
-export function markPendingEstimateFailed(db: Database, id: string, reason: string): void {
-  db.run('UPDATE pending_estimates SET attempts = attempts + 1, last_error = ? WHERE id = ?', [
-    reason.slice(0, 400),
+export function markPendingEstimateFailed(
+  db: Database,
+  id: string,
+  lastError: string,
+  disposition: QueueDisposition
+): void {
+  const attempts =
+    disposition === 'wait'
+      ? 'attempts'
+      : disposition === 'retry'
+        ? 'attempts + 1'
+        : `MAX(attempts, ${QUEUE_MAX_ATTEMPTS})`;
+  db.run(`UPDATE pending_estimates SET attempts = ${attempts}, last_error = ? WHERE id = ?`, [
+    lastError.slice(0, 400),
     id,
   ]);
 }
 
-/** Drop one queue entry — what a successful drain, and only a successful drain,
- *  does. The caller removes the file afterwards; the orphan pass covers it if
- *  that fails. */
+/**
+ * Try again: a parked (or backing-off) request becomes a fresh one — attempts
+ * back to 0, the reason cleared — so the next drain sends it at once. The
+ * caller starts that drain. Returns whether a row was there to reset.
+ */
+export function retryPendingEstimate(db: Database, mealId: string): boolean {
+  const before = pendingEstimateForMeal(db, mealId);
+  if (!before) return false;
+  db.run('UPDATE pending_estimates SET attempts = 0, last_error = NULL WHERE id = ?', [before.id]);
+  return true;
+}
+
+/** Drop one queue entry — what a successful drain does, and what the user's own
+ *  Enter by hand does. The caller removes the file afterwards; the orphan pass
+ *  covers it if that fails. */
 export function deletePendingEstimate(db: Database, id: string): void {
   db.run('DELETE FROM pending_estimates WHERE id = ?', [id]);
 }

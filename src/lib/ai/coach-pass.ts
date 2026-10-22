@@ -538,6 +538,7 @@ export async function runCoachPass(
         apiKey,
         model: options.model ?? PASS_MODEL,
         fetchImpl,
+        callType: 'pass',
       },
       {
         system: buildCoachSystemPrompt(),

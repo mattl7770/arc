@@ -7,7 +7,14 @@
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
-import { ModelRequestError } from '../src/lib/ai/model-client.ts';
+import { ModelRequestError, NETWORK_ERROR } from '../src/lib/ai/model-client.ts';
+import {
+  isParked,
+  isPendingEstimateDue,
+  pendingEstimateStatus,
+  QUEUE_BACKOFF_MS,
+  QUEUE_MAX_ATTEMPTS,
+} from '../src/lib/nutrition/queue-status.ts';
 // The Coach's domain registry, for §77's payload read only (a namespace, for
 // the reason given at reviewRowsModule below).
 import * as domainsModule from '../src/lib/ai/domains/index.ts';
@@ -73,11 +80,15 @@ import {
   pendingEstimateForMeal,
   pendingEstimateMealIds,
   placeholderMealName,
+  pendingEstimateStatuses,
   queueMealRevision,
   queueNewMealEstimate,
+  retryPendingEstimate,
 } from '../src/lib/db/repositories/pending-estimates.ts';
 import {
+  classifyQueueFailure,
   drainEstimateQueue,
+  enterPendingEstimateByHand,
   failureReason,
   isQueueableFailure,
 } from '../src/lib/nutrition/estimate-queue.ts';
@@ -160,6 +171,7 @@ import {
   MEAL_REVISION_SYSTEM_PROMPT,
   parseFoodEntry,
   MealEstimateParseError,
+  MealEstimateRefusedError,
   MealEstimationUnavailableError,
   parseMealEstimate,
 } from '../src/lib/nutrition/estimate.ts';
@@ -1545,6 +1557,10 @@ const REPLY = JSON.stringify({
 
 /** The network being gone, as `expo/fetch` actually reports it. */
 const offline = () => new TypeError('Network request failed');
+/** What a request that never left the phone looks like by the time it reaches
+ *  the queue: the model client turns the fetch's rejection into a named
+ *  status-0 error (db/model-client.test.mjs pins that half). */
+const noNetwork = () => new ModelRequestError(0, NETWORK_ERROR, 'Network request failed');
 
 /** Estimators that answer, count their calls, and record what they were sent. */
 function fakeEstimators(reply = REPLY) {
@@ -1566,10 +1582,10 @@ function fakeEstimators(reply = REPLY) {
 function deadEstimators() {
   return {
     estimate: async () => {
-      throw offline();
+      throw noNetwork();
     },
     revise: async () => {
-      throw offline();
+      throw noNetwork();
     },
   };
 }
@@ -1679,26 +1695,40 @@ console.log('24. C3: an estimate made offline is QUEUED, and the meal is visible
 
 console.log('25. C3: which failures are worth waiting on');
 {
-  // The whole classifier, as a table. The dangerous mistake is the last row: an
-  // HTTP error means the API ANSWERED, so queueing it re-bills the same
+  // The whole classifier, as a table. The dangerous mistake is the PARK rows:
+  // an HTTP error means the API ANSWERED, so re-sending it re-bills the same
   // rejection tomorrow — and a parse failure will parse identically badly.
-  isQueueableFailure(offline())
-    ? ok('a transport failure (expo/fetch rejecting) queues')
+  isQueueableFailure(noNetwork())
+    ? ok('a request the client could not send (network_error) queues')
     : bad('network failure not queued');
   isQueueableFailure(
     new ModelRequestError(0, null, 'Model stream ended before the reply completed.')
   )
     ? ok('a stream that died mid-reply queues (status 0 = no HTTP response)')
     : bad('status-0 ModelRequestError not queued');
+  // A 5xx on an INTERACTIVE estimate is answered on its screen (the user is
+  // there to retry); the queued screen says "No connection", which it is not.
+  // The drain still RETRIES one (see the classification table below).
+  !isQueueableFailure(new ModelRequestError(529, 'overloaded_error', 'Overloaded')) &&
+  !isQueueableFailure(new ModelRequestError(503, 'api_error', 'unavailable')) &&
+  isQueueableFailure(new ModelRequestError(0, 'overloaded_error', 'Overloaded'))
+    ? ok('a 5xx or 529 is not queued from a screen; an error that cut a stream mid-reply is')
+    : bad('interactive server-failure queueing');
   !isQueueableFailure(new ModelRequestError(401, 'authentication_error', 'invalid key'))
     ? ok('a 401 does NOT queue — the API answered; waiting fixes nothing')
     : bad('401 queued');
   !isQueueableFailure(new ModelRequestError(429, 'rate_limit_error', 'slow down'))
     ? ok('nor does a 429')
     : bad('429 queued');
+  !isQueueableFailure(new ModelRequestError(400, 'invalid_request_error', 'bad'))
+    ? ok('nor a 400')
+    : bad('400 queued');
   !isQueueableFailure(new MealEstimateParseError('Meal estimate reply was not valid JSON.'))
     ? ok('nor an unreadable reply — the same request produces the same nonsense')
     : bad('parse failure queued');
+  !isQueueableFailure(new MealEstimateRefusedError('The model declined to estimate this meal.'))
+    ? ok('nor a refusal — it is declined the same way, and billed, every time')
+    : bad('refusal queued');
   !isQueueableFailure(new MealEstimationUnavailableError())
     ? ok('nor a missing model key')
     : bad('unavailable queued');
@@ -1707,9 +1737,249 @@ console.log('25. C3: which failures are worth waiting on');
   !isQueueableFailure(aborted)
     ? ok('nor an abort — the user left the screen')
     : bad('abort queued');
-  failureReason(offline()) === 'TypeError: Network request failed'
+  // The default flipped (2026-10-21): an error nothing can name is no longer
+  // assumed to be a free network failure. It may have followed a billed call.
+  !isQueueableFailure(offline()) && classifyQueueFailure(offline()).disposition === 'park'
+    ? ok('an error the classifier cannot name is parked, not assumed free to retry')
+    : bad('unknown error queued', JSON.stringify(classifyQueueFailure(offline())));
+  const c = (e) => {
+    const f = classifyQueueFailure(e);
+    return `${f.code}/${f.disposition}${f.stopDrain ? '/stop' : ''}`;
+  };
+  c(noNetwork()) === 'offline/wait/stop' &&
+  c(new MealEstimationUnavailableError()) === 'no_key/wait/stop' &&
+  c(aborted) === 'aborted/wait/stop' &&
+  c(new ModelRequestError(0, null, 'x')) === 'interrupted/retry/stop' &&
+  c(new ModelRequestError(529, null, 'x')) === 'server/retry/stop' &&
+  c(new ModelRequestError(401, null, 'x')) === 'auth/park/stop' &&
+  c(new ModelRequestError(429, null, 'x')) === 'rate_limited/park/stop' &&
+  c(new ModelRequestError(400, null, 'x')) === 'rejected/park' &&
+  c(new MealEstimateParseError('x')) === 'unreadable/park' &&
+  c(new MealEstimateRefusedError('x')) === 'refused/park'
+    ? ok('every failure has one code and one disposition: wait (free), retry (counted), park')
+    : bad('classification table');
+  failureReason(noNetwork()) === 'ModelRequestError: Network request failed'
     ? ok('and the reason recorded on the row is the error, not a stack')
-    : bad('failureReason', failureReason(offline()));
+    : bad('failureReason', failureReason(noNetwork()));
+}
+
+console.log('25b. the re-billing loop: a refused estimate is sent ONCE, not on every open');
+{
+  // THE BUG (Track 0 item 1). A queued estimate whose failure waiting cannot
+  // fix stayed in the queue and was re-sent — and billed — on every app open,
+  // with no cap. Each scenario queues one meal, then opens the app five times a
+  // day apart, and counts the model calls.
+  const DAY = 24 * 60 * 60_000;
+  const t0 = Date.now() + 60_000;
+  const failing = (error) => {
+    const calls = [];
+    const fail = async () => {
+      calls.push(1);
+      throw error();
+    };
+    return { calls, estimate: fail, revise: fail };
+  };
+  const opens = async (db, estimators, times, step) => {
+    for (let i = 0; i < times; i++) {
+      await drainEstimateQueue(db, {
+        estimators,
+        pendingStore: null,
+        mealPhotoStore: null,
+        now: () => t0 + i * step,
+      });
+    }
+  };
+  const queued = (db) =>
+    queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '12:00', name: 'a burrito' },
+      { kind: 'text', description: 'a burrito' }
+    ).mealId;
+
+  const permanent = [
+    ['an unreadable reply', () => new MealEstimateParseError('Meal estimate reply was not valid JSON.')],
+    ['a refusal', () => new MealEstimateRefusedError('The model declined to estimate this meal.')],
+    ['a 400', () => new ModelRequestError(400, 'invalid_request_error', 'bad request')],
+    ['a 401', () => new ModelRequestError(401, 'authentication_error', 'invalid x-api-key')],
+    ['a 429', () => new ModelRequestError(429, 'rate_limit_error', 'rate limited')],
+    ['an error nothing can name', () => new TypeError('Cannot read properties of undefined')],
+  ];
+  for (const [label, error] of permanent) {
+    const { db } = freshDb();
+    const mealId = queued(db);
+    const estimators = failing(error);
+    await opens(db, estimators, 5, DAY);
+    const row = pendingEstimateForMeal(db, mealId);
+    estimators.calls.length === 1 && row && isParked(row) && getMeal(db, mealId)
+      ? ok(`${label}: one model call across five opens, then parked — the row and meal kept`)
+      : bad(`${label} re-billed`, JSON.stringify({ calls: estimators.calls.length, row }));
+  }
+
+  // A failure AFTER the model answered was billed, whatever it was: parked.
+  {
+    const { db } = freshDb();
+    const mealId = queued(db);
+    const calls = [];
+    const estimators = {
+      estimate: async () => {
+        calls.push(1);
+        return { title: 'x', items: null, notes: null, questions: [] };
+      },
+      revise: async () => {
+        throw new Error('not this path');
+      },
+    };
+    await opens(db, estimators, 5, DAY);
+    const row = pendingEstimateForMeal(db, mealId);
+    calls.length === 1 && row && isParked(row) && row.last_error.startsWith('apply_failed: ')
+      ? ok('a reply that could not be applied is parked after its one (billed) call')
+      : bad('apply failure re-sent', JSON.stringify({ calls: calls.length, row }));
+  }
+
+  // TRANSIENT: counted, backed off by elapsed time, capped.
+  {
+    const { db } = freshDb();
+    const mealId = queued(db);
+    const estimators = failing(() => new ModelRequestError(529, 'overloaded_error', 'Overloaded'));
+    // Ten opens inside one minute: one call — the backoff is time, not opens.
+    await opens(db, estimators, 10, 5_000);
+    const afterBurst = pendingEstimateForMeal(db, mealId);
+    estimators.calls.length === 1 && afterBurst.attempts === 1 && !isParked(afterBurst)
+      ? ok('a 529, then ten opens in a minute: still ONE call — backoff is by elapsed time')
+      : bad('backoff by opens', JSON.stringify({ calls: estimators.calls.length, afterBurst }));
+    // A day apart, every open is past any backoff: the cap stops it at five.
+    await opens(db, estimators, 10, DAY);
+    const row = pendingEstimateForMeal(db, mealId);
+    estimators.calls.length === QUEUE_MAX_ATTEMPTS &&
+    isParked(row) &&
+    row.attempts === QUEUE_MAX_ATTEMPTS
+      ? ok(`…and capped: ${QUEUE_MAX_ATTEMPTS} calls in all, then parked, however many opens follow`)
+      : bad('transient uncapped', JSON.stringify({ calls: estimators.calls.length, row }));
+  }
+
+  // The backoff schedule itself, against the row's own stamp.
+  {
+    const stamp = '2026-10-21T10:00:00.000Z';
+    const at = Date.parse(stamp);
+    const due = (attempts, after) =>
+      isPendingEstimateDue({ attempts, updated_at: stamp }, at + after);
+    due(0, 0) &&
+    !due(1, QUEUE_BACKOFF_MS[0] - 1) &&
+    due(1, QUEUE_BACKOFF_MS[0]) &&
+    !due(4, QUEUE_BACKOFF_MS[3] - 1) &&
+    due(4, QUEUE_BACKOFF_MS[3]) &&
+    !due(QUEUE_MAX_ATTEMPTS, 365 * DAY) &&
+    isPendingEstimateDue({ attempts: 2, updated_at: 'garbage' }, at)
+      ? ok('due: fresh at once, Nth failure after its wait, parked never, a bad stamp not stuck')
+      : bad('isPendingEstimateDue');
+  }
+
+  // OFFLINE is free: retried every open, never counted, never parked.
+  {
+    const { db } = freshDb();
+    const mealId = queued(db);
+    const estimators = failing(noNetwork);
+    await opens(db, estimators, 8, DAY);
+    const row = pendingEstimateForMeal(db, mealId);
+    estimators.calls.length === 8 && row.attempts === 0 && !isParked(row)
+      ? ok('offline: tried on every open (nothing was sent, nothing billed) and never parked')
+      : bad('offline', JSON.stringify({ calls: estimators.calls.length, row }));
+  }
+
+  // A parked row stops at itself: the drain goes on to the next one.
+  {
+    const { db } = freshDb();
+    const first = queued(db);
+    const second = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '13:00', name: 'a salad' },
+      { kind: 'text', description: 'a salad' }
+    ).mealId;
+    let n = 0;
+    const result = await drainEstimateQueue(db, {
+      estimators: {
+        estimate: async (input) => {
+          n++;
+          if (input.description === 'a burrito') throw new MealEstimateParseError('bad');
+          return parseMealEstimate(REPLY);
+        },
+        revise: async () => {
+          throw new Error('not this path');
+        },
+      },
+      pendingStore: null,
+      mealPhotoStore: null,
+    });
+    n === 2 &&
+    result.applied === 1 &&
+    result.kept === 1 &&
+    result.parked === 1 &&
+    isParked(pendingEstimateForMeal(db, first)) &&
+    !pendingEstimateForMeal(db, second)
+      ? ok('an unreadable reply parks its own row and the drain carries on to the next')
+      : bad('parked row blocked the queue', JSON.stringify({ n, result }));
+  }
+
+  // What the screens say, and the user's two ways out.
+  {
+    const { db } = freshDb();
+    const pendingStore = fakeStore();
+    const mealPhotoStore = fakeStore();
+    const fileName = writePendingEstimatePhoto('/9j/plate', pendingStore);
+    const { mealId } = queueNewMealEstimate(
+      db,
+      { date: TODAY, time: '19:40', name: placeholderMealName(null) },
+      { kind: 'photo', file_name: fileName, width: 800, height: 600 }
+    );
+    const waiting = pendingEstimateStatuses(db, TODAY).get(mealId);
+    waiting && !waiting.parked && waiting.line === 'Estimate pending — offline'
+      ? ok('a fresh queued meal reads "Estimate pending — offline", as it always did')
+      : bad('fresh status', JSON.stringify(waiting));
+
+    const estimators = failing(() => new ModelRequestError(401, 'authentication_error', 'bad key'));
+    await drainEstimateQueue(db, { estimators, pendingStore, mealPhotoStore });
+    const parked = pendingEstimateStatuses(db, TODAY).get(mealId);
+    parked &&
+    parked.parked &&
+    parked.line === 'Estimate paused — tap to retry or enter it' &&
+    parked.sentence.startsWith('Anthropic did not accept the API key') &&
+    parked.sentence.includes('is not sent again by itself') &&
+    !/ModelRequestError|401|bad key/.test(parked.sentence)
+      ? ok('a parked meal says so in a plain sentence — never the exception or the status code')
+      : bad('parked status', JSON.stringify(parked));
+
+    // Try again: one more call, at once.
+    retryPendingEstimate(db, mealId) &&
+    pendingEstimateForMeal(db, mealId).attempts === 0 &&
+    pendingEstimateForMeal(db, mealId).last_error === null
+      ? ok('Try again makes it a fresh request…')
+      : bad('retry did not reset');
+    await drainEstimateQueue(db, { estimators, pendingStore, mealPhotoStore });
+    estimators.calls.length === 2 && isParked(pendingEstimateForMeal(db, mealId))
+      ? ok('…which the next drain sends once (and, refused again, parks again)')
+      : bad('retry drain', String(estimators.calls.length));
+
+    // Enter by hand: the request goes, the photo and the meal stay.
+    enterPendingEstimateByHand(db, mealId, { pendingStore, mealPhotoStore })
+      ? ok('Enter by hand drops the queued request')
+      : bad('enter by hand found nothing');
+    const photo = latestMealPhoto(db, mealId);
+    const meal = getMeal(db, mealId);
+    !pendingEstimateForMeal(db, mealId) &&
+    meal &&
+    meal.kcal === null &&
+    photo &&
+    mealPhotoStore.files.get(photo.file_name) === '/9j/plate' &&
+    pendingStore.files.size === 0
+      ? ok('…keeps the meal (NULL, for him to fill in) and moves the photo onto it — nothing lost')
+      : bad('enter by hand lost something', JSON.stringify({ meal, photo }));
+    pendingEstimateStatus({ attempts: 0, last_error: 'no_key: MealEstimationUnavailableError: x' })
+      .line === 'Estimate pending — needs an API key' &&
+    pendingEstimateStatus({ attempts: 2, last_error: 'server: ModelRequestError: 503' }).line ===
+      'Estimate pending — will retry'
+      ? ok('waiting rows say what they wait for: a key, or a retry')
+      : bad('waiting lines');
+  }
 }
 
 console.log('26. C3: the queue survives a restart, then drains');
@@ -1729,8 +1999,14 @@ console.log('26. C3: the queue survives a restart, then drains');
     mealPhotoStore: null,
   });
   const kept = pendingEstimateForMeal(db, mealId);
-  stillDown.applied === 0 && stillDown.kept === 1 && kept.attempts === 1 && kept.last_error !== null
-    ? ok('a drain with no network keeps the request and counts the attempt')
+  // No connection means nothing was sent and nothing billed, so the attempt is
+  // recorded but NOT counted against the cap (2026-10-21): a week offline must
+  // not park a meal the way five billed failures do.
+  stillDown.applied === 0 &&
+  stillDown.kept === 1 &&
+  kept.attempts === 0 &&
+  (kept.last_error ?? '').startsWith('offline: ')
+    ? ok('a drain with no network keeps the request, records why, and counts nothing')
     : bad('offline drain', JSON.stringify({ stillDown, kept }));
   getMeal(db, mealId).kcal === null
     ? ok('…and the placeholder still reads “not recorded”, never 0 kcal')
