@@ -129,28 +129,53 @@ export function compareWindows(
     return { recentMean, baselineMean, changePct, significant: false };
   }
 
-  const varOverN = (sd: number, n: number) => (sd * sd) / n;
-  const se = Math.sqrt(varOverN(sdRecent, recent.length) + varOverN(sdBaseline, baseline.length));
-
+  const welch = welchT(recent, baseline);
   // Zero variance in both windows: every reading identical. Any difference at
   // all is then as real as data gets, so the practical bar alone decides.
-  if (se === 0) {
+  if (welch === null) {
     return { recentMean, baselineMean, changePct, significant: practical };
   }
-
-  const t = Math.abs(recentMean - baselineMean) / se;
-  // Welch–Satterthwaite degrees of freedom.
-  const numerator =
-    (varOverN(sdRecent, recent.length) + varOverN(sdBaseline, baseline.length)) ** 2;
-  const denominator =
-    varOverN(sdRecent, recent.length) ** 2 / (recent.length - 1) +
-    varOverN(sdBaseline, baseline.length) ** 2 / (baseline.length - 1);
-  const df = denominator === 0 ? recent.length + baseline.length - 2 : numerator / denominator;
 
   return {
     recentMean,
     baselineMean,
     changePct,
-    significant: practical && t >= tCritical(Math.floor(df)),
+    significant: practical && welch.t >= welch.critical,
   };
+}
+
+/** Welch's t for two windows, with its degrees of freedom and the bar it is judged against. */
+export type WelchT = {
+  /** |mean(a) − mean(b)| / SE — always non-negative. */
+  t: number;
+  /** Welch–Satterthwaite degrees of freedom. */
+  df: number;
+  /** {@link tCritical} at floor(df): the α = 0.05 two-tailed bar `t` must reach. */
+  critical: number;
+};
+
+/**
+ * The statistical half of {@link compareWindows}, exposed so a surface that
+ * must REPORT the test (the experiment readout, src/lib/experiments/readout.ts)
+ * states the same t, df and bar the gate decided on rather than a second copy
+ * of the arithmetic. Null when either window has fewer than two observations,
+ * or when both have zero variance (SE = 0: t is undefined, and compareWindows
+ * lets the practical bar alone decide).
+ */
+export function welchT(a: number[], b: number[]): WelchT | null {
+  const sdA = stdev(a);
+  const sdB = stdev(b);
+  if (sdA === null || sdB === null) return null;
+  const varOverN = (sd: number, n: number) => (sd * sd) / n;
+  const vA = varOverN(sdA, a.length);
+  const vB = varOverN(sdB, b.length);
+  const se = Math.sqrt(vA + vB);
+  if (se === 0) return null;
+  const meanA = a.reduce((x, y) => x + y, 0) / a.length;
+  const meanB = b.reduce((x, y) => x + y, 0) / b.length;
+  const t = Math.abs(meanA - meanB) / se;
+  // Welch–Satterthwaite degrees of freedom.
+  const denominator = vA ** 2 / (a.length - 1) + vB ** 2 / (b.length - 1);
+  const df = denominator === 0 ? a.length + b.length - 2 : (vA + vB) ** 2 / denominator;
+  return { t, df, critical: tCritical(Math.floor(df)) };
 }

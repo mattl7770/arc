@@ -1576,7 +1576,8 @@ console.log('13. accumulating metrics — ONE list, and it cannot quietly grow a
   //     and the `agg === 'sum'` half is TRUE — folding many rows into a day is
   //     accumulation. Deleting the disjunct is only safe if every `agg: 'sum'`
   //     spec is on the shared list, so that is asserted instead of assumed.
-  const readTools = readFileSync(new URL('../src/lib/ai/tools/read-tools.ts', import.meta.url), 'utf8'); // prettier-ignore
+  // The specs moved to src/lib/ai/metric-catalog.ts with the catalog (2026-10-21).
+  const readTools = readFileSync(new URL('../src/lib/ai/metric-catalog.ts', import.meta.url), 'utf8'); // prettier-ignore
   // Only real declarations — `\n<indent>agg: 'sum',` — so a mention of the
   // shape inside a doc comment is not read as a spec.
   const sumSpecs = [];
