@@ -37,9 +37,14 @@ export const WRITE_TOOLS: CoachTool[] = [...BESPOKE_WRITE_TOOLS, ...RECORD_WRITE
 export const COACH_TOOLS: CoachTool[] = [...READ_TOOLS, ...WRITE_TOOLS];
 
 /**
- * Read tools the UNATTENDED pass does not get.
+ * Read tools the UNATTENDED pass does not get UNDER LEAN.
  *
- * `query_records` is excluded, and this is a measured call rather than caution
+ * Since the usage policy (2026-10-21) this is Lean's pass set: under Standard
+ * and Generous the pass runs on the chat model and is given `query_records`
+ * too ({@link passToolsFor}; owner's decision — "the same read access as the
+ * chat"), and it is still read-only, because every tool it gets is a READ.
+ *
+ * Under Lean `query_records` is excluded, and this is a measured call rather than caution
  * (docs/spikes/coach-whole-app-access.md §3.4). The pass runs `claude-haiku-4-5`
  * on a trigger nobody asked for, with a hard cap of eight round trips: Haiku's
  * selection over a fifteen-key domain enum is unmeasured, a DISCOVERY call
@@ -57,10 +62,18 @@ export const COACH_TOOLS: CoachTool[] = [...READ_TOOLS, ...WRITE_TOOLS];
  */
 export const PASS_EXCLUDED_TOOLS: ReadonlySet<string> = new Set(['query_records']);
 
-/** The read tools the unattended pass is given. */
+/** The read tools the unattended pass is given under Lean. */
 export const PASS_READ_TOOLS: CoachTool[] = READ_TOOLS.filter(
   (tool) => !PASS_EXCLUDED_TOOLS.has(tool.name)
 );
+
+/**
+ * The pass's tools for a usage policy: Lean's set, or every READ tool when the
+ * policy gives it `query_records`. Never a write — the pass has no gate.
+ */
+export function passToolsFor(policy: { passQueryRecords: boolean }): CoachTool[] {
+  return policy.passQueryRecords ? READ_TOOLS : PASS_READ_TOOLS;
+}
 
 /**
  * Write tools that USED to exist, by name.

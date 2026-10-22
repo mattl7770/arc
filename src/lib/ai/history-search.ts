@@ -20,6 +20,8 @@
  */
 import type { Database } from '@/lib/db/database';
 
+import { activeUsagePolicy } from './usage-policy';
+
 export type HistoryHit = {
   /** Where it came from, for the citation: "your note", "our conversation"… */
   source: string;
@@ -44,19 +46,20 @@ export type HistoryHit = {
   id?: string;
 };
 
-/** Cap on one returned excerpt — the model needs the gist, not the essay. */
-const EXCERPT_CHARS = 300;
-
-/**
+/*
+ * The caps on one returned excerpt are the usage level's — `historyExcerptChars`
+ * (300 under Lean; the model needs the gist, not the essay) and
+ * `knowledgeExcerptChars` (500 under Lean) — read once per search
+ * (src/lib/ai/usage-policy.ts). They are tool RESULTS, never the cached prefix.
+ *
  * Knowledge passages get a longer window (0038). A chat line truncated at 300
  * characters loses a sentence; a doctrine gist truncated at 300 loses the
  * qualification that made it doctrine rather than a slogan — and the Coach is
  * expected to CITE these, so a half-carried caveat is the failure mode that
  * matters. Both stores are still capped; only the cap differs.
  */
-const KNOWLEDGE_EXCERPT_CHARS = 500;
 
-function excerpt(text: string, terms: string[], cap: number = EXCERPT_CHARS): string {
+function excerpt(text: string, terms: string[], cap: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat.length <= cap) return flat;
   // Window the excerpt around the first matching term so the hit is visible,
@@ -107,6 +110,7 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
    */
   type RankedHit = HistoryHit & { cap?: number; refRank?: number };
   const rows: RankedHit[] = [];
+  const policy = activeUsagePolicy();
 
   // 1) Conversation turns — what was actually said, both sides.
   for (const row of db.all<{ role: string; content: string; created_at: string }>(
@@ -230,7 +234,7 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
       // Reference material is not dated like a log entry; it is current doctrine.
       date: 'reference',
       text: row.title ? `${row.title} — ${row.body}` : row.body,
-      cap: KNOWLEDGE_EXCERPT_CHARS,
+      cap: policy.knowledgeExcerptChars,
       refRank: rankOf(row),
       // The ENTRY's id, never the chunk's (C14): the write tools address
       // entries, and a chunk id would be an id the Coach cannot use. Null on
@@ -332,7 +336,7 @@ export function searchUserHistory(db: Database, query: string, limit = 15): Hist
       // returned object is a plain HistoryHit.
       .map(({ cap, refRank: _refRank, ...hit }) => ({
         ...hit,
-        text: excerpt(hit.text, terms, cap),
+        text: excerpt(hit.text, terms, cap ?? policy.historyExcerptChars),
       }))
   );
 }

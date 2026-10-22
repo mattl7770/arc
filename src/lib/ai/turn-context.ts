@@ -50,6 +50,7 @@ import { formatUtcOffset, offsetShift } from '@/lib/timezone/classify';
 import { awayDayNumber } from '@/lib/timezone/trips';
 
 import { generateDailyBrief } from './insights';
+import { activeUsagePolicy } from './usage-policy';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -467,7 +468,8 @@ export function buildTurnContext(
   // --- What you know about this user (0028) — the durable half of memory.
   // These outlive every context window; without them the Coach meets Matt
   // again every thread.
-  const memories = listMemories(db);
+  // How many is the usage level's (`memoriesPerTurn`, 40 under Lean).
+  const memories = listMemories(db, activeUsagePolicy().memoriesPerTurn);
   if (memories.length > 0) {
     // Say when the list is cut short. Settings shows up to 200 memories, so a
     // silent cap meant the user could read a fact on screen and watch the Coach

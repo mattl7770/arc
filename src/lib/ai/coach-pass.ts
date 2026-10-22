@@ -93,8 +93,9 @@ import { buildTurnContext } from './turn-context';
 import { vetWeeklyRead, weeklyDirective, type WeeklyPassInput } from './weekly-review';
 // Explicit /index: a bare directory import resolves under Metro but not under
 // Node ESM, and this module IS loaded headlessly (db/coach-pass.test.mjs).
-import { PASS_EXCLUDED_TOOLS, PASS_READ_TOOLS, toolByName, toWireTools } from './tools/index';
+import { passToolsFor, toolByName, toWireTools } from './tools/index';
 import type { CoachToolCall } from './types';
+import { activeUsagePolicy, LEAN_USAGE_POLICY, passModelFor } from './usage-policy';
 
 /** The model replies with exactly this when the day needs nothing said. */
 export const PASS_SKIP = 'SKIP';
@@ -497,9 +498,10 @@ export type RunPassOptions = {
   /** Injected in tests; expo/fetch on device. */
   fetchImpl?: FetchLike;
   /**
-   * Override the model. The pass runs unattended and often says nothing, so it
-   * defaults to the cheapest capable model rather than the user's chat pick —
-   * paying Opus rates for "SKIP" every morning is indefensible.
+   * Override the model. Otherwise the usage level decides: under Lean the pass
+   * runs unattended on the cheapest capable model ({@link PASS_MODEL}) rather
+   * than the chat pick; under Standard and Generous it runs on the chat model,
+   * with the chat's read access (the owner's call, 2026-10-21).
    */
   model?: string;
   /**
@@ -528,8 +530,12 @@ const FAILED: CoachPassResult = {
   plan: null,
 };
 
-/** The model the pass uses unless overridden — cheap, fast, good enough to triage. */
-export const PASS_MODEL = 'claude-haiku-4-5';
+/**
+ * The model the pass uses UNDER LEAN unless overridden — cheap, fast, good
+ * enough to triage. Under Standard and Generous the usage policy puts the pass
+ * on the chat model instead (usage-policy.ts `passModel: 'chat'`).
+ */
+export const PASS_MODEL = LEAN_USAGE_POLICY.passModel;
 
 /**
  * expo/fetch, resolved LAZILY through a guarded require (the api-key-store /
@@ -600,10 +606,18 @@ export async function runCoachPass(
     const turnContext = buildTurnContext(db, now, { calendar });
     // Held, because it is also the haystack the brief's numbers must come from.
     const systemContext = findings.text ? `${turnContext}\n\n${findings.text}` : turnContext;
+    // The usage level decides the pass's model, tools and search (usage-policy.ts).
+    // Lean: Haiku 4.5 and the curated reads, no search — exactly as before.
+    // Standard / Generous: the chat model, every READ tool (query_records
+    // included) and the provider's search. Writes never: see passToolsFor.
+    const policy = activeUsagePolicy();
+    const passTools = passToolsFor(policy);
+    const allowed = new Set(passTools.map((tool) => tool.name));
+    const model = options.model ?? passModelFor(policy, apiKeyStore.getChatModel());
     const result = await runCoachTurn(
       {
         apiKey,
-        model: options.model ?? PASS_MODEL,
+        model,
         fetchImpl,
         callType: 'pass',
       },
@@ -616,19 +630,26 @@ export async function runCoachPass(
             content: passDirective(options.trigger, today, nudges, extras, dayPlan?.block ?? null),
           },
         ],
-        // READ tools only, MINUS the generic one: with no write in the registry
-        // there is nothing to gate, so an unattended pass cannot change
-        // anything, and `query_records` is held back for the reasons at
+        // READ tools only: with no write in the registry there is nothing to
+        // gate, so an unattended pass cannot change anything. Under Lean the
+        // generic `query_records` is held back too, for the reasons at
         // PASS_EXCLUDED_TOOLS (a discovery call would spend one of eight round
         // trips and re-bill the uncached state block, for a selection
         // behaviour nobody has measured on Haiku).
-        tools: toWireTools(PASS_READ_TOOLS),
+        tools: toWireTools(passTools),
+        // The provider's search, only where the level gives the pass one and
+        // the switch is on; the client drops it for a model with no version.
+        webSearch:
+          policy.passWebSearch && apiKeyStore.isWebSearchUsable()
+            ? { maxUses: policy.coachWebSearchesPerTurn }
+            : null,
       },
       {
         onToken: () => {},
+        onWebSearchUnavailable: () => apiKeyStore.markWebSearchUnavailable(),
         executeTool: async (name, input) => {
           const tool = toolByName(name);
-          if (!tool || !tool.readOnly || PASS_EXCLUDED_TOOLS.has(name)) {
+          if (!tool || !tool.readOnly || !allowed.has(name)) {
             // Defence in depth: even if a write tool somehow reaches here, the
             // pass refuses it rather than running it unattended.
             return {

@@ -1,5 +1,5 @@
 /**
- * The Coach's API key + model preference — persisted to the iOS Keychain.
+ * The Coach's API key + model picks — persisted to the iOS Keychain.
  *
  * The key is the ONE secret ARC holds. It lives in the device Keychain via
  * `expo-secure-store` (hardware-backed, per-app, never in the JS bundle or the
@@ -9,8 +9,10 @@
  * Lifecycle: {@link hydrate} runs once at app boot (app/_layout.tsx), loading
  * the Keychain into the mirror; writes go through {@link setKey}/{@link clearKey},
  * which update the mirror synchronously (so the UI reacts at once) and persist
- * in the background. The model preference is not a secret but rides along here
- * so "which model, is a key set" is one store the Coach service reads.
+ * in the background. The model picks (chat, and utility for the one-shot calls)
+ * are not secrets but ride along here so "which model, is a key set" is one
+ * store the Coach service reads. A pick always wins; with none, the usage
+ * level's default applies (src/lib/ai/usage-policy.ts).
  *
  * GRACEFUL DEGRADATION: the native module (expo-secure-store is a native dep)
  * is absent on the web logic-check preview, and would be absent on any build
@@ -20,10 +22,18 @@
  * previous session-only behavior — so nothing crashes; {@link isPersistent}
  * reports which mode is live so the UI can be honest about it.
  */
-import { DEFAULT_MODEL, isCoachModel } from './model-client';
+import { isCoachModel, type CoachModelId } from './model-client';
+import { activeUsagePolicy } from './usage-policy';
 
 const KEYCHAIN_API_KEY = 'arc.coach.api_key';
+/** The CHAT model pick (until 2026-10-21 the one pick for every call). */
 const KEYCHAIN_MODEL = 'arc.coach.model';
+/**
+ * The UTILITY model pick (2026-10-21): the one-shot calls — estimates,
+ * corrections, imports, the lab parse, photo and report readings, the exercise
+ * calls. Absent until he picks one, so the level's default applies.
+ */
+const KEYCHAIN_UTILITY_MODEL = 'arc.coach.utility_model';
 /**
  * The web search switch (2026-10-21, docs/decisions.md "Provider-side web
  * search"): `'off'` when the owner turned it off, absent otherwise. ON is the
@@ -76,6 +86,7 @@ type Listener = () => void;
 
 let apiKey: string | null = null;
 let model: string | null = null;
+let utilityModel: string | null = null;
 let webSearch = true;
 // The session latch (2026-10-21): the API refused the search tool on this key
 // and the same request without it went through (model-client.ts
@@ -102,6 +113,7 @@ let hydrated = false;
 // including an explicit clear (which looks identical to "never set" without it).
 let keyTouched = false;
 let modelTouched = false;
+let utilityModelTouched = false;
 let webSearchTouched = false;
 const listeners = new Set<Listener>();
 
@@ -147,9 +159,33 @@ export const apiKeyStore = {
   has(): boolean {
     return apiKey !== null;
   },
-  /** The chosen model id, or the default when none is set / a stale id is stored. */
-  getModel(): string {
-    return model !== null && isCoachModel(model) ? model : DEFAULT_MODEL;
+  /**
+   * His explicit chat pick, or null when he has made none (or a stale id is
+   * stored) — then the usage level's default applies.
+   */
+  getChatPick(): CoachModelId | null {
+    return model !== null && isCoachModel(model) ? model : null;
+  },
+  /** His explicit utility pick, or null (see {@link getChatPick}). */
+  getUtilityPick(): CoachModelId | null {
+    return utilityModel !== null && isCoachModel(utilityModel) ? utilityModel : null;
+  },
+  /**
+   * The Coach chat model: his pick, which ALWAYS wins, else the active usage
+   * level's default (usage-policy.ts). Read per call, so a level switch or a
+   * soft budget reached today moves it at the next turn.
+   */
+  getChatModel(): string {
+    return apiKeyStore.getChatPick() ?? activeUsagePolicy().chatModel;
+  },
+  /**
+   * The one-shot calls' model: his utility pick, else the level's utility
+   * default, else (Lean — exactly as before) the chat model.
+   */
+  getUtilityModel(): string {
+    return (
+      apiKeyStore.getUtilityPick() ?? activeUsagePolicy().utilityModel ?? apiKeyStore.getChatModel()
+    );
   },
   /**
    * Whether the model may run the provider's web search (Coach chat and the
@@ -207,14 +243,18 @@ export const apiKeyStore = {
     const store = secureStore;
     if (store && persistent) {
       try {
-        const [storedKey, storedModel, storedWebSearch] = await Promise.all([
+        const [storedKey, storedModel, storedUtility, storedWebSearch] = await Promise.all([
           store.getItemAsync(KEYCHAIN_API_KEY),
           store.getItemAsync(KEYCHAIN_MODEL),
+          store.getItemAsync(KEYCHAIN_UTILITY_MODEL),
           store.getItemAsync(KEYCHAIN_WEB_SEARCH),
         ]);
         // Never overwrite a value the user set or cleared during the read window.
         if (!keyTouched && storedKey && storedKey.trim().length > 0) apiKey = storedKey;
         if (!modelTouched && storedModel && isCoachModel(storedModel)) model = storedModel;
+        if (!utilityModelTouched && storedUtility && isCoachModel(storedUtility)) {
+          utilityModel = storedUtility;
+        }
         if (!webSearchTouched) webSearch = storedWebSearch !== 'off';
       } catch {
         persistent = false;
@@ -244,14 +284,35 @@ export const apiKeyStore = {
     persistInBackground((store) => store.deleteItemAsync(KEYCHAIN_API_KEY));
   },
 
-  /** Choose (and persist) the model. Unknown ids are ignored. */
-  async setModel(next: string): Promise<void> {
-    if (!isCoachModel(next)) return;
+  /**
+   * Choose (and persist) the chat model; null clears the pick, so the usage
+   * level's default applies again. Unknown ids are ignored.
+   */
+  async setModel(next: string | null): Promise<void> {
+    if (next !== null && !isCoachModel(next)) return;
     modelTouched = true;
     model = next;
     resetWebSearchLatch();
     emit();
-    persistInBackground((store) => store.setItemAsync(KEYCHAIN_MODEL, next, deviceOnly(store)));
+    persistInBackground((store) =>
+      next === null
+        ? store.deleteItemAsync(KEYCHAIN_MODEL)
+        : store.setItemAsync(KEYCHAIN_MODEL, next, deviceOnly(store))
+    );
+  },
+
+  /** Choose (and persist) the utility model; null follows the level again. */
+  async setUtilityModel(next: string | null): Promise<void> {
+    if (next !== null && !isCoachModel(next)) return;
+    utilityModelTouched = true;
+    utilityModel = next;
+    resetWebSearchLatch();
+    emit();
+    persistInBackground((store) =>
+      next === null
+        ? store.deleteItemAsync(KEYCHAIN_UTILITY_MODEL)
+        : store.setItemAsync(KEYCHAIN_UTILITY_MODEL, next, deviceOnly(store))
+    );
   },
 
   /** Turn web search on or off (and persist it). Off is the only value stored. */

@@ -131,7 +131,7 @@ export async function generateCoachRead(
   const fetchImpl = loadStreamingFetch();
   if (!apiKey || !fetchImpl) throw new CoachReadUnavailableError();
 
-  const model = apiKeyStore.getModel();
+  const model = apiKeyStore.getUtilityModel();
   let streamed = '';
   const result = await runCoachTurn(
     { apiKey, model, fetchImpl, callType: 'report_read' },

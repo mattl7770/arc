@@ -14,6 +14,7 @@
  * same code runs on device and against node:sqlite in db/coach-memory.test.mjs.
  */
 import { queryTerms } from '@/lib/ai/history-search';
+import { LEAN_USAGE_POLICY } from '@/lib/ai/usage-policy';
 
 import type { Database } from '../database';
 import { newId } from '../id';
@@ -46,8 +47,12 @@ export type NewMemory = {
  * grows without bound quietly becomes a context-window tax on every single
  * turn; past this the oldest fall out of the prompt (they stay in the table
  * and in Settings, so nothing is lost — they just stop being free).
+ *
+ * This is LEAN's figure. The live one is the usage level's `memoriesPerTurn`
+ * (40 / 60 / 80, src/lib/ai/usage-policy.ts), which the turn context and the
+ * screens that state it read at runtime.
  */
-export const MEMORY_PROMPT_LIMIT = 40;
+export const MEMORY_PROMPT_LIMIT = LEAN_USAGE_POLICY.memoriesPerTurn;
 
 /** Normalize + validate a memory's text. Throws on empty (the DB CHECK agrees). */
 function normalizeContent(content: string): string {

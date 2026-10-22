@@ -14,6 +14,11 @@ import { palette } from '@/constants/theme';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { COACH_MODELS } from '@/lib/ai/model-client';
 import {
+  activeUsageResolution,
+  USAGE_LEVEL_LABELS,
+  type UsageResolution,
+} from '@/lib/ai/usage-policy';
+import {
   calendarAccess,
   requestCalendarAccess,
   type CalendarAccess,
@@ -111,9 +116,22 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * write back behind a card. Stored in the preferences blob and read at the
  * start of every chat turn (coach-autosave-setting.ts).
  *
+ * ## Two model picks (2026-10-21, the usage policy)
+ *
+ * **Chat model** (Coach chat, and the pass under Standard / Generous) and
+ * **One-shot calls model** (estimates, imports, the lab parse, readings, the
+ * exercise calls — src/lib/ai/call-types.ts). Each plate opens on **Level
+ * default**: no pick, so the usage level decides, and the row names what that
+ * is right now. Any model below it is an explicit pick, which always wins over
+ * the level. The pickers live HERE rather than on Coach usage because this is
+ * where the Coach's connection is configured — the key, search, calendar — and
+ * where he already picked a model; Coach usage holds the level, its budget and
+ * the spend, and names the models the level resolves to, pointing back here.
+ * A pick made before the split carries over as the chat pick.
+ *
  * ## Coach usage (2026-10-21)
  *
- * One row under the model picker that opens the spend ledger's screen
+ * One row under the model pickers that opens the spend ledger's screen
  * (app/settings-coach-usage.tsx), showing today's and this month's estimate
  * so the cost of a model choice is one glance from the choice itself.
  */
@@ -178,6 +196,78 @@ function useNudgeSettings(): [NudgeSettings, (patch: Partial<NudgeSettings>) => 
   return [settings, save];
 }
 
+/** What runs now (usage-policy.ts), re-read on focus. */
+function useUsageResolution(): UsageResolution {
+  const [usage, setUsage] = useState(activeUsageResolution);
+  useFocusEffect(useCallback(() => setUsage(activeUsageResolution()), []));
+  return usage;
+}
+
+function modelLabel(id: string): string {
+  return COACH_MODELS.find((m) => m.id === id)?.label ?? id;
+}
+
+/**
+ * One model pick as a ruled plate: "Level default" first (no pick — the usage
+ * level decides, and the row says what that is now), then every model. The
+ * selected mark is a filled square in ink — square corners throughout, and no
+ * accent anywhere in Settings.
+ */
+function ModelPicker({
+  pick,
+  levelDefault,
+  levelName,
+  onPick,
+  what,
+}: {
+  pick: string | null;
+  levelDefault: string;
+  levelName: string;
+  onPick: (id: string | null) => void;
+  what: string;
+}) {
+  const rows: { id: string | null; label: string; note: string }[] = [
+    {
+      id: null,
+      label: 'Level default',
+      note: `${modelLabel(levelDefault)} · ${levelName}`,
+    },
+    ...COACH_MODELS.map((m) => ({ id: m.id as string, label: m.label, note: m.note as string })),
+  ];
+  return (
+    <Block device="plate">
+      {rows.map((option, index) => {
+        const on = option.id === pick;
+        return (
+          <View key={option.id ?? 'level-default'}>
+            <Divider first={index === 0} />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: on }}
+              accessibilityLabel={`${what}: ${option.label}. ${option.note}.`}
+              onPress={() => onPick(option.id)}
+              className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
+              <View
+                className={`h-4 w-4 items-center justify-center border ${
+                  on ? 'border-ink' : 'border-hairline'
+                }`}>
+                {on ? <View className="h-2 w-2 bg-ink" /> : null}
+              </View>
+              <View className="flex-1">
+                <Text
+                  className={`font-serif text-[15px] ${on ? 'text-ink' : 'text-ink-secondary'}`}>
+                  {option.label}
+                </Text>
+                <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">{option.note}</Text>
+              </View>
+            </Pressable>
+          </View>
+        );
+      })}
+    </Block>
+  );
+}
+
 export default function SettingsCoachScreen() {
   // Each getter doubles as the server snapshot: the headless render suite
   // renders this screen to HTML since 0064, and React requires one there. On
@@ -185,12 +275,14 @@ export default function SettingsCoachScreen() {
   const has = () => apiKeyStore.has();
   const isHydrated = () => apiKeyStore.isHydrated();
   const isPersistent = () => apiKeyStore.isPersistent();
-  const getModel = () => apiKeyStore.getModel();
+  const getChatPick = () => apiKeyStore.getChatPick();
+  const getUtilityPick = () => apiKeyStore.getUtilityPick();
   const isWebSearchOn = () => apiKeyStore.isWebSearchOn();
   const keySet = useSyncExternalStore(apiKeyStore.subscribe, has, has);
   const hydrated = useSyncExternalStore(apiKeyStore.subscribe, isHydrated, isHydrated);
   const persistent = useSyncExternalStore(apiKeyStore.subscribe, isPersistent, isPersistent);
-  const model = useSyncExternalStore(apiKeyStore.subscribe, getModel, getModel);
+  const chatPick = useSyncExternalStore(apiKeyStore.subscribe, getChatPick, getChatPick);
+  const utilityPick = useSyncExternalStore(apiKeyStore.subscribe, getUtilityPick, getUtilityPick);
   const webSearch = useSyncExternalStore(apiKeyStore.subscribe, isWebSearchOn, isWebSearchOn);
 
   const [draft, setDraft] = useState('');
@@ -200,6 +292,13 @@ export default function SettingsCoachScreen() {
   const [saveAtOnce, setSaveAtOnce] = useState(() => getSaveLogsAtOnce(getDb()));
   const router = useRouter();
   const spend = useSpendGlance();
+  // The level the defaults come from, re-read on focus: it is chosen on the
+  // Coach usage screen one push away, and a soft budget can move it mid-day.
+  const usage = useUsageResolution();
+  const levelName = USAGE_LEVEL_LABELS[usage.effective];
+  const chatDefault = usage.policy.chatModel;
+  // Lean's utility default is "whatever the chat runs" — exactly as before.
+  const utilityDefault = usage.policy.utilityModel ?? chatPick ?? chatDefault;
 
   return (
     <Screen scroll>
@@ -291,44 +390,31 @@ export default function SettingsCoachScreen() {
         </View>
       </View>
 
-      {/* Model — the pick the Coach service reads on every turn. */}
+      {/* Models — two picks (2026-10-21): the chat, and the one-shot calls.
+          Each reads on every call; with no pick, the usage level decides. */}
       <View className="mt-8">
-        <SectionLabel label="Model" />
+        <SectionLabel label="Chat model" />
         <View className="mt-3">
-          <Block device="plate">
-            {COACH_MODELS.map((option, index) => {
-              const on = option.id === model;
-              return (
-                <View key={option.id}>
-                  <Divider first={index === 0} />
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: on }}
-                    accessibilityLabel={`${option.label}. ${option.note}.`}
-                    onPress={() => void apiKeyStore.setModel(option.id)}
-                    className="min-h-[44px] flex-row items-center gap-3 py-3 active:opacity-60">
-                    {/* The selected mark is a filled square in ink — square corners
-                        throughout, and no accent anywhere in Settings. */}
-                    <View
-                      className={`h-4 w-4 items-center justify-center border ${
-                        on ? 'border-ink' : 'border-hairline'
-                      }`}>
-                      {on ? <View className="h-2 w-2 bg-ink" /> : null}
-                    </View>
-                    <View className="flex-1">
-                      <Text
-                        className={`font-serif text-[15px] ${on ? 'text-ink' : 'text-ink-secondary'}`}>
-                        {option.label}
-                      </Text>
-                      <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
-                        {option.note}
-                      </Text>
-                    </View>
-                  </Pressable>
-                </View>
-              );
-            })}
-          </Block>
+          <ModelPicker
+            pick={chatPick}
+            levelDefault={chatDefault}
+            levelName={levelName}
+            onPick={(id) => void apiKeyStore.setModel(id)}
+            what="Coach chat"
+          />
+        </View>
+      </View>
+
+      <View className="mt-8">
+        <SectionLabel label="One-shot calls model" />
+        <View className="mt-3">
+          <ModelPicker
+            pick={utilityPick}
+            levelDefault={utilityDefault}
+            levelName={usage.policy.utilityModel === null ? 'follows chat' : levelName}
+            onPick={(id) => void apiKeyStore.setUtilityModel(id)}
+            what="one-shot calls"
+          />
         </View>
 
         <View className="mt-4">
@@ -336,8 +422,11 @@ export default function SettingsCoachScreen() {
             {/* "Switch anytime." was cut by the owner as explanatory copy on
                 2026-08-11 — the picker above it affords the switch. */}
             <Text className="font-serif text-[11px] leading-4 text-ink-muted">
-              Haiku is the cheapest; Opus is the strongest on deep, whole-history analysis. What
-              each choice actually costs is in Coach usage.
+              One-shot calls are meal estimates and corrections, food descriptions, recipe and
+              knowledge imports, lab reports, photo and report readings, and the exercise calls. A
+              pick here always wins over the usage level&rsquo;s default. Haiku is the cheapest;
+              Opus is the strongest on deep, whole-history analysis. What each choice actually costs
+              is in Coach usage.
             </Text>
           </Block>
         </View>

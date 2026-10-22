@@ -427,7 +427,7 @@ export async function extractLabReport(
   const result = await runCoachTurn(
     {
       apiKey,
-      model: apiKeyStore.getModel(),
+      model: apiKeyStore.getUtilityModel(),
       fetchImpl,
       maxTokens: LAB_PARSE_MAX_TOKENS,
       callType: 'lab_parse',

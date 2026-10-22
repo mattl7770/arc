@@ -25,6 +25,8 @@
  * a line of its own to the block. Like his usual foods (§21), the block rides
  * the USER turn; the system prompt is at its ceiling and is never touched.
  */
+import { activeUsagePolicy, LEAN_USAGE_POLICY } from '@/lib/ai/usage-policy';
+
 import type { MealItemNode } from './composite';
 import { foodKey, isStandIn, oneLine } from './repeats';
 import type { AmountUnit } from './types';
@@ -39,10 +41,16 @@ export const RATING_ISSUES: readonly { issue: RatingIssue; label: string }[] = [
   { issue: 'macros', label: 'Macros' },
 ];
 
-/** At most this many corrections reach one estimate. */
-export const CORRECTION_EXAMPLES_LIMIT = 8;
-/** …and never more than this many characters (~444 tokens at chars/3.6). */
-export const CORRECTIONS_CHAR_BUDGET = 1600;
+/**
+ * At most this many corrections reach one estimate — LEAN's figure; the live
+ * one is the usage level's `correctionExamples` (8 / 10 / 12), read per call.
+ */
+export const CORRECTION_EXAMPLES_LIMIT = LEAN_USAGE_POLICY.correctionExamples;
+/**
+ * …and never more than this many characters (~444 tokens at chars/3.6) — Lean's
+ * again; live: `correctionChars` (1,600 / 2,000 / 2,400).
+ */
+export const CORRECTIONS_CHAR_BUDGET = LEAN_USAGE_POLICY.correctionChars;
 /** One meal's line names at most this many changes, then counts the rest. */
 export const CORRECTION_CHANGES_PER_LINE = 2;
 /** A food's name in an example, at most this long. */
@@ -256,12 +264,14 @@ export const CORRECTIONS_HEADING =
  * {@link CORRECTIONS_CHAR_BUDGET}.
  */
 export function correctionsContext(corrections: readonly RatingCorrection[]): string | null {
+  // Both caps are the usage level's, read per call (Lean: the two below).
+  const { correctionExamples, correctionChars } = activeUsagePolicy();
   const lines = corrections
     .map(describeCorrection)
     .filter((line): line is string => line !== null)
-    .slice(0, CORRECTION_EXAMPLES_LIMIT);
+    .slice(0, correctionExamples);
   const size = () => [CORRECTIONS_HEADING, ...lines].join('\n').length;
-  while (lines.length > 0 && size() > CORRECTIONS_CHAR_BUDGET) lines.pop();
+  while (lines.length > 0 && size() > correctionChars) lines.pop();
   if (lines.length === 0) return null;
   return [CORRECTIONS_HEADING, ...lines].join('\n');
 }

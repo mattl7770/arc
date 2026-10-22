@@ -666,9 +666,11 @@ console.log('12. the model picker states each option; it does not sell one');
   // note — built HERE, so the walk of app/ never read it. A note is a fact about
   // the option (the default, a cost multiple, speed), never a comparison that
   // flatters one product against another.
+  // Since the usage policy (2026-10-21) the default depends on the level, so
+  // Sonnet 5's note names whose default it is (Lean's), and nothing more.
   const sonnet = COACH_MODELS.find((m) => m.id === DEFAULT_MODEL);
-  sonnet?.note === 'Default'
-    ? ok('the default model is marked as the default, and nothing more')
+  sonnet?.note === 'Lean’s default'
+    ? ok('the default model is marked as Lean’s default, and nothing more')
     : bad('default note', sonnet?.note);
   COACH_MODELS.every((m) => !/near-|quality/i.test(m.note))
     ? ok('no note borrows another model’s name to describe itself')
@@ -1440,7 +1442,7 @@ console.log('20. a key that cannot search: one retry without the tool, then off 
   // fix4: the refusal belonged to one key on one model. A new key, a cleared
   // key or a model choice tries search again, and owes no stale line.
   {
-    const wasModel = apiKeyStore.getModel();
+    const wasModel = apiKeyStore.getChatModel();
     const relatch = () => {
       apiKeyStore.markWebSearchUnavailable();
       return apiKeyStore.isWebSearchUsable() === false;
@@ -1659,7 +1661,7 @@ console.log('22. three tables move together: every model has a price and a searc
     ? ok('Opus 5.5, Sonnet 5.5 and Haiku 5.5 are selectable')
     : bad('5.5 models missing', JSON.stringify(COACH_MODELS.map((m) => m.id)));
   DEFAULT_MODEL === 'claude-sonnet-5'
-    ? ok('the default is unchanged (the usage policy decides defaults later)')
+    ? ok('DEFAULT_MODEL is still Sonnet 5 — Lean’s chat model (the usage policy decides per level)')
     : bad('default moved', DEFAULT_MODEL);
 
   // The prices, as the live pricing page listed them on 2026-10-21.

@@ -287,7 +287,7 @@ export async function importWorkoutFromPhoto(
   const req = buildWorkoutParseRequest(base64Jpeg, userNote);
   let text = '';
   const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl, callType: 'workout_import' },
+    { apiKey, model: apiKeyStore.getUtilityModel(), fetchImpl, callType: 'workout_import' },
     { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
     {
       onToken: (chunk) => {

@@ -6,12 +6,12 @@ import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { activeUsagePolicy } from '@/lib/ai/usage-policy';
 import { getDb } from '@/lib/db/client';
 import {
   deleteMemory,
   forgetMemory,
   getMemory,
-  MEMORY_PROMPT_LIMIT,
   rememberFact,
   restoreMemory,
   updateMemory,
@@ -250,9 +250,9 @@ export default function CoachMemoryScreen() {
       ) : null}
 
       <Text className="mt-7 font-serif text-[12px] leading-5 text-ink-muted">
-        The Coach carries the {MEMORY_PROMPT_LIMIT} most recent memories into every turn. Past that
-        the oldest stop riding along — they stay on this list, and the Coach can still find them by
-        searching.
+        The Coach carries the {activeUsagePolicy().memoriesPerTurn} most recent memories into every
+        turn. Past that the oldest stop riding along — they stay on this list, and the Coach can
+        still find them by searching.
       </Text>
     </Screen>
   );
