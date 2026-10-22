@@ -181,6 +181,17 @@ CREATE INDEX reports_generated_idx ON reports (generated_at DESC);
 
 Opt-in per report (⚑ MATT #5), self-review only. One **no-tools, key-gated** model turn whose entire context is the serialized deterministic `ReportData`; output stored in `narrative_text`; rendered under an explicit rubric: *"Coach's read — written by the model over the numbers above. Everything numeric in this report was computed by ARC, not the model."* Opt-in rather than default-on because a report must be complete and shareable with no key and no network — and because an auto-inserted model section blurs the deterministic document's boundary by default.
 
+### 6b. The weekly review files a self-review (2026-10-21, chief-of-staff Track 2 item 5)
+
+**Owner's decision (2026-10-21):** on the first open after Sunday 18:00, last week is summed up and the Coach returns at most three decisions. The trigger, the read and the decisions are the Coach's (`docs/ai-coach.md` › The weekly review); what lands here is a **report record**, and the rules of this document hold for it unchanged.
+
+- **The figures are the screen's.** `src/lib/ai/weekly-runner.ts` calls `assembleSelfReview` — the function `app/report-view.tsx` calls — over the reviewed week, so the stored `data_json` is, figure for figure, what Data › Reports prints for the same week (asserted in `db/weekly-review.test.mjs` against `lastCompleteWeek` on a Monday and against a custom range on Sunday evening). Nothing in the assembly or the renderers moved.
+- **Which week.** The Monday–Sunday week whose Sunday 18:00 passed most recently. On Sunday evening that week **includes today**, so the report carries the self-review's own honesty for that case: accumulating totals (adherence, training minutes, steps, food) stop at Saturday and `todayNote` says so; single readings taken today count. That is the one place the review differs from the screen's *Last week* preset, which on a Sunday still means the week before. Its `period.label` is "Weekly review" (kind `last_week`), so the preview and the history say what it is.
+- **The read is the existing narrative.** The vetted read (every number traced to the report, the state block or a tool result the pass read) goes into `narrative_text`, never `data_json`, and re-reads with the same `COACH_READ_ATTRIBUTION`. It differs from §6a in one respect, deliberately: the pass that writes it has the read tools, because a decision about the week ahead needs more than the week's figures. The provenance check is what keeps a tool-derived number from being an invented one.
+- **Filed without a file.** The row is inserted with the `file_name`/`file_path` the HTML will have, and no file is written: there is no share sheet to offer it to unattended, and writing whole health data to disk for nobody is the wrong default. "Share again" on the persisted view renders and writes it from `data_json`, exactly as for any report whose file is gone (§5).
+- **Never the doctor pack.** The runner imports only the self-review assembler; a read is only ever attached to a `self_review` row; and `renderReportHtml(doctorPack, read)` still renders no read (asserted again in `db/weekly-review.test.mjs` W6).
+- **Where it opens.** Home's Coach card, "Your week" › *Open the report*, on the evening it lands and the next day; and Data › Reports' history, like any other self-review.
+
 ---
 
 ## 7. Reports vs export vs backup — the boundary, stated once

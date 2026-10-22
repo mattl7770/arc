@@ -97,6 +97,14 @@ export type StoredProposal = {
   resolvedAt: string | null;
   /** The thread row that recorded the draft, once written. */
   messageId: string | null;
+  /**
+   * Drafted by the WEEKLY review (weekly-review.ts), or absent for the pass's
+   * own drafts. A weekly decision has its own allowance — three per reviewed
+   * week, never the day's three — and a two-day life: `through` is the last
+   * logical day it can be approved (the day after it landed). Older rows lack
+   * the field: read as a daily draft.
+   */
+  weekly?: { week: string; through: string };
 };
 
 /** A draft code would not keep, and why — told to the next pass. */
@@ -119,6 +127,14 @@ let version = 0;
 function bump(): void {
   version += 1;
   for (const listener of listeners) listener();
+}
+
+/**
+ * Something outside this store changed what Home's Coach card reads — the
+ * weekly review filed its report (weekly-runner.ts) — so its readers re-read.
+ */
+export function noteProposalsChanged(): void {
+  bump();
 }
 
 /** Re-render seam for Home and the thread (useSyncExternalStore). */
@@ -199,14 +215,21 @@ function intoDay(clock: string, dayStartsAt: string): number {
   return (h! * 60 + m! - dayStartMinutes(dayStartsAt) + 1440) % 1440;
 }
 
-/** Is this draft past its life? Its day is over, or its `until` has gone by. */
+/**
+ * Is this draft past its life? Its last day is over (the day it was drafted
+ * on, or a weekly decision's `through`), or its `until` has gone by. A clock
+ * rolled back before the drafted day expires it too. An `until` binds the
+ * drafted day.
+ */
 export function isExpired(
-  proposal: Pick<StoredProposal, 'day' | 'until'>,
+  proposal: Pick<StoredProposal, 'day' | 'until' | 'weekly'>,
   now: Date,
   dayStartsAt: string = getDayStartsAt()
 ): boolean {
-  if (todayISODate(now, dayStartsAt) !== proposal.day) return true;
+  const today = todayISODate(now, dayStartsAt);
+  if (today < proposal.day || today > (proposal.weekly?.through ?? proposal.day)) return true;
   if (proposal.until === null) return false;
+  if (today > proposal.day) return true;
   return intoDay(clockOf(now), dayStartsAt) >= intoDay(proposal.until, dayStartsAt);
 }
 
@@ -236,13 +259,26 @@ export function listProposals(db: Database, now: Date = new Date()): StoredPropo
   return readState(db).items.map((p) => effective(p, now, dayStartsAt));
 }
 
-/** One day's drafts, pending first then answered, each in drafted order. */
-export function draftsForDay(items: StoredProposal[], day: string): StoredProposal[] {
-  const mine = items.filter((p) => p.day === day);
+/** Pending first, then answered, each in drafted order. */
+function pendingFirst(mine: StoredProposal[]): StoredProposal[] {
   return [
     ...mine.filter((p) => p.status === 'pending'),
     ...mine.filter((p) => p.status !== 'pending'),
   ];
+}
+
+/**
+ * One day's drafts from the pass, pending first then answered, each in drafted
+ * order. The weekly review's decisions are not among them: Home draws those
+ * under "Your week" ({@link weeklyDrafts}).
+ */
+export function draftsForDay(items: StoredProposal[], day: string): StoredProposal[] {
+  return pendingFirst(items.filter((p) => p.day === day && !p.weekly));
+}
+
+/** One reviewed week's decisions (`week` is its Monday), pending first. */
+export function weeklyDrafts(items: StoredProposal[], week: string): StoredProposal[] {
+  return pendingFirst(items.filter((p) => p.weekly?.week === week));
 }
 
 // --- Findings ---------------------------------------------------------------------
@@ -302,10 +338,14 @@ export type ProposalDirective = {
 
 export function proposalDirectiveFor(db: Database, now: Date = new Date()): ProposalDirective {
   const today = todayISODate(now);
-  const items = listProposals(db, now).filter((p) => p.day === today);
+  const all = listProposals(db, now);
+  // The weekly review's decisions have their own allowance, so they do not
+  // spend the day's three — but they are waiting on him like any other draft,
+  // so the pass is told about them and does not draft them again.
+  const made = all.filter((p) => p.day === today && !p.weekly).length;
   return {
-    remaining: Math.max(0, PROPOSALS_PER_DAY - items.length),
-    pending: items.filter((p) => p.status === 'pending').map((p) => p.summary),
+    remaining: Math.max(0, PROPOSALS_PER_DAY - made),
+    pending: all.filter((p) => p.status === 'pending').map((p) => p.summary),
     refused: readState(db).refused,
   };
 }
@@ -448,17 +488,26 @@ export function recordProposals(
   db: Database,
   drafted: DraftedProposal[],
   refused: RefusedProposal[],
-  now: Date
+  now: Date,
+  /**
+   * The weekly review's drafts: counted against `allowance` for `week` (its
+   * Monday) instead of the day's three, and open through `through`.
+   */
+  options: { weekly?: { week: string; through: string; allowance: number } } = {}
 ): StoredProposal[] {
   const dayStartsAt = getDayStartsAt();
   const today = todayISODate(now, dayStartsAt);
   const state = sweep(readState(db), now, dayStartsAt);
-  const made = state.items.filter((p) => p.day === today).length;
-  const remaining = Math.max(0, PROPOSALS_PER_DAY - made);
+  const weekly = options.weekly ?? null;
+  const made = weekly
+    ? state.items.filter((p) => p.weekly?.week === weekly.week).length
+    : state.items.filter((p) => p.day === today && !p.weekly).length;
+  const cap = weekly ? weekly.allowance : PROPOSALS_PER_DAY;
+  const remaining = Math.max(0, cap - made);
   const key = (p: { tool: string; summary: string }) => `${p.tool}\u0000${p.summary}`;
-  const pending = new Set(
-    state.items.filter((p) => p.day === today && p.status === 'pending').map(key)
-  );
+  // After the sweep every draft still pending is live — today's, or a weekly
+  // decision inside its two days — so the duplicate rule spans both.
+  const pending = new Set(state.items.filter((p) => p.status === 'pending').map(key));
   const kept: StoredProposal[] = [];
   const dropped = [...refused];
   for (const draft of drafted) {
@@ -467,7 +516,12 @@ export function recordProposals(
       continue;
     }
     if (kept.length >= remaining) {
-      dropped.push({ line: draft.summary, reason: `over the ${PROPOSALS_PER_DAY}-a-day cap` });
+      dropped.push({
+        line: draft.summary,
+        reason: weekly
+          ? `over the ${cap}-decision cap for the weekly review`
+          : `over the ${PROPOSALS_PER_DAY}-a-day cap`,
+      });
       continue;
     }
     pending.add(key(draft));
@@ -480,6 +534,7 @@ export function recordProposals(
       outcome: null,
       resolvedAt: null,
       messageId: null,
+      ...(weekly ? { weekly: { week: weekly.week, through: weekly.through } } : {}),
     });
   }
   writeState(db, { items: [...state.items, ...kept], refused: dropped });
