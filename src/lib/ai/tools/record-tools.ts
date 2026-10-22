@@ -44,6 +44,7 @@ import {
   type CoachDomainEntry,
   type DomainRow,
 } from '../domains/index';
+import { activeUsagePolicy } from '../usage-policy';
 import {
   asRecord,
   optDate,
@@ -253,9 +254,14 @@ const editRecordTool: CoachTool = {
 
 // --- query_records -----------------------------------------------------------
 
-/** The read cap, matching the registry's other capped read (read-tools.ts). */
-const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 25;
+/*
+ * The read cap — 10 rows by default, 25 at most, matching the registry's other
+ * capped read (read-tools.ts) — is the usage policy's `queryRecordsDefaultLimit`
+ * / `queryRecordsMaxLimit`, read per call. The SAME at every level, on purpose:
+ * the description below names both numbers and rides the cached prefix, so a
+ * level that moved them would make the tool lie or the prefix move
+ * (db/usage-policy.test.mjs holds the description and the policy together).
+ */
 
 const queryRecordsTool: CoachTool = {
   name: 'query_records',
@@ -301,7 +307,8 @@ const queryRecordsTool: CoachTool = {
     if (rawLimit !== undefined && (!Number.isInteger(rawLimit) || rawLimit < 1)) {
       throw new Error('"limit" must be a positive integer.');
     }
-    const limit = Math.min(rawLimit ?? DEFAULT_LIMIT, MAX_LIMIT);
+    const { queryRecordsDefaultLimit, queryRecordsMaxLimit } = activeUsagePolicy();
+    const limit = Math.min(rawLimit ?? queryRecordsDefaultLimit, queryRecordsMaxLimit);
     const readArgs = { id, query, from, to, limit, now: context.now };
 
     // THE DISCOVERY CALL: domain alone. This is where the field vocabulary

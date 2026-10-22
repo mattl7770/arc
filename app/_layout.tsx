@@ -20,6 +20,7 @@ import { useAppLock } from '@/hooks/use-app-lock';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { coachPassStore } from '@/lib/ai/pass-store';
 import { installSpendLedger } from '@/lib/ai/spend-store';
+import { installUsagePolicy } from '@/lib/ai/usage-policy-store';
 import { autoBackupIfDue } from '@/lib/backup/snapshot';
 import { getDb } from '@/lib/db/client';
 import { registerForegroundHealthSync, syncHealthIfEnabled } from '@/lib/health/sync';
@@ -79,6 +80,12 @@ import { useCoachPassRunner } from '@/hooks/use-coach-pass';
  * is not guaranteed to be before the first call.
  */
 installSpendLedger(getDb);
+/**
+ * The usage level's reader (src/lib/ai/usage-policy-store.ts), installed at
+ * module scope for the same reason. Until it is, every module reads Lean — the
+ * floor — so a call made before it could only ever spend LESS than the level.
+ */
+installUsagePolicy(getDb);
 
 const arcNavTheme: Theme = {
   ...DefaultTheme,

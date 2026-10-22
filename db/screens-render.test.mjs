@@ -66,6 +66,7 @@ import { composeLastError } from '../src/lib/nutrition/queue-status.ts';
 // Track 0 (2026-10-21): the spend ledger's screen, and its store.
 import SettingsCoachUsageScreen from '../app/settings-coach-usage.tsx';
 import * as spendStore from '../src/lib/ai/spend-store.ts';
+import * as usageStore from '../src/lib/ai/usage-policy-store.ts';
 import {
   addGroceryItems,
   checkGroceryItem,
@@ -10215,6 +10216,80 @@ console.log('\n44. Track 0 (2026-10-21) — Coach usage, the new models, and a p
     'Enter by hand',
   ]);
   refute('meal-detail (estimate waiting)', waiting, ['Try again']);
+}
+
+console.log('\n45. The usage level (2026-10-21) — Lean / Standard / Generous above the spend, two model pickers');
+{
+  // No source installed (every section above ran this way): the screen says
+  // the setting could not be read and that the Coach is on Lean — the floor.
+  const unread = render('coach usage (no source)', SettingsCoachUsageScreen);
+  expect('coach usage (no source)', unread, [
+    'Usage level',
+    'Lean',
+    'Standard',
+    'Generous',
+    'could not be read, so the Coach is running Lean',
+    'Spend',
+  ]);
+  if (unread !== null) {
+    unread.indexOf('Usage level') < unread.indexOf('Spend')
+      ? ok('coach usage: the level sits above the spend figures')
+      : bad('usage level below the spend');
+  }
+
+  // The app's source, on this database: nothing stored → Generous, the default,
+  // with today's $0.45 (section 44) against the $5 soft budget.
+  const uninstall = usageStore.installUsagePolicy(getDb);
+  await apiKeyStore.setModel(null);
+  await apiKeyStore.setUtilityModel(null);
+  const generous = render('coach usage (generous default)', SettingsCoachUsageScreen);
+  expect('coach usage (generous default)', generous, [
+    'Running Generous, the default.',
+    'Today $0.45 of a $5.00 soft budget.',
+    'Soft daily budget',
+    'Past it, the rest of the day runs Lean',
+    'Off',
+    '$1.00',
+    '$2.50',
+    '$10.00',
+    'Chat Opus 5.5, one-shot calls Sonnet 5.5, the daily pass Opus 5.5.',
+    'always wins over the level',
+  ]);
+
+  // A budget below today's spend: the rest of the day runs Lean, and it says so.
+  usageStore.saveDailyBudget(db, 'generous', 0.25);
+  const tripped = render('coach usage (budget reached)', SettingsCoachUsageScreen);
+  expect('coach usage (budget reached)', tripped, [
+    'has reached the $0.25 soft budget, so the rest of today runs Lean. Generous again tomorrow.',
+    'Chat Sonnet 5, one-shot calls Sonnet 5, the daily pass Haiku 4.5.',
+  ]);
+
+  // Lean, chosen: no budget row (Lean is the floor), today's models.
+  usageStore.saveUsageLevel(db, 'lean');
+  const lean = render('coach usage (lean)', SettingsCoachUsageScreen);
+  expect('coach usage (lean)', lean, ['Running Lean, until you switch it.']);
+  refute('coach usage (lean)', lean, ['Soft daily budget']);
+
+  // Settings › Coach: two pickers, each opening on the level's default.
+  usageStore.saveUsageLevel(db, 'generous');
+  usageStore.saveDailyBudget(db, 'generous', null);
+  const coach = render('settings-coach (two pickers)', SettingsCoachScreen);
+  expect('settings-coach (two pickers)', coach, [
+    'Chat model',
+    'One-shot calls model',
+    'Level default',
+    'Opus 5.5 · Generous',
+    'Sonnet 5.5 · Generous',
+    'A pick here always wins over the usage level',
+  ]);
+  // An explicit pick names itself on the usage screen.
+  await apiKeyStore.setModel('claude-sonnet-5-5');
+  const picked = render('coach usage (a chat pick)', SettingsCoachUsageScreen);
+  expect('coach usage (a chat pick)', picked, ['Chat Sonnet 5.5 (your pick)']);
+  await apiKeyStore.setModel(null);
+
+  uninstall();
+  db.run("UPDATE users SET preferences = json_remove(preferences, '$.usagePolicy')");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -390,7 +390,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // of the ledger, not a second, differently-rounded count.
           const caption = usageCaption(
             result.usage,
-            apiKeyStore.getModel(),
+            apiKeyStore.getChatModel(),
             tools.length,
             result.estimatedUsd
           );

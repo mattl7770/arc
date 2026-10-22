@@ -53,6 +53,7 @@
 import { isModelCallType, type ModelCallType } from './call-types';
 import { estimateCost } from './cost';
 import type { CoachStopReason, CoachToolCall, CoachTurnResult } from './types';
+import { activeUsagePolicy, type EffortLevel, type UsagePolicy } from './usage-policy';
 import {
   isWebSearchCall,
   WebSearchLedger,
@@ -67,7 +68,10 @@ export const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 export const ANTHROPIC_VERSION = '2023-06-01';
 
 /**
- * The default model until the user picks in Settings.
+ * The Lean level's chat model — what ARC ran before the usage policy, and the
+ * fallback when no level can be read (usage-policy.ts LEAN_USAGE_POLICY.chatModel,
+ * which a test holds equal to this). Under Standard and Generous the level's own
+ * default applies until the user picks in Settings › Coach.
  *
  * SONNET 5, not Opus (changed 2026-08-10 during first live testing). Sonnet is
  * described by Anthropic as near-Opus on agentic work and bills at $2/$10 per
@@ -78,8 +82,8 @@ export const ANTHROPIC_VERSION = '2023-06-01';
  * This is a "measure, then decide" default, not a verdict on quality: the usage
  * captions record input/cache/output per turn and the spend ledger keeps them
  * (src/lib/ai/spend-ledger.ts), so the choice can be made against real spend
- * instead of a guess. It stays where it is until the usage policy decides
- * defaults (docs/spikes/chief-of-staff-release.md, Track 1).
+ * instead of a guess. The usage policy (2026-10-21) now decides the default per
+ * level; this stays Lean's.
  */
 export const DEFAULT_MODEL = 'claude-sonnet-5';
 
@@ -93,14 +97,14 @@ export const DEFAULT_MODEL = 'claude-sonnet-5';
  * is missing from either, which is how a model used to lose its cost line or
  * its search in silence.
  *
- * The notes compare each model's per-token price with the default's. Cache
+ * The notes compare each model's per-token price with Sonnet 5's (Lean's default). Cache
  * minimums differ by model, and a prefix under one silently caches nothing:
  * 512 tokens on Opus 5.5, Opus 5, Sonnet 5.5 and Haiku 5.5; 1,024 on Sonnet 5;
  * 4,096 on Haiku 4.5 (the prompt-caching page, checked 2026-10-21). The tools +
  * system prefix (~10k) clears all of them.
  */
 export const COACH_MODELS = [
-  { id: 'claude-sonnet-5', label: 'Sonnet 5', note: 'Default' },
+  { id: 'claude-sonnet-5', label: 'Sonnet 5', note: 'Lean’s default' },
   { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5', note: 'Newer Sonnet · same price' },
   { id: 'claude-opus-5-5', label: 'Opus 5.5', note: 'Deepest reasoning · ~2× the cost' },
   { id: 'claude-opus-5', label: 'Opus 5', note: 'Previous Opus · ~2.5× the cost' },
@@ -115,15 +119,41 @@ export function isCoachModel(id: string): id is CoachModelId {
   return COACH_MODELS.some((m) => m.id === id);
 }
 
-/**
- * Output cap per model round-trip. On models with default-on thinking this
- * bounds thinking + text together, so it carries headroom beyond chat-sized
- * replies.
+/*
+ * The output cap per round trip (8,192 under Lean) and the hard ceiling on
+ * round trips per turn (8 under Lean — the runaway-loop guard) are the usage
+ * policy's (src/lib/ai/usage-policy.ts `maxTokensPerCall`,
+ * `maxModelCallsPerTurn`), read once per turn in runCoachTurn. On models with
+ * default-on thinking the cap bounds thinking + text together, which is why the
+ * looser levels, which also send an effort, raise it.
  */
-const DEFAULT_MAX_TOKENS = 8192;
 
-/** Hard ceiling on model round-trips in one turn — a runaway-loop guard. */
-const MAX_MODEL_CALLS_PER_TURN = 8;
+/**
+ * Which models take `output_config.effort` (the claude-api skill's thinking &
+ * effort table, checked 2026-10-21): Opus 5.5, Opus 5, Sonnet 5.5, Sonnet 5 and
+ * Haiku 5.5 take low…max; **Haiku 4.5 rejects it** ("errors on Sonnet 4.5 /
+ * Haiku 4.5"). A FOURTH table that moves with COACH_MODELS: every id has an
+ * explicit row (db/usage-policy.test.mjs), and a model missing from it is never
+ * sent an effort — a wrong guess is a 400 on every call.
+ */
+const EFFORT_BY_MODEL: Readonly<Record<string, boolean>> = {
+  'claude-sonnet-5': true,
+  'claude-sonnet-5-5': true,
+  'claude-opus-5-5': true,
+  'claude-opus-5': true,
+  'claude-haiku-5-5': true,
+  'claude-haiku-4-5': false,
+};
+
+/** Has `model` an explicit effort decision (true or a deliberate false)? */
+export function hasEffortDecision(model: string): boolean {
+  return Object.prototype.hasOwnProperty.call(EFFORT_BY_MODEL, model);
+}
+
+/** Does `model` accept `output_config.effort`? False for any model not in the table. */
+export function acceptsEffort(model: string): boolean {
+  return EFFORT_BY_MODEL[model] === true;
+}
 
 /** The subset of the fetch surface the client needs — expo/fetch satisfies it. */
 export type FetchLike = (
@@ -152,7 +182,16 @@ export type ModelClientConfig = {
   model: string;
   /** expo/fetch on device; a scripted mock in tests. */
   fetchImpl: FetchLike;
+  /** The caller's own cap (the lab parse's floor, a reading's size); else the policy's. */
   maxTokens?: number;
+  /**
+   * The effort to send. Absent: the active usage policy's for `callType`.
+   * Null: none. Either way it is dropped for a model that rejects it
+   * ({@link acceptsEffort}). runCoachTurn fills it once per turn, so every
+   * round trip of one turn sends the same value (an effort change mid-turn
+   * would invalidate the messages cache).
+   */
+  effort?: EffortLevel | null;
   /**
    * What this call is FOR, as the spend ledger files it (src/lib/ai/call-types.ts).
    * Required, so a new call site cannot spend without saying on what.
@@ -428,6 +467,9 @@ export function buildMessagesRequest(
   // trip (it has client tools). See CONVERSATION_CACHE.
   const messages =
     request.tools.length > 0 ? withConversationBreakpoint(request.messages) : request.messages;
+  // The usage policy's two request parameters (usage-policy.ts). Resolved here
+  // only when the caller did not: runCoachTurn fills both once per turn.
+  const resolved = resolveRequestLimits(config);
 
   return {
     url: ANTHROPIC_MESSAGES_URL,
@@ -439,12 +481,35 @@ export function buildMessagesRequest(
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: resolved.maxTokens,
       stream: true,
+      // Absent under Lean (no effort is sent, exactly as before the policy), and
+      // for any model that rejects the parameter.
+      ...(resolved.effort ? { output_config: { effort: resolved.effort } } : {}),
       system,
       messages,
       ...(tools ? { tools } : {}),
     }),
+  };
+}
+
+/**
+ * The cap and the effort one request carries: the caller's, else the policy's
+ * (`policy`, or the active one), and an effort only for a model that takes it.
+ */
+export function resolveRequestLimits(
+  config: ModelClientConfig,
+  policy?: UsagePolicy
+): { maxTokens: number; effort: EffortLevel | null } {
+  // The policy is read only when the config leaves something to it: a turn's
+  // round trips carry both values already (runCoachTurn), so they read nothing.
+  let read = policy;
+  const active = (): UsagePolicy => (read ??= activeUsagePolicy());
+  const wanted =
+    config.effort === undefined ? (active().effort[config.callType] ?? null) : config.effort;
+  return {
+    maxTokens: config.maxTokens ?? active().maxTokensPerCall,
+    effort: wanted !== null && acceptsEffort(config.model) ? wanted : null,
   };
 }
 
@@ -457,8 +522,8 @@ export function buildMessagesRequest(
  * The two prefix breakpoints cache tools + the static system text. Everything
  * after them — the per-turn context block (~1.4k tokens: date, readiness,
  * mission, memory) and the whole history — used to be re-sent at full price on
- * EVERY round trip of a turn, and a tool-using turn makes up to eight. Render
- * order is tools → system → messages, so a breakpoint on the last message
+ * EVERY round trip of a turn, and a tool-using turn makes up to eight (twelve
+ * under Generous). Render order is tools → system → messages, so a breakpoint on the last message
  * caches all of it: round trip 2 reads round trip 1's write, round trip 3 reads
  * round trip 2's, and only what each round added bills at the full rate.
  *
@@ -1060,10 +1125,22 @@ function transcript(narration: string, answer: string): string {
  * why the turn stopped.
  */
 export async function runCoachTurn(
-  config: ModelClientConfig,
+  callerConfig: ModelClientConfig,
   request: AgenticRequest,
   handlers: CoachTurnHandlers
 ): Promise<CoachTurnResult> {
+  // The usage policy, read ONCE for the whole turn (usage-policy.ts): a soft
+  // budget crossed mid-turn takes effect on the next turn, never between two
+  // round trips of this one — which would change the cap, the round-trip
+  // ceiling and the effort under a conversation already in flight.
+  const policy = activeUsagePolicy();
+  const limits = resolveRequestLimits(callerConfig, policy);
+  const config: ModelClientConfig = {
+    ...callerConfig,
+    maxTokens: limits.maxTokens,
+    effort: limits.effort,
+  };
+  const maxCalls = policy.maxModelCallsPerTurn;
   const messages: WireMessage[] = [...request.messages];
   const toolCalls: CoachToolCall[] = [];
   // The turn's web searches (src/lib/ai/web-search.ts). Their records join
@@ -1095,7 +1172,7 @@ export async function runCoachTurn(
   // the seam state handed to the next reply (MessageAccumulator).
   let afterNonText = false;
 
-  for (let call = 0; call < MAX_MODEL_CALLS_PER_TURN; call++) {
+  for (let call = 0; call < maxCalls; call++) {
     if (handlers.signal?.aborted) {
       // Preserve the audit trail if writes already executed this turn — mirror
       // the streamOnce catch below so an unmount mid-turn still persists the
@@ -1161,7 +1238,7 @@ export async function runCoachTurn(
     // turn). The documented continuation is the paused assistant content sent
     // back UNCHANGED, with no new user message and the same tools; the API
     // resumes where it stopped, and a resumed turn can pause again. Each resume
-    // spends one of MAX_MODEL_CALLS_PER_TURN, which is the cap on that loop.
+    // spends one of the policy's round trips, which is the cap on that loop.
     // The loop adds no seam: a reply paused mid-text finishes the same
     // sentence, and one paused on a search pays the accumulator's seam when
     // its text resumes (the carry above).

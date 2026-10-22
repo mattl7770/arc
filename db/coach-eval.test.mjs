@@ -1183,16 +1183,39 @@ console.log('6. the prompt budget: the fixed payload every request carries');
   // ── 2026-09-25, BOTH ON ONE TREE (the notifications and parity merges):
   // **9,093 schema (9,039 + 19 + 35), 3,644 prompt, pass prefix 7,020.** The
   // two measurements add exactly; neither ceiling moved.
-  allToolTokens < 9250
+  //
+  // ── 2026-10-21: ONE RECORDED RAISE, 9,250 → 11,000 schema and 3,700 → 4,500
+  // prompt. Measured at the raise: **9,136 schema, 3,662 prompt** — the raise
+  // buys headroom, it does not pay for anything already shipped.
+  //
+  // WHY, and why it is not the reflex this block warns against: an OWNER
+  // DECISION (2026-10-21, docs/decisions.md "A reversible usage policy"), made
+  // while promotional credits fund the Coach, for the chief-of-staff work that
+  // needs room in the prefix (a few field names in the schema, the ranking verb
+  // for chat, `search_knowledge` once an embedder exists —
+  // docs/spikes/chief-of-staff-release.md Track 1). The price is stated, not
+  // guessed: under 1-hour caching, 1,000 more prefix tokens cost about $0.004
+  // per cold turn, roughly **$0.50 a month per 1,000 tokens**.
+  //
+  // It is a CODE change, not part of the usage-level switch: the levels move
+  // runtime values only and never these bytes (db/usage-policy.test.mjs holds
+  // that), so undoing this raise is a commit, never a setting. The rule above
+  // still governs everything under the new ceilings — trim duplication first —
+  // and CLAUDE.md §6 records the raise and its reason.
+  const TOOL_SCHEMA_CEILING = 11000;
+  const SYSTEM_PROMPT_CEILING = 4500;
+  allToolTokens < TOOL_SCHEMA_CEILING
     ? ok(
-        `the ${COACH_TOOLS.length} tool schemas + the web search tool fit the budget (~${allToolTokens} tok)`
+        `the ${COACH_TOOLS.length} tool schemas + the web search tool fit the budget (~${allToolTokens} tok < ${TOOL_SCHEMA_CEILING})`
       )
     : bad(
         'tool schemas over budget',
         `${allToolTokens} tok — trim descriptions before adding more`
       );
-  systemTokens < 3700
-    ? ok(`the static system prompt fits its budget (~${systemTokens} tok)`)
+  systemTokens < SYSTEM_PROMPT_CEILING
+    ? ok(
+        `the static system prompt fits its budget (~${systemTokens} tok < ${SYSTEM_PROMPT_CEILING})`
+      )
     : bad('system prompt over budget', String(systemTokens));
 
   // THE TRAP. Prompt-cache minimums differ by model: 512 on Opus 5, 1024 on

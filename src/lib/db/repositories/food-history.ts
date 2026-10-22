@@ -30,8 +30,8 @@ import {
   type UsualFood,
   usualFoodsContext,
   USUAL_FOODS_DAYS,
-  USUAL_FOODS_LIMIT,
 } from '@/lib/nutrition/repeats';
+import { activeUsagePolicy } from '@/lib/ai/usage-policy';
 import type { MealItemWithServing, NewMealItem } from '@/lib/nutrition/types';
 
 /**
@@ -75,7 +75,7 @@ function windowStart(today: string): string {
 export function listUsualFoods(
   db: Database,
   today: string = todayISODate(),
-  limit: number = USUAL_FOODS_LIMIT
+  limit: number = activeUsagePolicy().usualFoods
 ): UsualFood[] {
   return rankUsualFoods(
     loggedFoods(db, 'm.date >= ? AND m.date <= ?', [windowStart(today), today]),

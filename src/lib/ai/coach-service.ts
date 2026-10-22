@@ -10,7 +10,7 @@ import { buildCoachSystemPrompt } from './system-prompt';
 import { buildTurnContext } from './turn-context';
 import { buildWireHistory } from './history-window';
 import { deviceRegion, regionLine } from './region';
-import { COACH_WEB_SEARCH_MAX_USES } from './web-search';
+import { activeUsagePolicy } from './usage-policy';
 import {
   COACH_TOOLS,
   humanizeToolName,
@@ -110,7 +110,11 @@ export async function streamCoachReply(
   // The clock also dates the thread: turns are stamped at each calendar
   // boundary so the model can see how old the conversation it is reading is
   // (history-window.ts). Without that every past turn read as "now".
-  const messages = buildWireHistory(history, options.priorSummary, clock());
+  // The usage level's limits for this turn (usage-policy.ts): the history
+  // window and digest length here, the search cap below. The client reads the
+  // same policy once more for the cap, the round trips and the effort.
+  const policy = activeUsagePolicy();
+  const messages = buildWireHistory(history, options.priorSummary, clock(), policy);
   // The calendar section (2026-10-21): null unless the owner turned the switch
   // on in Settings › Coach; read fresh or from a few minutes' memory, never
   // from the database. Never throws and times out on its own.
@@ -119,7 +123,7 @@ export async function streamCoachReply(
   const result = await runCoachTurn(
     {
       apiKey,
-      model: apiKeyStore.getModel(),
+      model: apiKeyStore.getChatModel(),
       // expo/fetch streams response bodies in React Native (WHATWG fetch there
       // does not), with no native dependency. Structurally a FetchLike; the
       // cast bridges Expo's own response typings.
@@ -147,7 +151,9 @@ export async function streamCoachReply(
       // and dropped by the client for a model with no known tool version.
       // Also off for the rest of the session once the API has refused the
       // tool on this key (model-client.ts searchToolRefused).
-      webSearch: apiKeyStore.isWebSearchUsable() ? { maxUses: COACH_WEB_SEARCH_MAX_USES } : null,
+      webSearch: apiKeyStore.isWebSearchUsable()
+        ? { maxUses: policy.coachWebSearchesPerTurn }
+        : null,
     },
     {
       onToken: options.onToken,

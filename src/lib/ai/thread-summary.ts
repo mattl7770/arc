@@ -23,15 +23,19 @@ import {
 } from '@/lib/db/repositories/ai-chat';
 import type { AiMessageRow } from '@/lib/ai/types';
 import { TRUNCATION_MARKER } from './types';
+import { activeUsagePolicy, summaryTriggerOf, summaryWindowOf } from './usage-policy';
 
-/**
- * Turns kept in the model's window (mirrors coach-service's
- * MAX_HISTORY_MESSAGES). Anything older is only ever seen through the summary.
+/*
+ * The window — turns kept in the model's view — is the usage policy's history
+ * window (`summaryWindowOf`: 30 under Lean, the same number history-window.ts
+ * replays), so anything older is only ever seen through the summary, at every
+ * level. Summarising starts ten turns past it (`summaryTriggerOf`: 40 under
+ * Lean), once a thread is meaningfully past the window. Both are read per call.
+ *
+ * After a switch to a SMALLER window the turns between the two windows are in
+ * neither until the next completed turn refreshes the summary — one turn, and
+ * the summary is deterministic, so nothing is invented in the meantime.
  */
-export const SUMMARY_WINDOW = 30;
-
-/** Only start summarising once a thread is meaningfully past the window. */
-export const SUMMARY_TRIGGER = 40;
 
 /** How many characters of one user turn to keep verbatim. */
 const USER_SNIPPET = 120;
@@ -88,9 +92,10 @@ function userLine(content: string): string {
  * the model sees all of it — there is nothing to remember on its behalf.
  */
 export function buildRollingSummary(db: Database, conversationId: string): string | null {
+  const windowSize = summaryWindowOf(activeUsagePolicy());
   const total = countMessages(db, conversationId);
-  if (total <= SUMMARY_WINDOW) return null;
-  const agedCount = total - SUMMARY_WINDOW;
+  if (total <= windowSize) return null;
+  const agedCount = total - windowSize;
 
   // Read only the ends of the aged region — see AGED_HEAD_SCAN.
   let aged: AiMessageRow[];
@@ -101,8 +106,8 @@ export function buildRollingSummary(db: Database, conversationId: string): strin
     const head = listOldestMessages(db, conversationId, AGED_HEAD_SCAN);
     // The aged TAIL is the newest aged turns: take the window plus a slab, then
     // drop the window itself (which the model still sees in full).
-    const withWindow = listRecentMessages(db, conversationId, SUMMARY_WINDOW + AGED_TAIL_SCAN);
-    const tail = withWindow.slice(0, Math.max(0, withWindow.length - SUMMARY_WINDOW));
+    const withWindow = listRecentMessages(db, conversationId, windowSize + AGED_TAIL_SCAN);
+    const tail = withWindow.slice(0, Math.max(0, withWindow.length - windowSize));
     skipped = Math.max(0, agedCount - head.length - tail.length);
     aged = [...head, ...tail];
   }
@@ -151,7 +156,7 @@ export function buildRollingSummary(db: Database, conversationId: string): strin
  * no-op for short threads.
  */
 export function updateRollingSummary(db: Database, conversationId: string): void {
-  if (countMessages(db, conversationId) < SUMMARY_TRIGGER) return;
+  if (countMessages(db, conversationId) < summaryTriggerOf(activeUsagePolicy())) return;
   const summary = buildRollingSummary(db, conversationId);
   if (summary && summary !== getConversationSummary(db, conversationId)) {
     setConversationSummary(db, conversationId, summary);

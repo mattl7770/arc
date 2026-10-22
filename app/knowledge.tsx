@@ -8,11 +8,11 @@ import { Screen } from '@/components/ui/screen';
 import { SectionLabel } from '@/components/ui/section-label';
 import { StackHeader } from '@/components/ui/stack-header';
 import { palette } from '@/constants/theme';
+import { activeUsagePolicy } from '@/lib/ai/usage-policy';
 import { getDb } from '@/lib/db/client';
 import {
   listAllMemories,
   searchMemories,
-  MEMORY_PROMPT_LIMIT,
   type CoachMemoryRow,
 } from '@/lib/db/repositories/coach-memory';
 import {
@@ -208,6 +208,8 @@ export default function KnowledgeScreen() {
   );
   const [showArchived, setShowArchived] = useState(false);
   const [memories, setMemories] = useState<CoachMemoryRow[]>(() => searchMemories(getDb()));
+  // The usage level's figure (40 under Lean), read at render: it moves with the level.
+  const memoryLimit = activeUsagePolicy().memoriesPerTurn;
   const [forgotten, setForgotten] = useState<CoachMemoryRow[]>(() =>
     listAllMemories(getDb()).filter((m) => m.archived_at !== null)
   );
@@ -374,12 +376,12 @@ export default function KnowledgeScreen() {
             {/* Only past the cap, and phrased as a consequence rather than a
                 setting: the number alone would tell the owner nothing about
                 what it costs him. */}
-            {memories.length > MEMORY_PROMPT_LIMIT ? (
+            {memories.length > memoryLimit ? (
               <Text className="mt-2 font-serif text-[12px] leading-5 text-ink-muted">
-                The Coach carries the {MEMORY_PROMPT_LIMIT} most recent into every turn, so{' '}
-                {memories.length - MEMORY_PROMPT_LIMIT} of these are no longer riding along. They
-                stay here, and the Coach can still find them by searching — delete or forget the
-                ones that have stopped being true.
+                The Coach carries the {memoryLimit} most recent into every turn, so{' '}
+                {memories.length - memoryLimit} of these are no longer riding along. They stay here,
+                and the Coach can still find them by searching — delete or forget the ones that have
+                stopped being true.
               </Text>
             ) : null}
           </>

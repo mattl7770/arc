@@ -14,8 +14,8 @@ import type { Database } from '../database';
 import { newId } from '../id';
 import { getMeal, listMealItems } from './nutrition';
 import { assembleMealItems } from '@/lib/nutrition/composite';
+import { activeUsagePolicy } from '@/lib/ai/usage-policy';
 import {
-  CORRECTION_EXAMPLES_LIMIT,
   correctionsContext,
   describeCorrection,
   type EstimateRating,
@@ -188,7 +188,7 @@ export function listMealRatings(
  *  the cap, because a correction below the printed digits shows no line. */
 export function ratingCorrections(
   db: Database,
-  limit: number = CORRECTION_EXAMPLES_LIMIT
+  limit: number = activeUsagePolicy().correctionExamples
 ): RatingCorrection[] {
   return listMealRatings(db, { limit: limit * 3, correctedOnly: true })
     .filter((r) => r.correction !== null)

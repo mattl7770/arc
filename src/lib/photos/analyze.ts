@@ -359,7 +359,7 @@ export async function readPhotos(
   const fetchImpl = loadStreamingFetch();
   if (!apiKey || !fetchImpl) throw new PhotoReadingUnavailableError();
 
-  const model = apiKeyStore.getModel();
+  const model = apiKeyStore.getUtilityModel();
   const req = buildPhotoReadingRequest(input);
   let text = '';
   const result = await runCoachTurn(

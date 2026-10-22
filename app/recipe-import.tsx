@@ -613,7 +613,7 @@ export function ReviewDraft({
     ? [
         `${draft.sampling.stills} still${draft.sampling.stills === 1 ? '' : 's'}`,
         `about 1 per ${formatInterval(draft.sampling.everySeconds)}`,
-        usageCaption(draft.sampling.usage ?? undefined, apiKeyStore.getModel(), 0),
+        usageCaption(draft.sampling.usage ?? undefined, apiKeyStore.getUtilityModel(), 0),
       ]
         .filter((part): part is string => part !== null)
         .join(' · ')

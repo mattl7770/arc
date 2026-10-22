@@ -35,6 +35,7 @@
  * (a small to a large latte is +40 % or more). Name-only would merge sizes;
  * figures-only would merge different foods; both together is the claim.
  */
+import { activeUsagePolicy, LEAN_USAGE_POLICY } from '@/lib/ai/usage-policy';
 import { normalizeFoodName } from '@/lib/db/repositories/foods';
 
 import { DRINK_PIECE } from './drinks';
@@ -43,8 +44,11 @@ import type { AmountUnit, EstimateConfidence, NewFood, NewMealItem } from './typ
 
 /** The Save-as-a-food offer comes on the third identical log. */
 export const REPEAT_OFFER_AFTER = 3;
-/** How many usual foods the estimators see per call. */
-export const USUAL_FOODS_LIMIT = 30;
+/**
+ * How many usual foods the estimators see per call — LEAN's figure. The live
+ * one is the usage level's `usualFoods` (30 / 40 / 50), read per call.
+ */
+export const USUAL_FOODS_LIMIT = LEAN_USAGE_POLICY.usualFoods;
 /** "Usual" is a current habit: counted over this many days. */
 export const USUAL_FOODS_DAYS = 90;
 /** An add-on was logged within this many minutes of its drink, in its meal. */
@@ -227,7 +231,7 @@ export type UsualFood = {
  */
 export function rankUsualFoods(
   items: readonly LoggedFood[],
-  limit: number = USUAL_FOODS_LIMIT
+  limit: number = activeUsagePolicy().usualFoods
 ): UsualFood[] {
   const groups = new Map<string, UsualFood>();
   for (const item of items) {

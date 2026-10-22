@@ -28,12 +28,16 @@ import type { ChatMessage } from '@/types/coach';
 
 import type { WireMessage } from './model-client';
 import { TRUNCATION_MARKER, type CoachToolCall } from './types';
+import { activeUsagePolicy, type UsagePolicy } from './usage-policy';
 
-/** Bound the request: the model doesn't need the whole thread forever. */
-export const MAX_HISTORY_MESSAGES = 30;
-
-/** Cap on one replayed tool digest, so history can't be swamped by one read. */
-const TOOL_DIGEST_CHARS = 240;
+/*
+ * The two bounds on what is replayed — messages per turn (30 under Lean) and
+ * characters per tool digest (240 under Lean), so history can neither grow
+ * forever nor be swamped by one read — are the usage policy's `historyMessages`
+ * and `toolDigestChars` (src/lib/ai/usage-policy.ts), read at runtime. The
+ * thread summary's window is tied to the first (thread-summary.ts), so what
+ * ages out of one is what the other summarises.
+ */
 
 /**
  * The LOCAL calendar day of an instant, as a day index since the epoch.
@@ -69,7 +73,10 @@ function ageLabel(daysAgo: number): string {
  * the model can see what the user refused; the truncation sentinel (a
  * persistence detail, not a tool) never reaches the model.
  */
-export function toolDigest(calls: CoachToolCall[]): string {
+export function toolDigest(
+  calls: CoachToolCall[],
+  digestChars: number = activeUsagePolicy().toolDigestChars
+): string {
   const parts = calls
     .filter((call) => call.name !== TRUNCATION_MARKER)
     .map((call) => {
@@ -77,21 +84,22 @@ export function toolDigest(calls: CoachToolCall[]): string {
       if (call.isError) return `${call.name}: error`;
       const result = (call.result ?? '').replace(/\s+/g, ' ').trim();
       return `${call.name} → ${
-        result.length > TOOL_DIGEST_CHARS ? `${result.slice(0, TOOL_DIGEST_CHARS)}…` : result
+        result.length > digestChars ? `${result.slice(0, digestChars)}…` : result
       }`;
     });
   return parts.length === 0 ? '' : `\n\n[tools this turn: ${parts.join(' | ')}]`;
 }
 
 /**
- * The wire history for one turn: the last {@link MAX_HISTORY_MESSAGES}
- * messages, each assistant turn carrying its tool digest, optionally preceded
- * by the rolling summary of everything older.
+ * The wire history for one turn: the last `policy.historyMessages` messages
+ * (30 under Lean), each assistant turn carrying its tool digest, optionally
+ * preceded by the rolling summary of everything older.
  */
 export function buildWireHistory(
   history: ChatMessage[],
   priorSummary?: string | null,
-  now: Date = new Date()
+  now: Date = new Date(),
+  policy: UsagePolicy = activeUsagePolicy()
 ): WireMessage[] {
   // Render FIRST, then drop what renders empty. A turn can legitimately have no
   // prose — the reply was cut off, or the model called a tool and stopped — and
@@ -103,12 +111,12 @@ export function buildWireHistory(
   // lines, and a content block that is only whitespace is rejected by the API.
   const today = localDayIndex(now.getTime());
   const dated = history
-    .slice(-MAX_HISTORY_MESSAGES)
+    .slice(-policy.historyMessages)
     .map((m) => ({
       role: m.role,
       content:
         m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0
-          ? `${m.content}${toolDigest(m.toolCalls)}`.trim()
+          ? `${m.content}${toolDigest(m.toolCalls, policy.toolDigestChars)}`.trim()
           : m.content.trim(),
       // NaN for an unparseable stamp (loadThread does Date.parse on the stored
       // text). Kept as null so such a turn inherits its neighbour's day rather

@@ -1,5 +1,55 @@
 # Architecture Decision Records (ADR)
 
+## 2026-10-21 — A reversible usage policy
+
+**Context.** The chief-of-staff release, Track 1 (`docs/spikes/chief-of-staff-release.md`). The owner
+has promotional credits and wants the Coach to do more while they last — a stronger model for chat,
+a pass that reads like the chat, wider history and memory — without that becoming a set of edits
+scattered across ~20 files that nobody can reliably undo when the credits end. The spend ledger
+(Track 0) made spend visible; this makes it a setting.
+
+**Decision** (owner, 2026-10-21).
+
+1. **Three levels — Lean, Standard, Generous — in one module** (`src/lib/ai/usage-policy.ts`), each a
+   frozen profile of every money limiter (the table is `docs/ai-coach.md` §7d). Each module reads the
+   active profile at runtime; none keeps its own literal.
+2. **Lean is today, exactly**, pinned by a literal snapshot in `db/usage-policy.test.mjs`, which
+   also checks each module under Lean behaves on that exact value. It is also the floor: anything
+   unreadable resolves to Lean.
+3. **Default: Generous.** A fresh install (nothing stored) runs Generous; the level lives in
+   `users.preferences.usagePolicy` (no migration), picked on Settings › Coach › Coach usage.
+4. **No automatic revert, no end date.** He switches back himself. The one automatic change is an
+   **optional soft daily budget** per level ($2.50 Standard, $5 Generous by default, Off/$1/$2.50/$5/$10
+   on the screen): once today's estimated spend reaches it, the rest of the logical day runs Lean.
+5. **Separate model picks.** A chat model and a utility model for the one-shot calls, in Settings ›
+   Coach, each defaulting to the level (Generous: Opus 5.5 chat, Sonnet 5.5 one-shot). **An explicit
+   pick always wins.** The pre-split pick carries over as the chat pick.
+6. **The pass on the chat model** under Standard and Generous, with the chat's read access
+   (`query_records` and web search). Lean keeps Haiku 4.5 and today's tools. The pass stays
+   read-only; the proposals mechanism is unchanged.
+7. **Effort per call type** where the model accepts it (never Haiku 4.5): Generous `high` for chat
+   and the pass, `low` for the estimators, `xhigh` for the lab parse and the report read. Lean
+   sends none.
+8. **The profile moves runtime values, never the cached prefix** — the system prompt and the
+   registry schemas are the same bytes at every level (tested). The search tool's `max_uses`,
+   `effort` and `max_tokens` are request parameters that do move; their cache cost is one
+   system-tier re-write on the first turn after a switch, stated in §7d.
+9. **One recorded raise of the prompt ceilings**, separate from the switch: tool schemas 9,250 →
+   11,000, system prompt 3,700 → 4,500 (`db/coach-eval.test.mjs` §6, CLAUDE.md §6), for the
+   chief-of-staff work's room in the prefix, at about $0.50 a month per 1,000 prefix tokens with
+   1-hour caching. Undoing it is a commit, not a setting.
+
+**Kept out, on purpose:** 2 nudges a day and quiet hours, the 3-question cap, the read-only pass,
+the doctor pack's no-model-prose rule, search queries never carrying health data, the
+deterministic thread summary, the lab-parse output floor, image downscaling — decisions about
+attention, privacy or quality, not money.
+
+**Consequences.** Spend at Generous is roughly 2–3× Lean's at the spike's estimate (~$45–70 a
+month before the conversation cache's savings); the ledger and the budget keep it visible and
+bounded. Reverting is a tap, guaranteed by the suite. A switch costs one system-tier cache re-write.
+The `query_records` limits cannot vary by level without a prompt edit, so they are the same at
+every level. Not yet seen on a device.
+
 ## 2026-10-21 — Calendar context to the model
 
 **Context.** The chief-of-staff release, Track 2 item 7 (`docs/spikes/chief-of-staff-release.md`):

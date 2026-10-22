@@ -27,8 +27,8 @@ import type { JsonText } from '@/lib/db/types';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
 import { type FetchLike, runCoachTurn, type WireMessage } from '@/lib/ai/model-client';
 import { deviceRegion, regionLine } from '@/lib/ai/region';
+import { activeUsagePolicy } from '@/lib/ai/usage-policy';
 import {
-  ESTIMATOR_WEB_SEARCH_MAX_USES,
   webSearchesOf,
   webSearchTool,
   type WebSearchOptions,
@@ -335,7 +335,8 @@ export const NO_ESTIMATOR_OPTIONS: EstimatorOptions = { webSearch: false, region
  * request that cannot carry it.
  */
 export function currentEstimatorOptions(): EstimatorOptions {
-  const searchable = webSearchTool(apiKeyStore.getModel(), ESTIMATOR_WEB_SEARCH_MAX_USES) !== null;
+  // Only the model decides whether a search tool exists; the cap does not.
+  const searchable = webSearchTool(apiKeyStore.getUtilityModel(), 1) !== null;
   return {
     webSearch: apiKeyStore.isWebSearchUsable() && searchable,
     region: regionLine(deviceRegion()),
@@ -369,7 +370,10 @@ export function estimatorContext(options: EstimatorOptions): {
     // Both keys are absent when there is nothing to say, so a request built
     // with no options is byte-identical to the one built before search existed.
     ...(lines.length > 0 ? { systemContext: lines.join('\n') } : {}),
-    ...(options.webSearch ? { webSearch: { maxUses: ESTIMATOR_WEB_SEARCH_MAX_USES } } : {}),
+    // The cap is the usage level's (2 under Lean), read at the call.
+    ...(options.webSearch
+      ? { webSearch: { maxUses: activeUsagePolicy().estimatorWebSearchesPerCall } }
+      : {}),
   };
 }
 
@@ -1019,7 +1023,7 @@ async function runEstimatorTurn(
   const result = await runCoachTurn(
     {
       apiKey: connection.apiKey,
-      model: apiKeyStore.getModel(),
+      model: apiKeyStore.getUtilityModel(),
       fetchImpl: connection.fetchImpl,
       callType,
     },

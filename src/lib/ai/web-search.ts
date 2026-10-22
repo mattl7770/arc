@@ -32,26 +32,34 @@
  *   query and the domains, in the turn's `tool_calls` JSON (no migration).
  */
 import type { CoachToolCall } from './types';
+import { LEAN_USAGE_POLICY } from './usage-policy';
 
 /** The server tool's fixed name. No registry tool may take it (a test holds that). */
 export const WEB_SEARCH_TOOL_NAME = 'web_search';
 
 /**
- * Searches one Coach turn may run. The tool docs put a simple factual lookup at
- * one to three searches; a Coach question that needs the web at all is that
- * shape (a menu, a product, a recent result), and three lets it refine a miss
- * twice. Each search is ~1¢ plus its results as input tokens, so the cap is also
- * the most one question can add: ~3¢ and a few thousand tokens.
+ * Searches one Coach turn may run — UNDER LEAN. The live caps are the usage
+ * policy's `coachWebSearchesPerTurn` (3 / 4 / 5) and
+ * `estimatorWebSearchesPerCall` (2 / 2 / 3), read at runtime by each caller
+ * (src/lib/ai/usage-policy.ts); these two names stay for the measurements that
+ * price the tool at Lean's shape.
+ *
+ * Lean's reasoning: the tool docs put a simple factual lookup at one to three
+ * searches; a Coach question that needs the web at all is that shape (a menu, a
+ * product, a recent result), and three lets it refine a miss twice. Each search
+ * is ~1¢ plus its results as input tokens, so the cap is also the most one
+ * question can add: ~3¢ and a few thousand tokens.
  */
-export const COACH_WEB_SEARCH_MAX_USES = 3;
+export const COACH_WEB_SEARCH_MAX_USES = LEAN_USAGE_POLICY.coachWebSearchesPerTurn;
 
 /**
- * Searches one estimate, revision or food description may run. A meal names one
- * or two things worth looking up (a chain's burger, a packaged bar), and the
- * second use is the retry with a better query. The estimate is a one-shot call
- * the user is WAITING on in the review screen, so the cap also bounds latency.
+ * Searches one estimate, revision or food description may run — UNDER LEAN
+ * (see above). A meal names one or two things worth looking up (a chain's
+ * burger, a packaged bar), and the second use is the retry with a better query.
+ * The estimate is a one-shot call the user is WAITING on in the review screen,
+ * so the cap also bounds latency.
  */
-export const ESTIMATOR_WEB_SEARCH_MAX_USES = 2;
+export const ESTIMATOR_WEB_SEARCH_MAX_USES = LEAN_USAGE_POLICY.estimatorWebSearchesPerCall;
 
 /** What a caller asks for: the search tool, capped. Absent or null = no search. */
 export type WebSearchOptions = { maxUses: number };

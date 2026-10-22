@@ -22,7 +22,7 @@ user turn ──▶ model (streaming) ──▶ tool calls ──▶ executed lo
                                 (loop until the model answers in text)
 ```
 
-Everything runs on-device except the model call itself (local-first, offline-except-AI — the 2026-07-24 ADR). The model is called directly from the app over streaming `expo/fetch` and is user-selectable in **Settings › Coach** — Sonnet 5 (the default, `DEFAULT_MODEL`), Sonnet 5.5, Opus 5.5, Opus 5, Haiku 5.5, Haiku 4.5 (`COACH_MODELS` in `model-client.ts`; the 5.5 models joined 2026-10-21, §7c). What every call costs is recorded in the spend ledger and shown in **Settings › Coach › Coach usage** (§7c).
+Everything runs on-device except the model call itself (local-first, offline-except-AI — the 2026-07-24 ADR). The model is called directly from the app over streaming `expo/fetch` and is user-selectable in **Settings › Coach** — Sonnet 5, Sonnet 5.5, Opus 5.5, Opus 5, Haiku 5.5, Haiku 4.5 (`COACH_MODELS` in `model-client.ts`; the 5.5 models joined 2026-10-21, §7c) — as TWO picks since the usage policy (§7d): the chat model and the one-shot calls' model, each defaulting to the usage level's choice (Generous, the default: Opus 5.5 chat, Sonnet 5.5 one-shot; Lean: Sonnet 5 for everything, `DEFAULT_MODEL`). What every call costs is recorded in the spend ledger and shown in **Settings › Coach › Coach usage** (§7c).
 
 **Architecture (shipped 2026-07-26):**
 
@@ -534,7 +534,7 @@ Three changes from the chief-of-staff release's Track 0 (`docs/spikes/chief-of-s
 
 ### Current models and prices
 
-`COACH_MODELS` gained **Sonnet 5.5** (`claude-sonnet-5-5`), **Opus 5.5** (`claude-opus-5-5`) and **Haiku 5.5** (`claude-haiku-5-5`). `DEFAULT_MODEL` stays Sonnet 5 — the usage policy (Track 1) decides defaults. **Three tables move together** and `db/model-client.test.mjs` §22 fails if they drift: every id has a `PRICES` row (`src/lib/ai/cost.ts`) and an explicit web-search decision (`TOOL_VERSION_BY_MODEL`, `src/lib/ai/web-search.ts` — a version, or `null`).
+`COACH_MODELS` gained **Sonnet 5.5** (`claude-sonnet-5-5`), **Opus 5.5** (`claude-opus-5-5`) and **Haiku 5.5** (`claude-haiku-5-5`). `DEFAULT_MODEL` stays Sonnet 5, as Lean's chat model — the usage policy decides defaults per level (§7d). **Three tables move together** and `db/model-client.test.mjs` §22 fails if they drift: every id has a `PRICES` row (`src/lib/ai/cost.ts`) and an explicit web-search decision (`TOOL_VERSION_BY_MODEL`, `src/lib/ai/web-search.ts` — a version, or `null`).
 
 | Model | Input / output per MTok | Cache read | Web search |
 | --- | --- | --- | --- |
@@ -547,9 +547,9 @@ Three changes from the chief-of-staff release's Track 0 (`docs/spikes/chief-of-s
 
 **Where each figure was checked (2026-10-21).** Prices: the live pricing page (`platform.claude.com/docs/en/about-claude/pricing`), which also says Sonnet 5's $2/$10 "is now the standard price" — so the old "REVISIT 2026-09-01: change to $3/$15" note is retired, not applied. One disagreement: the claude-api skill's cached table gives Sonnet 5.5 cache reads at $0.20; the live page gives $0.10 (0.05×), and the live page is what `PRICES` uses. Cache writes are 1.25× input for 5 minutes and 2× for an hour on every model (same page). Haiku 5.5's second rate card applies to a whole REQUEST whose prompt (input + cache reads + writes) is over 100,000 tokens — which is why cost is now priced request by request (`CoachTurnResult.estimatedUsd`) rather than from a turn's summed usage. Web search: the live tool page puts dynamic filtering (`web_search_20260209`) on "Claude 4.6 and later models" with `claude-opus-5-5` examples, and the skill's server-tools table lists Opus 5.5 and Sonnet 5.5 for it. **No page names Haiku 5.5 as supporting search** (the tool page, the tool reference, the Haiku 5.5 overview and what's-new were all read), so it gets `null` — no search tool, the estimators' "web search is available" line suppressed, and "no web search" in its picker note. Revisit when the Models API's `capabilities.server_tools.web_search.supported` says otherwise.
 
-**Cache minimums.** 512 tokens on Opus 5.5, Opus 5, Sonnet 5.5 and Haiku 5.5; 1,024 on Sonnet 5; 4,096 on Haiku 4.5 (the live prompt-caching page). The pass-prefix floor test in `db/coach-eval.test.mjs` §6 is Haiku-4.5-specific at 4,096 and is left as it is: the pass still runs on Haiku 4.5 (`PASS_MODEL`). If the pass ever moves to Haiku 5.5 its floor is 512, and the test's constant should move with it.
+**Cache minimums.** 512 tokens on Opus 5.5, Opus 5, Sonnet 5.5 and Haiku 5.5; 1,024 on Sonnet 5; 4,096 on Haiku 4.5 (the live prompt-caching page). The pass-prefix floor test in `db/coach-eval.test.mjs` §6 is Haiku-4.5-specific at 4,096 and is left as it is: under Lean the pass still runs on Haiku 4.5 (`PASS_MODEL`); under Standard and Generous it runs on the chat model, whose floor is 512 or 1,024 (§7d). If the pass ever moves to Haiku 5.5 its floor is 512, and the test's constant should move with it.
 
-**Request shape.** Nothing the client sends is rejected by the 5.5 models: no `thinking`, no sampling parameters, no forced `tool_choice`, no prefill. Opus 5.5 and Haiku 5.5 default to `effort: medium` (Sonnet 5.5 to `high`); the client sets no effort, so that default is what they run at until the usage policy sets one per call type.
+**Request shape.** Nothing the client sends is rejected by the 5.5 models: no `thinking`, no sampling parameters, no forced `tool_choice`, no prefill. Opus 5.5 and Haiku 5.5 default to `effort: medium` (Sonnet 5.5 to `high`); under Lean the client still sets no effort, so that default is what they run at; Standard and Generous set one per call type (§7d).
 
 ### The conversation cache — a third breakpoint
 
@@ -573,11 +573,58 @@ Tests: `db/model-client.test.mjs` §24 (placement, the count, TTL order, the mov
 - **The store.** `installSpendLedger(getDb)` runs at module scope in `app/_layout.tsx`, before any screen can call the model. Per call it adds to a daily aggregate per call type — calls, input / output / cache-read / cache-write tokens, web searches, estimated USD, unpriced calls, calls per model — in **`users.preferences.spendLedger`** (no migration), keeping the last **120 days**, pruned on every write. Read-modify-write in one synchronous step, touching only its own key.
 - **It can never fail a call.** `recordModelCall` catches everything and returns false; the client also swallows anything a sink throws.
 - **The usage policy's read.** `spentToday(ledger, today)` (pure, `src/lib/ai/spend-ledger.ts`) is the priced total for a logical day; a model with no price adds nothing, so a budget can never trip on a guess.
-- **The screen.** Settings › Coach has a **Coach usage** row (today and this month at a glance) opening `app/settings-coach-usage.tsx`: today, the last 7 days and this month, then this month by call type, every figure labelled **est.** and a margin note saying they are the app's price table applied to reported usage, not the invoice. **The seam for the usage level:** the screen's first section is `UsageLevelSection`, which renders nothing today; the usage-policy branch puts its Lean / Standard / Generous plate there, above the spend figures, and nothing else on the screen moves.
+- **The screen.** Settings › Coach has a **Coach usage** row (today and this month at a glance) opening `app/settings-coach-usage.tsx`: today, the last 7 days and this month, then this month by call type, every figure labelled **est.** and a margin note saying they are the app's price table applied to reported usage, not the invoice. Its first section, `UsageLevelSection`, is the usage level (§7d), above the spend figures.
 - **The chat caption** now prices the turn request by request (`result.estimatedUsd`), so the bubble and the ledger agree.
 
 Tests: `db/spend-ledger.test.mjs` — aggregation, the three windows and `spentToday`, pruning at 120 days, tolerant parsing, the preferences write and its failure path, a **source pin** (the eleven files that call `runCoachTurn` are exactly the known ones, each passing its own call types), and a **behavioural test per call type**: all fourteen real entry points driven through a mocked fetch with the app's own sink installed, each landing in the ledger under its own type. `db/model-client.test.mjs` §25 covers the sink itself; `db/screens-render.test.mjs` §41 renders the screen.
 
+
+## 7d. The usage policy — Lean / Standard / Generous (2026-10-21, Track 1)
+
+**What it is.** One module, `src/lib/ai/usage-policy.ts`: a `UsagePolicy` type and three frozen profiles. Every limiter that is a question of money moved into it, and each module that used to hold its own literal reads the **active** profile at runtime (`activeUsagePolicy()`). The owner picks the level on **Settings › Coach › Coach usage**, above the spend figures. The ADR is "A reversible usage policy" in `docs/decisions.md`.
+
+**The rules that make it reversible.**
+- **Lean is today, exactly** — the values main ran on at 4fa124d. `db/usage-policy.test.mjs` §1 pins it to a literal snapshot, and §5–6 check each module, under Lean, behaves on exactly that value (the requests every entry point sends under Lean are the pre-policy requests: Sonnet 5, the pass on Haiku 4.5, no `output_config`, 8,192 tokens). Reverting is a tap, guaranteed by the suite.
+- **Lean is the floor.** No source installed, a source that throws, or a stored value that is not a level → Lean. A **fresh install** (nothing stored) gets the owner's default, **Generous**.
+- **No end date** (owner, 2026-10-21): the level stays until he switches it. The only automatic change is the **soft daily budget**: once today's estimated spend (`spentToday`, the spend ledger) reaches the chosen level's budget, the rest of the logical day runs Lean, and the next day starts on the chosen level again. Budgets are optional per level — Off, $1, $2.50, $5, $10 on the screen; Standard defaults to $2.50, Generous to $5, Lean has none.
+- **Runtime values, never the cached prefix.** No profile field is interpolated into the system prompt or a registry schema: the registry tools and the static system block are the same bytes at every level (`db/usage-policy.test.mjs` §8). Three request PARAMETERS move with the level, by design: `max_tokens` (not part of the cache key); `output_config.effort` (pinned per call type, so it changes only when the level does — which invalidates the messages cache tier, and on some models more, once); and the web search tool's `max_uses`, which renders after the last registry tool, so the ~8k tool tier still reads and the ~3.7k system tier re-writes once on the first turn after a switch. The `query_records` limits are policy fields with the **same** value at every level, because its description states them.
+- **A turn reads the policy once** (`runCoachTurn`): a budget crossed mid-turn takes effect on the next turn, never between two round trips of one.
+
+**The models.** Two picks in **Settings › Coach** (`api-key-store.ts`): **Chat model** (chat, and the pass under Standard/Generous) and **One-shot calls model** (every other call type in `call-types.ts`: estimates, corrections, food entry, recipe and knowledge imports, recipe pricing, the lab parse, photo and report readings, exercise additions, workout imports). Each plate opens on **Level default** (no pick: the level decides, and the row names what that is now); any model below it is an explicit pick, which **always wins**. A pick made before the split (`arc.coach.model`) carries over as the chat pick. With no utility pick, Lean's one-shot calls follow the chat model — exactly the single pick of before. The pickers live in Settings › Coach, not on Coach usage, because that is where the Coach's connection is configured (key, search, calendar) and where he already picked a model; Coach usage names the models the level resolves to and points there.
+
+**Effort** (`output_config.effort`, GA, no beta header — the claude-api skill, checked 2026-10-21): accepted by Opus 5.5, Opus 5, Sonnet 5.5, Sonnet 5 and Haiku 5.5 (`low`…`max`); **rejected by Haiku 4.5**, so it is never sent there (`EFFORT_BY_MODEL` in `model-client.ts`, a fourth table that moves with `COACH_MODELS` and is tested for completeness). No `thinking` parameter is sent at any level (all the effort models run adaptive thinking when it is omitted). Lean sends no effort.
+
+| | **Lean** (today) | **Standard** | **Generous** (default) |
+| --- | --- | --- | --- |
+| Chat model (no pick) | Sonnet 5 | Sonnet 5.5 | **Opus 5.5** |
+| One-shot model (no pick) | the chat model | Sonnet 5.5 | **Sonnet 5.5** |
+| Pass model · tools · search | Haiku 4.5 · curated reads (no `query_records`) · none | chat model · every read incl. `query_records` · yes | chat model · every read incl. `query_records` · yes |
+| `max_tokens` per round trip (caller's own cap wins: lab parse 32,000, photo reading 4,000) | 8,192 | 12,288 | 16,384 |
+| Round trips per turn | 8 | 10 | 12 |
+| Web searches per Coach turn / per estimate | 3 / 2 | 4 / 2 | 5 / 3 |
+| History messages / tool-digest chars (summary window = history; trigger +10) | 30 / 240 (40) | 45 / 400 (55) | 60 / 600 (70) |
+| Memories per turn | 40 | 60 | 80 |
+| `search_history` excerpt chars (history / knowledge) | 300 / 500 | 400 / 650 | 500 / 800 |
+| `query_records` rows (default / max) — same at every level | 10 / 25 | 10 / 25 | 10 / 25 |
+| Usual foods per estimate | 30 | 40 | 50 |
+| Corrections per estimate / chars | 8 / 1,600 | 10 / 2,000 | 12 / 2,400 |
+| Effort: chat · pass | none | high · medium | high · high |
+| Effort: meal estimate, correction, food entry, recipe pricing and correction | none | low | low |
+| Effort: recipe and knowledge imports, photo reading, exercise, workout import | none | medium | medium |
+| Effort: lab parse · report read | none | high · high | **xhigh · xhigh** |
+| Soft daily budget (default) | — | $2.50 | $5.00 |
+
+**Why Standard's values.** Sonnet 5.5 costs what Sonnet 5 does per token, so Standard spends more only through its limits. 12,288 tokens because effort is now sent and thinking shares the cap; 10 round trips leave room for the pass's `query_records` discovery call; searches 4 per turn but estimates kept at 2 (the estimate is waited on); history, digests, memories, excerpts, usual foods and corrections half-way, each being per-call input cost; effort `high` for chat (Sonnet 5.5's own default, stated rather than implied), `medium` for the pass and the imports, `low` where the answer is a lookup he waits on, `high` where a misread is costly; a $2.50 budget about twice a typical Standard day.
+
+**The pass under Standard and Generous** (owner, 2026-10-21: "the same read access as the chat"): the chat model, `passToolsFor(policy)` = every READ tool (`query_records` included) and the provider's search capped at the turn's search limit. **Still read-only**: no write tool is in its list, its executor refuses anything that is not a read in that list, and the proposals mechanism (PROPOSE lines drafted, carded by the tool's own `confirmSummary`, approved later through the chat's gate) is unchanged — the directive is the same bytes at every level (tested).
+
+**Kept out of the policy, deliberately** (attention, privacy or quality, not money): 2 nudges a day and quiet hours; the 3-question cap; the read-only pass; the doctor pack's no-model-prose rule; search queries never carrying health data; the deterministic thread summary; the lab-parse output floor; image downscaling.
+
+**One recorded raise of the prompt ceilings**, separate from the switch (a code change, not a setting): tool schemas 9,250 → **11,000**, system prompt 3,700 → **4,500** (`db/coach-eval.test.mjs` §6, dated), by owner decision while promotional credits fund the Coach, for the chief-of-staff work's room in the prefix — about $0.50 a month per 1,000 prefix tokens at 1-hour caching. Measured at the raise: 9,136 schema, 3,662 prompt. CLAUDE.md §6 records it.
+
+**What only the phone can settle.** Whether Opus 5.5 at `high` keeps chat latency acceptable; whether the Generous pass's `query_records` and search calls earn their round trips; the real per-day spend at each level against the $2.50 / $5 budgets (the ledger will say); and whether `xhigh` on a long lab PDF stays inside the 32,000-token floor — a truncated parse fails loudly (`max_tokens` → "too long to read in one pass"), it never imports a partial panel.
+
+Tests: `db/usage-policy.test.mjs` (the Lean snapshot; the profiles; resolution and the store; each module at runtime under Lean and Generous; every entry point's model and effort through the mock; explicit picks; the Generous pass; the prefix bytes), `db/screens-render.test.mjs` §45 (the level, the budget line, the two pickers), `db/coach-eval.test.mjs` §6 (the raised ceilings).
 
 ## 8. Verified scenarios (the two required flows)
 

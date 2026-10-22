@@ -384,7 +384,7 @@ async function runExtractionTurn(
   const req = buildKnowledgeExtractionRequest(input);
   let text = '';
   const result = await runCoachTurn(
-    { apiKey, model: apiKeyStore.getModel(), fetchImpl, callType: 'knowledge_import' },
+    { apiKey, model: apiKeyStore.getUtilityModel(), fetchImpl, callType: 'knowledge_import' },
     { system: req.system, messages: req.messages as unknown as WireMessage[], tools: [] },
     {
       onToken: (chunk) => {
