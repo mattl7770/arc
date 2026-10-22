@@ -37,6 +37,7 @@ import {
   domainSelfEvident,
   domainVocabulary,
   describeDelete,
+  REOPENS_TRAINING_CLAUSE,
   EDIT_DOMAIN_KEYS,
   QUERY_DOMAIN_KEYS,
   REMOVABLE_DOMAIN_KEYS,
@@ -431,6 +432,33 @@ const deleteRecordTool: CoachTool = {
         }
       }
       if (card.line !== undefined && card.line !== plan.line) {
+        // Every value above held, so what moved is what goes WITH the row.
+        // When that is only the Training row a workout's delete re-opens
+        // (someone un-ticked it on Home), say so: "that workout changed" is
+        // not true, and the Coach should re-read the row, not the workout.
+        const prefix = describeDelete(plan.entry.label, plan.row, '');
+        const clauses = (line: string) =>
+          line.startsWith(prefix) ? line.slice(prefix.length).split(' · ') : null;
+        const was = clauses(card.line);
+        const now = clauses(plan.line);
+        if (was && now) {
+          const moved = [
+            ...was.filter((c) => !now.includes(c)),
+            ...now.filter((c) => !was.includes(c)),
+          ];
+          if (moved.length > 0 && moved.every((c) => c.startsWith(REOPENS_TRAINING_CLAUSE))) {
+            const wasRow = was.find((c) => c.startsWith(REOPENS_TRAINING_CLAUSE));
+            const nowRow = now.find((c) => c.startsWith(REOPENS_TRAINING_CLAUSE));
+            const quote = (clause: string | undefined) =>
+              clause === undefined ? 'no row to re-open' : `"${clause}"`;
+            throw new Error(
+              `The Training row this ${plan.entry.label} ticked changed while the card was ` +
+                `open (the card said ${quote(wasRow)}, it now reads ${quote(nowRow)}); the ` +
+                `${plan.entry.label} itself is unchanged. Nothing deleted. Read it again and ` +
+                'propose once more.'
+            );
+          }
+        }
         throw new Error(
           `That ${plan.entry.label} changed while the card was open (the card said ` +
             `"${card.line}", it now reads "${plan.line}"). Nothing deleted. ` +

@@ -4057,16 +4057,42 @@ console.log('29. one session, two writers — one session everywhere (round 3, i
     // A 60-minute lift whose recording ran 10 minutes into a 20-minute run:
     // half of the run, a sixth of the lift.
     const lift = ingest(db, { uuid: 'G-lift', device: 'garmin', hour: 7, minutes: 60, raw: 50 });
-    ingest(db, { uuid: 'P-run', device: 'other', hour: 7, minute: 50, minutes: 20, raw: 37 });
+    const run = ingest(db, { uuid: 'P-run', device: 'other', hour: 7, minute: 50, minutes: 20, raw: 37 });
     const minutes = unpairedWorkoutDailyMinutes(db, DAY, DAY);
     minutes.length === 1 && minutes[0].value === 80 && pendingIngestedStrength(db, NOW).length === 1
       ? ok('fix3: a late stop button does not make a lift and a run one session')
       : bad('edge overlap merged', JSON.stringify(minutes));
     const live = logWorkout(db, { date: DAY, kind: 'strength', durationMin: 20, startedAt: at(DAY, 7, 50) });
     pairIngestedWorkouts(db, NOW);
-    pairedIngestFor(db, live)?.wearableId !== lift
-      ? ok('…and a log of the run’s 20 minutes is not paired with the lift it barely touches')
+    // Both clear half the shorter; the run is the same session and the lift is
+    // not, so the run wins even though Garmin outranks the phone (fix4).
+    pairedIngestFor(db, live)?.wearableId === run && run !== lift
+      ? ok('…and a log of the run’s 20 minutes pairs with the run, not the lift it barely touches')
       : bad('span pair to edge', JSON.stringify(pairedIngestFor(db, live)));
+  }
+  // fix4: the pairing pass's GATE went back to half the shorter. fix3 had
+  // made it sameSession, which dropped pairings that worked: a watch that ran
+  // 07:00–08:00 (warm-up included) and a log 07:15–09:00 share 0.75 of the
+  // watch's hour but under half of the log's 105 minutes. Two clocks on one
+  // session, started and stopped by hand at different moments, not twins.
+  for (const [startMin, duration] of [
+    [15, 105],
+    [20, 90],
+  ]) {
+    const { db } = freshDb();
+    const watch = ingest(db, { uuid: 'G', device: 'garmin', hour: 7, minutes: 60, raw: 50 });
+    const log = logWorkout(db, {
+      date: DAY,
+      kind: 'strength',
+      durationMin: duration,
+      startedAt: at(DAY, 7, startMin),
+    });
+    pairIngestedWorkouts(db, NOW) === 1 &&
+    pairedIngestFor(db, log)?.wearableId === watch &&
+    pairedIngestFor(db, log)?.pairedBy === 'span' &&
+    pendingIngestedStrength(db, NOW).length === 0
+      ? ok(`fix4: a log 07:${startMin}+${duration}min pairs by span with the watch's 07:00–08:00 (half the shorter, not a twin)`)
+      : bad('span pair dropped', JSON.stringify(pairedIngestFor(db, log)));
   }
   {
     const { db } = freshDb();

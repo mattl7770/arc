@@ -1890,6 +1890,61 @@ console.log('25b. a measurement must be the whole line — in the quick box and 
   lost.length === 0
     ? ok(`${metrics.length} measurement lines (filler, units, clock times allowed) still file as before`)
     : bad('metric line lost', lost.map(([l]) => `${l} → ${JSON.stringify(act(l))}`).join('; '));
+
+  // The first cut's filler list was too short: everyday weigh-in and water
+  // lines became notes on the Log tab and food in the quick box (review,
+  // 2026-10-21). `logTab` is the command field's gate (pinned to the source
+  // below): a metric only when parseCommand binds one AND the line is whole.
+  const logTab = (line) => {
+    const p = parseCommand(line);
+    return p.kind === 'metric' && isWholeMetricLine(line, p.metric) ? p.metric : 'note';
+  };
+  const everyday = [
+    ['weight 178 fasted', 'weight'],
+    ['fasted weight 178', 'weight'],
+    ['weight 178 (fasted)', 'weight'],
+    ['weight 178 am', 'weight'],
+    ['am weight 178', 'weight'],
+    ['weight 178 this am', 'weight'],
+    ['hrv 61 last night', 'hrv'],
+    ['weight 178 after workout', 'weight'],
+    ['weight 178 @ 7am', 'weight'],
+    ['another 16 oz water', 'water'],
+    ['16 oz water again', 'water'],
+    ['16 oz water bottle', 'water'],
+    ['+16 oz water', 'water'],
+    ['waist 32"', 'waist'],
+  ];
+  const dropped = everyday.filter(([line, key]) => {
+    const a = act(line);
+    const p = parseCommand(line);
+    return !(
+      logTab(line) === key &&
+      a.kind === 'metric' &&
+      a.metric === key &&
+      p.kind === 'metric' &&
+      near(a.canonical, p.canonical)
+    );
+  });
+  dropped.length === 0
+    ? ok(`${everyday.length} everyday lines ("weight 178 fasted", "+16 oz water", 'waist 32"') file as metrics on the Log tab and in the quick box`)
+    : bad('everyday metric line dropped', dropped.map(([l]) => `${l} → tab ${logTab(l)}, box ${JSON.stringify(act(l))}`).join('; '));
+  // …and the whitelist stays a whitelist: the food lines are still food in
+  // the box and notes on the Log tab, the sentence still a note.
+  const stillFood = [
+    'bw 1 banana',
+    'oatmeal with 8 oz water',
+    '2 eggs and toast with 16 oz water',
+    'chicken thighs resting 10 min then 200g rice',
+    '1 lb ground beef',
+  ];
+  stillFood.every((line) => act(line).kind === 'food' && logTab(line) === 'note') &&
+  logTab('took 2 pills, weight 181') === 'note'
+    ? ok('the widened filler keeps the food lines food (box) and notes (Log tab); "took 2 pills, weight 181" stays a note')
+    : bad(
+        'whitelist widened too far',
+        [...stillFood, 'took 2 pills, weight 181'].map((l) => `${l} → tab ${logTab(l)}, box ${act(l).kind}`).join('; ')
+      );
   // There is no sleep metric to type: "slept 7h 20m" was never one, and is food.
   act('slept 7h 20m').kind === 'food'
     ? ok('"slept 7h 20m" is not a metric ARC parses (no sleep entry), so it is food')

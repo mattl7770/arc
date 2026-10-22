@@ -150,9 +150,37 @@ function pushUnique(list: string[], value: string, cap: number): void {
  * The records are `CoachToolCall`s (name {@link WEB_SEARCH_TOOL_NAME}) so they
  * ride the existing `ai_messages.tool_calls` JSON column with no migration, and
  * the next turn's digest (history-window.ts) tells the model what it searched.
+ *
+ * A search is not only a block named exactly `web_search` (fix4). A name that
+ * starts with it is read as one at once, and any other `server_tool_use` is
+ * held by its id: when a `web_search_tool_result` answers it, it WAS a search,
+ * and is recorded then. Another server tool that no search result answers is
+ * never recorded, so nothing else is passed off as a search.
  */
 export class WebSearchLedger {
   private readonly records = new Map<string, LedgerEntry>();
+  /** Server tool calls not (yet) known to be searches, by id, for the whole turn. */
+  private readonly unnamed = new Map<string, Block>();
+
+  /** Record one search block; null when it has no id or is already recorded. */
+  private record(id: string, block: Block): CoachToolCall | null {
+    if (id === '' || this.records.has(id)) return null;
+    const input = block.input as { query?: unknown } | undefined;
+    const query = typeof input?.query === 'string' ? input.query : '';
+    const call: CoachToolCall = {
+      id,
+      name: WEB_SEARCH_TOOL_NAME,
+      input: { query },
+      result: '',
+    };
+    this.records.set(id, {
+      call,
+      data: { query, cited: [], found: [] },
+      urls: new Set(),
+      resolved: false,
+    });
+    return call;
+  }
 
   /** The records in the order their searches were made. */
   calls(): CoachToolCall[] {
@@ -163,26 +191,22 @@ export class WebSearchLedger {
   observe(blocks: readonly Block[]): CoachToolCall[] {
     const added: CoachToolCall[] = [];
     for (const block of blocks) {
-      if (block.type === 'server_tool_use' && block.name === WEB_SEARCH_TOOL_NAME) {
+      if (block.type === 'server_tool_use') {
         const id = typeof block.id === 'string' ? block.id : '';
-        if (id === '' || this.records.has(id)) continue;
-        const input = block.input as { query?: unknown } | undefined;
-        const query = typeof input?.query === 'string' ? input.query : '';
-        const call: CoachToolCall = {
-          id,
-          name: WEB_SEARCH_TOOL_NAME,
-          input: { query },
-          result: '',
-        };
-        this.records.set(id, {
-          call,
-          data: { query, cited: [], found: [] },
-          urls: new Set(),
-          resolved: false,
-        });
-        added.push(call);
+        if (typeof block.name === 'string' && block.name.startsWith(WEB_SEARCH_TOOL_NAME)) {
+          const call = this.record(id, block);
+          if (call) added.push(call);
+        } else if (id !== '') {
+          this.unnamed.set(id, block);
+        }
       } else if (block.type === 'web_search_tool_result') {
-        const entry = this.records.get(String(block.tool_use_id ?? ''));
+        const useId = String(block.tool_use_id ?? '');
+        const held = this.unnamed.get(useId);
+        if (held && !this.records.has(useId)) {
+          const call = this.record(useId, held);
+          if (call) added.push(call);
+        }
+        const entry = this.records.get(useId);
         if (!entry) continue;
         entry.resolved = true;
         const content = block.content;

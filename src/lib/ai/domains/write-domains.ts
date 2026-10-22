@@ -118,6 +118,7 @@ import {
   listed,
   numberField,
   plural,
+  REOPENS_TRAINING_CLAUSE,
   textField,
   type CoachDomainEntry,
   type DomainField,
@@ -240,7 +241,7 @@ const workoutsDomain: CoachDomainEntry = {
         workout.sets.length === 0
           ? 'no sets'
           : `${plural(workout.sets.length, 'set')}: ${listed(movements)}`,
-        reopens.length === 0 ? null : `re-opens Training: ${listed(reopens)}`,
+        reopens.length === 0 ? null : `${REOPENS_TRAINING_CLAUSE}${listed(reopens)}`,
       ]
         .filter((p): p is string => p !== null)
         .join(' · ');

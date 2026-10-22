@@ -3,7 +3,7 @@
  * per render via __setParams; router methods record calls; useFocusEffect is
  * a no-op (a server render runs no effects — matching SSR semantics).
  */
-export const __router = { pushes: [], replaces: [], backs: 0, dismissTos: [] };
+export const __router = { pushes: [], replaces: [], backs: 0, dismissTos: [], dismisses: [] };
 let params = {};
 /**
  * The route the screen believes it is rendering at. `app/nutrition.tsx` and
@@ -45,6 +45,9 @@ export function useRouter() {
     },
     dismissTo: (to) => {
       __router.dismissTos.push(to);
+    },
+    dismiss: (count = 1) => {
+      __router.dismisses.push(count);
     },
   };
 }

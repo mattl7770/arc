@@ -167,8 +167,9 @@ export function TabSessionBar() {
  * a second logger on the stack, and the first then read "session ended". So
  * the tap asks the question the "Rest complete" tap asks (`restTapTarget`,
  * src/lib/notifications/taps.ts): a live logger lower in the stack is gone
- * back to, as it was (`dismissTo` with its own params); with none, the
- * session is resumed by a push, as Home's Resume row does.
+ * back to, as it was, by popping exactly the screens above it (fix4: a pop
+ * by name stopped at a past session's editor); with none, the session is
+ * resumed by a push, as Home's Resume row does.
  */
 export function SessionBar({ view, inset = 0 }: { view: SessionBarView; inset?: number }) {
   const router = useRouter();
@@ -183,10 +184,10 @@ export function SessionBar({ view, inset = 0 }: { view: SessionBarView; inset?: 
     }
     const target = restTapTarget(state, true);
     if (target.kind === 'return') {
-      router.dismissTo({
-        pathname: LIVE_LOGGER_RESUME.pathname,
-        params: target.params as Record<string, string>,
-      });
+      // By count, never by name: `dismissTo('/workout-live')` stops at the
+      // NEAREST logger, which can be a past session's editor pushed over the
+      // live one, and replaces its params with the live one's.
+      router.dismiss(target.pops);
     } else if (target.kind === 'resume') {
       router.push(LIVE_LOGGER_RESUME);
     }

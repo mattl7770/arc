@@ -166,12 +166,33 @@ function matchMetric(text: string, metric: MetricDescriptor): Hit | undefined {
 // a metric only when, with the binding taken out, nothing is left but the
 // words a measurement line carries anyway: "log", "my", "this morning", a
 // clock time. Anything else on it means the line was about something else.
+//
+// It stays a WORD WHITELIST, never "any short word": the list names when and
+// how a reading was taken ("fasted", "am", "after workout", "last night") and
+// how a glass of water is said ("another", "again", "bottle"), so a line whose
+// extra words are a food ("bw 1 banana", "oatmeal with 8 oz water") still
+// fails. The first cut carried only the "this morning" words, and everyday
+// lines ("weight 178 fasted", "am weight 178", "16 oz water again") became
+// notes on the Log tab and food in the quick box (review, 2026-10-21).
 
-/** Words a measurement line may carry beside its keyword, number and unit. */
+/**
+ * Words a measurement line may carry beside its keyword, number and unit.
+ * A phrase precedes the single words it contains, so the alternation takes
+ * "this am" whole instead of leaving a stray "this".
+ */
 const FILLER = [
   'this afternoon',
   'this evening',
   'this morning',
+  'this am',
+  'this pm',
+  'last night',
+  'after workout',
+  'before workout',
+  'post workout',
+  'pre workout',
+  'post-workout',
+  'pre-workout',
   'logged',
   'log',
   'my',
@@ -179,16 +200,29 @@ const FILLER = [
   'at',
   'today',
   'tonight',
+  'overnight',
   'morning',
+  'evening',
+  'am',
+  'pm',
+  'fasted',
+  'fasting',
   'now',
   'just',
   'drank',
+  'another',
+  'again',
+  'bottle',
+  'glass',
 ];
 const FILLER_RE = new RegExp(`\\b(?:${FILLER.map(escapeRegExp).join('|')})\\b`, 'gi');
 /** "7am", "7:30 pm", "07:30": when it was taken, which the line may say. */
 const CLOCK_RE = /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b/gi;
-/** Separators, and the percent sign "bf 15%" writes. */
-const PUNCT_RE = /[\s,.;:!=%()\-–—]+/g;
+/**
+ * Separators, the percent sign of "bf 15%", the inch mark of `waist 32"`, the
+ * "@" of "@ 7am", the "+" of "+16 oz water" and the brackets of "(fasted)".
+ */
+const PUNCT_RE = /[\s,.;:!=%()[\]\-–—@"'#+]+/g;
 
 /**
  * True when `input` is a measurement of `metricKey` and nothing else: the

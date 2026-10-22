@@ -21,6 +21,7 @@ import {
   COACH_WEB_SEARCH_MAX_USES,
   isWebSearchCall,
   searchedLine,
+  WebSearchLedger,
   webSearchesOf,
 } from '../src/lib/ai/web-search.ts';
 import { deriveRegion, deviceRegion, regionLine, regionOfLocale } from '../src/lib/ai/region.ts';
@@ -1429,6 +1430,29 @@ console.log('20. a key that cannot search: one retry without the tool, then off 
   apiKeyStore.isWebSearchUsable() === true && apiKeyStore.takeWebSearchNotice() === null
     ? ok('touching the switch clears the latch, so search is tried again')
     : bad('latch reset');
+  // fix4: the refusal belonged to one key on one model. A new key, a cleared
+  // key or a model choice tries search again, and owes no stale line.
+  {
+    const wasModel = apiKeyStore.getModel();
+    const relatch = () => {
+      apiKeyStore.markWebSearchUnavailable();
+      return apiKeyStore.isWebSearchUsable() === false;
+    };
+    const cleared = async (act) => {
+      if (!relatch()) return false;
+      await act();
+      return apiKeyStore.isWebSearchUsable() === true && apiKeyStore.takeWebSearchNotice() === null;
+    };
+    const results = {
+      setKey: await cleared(() => apiKeyStore.setKey('sk-other-test')),
+      clearKey: await cleared(() => apiKeyStore.clearKey()),
+      setModel: await cleared(() => apiKeyStore.setModel(wasModel)),
+    };
+    await apiKeyStore.clearKey();
+    Object.values(results).every(Boolean)
+      ? ok('a new key, a cleared key and a model choice each clear the latch and its pending line')
+      : bad('latch survives a setter', JSON.stringify(results));
+  }
 
   // Within the turn the tool stays off: a tool round's next request goes without it.
   const f2 = scriptedFetch([
@@ -1502,6 +1526,110 @@ console.log('20. a key that cannot search: one retry without the tool, then off 
   f4.calls.length === 2 && unavailable === 0
     ? ok('…nor a 400 after a search ran in the same turn (its blocks are in the history)')
     : bad('post-search 400', String(f4.calls.length));
+
+  // fix4: "a search ran" is the ledger OR the API's own count. A search block
+  // the ledger did not read (a server tool it cannot name, never answered by a
+  // search result) still shows in usage.server_tool_use.web_search_requests,
+  // and its blocks are just as much in the history.
+  const f5 = scriptedFetch([
+    reply([
+      ...START,
+      ev('content_block_start', {
+        index: 0,
+        content_block: { type: 'server_tool_use', id: 'srvtoolu_x', name: 'unlisted_tool', input: {} },
+      }),
+      ev('content_block_stop', { index: 0 }),
+      ...finish('pause_turn', { server_tool_use: { web_search_requests: 1 } }),
+    ]),
+    refused(),
+    reply([...START, ...textEvents(0, 'x'), ...finish('end_turn')]),
+  ]);
+  unavailable = 0;
+  try {
+    await runCoachTurn({ ...SEARCH, fetchImpl: f5 }, WITH, handlers);
+  } catch {
+    // expected
+  }
+  f5.calls.length === 2 && unavailable === 0 && apiKeyStore.isWebSearchUsable()
+    ? ok('…nor a 400 after the API COUNTED a search this turn, even one the ledger did not record')
+    : bad('usage-counted search retried', String(f5.calls.length));
+}
+
+console.log('21. a search input that arrives whole, and a search block not named exactly web_search (fix4)');
+{
+  // The input complete in content_block_start, no input_json_delta: the
+  // accumulator used to overwrite it with {} at block stop, altering the block
+  // that goes back verbatim and recording a search with no query.
+  const whole = [
+    ...START,
+    ev('content_block_start', {
+      index: 0,
+      content_block: {
+        type: 'server_tool_use',
+        id: 'srvtoolu_w',
+        name: 'web_search',
+        input: { query: 'whittakers dark chocolate kcal' },
+      },
+    }),
+    ev('content_block_stop', { index: 0 }),
+    ev('content_block_start', {
+      index: 1,
+      content_block: { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_w', content: MENU_RESULTS },
+    }),
+    ev('content_block_stop', { index: 1 }),
+    ...textEvents(2, 'About 550 kcal per 100 g.'),
+    ...finish('end_turn', { server_tool_use: { web_search_requests: 1 } }),
+  ];
+  const acc = new MessageAccumulator(() => {});
+  for (const e of whole) acc.consume({ event: e.event, data: JSON.stringify(e.data) });
+  const blocks = acc.finish().blocks;
+  const run = await runCoachTurn(
+    { apiKey: 'sk-test', model: 'claude-sonnet-5', fetchImpl: scriptedFetch([reply(whole)]) },
+    { ...REQUEST, webSearch: { maxUses: 3 } },
+    { onToken: () => {}, executeTool: async () => ({ content: '{}' }) }
+  );
+  const recorded = run.toolCalls.find((c) => c.name === 'web_search');
+  blocks[0].input?.query === 'whittakers dark chocolate kcal' &&
+  recorded?.input.query === 'whittakers dark chocolate kcal' &&
+  JSON.parse(recorded.result).query === 'whittakers dark chocolate kcal'
+    ? ok('an input given whole in content_block_start is kept: the echoed block and the record keep the query')
+    : bad('whole input lost', JSON.stringify({ input: blocks[0].input, recorded }));
+  // A client tool_use with no deltas still reads as {} (nothing to keep).
+  const bare = new MessageAccumulator(() => {});
+  for (const e of [
+    ev('content_block_start', {
+      index: 0,
+      content_block: { type: 'tool_use', id: 'toolu_b', name: 'get_insights' },
+    }),
+    ev('content_block_stop', { index: 0 }),
+  ]) {
+    bare.consume({ event: e.event, data: JSON.stringify(e.data) });
+  }
+  JSON.stringify(bare.finish().blocks[0].input) === '{}'
+    ? ok('…and a block with no input at all still reads as {}')
+    : bad('bare input', JSON.stringify(bare.finish().blocks));
+
+  // The ledger: a search is what a web_search_tool_result answers, whatever
+  // its server_tool_use was named; a name starting web_search reads as one at
+  // once; any other server tool is never passed off as a search.
+  const ledger = new WebSearchLedger();
+  const early = ledger.observe([
+    { type: 'server_tool_use', id: 'srv_a', name: 'web_search_v2', input: { query: 'a' } },
+    { type: 'server_tool_use', id: 'srv_b', name: 'renamed_search', input: { query: 'b' } },
+    { type: 'server_tool_use', id: 'srv_c', name: 'code_execution', input: { code: 'x' } },
+  ]);
+  const late = ledger.observe([
+    { type: 'web_search_tool_result', tool_use_id: 'srv_a', content: MENU_RESULTS },
+    { type: 'web_search_tool_result', tool_use_id: 'srv_b', content: MENU_RESULTS },
+  ]);
+  const all = ledger.finish();
+  early.map((c) => c.id).join(',') === 'srv_a' &&
+  late.map((c) => c.id).join(',') === 'srv_b' &&
+  all.map((c) => `${c.id}:${c.input.query}`).join(',') === 'srv_a:a,srv_b:b' &&
+  all.every((c) => c.name === 'web_search' && c.isError === undefined) &&
+  JSON.parse(all[1].result).found.length === 2
+    ? ok('the ledger records a search by its result as well as by its name, and never a code tool')
+    : bad('ledger tolerance', JSON.stringify(all));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

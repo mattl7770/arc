@@ -3956,6 +3956,30 @@ console.log('49. item 70 — log_workout ticks today’s Training row; delete_re
   !plainCard.includes('re-opens')
     ? ok('…and a session that ticked nothing re-opens nothing, and its card says nothing')
     : bad('plain delete card', plainCard);
+
+  // fix4 (delete-card2.mjs untick): the row un-ticked on Home while the delete
+  // card was open. The refusal stands, but it used to say "That workout
+  // changed", which is not what moved — the Training row did.
+  const { result: third } = approve({ kind: 'cardio', duration_min: 30 });
+  const staleContext = { now: NOW };
+  const staleCard = del.confirmSummary({ domain: 'workouts', id: third.id }, db, staleContext);
+  raw.prepare(`UPDATE log_entries SET status = 'pending' WHERE title = 'Zone 2'`).run();
+  let refusal = '';
+  try {
+    del.execute(db, { domain: 'workouts', id: third.id }, staleContext);
+  } catch (e) {
+    refusal = e.message;
+  }
+  const left = raw.prepare('SELECT count(*) AS n FROM workouts WHERE id = ?').get(third.id).n;
+  third.tickedTraining === 'Zone 2' &&
+  staleCard.includes('re-opens Training: Zone 2') &&
+  refusal.startsWith('The Training row this workout ticked changed while the card was open') &&
+  refusal.includes('"re-opens Training: Zone 2"') &&
+  refusal.includes('the workout itself is unchanged') &&
+  !refusal.includes('That workout changed') &&
+  left === 1
+    ? ok(`fix4: a Training row un-ticked mid-card is named as what changed ("${refusal}")`)
+    : bad('training-row refusal', JSON.stringify({ third, staleCard, refusal, left }));
 }
 {
   // fix3: the Coach tab is the first thing to touch today. The card used to

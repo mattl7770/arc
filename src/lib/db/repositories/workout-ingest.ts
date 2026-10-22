@@ -51,6 +51,7 @@ import {
   overlapFraction,
   parseSpan,
   readWorkoutHr,
+  SAME_SESSION_OVERLAP,
   sameSession,
   sourcePriorityOf,
   workoutSpan,
@@ -343,11 +344,12 @@ function writePairingRefusals(db: Database, refusals: readonly PairRefusal[]): v
  * A manual session either has a knowable span or it does not, and the two cases
  * are disjoint — so the two rules can never fight over a `workouts` row:
  *
- *   · **`started_at` present → the SPAN rule.** The two sessions are THE SAME
- *     SESSION when {@link sameSession} says so (since fix3: half the shorter AND
- *     either the shorter lies inside the longer or they share half the longer)
- *     — the app's one definition of that, borrowed whole from the
- *     duplicate collapse `recentWearableWorkouts` already performs.
+ *   · **`started_at` present → the SPAN rule.** A recording is a candidate
+ *     when the two spans share at least {@link SAME_SESSION_OVERLAP} of the
+ *     shorter one (the 0054 rule; fix3 made it {@link sameSession}, which
+ *     dropped a log finished half an hour after the watch was stopped, and
+ *     fix4 put it back). `sameSession`, the twin collapse's stricter question,
+ *     only RANKS the candidates (see Ties).
  *   · **`started_at` NULL → the DAY rule** ({@link pairByDay}). No span exists,
  *     so the day is all there is, and the duration arbitrates.
  *
@@ -386,6 +388,9 @@ function writePairingRefusals(db: Database, refusals: readonly PairRefusal[]): v
  * manual session (two short recordings inside one long log), and those resolve
  * by:
  *
+ *   0. (span rule only) a candidate that is {@link sameSession} with the log
+ *      beats one that only clears half the shorter: a log of a run's 20
+ *      minutes takes the run, not the lift whose recording ran into it;
  *   1. {@link SOURCE_PRIORITY} — the same arbitration every other metric gets;
  *   2. then the LONGER span — a truncated copy tells you less about the session;
  *   3. then `created_at`, then `id` — the exact ordering 0042's de-duplicating
@@ -435,7 +440,7 @@ export function pairIngestedWorkouts(
   return links.length;
 }
 
-/** The 0054 rule: a shared clock ({@link sameSession} since fix3), and the day only pre-filters. */
+/** The 0054 rule: a shared clock (half the shorter), and the day only pre-filters. */
 function pairBySpan(
   db: Database,
   since: string,
@@ -480,15 +485,28 @@ function pairBySpan(
   for (const w of manual) {
     const before = shiftISODate(w.date, -1);
     const after = shiftISODate(w.date, 1);
-    let best: { candidate: PairableIngest; overlap: number } | null = null;
+    let best: { candidate: PairableIngest; overlap: number; same: boolean } | null = null;
     for (const candidate of candidates) {
       if (taken.has(candidate.row.id)) continue;
       if (isRefused(refused, w.id, candidate.members)) continue;
       if (candidate.row.date < before || candidate.row.date > after) continue;
       const shared = overlapFraction(w.span, candidate.span);
-      if (!sameSession(w.span, candidate.span)) continue;
-      if (best === null || beatsIncumbent(measured(candidate), measured(best.candidate))) {
-        best = { candidate, overlap: shared };
+      // Eligibility is the 0054 rule, half of the shorter: a log and a
+      // recording are two clocks on one session, started and stopped by hand
+      // at different moments (a warm-up on the watch, a log finished late).
+      // `sameSession` is the stricter TWIN question; as the gate it dropped
+      // pairings that had worked (fix4: watch 07:00–08:00, log 07:15–09:00).
+      if (shared < SAME_SESSION_OVERLAP) continue;
+      // It still ranks: a candidate that is the same session outranks one that
+      // only clears half the shorter, so a log of a run's 20 minutes takes the
+      // run, not the lift whose recording ran 10 minutes into it (fix3).
+      const same = sameSession(w.span, candidate.span);
+      if (
+        best === null ||
+        (same && !best.same) ||
+        (same === best.same && beatsIncumbent(measured(candidate), measured(best.candidate)))
+      ) {
+        best = { candidate, overlap: shared, same };
       }
     }
     if (best === null) continue;

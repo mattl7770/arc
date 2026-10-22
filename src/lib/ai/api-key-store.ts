@@ -80,11 +80,22 @@ let webSearch = true;
 // The session latch (2026-10-21): the API refused the search tool on this key
 // and the same request without it went through (model-client.ts
 // `searchToolRefused`). In memory ONLY — never the stored switch — so a relaunch,
-// or the owner flipping the switch after enabling search in the Console, tries
-// again. `webSearchNoticePending` is the one quiet line owed to whichever
-// screen shows a result next.
+// the owner flipping the switch after enabling search in the Console, or a new
+// key or model (`resetWebSearchLatch`) tries again. `webSearchNoticePending` is
+// the one quiet line owed to whichever screen shows a result next.
 let webSearchUnavailable = false;
 let webSearchNoticePending = false;
+
+/**
+ * Forget the latch and any line still owed. The refusal belonged to one key on
+ * one model, so a new key, a cleared key, a model choice and the switch itself
+ * each try search again (fix4: the latch outlived setKey/clearKey/setModel, so
+ * a key that CAN search stayed without it until a relaunch).
+ */
+function resetWebSearchLatch(): void {
+  webSearchUnavailable = false;
+  webSearchNoticePending = false;
+}
 let hydrated = false;
 // Set the moment the user acts (setKey/clearKey/setModel) so a slow boot-time
 // hydrate() read that resolves LATER can never clobber what they just chose —
@@ -219,6 +230,7 @@ export const apiKeyStore = {
     const trimmed = key.trim();
     if (trimmed.length === 0) return this.clearKey();
     apiKey = trimmed;
+    resetWebSearchLatch();
     emit();
     persistInBackground((store) => store.setItemAsync(KEYCHAIN_API_KEY, trimmed, deviceOnly(store)));
   },
@@ -227,6 +239,7 @@ export const apiKeyStore = {
   async clearKey(): Promise<void> {
     keyTouched = true;
     apiKey = null;
+    resetWebSearchLatch();
     emit();
     persistInBackground((store) => store.deleteItemAsync(KEYCHAIN_API_KEY));
   },
@@ -236,6 +249,7 @@ export const apiKeyStore = {
     if (!isCoachModel(next)) return;
     modelTouched = true;
     model = next;
+    resetWebSearchLatch();
     emit();
     persistInBackground((store) => store.setItemAsync(KEYCHAIN_MODEL, next, deviceOnly(store)));
   },
@@ -245,8 +259,7 @@ export const apiKeyStore = {
     webSearchTouched = true;
     webSearch = on;
     // Touching the switch is the owner's answer to the line: try again.
-    webSearchUnavailable = false;
-    webSearchNoticePending = false;
+    resetWebSearchLatch();
     emit();
     persistInBackground((store) =>
       on

@@ -442,6 +442,13 @@ export function describeDelete(label: string, row: DomainRow, gone: string): str
   return `Delete ${label} "${row.name}" — ${gone}`;
 }
 
+/**
+ * The clause a workout's removal card carries for the Training row the delete
+ * re-opens (fix3). Shared so delete_record's staleness refusal can say it was
+ * that ROW that changed, not the workout (fix4).
+ */
+export const REOPENS_TRAINING_CLAUSE = 're-opens Training: ';
+
 /** "1 set", "12 sets" — a removal card counts what goes with the row. */
 export function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`;

@@ -17,6 +17,7 @@
  * what they were about is settled (a fake Notification Centre injected as the
  * pass's `delivered` seam).
  */
+import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 
 import { migrate } from '../src/lib/db/migrate.ts';
@@ -886,9 +887,55 @@ console.log('16. the gate reads the app’s own Stack, not expo-router’s __roo
     ]),
     true
   );
-  back.kind === 'return' && back.params.routineId === 'r9'
-    ? ok('logger under another screen: return to it, its params intact')
+  back.kind === 'return' && back.params.routineId === 'r9' && back.pops === 1
+    ? ok('logger under another screen: return to it, its params intact, one pop')
     : bad('return', JSON.stringify(back));
+
+  // fix4 (popto.cjs): a pop BY NAME stops at the NEAREST workout-live, and a
+  // past session's editor can sit between the live logger and the top. The
+  // target now counts the screens above the live one, and that count, put
+  // through expo-router's own StackRouter, lands on the live logger as it was.
+  {
+    const routes = [
+      { key: 't', name: '(tabs)' },
+      { key: 'live', name: 'workout-live', params: { resume: '1' } },
+      { key: 'hub', name: 'exercise' },
+      { key: 'editor', name: 'workout-live', params: { workoutId: 'W1' } },
+      { key: 'detail', name: 'exercise-detail', params: { id: 'bench' } },
+    ];
+    const target = t(stack(routes), true);
+    const { StackRouter } = createRequire(import.meta.url)(
+      '../node_modules/expo-router/build/react-navigation/routers/StackRouter.js'
+    );
+    const names = ['(tabs)', 'workout-live', 'exercise', 'exercise-detail'];
+    const state = {
+      stale: false,
+      type: 'stack',
+      key: 'root',
+      index: routes.length - 1,
+      routeNames: names,
+      preloadedRoutes: [],
+      routes,
+    };
+    const opts = { routeNames: names, routeParamList: {}, routeGetIdList: {} };
+    const popped =
+      target.kind === 'return'
+        ? StackRouter({}).getStateForAction(state, { type: 'POP', payload: { count: target.pops } }, opts)
+        : null;
+    // What the old call did, for the record: POP_TO by name.
+    const byName = StackRouter({}).getStateForAction(
+      state,
+      { type: 'POP_TO', payload: { name: 'workout-live', params: { resume: '1' } } },
+      opts
+    );
+    target.kind === 'return' &&
+    target.pops === 3 &&
+    popped?.routes[popped.index]?.key === 'live' &&
+    popped.routes[popped.index].params?.resume === '1' &&
+    byName.routes[byName.index].key === 'editor'
+      ? ok('an editor between: 3 pops land on the LIVE logger (a pop by name stopped at the editor)')
+      : bad('pop past the editor', JSON.stringify({ target, popped: popped?.routes, index: popped?.index }));
+  }
   t(stack([{ name: '(tabs)' }, { name: 'workout-live', params: { workoutId: 'w1' } }]), true)
     .kind === 'resume'
     ? ok('a logger correcting a SAVED session is not the live one: resume the live one')
