@@ -9971,7 +9971,7 @@ console.log('\n42. Calendar context — the Settings › Coach switch, off until
     'aria-label="Calendar"',
     'Every calendar on this phone.',
     'never its notes, attendees or links',
-    'ARC never writes to your calendar and stores none of it.',
+    'ARC never writes to your calendar or keeps a copy of it; a Coach reply that mentions an event is saved like any reply.',
   ]);
   // OFF by default: the one switch labelled Calendar is unchecked.
   const calendarSwitch = screen?.match(/<input[^>]*aria-label="Calendar"[^>]*>/)?.[0] ?? '';
@@ -10230,7 +10230,7 @@ console.log('\n44. Track 0 (2026-10-21) — Coach usage, the new models, and a p
 }
 
 /**
- * 41. Smart day (0067) — the Coach's plan at the top of Home.
+ * 45. Smart day (0067) — the Coach's plan at the top of Home.
  *
  * Without a plan Home must be EXACTLY what it was: the render with no plan and
  * the render after a plan is cleared are compared as whole strings. With one,
