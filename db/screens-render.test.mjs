@@ -10353,6 +10353,37 @@ console.log('\n45. Smart day — the Coach’s plan at the top of Home, and its 
   });
   expect('coach item hero (until)', hero, ['until 14:00', '>Log a meal<', 'Eat lunch']);
   refute('coach item hero (no reason)', hero, ['The Coach:']);
+
+  // What only a running app exercises — listeners and timers — pinned in source
+  // (the pure halves are db/smart-day.test.mjs §3b).
+  const planHook = readFileSync(new URL('../src/hooks/use-day-plan.ts', import.meta.url), 'utf8');
+  /subscribeHealthSync\(bump\)/.test(planHook) &&
+  /subscribeGarminSync\(bump\)/.test(planHook) &&
+  /unsubscribeHealth\(\);/.test(planHook) &&
+  /unsubscribeGarmin\(\);/.test(planHook)
+    ? ok('useDayPlan re-reads when an Apple Health or Garmin sync lands, and unsubscribes')
+    : bad('useDayPlan does not listen to the Health / Garmin syncs');
+  /msUntilNextExpiry\(read\.items, new Date\(\)\)/.test(planHook) &&
+  /setTimeout\(bump, delay\)/.test(planHook) &&
+  /return \(\) => clearTimeout\(timer\)/.test(planHook)
+    ? ok('useDayPlan sets one timer to the earliest live UNTIL, cleared on change and unmount')
+    : bad('useDayPlan has no UNTIL timer');
+  /shownKeys\(read\.items, top,/.test(planHook) && !/onScreen\.add\(topKey\)/.test(planHook)
+    ? ok('useDayPlan records shown through shownKeys — live pins whose row is drawn included')
+    : bad('useDayPlan still records shown only for Coach rows and the hero');
+  /toCoachItemView\(item, read\.liveOpen\)/.test(planHook) &&
+  /toCoachItemView\(top\.item, read\.liveOpen\)/.test(planHook)
+    ? ok('a Coach item’s button knows whether a live session is open (Start → Resume)')
+    : bad('the Coach item views are built without the live session');
+  const proposalsHook = readFileSync(
+    new URL('../src/hooks/use-coach-proposals.ts', import.meta.url),
+    'utf8'
+  );
+  /AppState\.addEventListener\('change', \(state\) => \{\s*if \(state === 'active'\) setTick\(\(n\) => n \+ 1\);/.test(
+    proposalsHook
+  ) && /return \(\) => subscription\.remove\(\)/.test(proposalsHook)
+    ? ok('useCoachProposals re-reads on return to the foreground — yesterday’s brief does not outlive its day')
+    : bad('useCoachProposals does not re-read on foreground');
 }
 
 console.log('\n46. Item 87 — Progressing / Holding / Stalled replaces the PR stamp and the hub’s %');

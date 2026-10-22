@@ -21,6 +21,7 @@ import { getDayStartsAt, logicalDayUtcRange, shiftISODate, todayISODate } from '
 import { newId } from '@/lib/db/id';
 import { activeExperiments } from '@/lib/db/repositories/experiments';
 import { listMission } from '@/lib/db/repositories/mission';
+import { NIGHT_OUT_DRINKS_ONLY_MEAL_SQL } from '@/lib/db/repositories/nutrition';
 import { listPendingEstimates } from '@/lib/db/repositories/pending-estimates';
 import { isDueOn, listActiveReminders } from '@/lib/db/repositories/reminders';
 import { listRoutines } from '@/lib/db/repositories/routines';
@@ -248,7 +249,14 @@ function eventsFor(db: Database, planId: string): Set<string> {
 
 // --- Evaluation --------------------------------------------------------------------
 
-/** What has become of each item of the standing plan, as of `now`. Reads only. */
+/**
+ * What has become of each item of the standing plan, as of `now`. Reads only.
+ *
+ * Every "since" question is asked about the PLAN's day, not today's: a plan
+ * from yesterday is settled against yesterday's record (its mission rows, its
+ * meals, its weigh-in window), so what landed on it is `done` and only the
+ * rest `expired` (evaluatePlan).
+ */
 export function readDayPlan(
   db: Database,
   now: Date = new Date(),
@@ -257,6 +265,8 @@ export function readDayPlan(
   const plan = getDayPlan(db);
   if (!plan) return { plan: null, items: [] };
   const today = todayISODate(now, dayStartsAt);
+  const day = plan.day;
+  const range = logicalDayUtcRange(day, dayStartsAt);
   const since = plan.madeAt;
   const exists = (sql: string, params: (string | number)[]) => db.get(sql, params) !== undefined;
   const live = readOpenLiveSession(db);
@@ -264,21 +274,24 @@ export function readDayPlan(
     now,
     today,
     events: eventsFor(db, plan.id),
-    rows: new Map(listMission(db, today).map((row) => [row.id, row])),
+    rows: new Map(listMission(db, day).map((row) => [row.id, row])),
     weightSince: exists(
-      `SELECT 1 FROM body_metrics WHERE weight_kg IS NOT NULL AND created_at >= ? AND measured_at >= ? LIMIT 1`,
-      [since, logicalDayUtcRange(today, dayStartsAt).startUtc]
+      `SELECT 1 FROM body_metrics WHERE weight_kg IS NOT NULL AND created_at >= ?
+         AND measured_at >= ? AND measured_at < ? LIMIT 1`,
+      [since, range.startUtc, range.endUtc]
     ),
-    mealSince: exists(`SELECT 1 FROM meals WHERE date = ? AND created_at >= ? LIMIT 1`, [
-      today,
-      since,
-    ]),
+    // Night out's drinks are a meal row but not a meal (nutrition.ts).
+    mealSince: exists(
+      `SELECT 1 FROM meals m WHERE m.date = ? AND m.created_at >= ?
+         AND NOT ${NIGHT_OUT_DRINKS_ONLY_MEAL_SQL} LIMIT 1`,
+      [day, since]
+    ),
     waterSince: exists(
       `SELECT 1 FROM wearable_data WHERE metric_type = 'water_ml' AND date = ? AND created_at >= ? LIMIT 1`,
-      [today, since]
+      [day, since]
     ),
     workoutSince: exists(`SELECT 1 FROM workouts WHERE date = ? AND created_at >= ? LIMIT 1`, [
-      today,
+      day,
       since,
     ]),
     liveStartedAt: live ? live.draft.startedAt : null,
@@ -328,9 +341,11 @@ export function homeTopFor(
 
 /**
  * Apply a pass's resolved PLAN lines. `keep` changes nothing. `clear` and
- * `replace` first close every still-open item of the standing plan as
- * `replaced` (yesterday's as `expired` — they ended with their day), then write
- * the new plan, or none.
+ * `replace` first close the standing plan — every still-open item as
+ * `replaced` (yesterday's settle against their own day first), and every item
+ * the record has answered as what it answered (`done`, or `dismissed` for a
+ * skipped pin), since a plan that is ending can no longer be Undone into —
+ * then write the new plan, or none.
  *
  * Returns the plan now standing.
  */
@@ -346,6 +361,9 @@ export function applyDayPlan(
   if (standing.plan) {
     for (const item of standing.items) {
       if (item.state === 'live') recordPlanEvent(db, standing.plan, item, 'replaced', now);
+      // Idempotent: an outcome already on record is ignored by the unique index.
+      else if (item.state === 'done' || item.state === 'dismissed')
+        recordPlanEvent(db, standing.plan, item, item.state, now);
     }
   }
   const next: DayPlan | null =

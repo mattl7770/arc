@@ -46,9 +46,13 @@ import {
   destinationHref,
   evaluatePlan,
   homeTop,
+  msUntilNextExpiry,
   PLAN_ACTIONS,
+  shownKeys,
   summarizePlanEvents,
+  toCoachItemView,
 } from '../src/lib/home/day-plan.ts';
+import { setNightOutDrinks } from '../src/lib/db/repositories/nutrition.ts';
 import { deriveMissionView } from '../src/lib/home/derive-mission.ts';
 import { parsePlanReply, resolvePlan, planInstructions } from '../src/lib/home/plan-lines.ts';
 import * as plan from '../src/lib/db/repositories/day-plan.ts';
@@ -586,8 +590,9 @@ console.log('3. the plan against the record: the top of Home, and every transiti
   ]);
   plan.settleDayPlan(db, at(6), ZERO);
   check(
-    events(db).includes('do:log_weight|done'),
-    'the weight arriving records DONE for the weigh-in item'
+    plan.readDayPlan(db, at(6), ZERO).items[0].state === 'done' &&
+      !events(db).includes('do:log_weight|done'),
+    'the weight arriving reads DONE for the weigh-in item — recorded when the plan closes, not yet'
   );
   top = plan.homeTopFor(db, at(6), none, ZERO);
   check(
@@ -607,10 +612,25 @@ console.log('3. the plan against the record: the top of Home, and every transiti
   );
   unsnoozeItem(magnesium.id);
 
-  // Completing the pinned row records done for the PIN (the row's own status is the completion).
+  // Completing the pinned row is DONE for the pin — read off the row's live
+  // status every time, so the Undo of an auto-tick puts the pin back (finding 6).
   setMissionStatus(db, magnesium.id, 'completed', TODAY);
   plan.settleDayPlan(db, at(7), ZERO);
-  check(events(db).includes('pin:<id>|done'), 'ticking the pinned row records DONE for the pin');
+  check(
+    plan.readDayPlan(db, at(7), ZERO).items[1].state === 'done' &&
+      !events(db).includes('pin:<id>|done'),
+    'ticking the pinned row reads DONE for the pin, and records nothing while the plan stands'
+  );
+  setMissionStatus(db, magnesium.id, 'pending', TODAY);
+  plan.settleDayPlan(db, at(7), ZERO);
+  top = plan.homeTopFor(db, at(7), none, ZERO);
+  check(
+    plan.readDayPlan(db, at(7), ZERO).items[1].state === 'live' &&
+      top?.kind === 'pin' &&
+      top.row.id === magnesium.id,
+    'the tick Undone: the pin is live again and back on top — done was never sticky'
+  );
+  setMissionStatus(db, magnesium.id, 'completed', TODAY);
 
   // A destination with no data of its own: the tap is the act.
   const live = plan.readDayPlan(db, at(8), ZERO);
@@ -632,6 +652,10 @@ console.log('3. the plan against the record: the top of Home, and every transiti
     resolution([doItem('log_meal', 1, { title: 'Lunch' }), doItem('log_water', 2)]),
     at(10),
     ZERO
+  );
+  check(
+    events(db).includes('pin:<id>|done') && events(db).includes('do:log_weight|done'),
+    'the plan replaced: what the record answered is recorded as DONE as it closes'
   );
   const secondPlan = plan.getDayPlan(db);
   plan.applyDayPlan(db, resolution([doItem('log_water', 1, { title: 'Water' })]), at(11), ZERO);
@@ -753,12 +777,193 @@ console.log('3. the plan against the record: the top of Home, and every transiti
     [TODAY, iso(10)]
   );
   for (let i = 0; i < 3; i++) plan.settleDayPlan(db4, at(11), ZERO);
+  // The day ends; the next morning's settle closes the plan.
+  for (let i = 0; i < 2; i++) plan.settleDayPlan(db4, at(24 * 60), ZERO);
   check(
     JSON.stringify(events(db4)) ===
       JSON.stringify(['do:log_meal|done', 'do:log_meal|shown', 'do:log_meal|started']),
-    'shown ×5, started ×2, settled ×3 → one row each: shown, started, done',
+    'shown ×5, started ×2, settled ×3 today and ×2 tomorrow → one row each: shown, started, done',
     JSON.stringify(events(db4))
   );
+}
+
+// ---------------------------------------------------------------------------
+console.log('3b. review fixes: a past day settles against itself; drinks, pins, timers, labels');
+{
+  const tomorrowNoon = at(24 * 60);
+  const TOMORROW = shiftISODate(TODAY, 1);
+
+  // A PLAN FROM YESTERDAY IS SETTLED AGAINST YESTERDAY (finding 1). A weight
+  // logged 30 minutes after the plan, Home never re-opened that day: the next
+  // day's settle records DONE for it, and EXPIRED only for what did not land.
+  {
+    const db = seededDay();
+    const rows = listMission(db, TODAY);
+    const creatine = rows.find((r) => r.title === 'Creatine');
+    plan.applyDayPlan(
+      db,
+      resolution([
+        doItem('log_weight', 1, { title: 'Weigh in' }),
+        pinItem(creatine, 2),
+        doItem('log_meal', 3, { title: 'Lunch' }),
+      ]),
+      NOW,
+      ZERO
+    );
+    const p = plan.getDayPlan(db);
+    for (const item of p.items) plan.recordPlanEvent(db, p, item, 'shown', NOW);
+    db.run(
+      "INSERT INTO body_metrics (id, measured_at, weight_kg, source, created_at) VALUES ('w1', ?, 80, 'manual', ?)",
+      [iso(30), iso(30)]
+    );
+    setMissionStatus(db, creatine.id, 'completed', TODAY);
+    // Tomorrow's meal answers nothing about today's plan.
+    db.run(
+      "INSERT INTO meals (id, date, time, name, created_at) VALUES ('mt', ?, '08:00', 'Breakfast', ?)",
+      [TOMORROW, tomorrowNoon.toISOString()]
+    );
+    plan.settleDayPlan(db, tomorrowNoon, ZERO);
+    check(
+      JSON.stringify(events(db).filter((e) => !e.endsWith('|shown'))) ===
+        JSON.stringify(['do:log_meal|expired', 'do:log_weight|done', 'pin:<id>|done']),
+      'yesterday’s plan, settled today: the weight and the ticked pin DONE; a meal dated tomorrow leaves log_meal EXPIRED',
+      JSON.stringify(events(db))
+    );
+    const summary = plan.dayPlanSummary(db, TOMORROW);
+    check(
+      summary.startsWith('Your plan items, last 14 days: 3 shown, 2 acted on (2 done), 0 dismissed, 1 expired'),
+      'and the 14-day summary says acted on',
+      summary
+    );
+  }
+  {
+    // A weight measured TOMORROW is outside the plan day's window; an open pin expires.
+    const db = seededDay();
+    const fishOil = listMission(db, TODAY).find((r) => r.title === 'Fish oil');
+    plan.applyDayPlan(db, resolution([doItem('log_weight', 1), pinItem(fishOil, 2)]), NOW, ZERO);
+    db.run(
+      "INSERT INTO body_metrics (id, measured_at, weight_kg, source, created_at) VALUES ('w2', ?, 80, 'manual', ?)",
+      [tomorrowNoon.toISOString(), tomorrowNoon.toISOString()]
+    );
+    plan.settleDayPlan(db, at(24 * 60 + 1), ZERO);
+    check(
+      JSON.stringify(events(db)) === JSON.stringify(['do:log_weight|expired', 'pin:<id>|expired']),
+      'a weight from the next day does not settle yesterday’s weigh-in item; the open pin EXPIRED',
+      JSON.stringify(events(db))
+    );
+  }
+
+  // NIGHT OUT'S DRINKS ARE NOT A MEAL (finding 3).
+  {
+    const db = seededDay();
+    plan.applyDayPlan(db, resolution([doItem('log_meal', 1, { title: 'Log dinner' })]), NOW, ZERO);
+    setNightOutDrinks(db, TODAY, { count: 2, kind: 'wine' });
+    db.run('UPDATE meals SET created_at = ?', [iso(5)]);
+    check(
+      db.get('SELECT count(*) AS n FROM meals').n === 1 &&
+        plan.readDayPlan(db, at(6), ZERO).items[0].state === 'live',
+      'the Night-out drinks meal alone leaves log_meal live'
+    );
+    db.run(
+      "INSERT INTO meals (id, date, time, name, created_at) VALUES ('md', ?, '19:30', 'Dinner', ?)",
+      [TODAY, iso(10)]
+    );
+    check(
+      plan.readDayPlan(db, at(11), ZERO).items[0].state === 'done',
+      'a real meal after it clears the item'
+    );
+  }
+
+  // A WEIGHT TAKEN BACK puts its item back (finding 6, the do-item half).
+  {
+    const db = seededDay();
+    plan.applyDayPlan(db, resolution([doItem('log_weight', 1)]), NOW, ZERO);
+    db.run(
+      "INSERT INTO body_metrics (id, measured_at, weight_kg, source, created_at) VALUES ('w3', ?, 80, 'manual', ?)",
+      [iso(5), iso(5)]
+    );
+    plan.settleDayPlan(db, at(6), ZERO);
+    db.run("DELETE FROM body_metrics WHERE id = 'w3'");
+    check(
+      plan.settleDayPlan(db, at(7), ZERO).items[0].state === 'live' && events(db).length === 0,
+      'a weight logged then deleted: the weigh-in item is live again, nothing recorded'
+    );
+  }
+
+  // SHOWN FOR LIVE PINS whose row is drawn (finding 7), so acted on ≤ shown.
+  {
+    const db = seededDay();
+    const rows = listMission(db, TODAY);
+    const fishOil = rows.find((r) => r.title === 'Fish oil');
+    const magnesium = rows.find((r) => r.title === 'Magnesium');
+    plan.applyDayPlan(
+      db,
+      resolution([doItem('log_water', 1), pinItem(fishOil, 2), pinItem(magnesium, 3)]),
+      NOW,
+      ZERO
+    );
+    const read = plan.readDayPlan(db, at(1), ZERO);
+    const view = deriveMissionView(rows, new Set());
+    const top = homeTop(view, read.items);
+    const drawn = new Set(view.rest.map((r) => r.id));
+    const keys = shownKeys(read.items, top, drawn);
+    check(
+      keys.has('do:log_water') && keys.has(`pin:${fishOil.id}`) && keys.has(`pin:${magnesium.id}`),
+      'the hero’s item, the Coach row and both drawn pins are shown'
+    );
+    check(
+      JSON.stringify([...shownKeys(read.items, top, null)]) === JSON.stringify(['do:log_water']) &&
+        !shownKeys(read.items, top, new Set([fishOil.id])).has(`pin:${magnesium.id}`),
+      'no checklist: only the hero; a pin whose row is not drawn is not shown'
+    );
+    for (const item of read.plan.items) {
+      if (keys.has(item.key)) plan.recordPlanEvent(db, read.plan, item, 'shown', at(1));
+    }
+    setMissionStatus(db, magnesium.id, 'completed', TODAY);
+    plan.settleDayPlan(db, tomorrowNoon, ZERO);
+    const summary = plan.dayPlanSummary(db, TOMORROW);
+    check(
+      summary.includes('3 shown, 1 acted on (1 done)') && summary.includes('pinned row 2/1'),
+      'a pin ticked counts as shown and acted on — acted on never exceeds shown',
+      summary
+    );
+  }
+
+  // THE TIMER: the earliest live item's UNTIL (finding 4).
+  {
+    const db = seededDay();
+    plan.applyDayPlan(
+      db,
+      resolution([
+        doItem('log_water', 1, { until: iso(90) }),
+        doItem('log_meal', 2, { until: iso(30) }),
+      ]),
+      NOW,
+      ZERO
+    );
+    const live = plan.readDayPlan(db, at(1), ZERO).items;
+    check(msUntilNextExpiry(live, at(1)) === 29 * 60_000, 'the timer is set to the earliest live UNTIL');
+    const later = plan.readDayPlan(db, at(31), ZERO).items;
+    check(
+      msUntilNextExpiry(later, at(31)) === 59 * 60_000,
+      'past it, the next live item’s UNTIL'
+    );
+    check(
+      msUntilNextExpiry(plan.readDayPlan(db, at(91), ZERO).items, at(91)) === null,
+      'nothing live: no timer'
+    );
+  }
+
+  // START reads RESUME while a session is open (cosmetic): the href already resumes.
+  {
+    const item = { ...doItem('start_workout', 1, { targetId: 'r1' }), state: 'live', transition: null };
+    check(
+      toCoachItemView(item).button === 'Start' &&
+        toCoachItemView(item, true).button === 'Resume' &&
+        destinationHref(item, true).params?.resume === '1',
+      'start_workout says Resume while a live session is open, where its tap goes'
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -6,11 +6,15 @@ import { coachPassStore } from '@/lib/ai/pass-store';
 import { getDb } from '@/lib/db/client';
 import { readDayPlan, recordPlanEvent, settleDayPlan } from '@/lib/db/repositories/day-plan';
 import { readOpenLiveSession } from '@/lib/exercise/session-bar';
+import { subscribeGarminSync } from '@/lib/garmin/sync';
+import { subscribeHealthSync } from '@/lib/health/sync';
 import {
   ACTION_SPEC,
   coachRows,
   destinationHref,
   homeTop,
+  msUntilNextExpiry,
+  shownKeys,
   toCoachItemView,
   type CoachItemView,
   type HomeTop,
@@ -40,12 +44,18 @@ export type DayPlanView = {
  *
  * READS in render (op-sqlite is synchronous, the mission hook's pattern) and
  * WRITES in an effect: the `shown` event for what is on screen, and the
- * transitions the read found (a weight arrived → `done`, an `until` passed →
- * `expired`). Both are idempotent, so a re-render records nothing twice.
+ * transitions the read found (an `until` passed → `expired`; yesterday's plan
+ * settled against yesterday → `done` / `expired`). A weight that arrived today
+ * reads `done` but is recorded only when the plan closes (EvaluatedItem). Both
+ * writes are idempotent, so a re-render records nothing twice.
  *
- * Re-read on focus and foreground (data arrives on pushed screens and in the
- * background sync), whenever the mission moves, and whenever the pass store
- * emits — the pass that just wrote a plan.
+ * Re-read on focus and foreground (data arrives on pushed screens), when an
+ * Apple Health or Garmin sync lands (a scale's weight, water — the way
+ * use-readiness listens), whenever the mission moves, whenever the pass store
+ * emits — the pass that just wrote a plan — and when the earliest live item's
+ * `until` passes while Home stays open.
+ *
+ * The mission itself needs no sync listener: neither sync writes a mission row.
  */
 export function useDayPlan(view: MissionView): DayPlanView {
   const router = useRouter();
@@ -58,29 +68,49 @@ export function useDayPlan(view: MissionView): DayPlanView {
       if (state === 'active') bump();
     });
     const unsubscribe = coachPassStore.subscribe(bump);
+    const unsubscribeHealth = subscribeHealthSync(bump);
+    const unsubscribeGarmin = subscribeGarminSync(bump);
     return () => {
       subscription.remove();
       unsubscribe();
+      unsubscribeHealth();
+      unsubscribeGarmin();
     };
   }, [bump]);
 
   const read = useMemo(() => {
     try {
-      return readDayPlan(getDb(), new Date());
+      const db = getDb();
+      return { ...readDayPlan(db, new Date()), liveOpen: readOpenLiveSession(db) !== null };
     } catch {
-      return { plan: null, items: [] };
+      return { plan: null, items: [], liveOpen: false };
     }
     // `version` and `view.items` are the re-read triggers, not inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version, view.items]);
 
+  // One timer, to the earliest live item's UNTIL: past it the re-read finds the
+  // item expired (and the effect below records it) while Home stays open.
+  useEffect(() => {
+    const delay = msUntilNextExpiry(read.items, new Date());
+    if (delay === null) return;
+    const timer = setTimeout(bump, delay);
+    return () => clearTimeout(timer);
+  }, [read.items, bump]);
+
   // Cheap and pure, so computed every render; the effect below keys on WHICH
-  // item is on top, not on the object.
+  // items are on screen, not on the objects.
   const top = homeTop(view, read.items);
-  const topKey = top === null ? null : top.kind === 'mission' ? `row:${top.row.id}` : top.item.key;
-  const rows = useMemo(() => coachRows(read.items).map(toCoachItemView), [read.items]);
-  const heroItem = top?.kind === 'coach' ? toCoachItemView(top.item) : null;
-  const hasList = view.total > 0;
+  const rows = useMemo(
+    () => coachRows(read.items).map((item) => toCoachItemView(item, read.liveOpen)),
+    [read.items, read.liveOpen]
+  );
+  const heroItem = top?.kind === 'coach' ? toCoachItemView(top.item, read.liveOpen) : null;
+  // The checklist (and so its Coach rows and pinned rows) is drawn only on a day
+  // with rows; a live pin's row is open, so it is always in `rest`.
+  const onScreen = [
+    ...shownKeys(read.items, top, view.total > 0 ? new Set(view.rest.map((row) => row.id)) : null),
+  ].join('\n');
 
   // What is on screen is `shown`; what the read found is settled.
   useEffect(() => {
@@ -90,16 +120,14 @@ export function useDayPlan(view: MissionView): DayPlanView {
       const db = getDb();
       const now = new Date();
       settleDayPlan(db, now);
-      // The checklist (and so its Coach rows) is drawn only on a day with rows.
-      const onScreen = new Set(hasList ? rows.map((row) => row.key) : []);
-      if (topKey !== null && !topKey.startsWith('row:')) onScreen.add(topKey);
+      const keys = new Set(onScreen.split('\n'));
       for (const item of plan.items) {
-        if (onScreen.has(item.key)) recordPlanEvent(db, plan, item, 'shown', now);
+        if (keys.has(item.key)) recordPlanEvent(db, plan, item, 'shown', now);
       }
     } catch {
       // History is best effort; Home is what matters.
     }
-  }, [read, rows, topKey, hasList]);
+  }, [read, onScreen]);
 
   const open = useCallback(
     (key: string) => {

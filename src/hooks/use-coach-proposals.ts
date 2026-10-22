@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 
 import { coachPassStore } from '@/lib/ai/pass-store';
@@ -42,9 +43,11 @@ export type CoachProposals = {
  * write bumps the store's version, and the pass bumps it when it drafts.
  *
  * A draft expires by the clock as well as by the store, so the read is redone
- * on focus — a card left open past its `until` reads Expired on return, and a
- * tap on a card that expired while it was on screen is refused by
- * `approveProposal` itself rather than by this hook.
+ * on focus and on return to the foreground — a card left open past its `until`
+ * reads Expired on return, yesterday's brief does not outlive its day (Home
+ * left open overnight never loses focus, and a stale model brief would hide
+ * today's deterministic one), and a tap on a card that expired while it was on
+ * screen is refused by `approveProposal` itself rather than by this hook.
  *
  * `onResolved` runs after an approval that wrote something — Home re-reads its
  * mission, since a draft may have restructured today.
@@ -57,6 +60,12 @@ export function useCoachProposals(onResolved?: () => void): CoachProposals {
   );
   const [tick, setTick] = useState(0);
   useFocusEffect(useCallback(() => setTick((n) => n + 1), []));
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') setTick((n) => n + 1);
+    });
+    return () => subscription.remove();
+  }, []);
   const [busyId, setBusyId] = useState<string | null>(null);
   const busyRef = useRef<string | null>(null);
 
