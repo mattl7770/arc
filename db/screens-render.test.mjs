@@ -8379,6 +8379,17 @@ console.log('\n34. 2026-10-21 — Done, the label both ways, a food edited, a di
     }),
     ['Label data looks inconsistent — check per 100 ml.']
   );
+  // …but a FRESH reading's verdict wins: it was judged with the polyols the
+  // row does not keep, so a clean sugar-free mint says nothing (2026-10-21).
+  refute(
+    'barcode-scan notes (fresh reading wins)',
+    render('barcode-scan notes (fresh reading wins)', LabelNotes, {}, {
+      food: { ...milk, basis: 'g', kcal_100g: 240, protein_g_100g: 0, carbs_g_100g: 98, fat_g_100g: 0 },
+      label: { read: 'per100', servingDropped: null, doubtful: false },
+      healed: false,
+    }),
+    ['inconsistent']
+  );
 
   // 85 — A CATALOG FOOD, EDITED. The form opens on the row; Describe it is
   // not offered; Save is inert until something changes; micros are fields.

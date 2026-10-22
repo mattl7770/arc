@@ -7339,11 +7339,58 @@ console.log('92. a logged composite’s whole amount, typed — every part scale
   const saveAt = screen.indexOf('const saveDish = ');
   const saveBody = screen.slice(saveAt, screen.indexOf('\n  };', saveAt));
   saveBody.includes('planDishAmount(dishEdit.text, rolled)') &&
-  saveBody.includes('scaleCompositeItem(getDb(), parentId, plan.factor)') &&
+  saveBody.includes('scaleCompositeItem(getDb(), parentId, plan.factor, { keepCount: true })') &&
   !saveBody.includes('updateMealItemPortion') &&
   screen.includes("planDishAmount(null, node.rolled).kind !== 'unavailable'")
-    ? ok('meal-detail: the whole-dish Save plans with planDishAmount and writes only through scaleCompositeItem')
+    ? ok('meal-detail: the whole-dish Save plans with planDishAmount and writes only through scaleCompositeItem, count kept')
     : bad('dish wiring');
+}
+
+// The 2026-10-21 review (review/r3/probe2.mjs): typing a whole-dish weight on a
+// COUNTED composite rescaled its count — 8 slices became 10.67. A re-weighed
+// dish keeps its count; a share eaten (the chips) still moves it.
+console.log('92b. a re-weighed counted dish keeps its count; a share eaten moves it');
+{
+  const { db } = freshDb();
+  const { mealId } = logMealWithItems(db, {
+    date: TODAY,
+    time: '19:00',
+    name: 'Pizza',
+    items: [
+      {
+        name: 'Margherita pizza',
+        components: [
+          { name: 'Crust', amount: 400, unit: 'g', kcal: 1000, protein_g: 30, carbs_g: 180, fat_g: 15 },
+          { name: 'Cheese', amount: 200, unit: 'g', kcal: 560, protein_g: 40, carbs_g: 4, fat_g: 44 },
+        ],
+      },
+    ],
+  });
+  const header = () =>
+    db.get('SELECT * FROM meal_items WHERE meal_id = ? AND is_composite = 1', [mealId]);
+  const node = () => assembleMealItems(listMealItems(db, mealId)).find((n) => n.kind === 'composite');
+  setCompositeCount(db, header().id, 8, 'slice');
+  const plan = planDishAmount('800', node().rolled);
+  scaleCompositeItem(db, header().id, plan.factor, { keepCount: true });
+  header().serving_qty === 8 &&
+  header().piece_name === 'slice' &&
+  near(node().rolled.amount, 800) &&
+  near(node().rolled.kcal, 2080)
+    ? ok('600 g re-weighed to 800 g: still 8 slices, the parts and the kcal scale (2,080)')
+    : bad('keep count', JSON.stringify({ qty: header().serving_qty, rolled: node().rolled }));
+  scaleCompositeItem(db, header().id, 0.5);
+  header().serving_qty === 4 && near(node().rolled.amount, 400)
+    ? ok('…and the ½ chip, a share eaten, still halves the count: 4 slices')
+    : bad('chip count', String(header().serving_qty));
+
+  // Retyping the amount AS PRINTED is no change: parts that sum to 799.9999
+  // print "800" and "800" must not scale them.
+  const r = { ...node().rolled, amount: 799.9999999999999 };
+  planDishAmount('800', r).kind === 'none' &&
+  planDishAmount('612.3', { ...r, amount: 612.34 }).kind === 'none' &&
+  planDishAmount('612.4', { ...r, amount: 612.34 }).kind === 'scale'
+    ? ok('retyping the printed amount (800 for 799.9999, 612.3 for 612.34) writes nothing')
+    : bad('printed no-op');
 }
 
 // ---------------------------------------------------------------------------
@@ -7379,7 +7426,10 @@ console.log('90. a meal Add food creates is named after the food');
   !saveBody.includes('name: daypartName(now)') &&
   // Every add passes its food, so the first one can name the meal.
   (screen.match(/saveItem\(itemForPortion\(food, \{[^}]*\}\), food\)/g) || []).length === 4 &&
-  screen.includes('offersScanMealName(createdName, added)') &&
+  // Counted in PICKS, not items (2026-10-21 review): one saved meal is one pick.
+  screen.includes('offersScanMealName(createdName, picks)') &&
+  screen.includes('setPicks((n) => n + 1);') &&
+  !screen.includes('offersScanMealName(createdName, added)') &&
   screen.includes('commitScanMealName(getDb(), targetMealId, nameDraft)') &&
   screen.includes('useEffect(() => () => commitNameRef.current(), [])') &&
   !screen.includes('updateMealName(')

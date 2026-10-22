@@ -38,6 +38,7 @@ import {
   mealNameForProduct,
 } from '@/lib/nutrition/format';
 import {
+  drinkLooksPerServing,
   energyLooksWrong,
   lookupOffProduct,
   normalizeBarcode,
@@ -46,7 +47,7 @@ import {
 } from '@/lib/nutrition/openfoodfacts';
 import { confirmCaffeine } from '@/lib/nutrition/caffeine-confirm';
 import { commitScanMealName, offersScanMealName } from '@/lib/nutrition/scan-meal-name';
-import { amountForQty, itemForPortion } from '@/lib/nutrition/servings';
+import { amountForQty, itemForPortion, portionAfterHeal } from '@/lib/nutrition/servings';
 import type { FoodRow, NewMealItem, RecentFood } from '@/lib/nutrition/types';
 import { joinNearbyMealWithUndo, type JoinedMeal } from '@/lib/nutrition/undo-offers';
 import { runUndo } from '@/lib/nutrition/undo-store';
@@ -165,11 +166,27 @@ import type { VolumeUnit } from '@/lib/user/types';
  * per-100 one. A fresh Open Food Facts reading adds what it had to do: a line
  * when the figures were read per serving and divided here, and the reason when
  * the product's serving was left off (src/lib/nutrition/openfoodfacts.ts). A
- * product whose two sets of figures disagree is not cached at all — it takes
- * the miss path, with the reason, and Add manually opens with its name and
- * brand filled. **Edit this food** opens the catalog entry itself
- * (app/food-new.tsx, `id`), which is how a product cached wrong before this
- * round is put right.
+ * product whose two sets of figures disagree IS cached, with OFF's per-100
+ * figures as given, and the sheet marks it doubtful ("Label data looks
+ * inconsistent"). Only a product whose figures cannot be placed at all —
+ * per-serving figures with no serving to read them against, or ones that
+ * divide past the food itself — is refused: it takes the miss path, with the
+ * reason, and Add manually opens with its name and brand filled. **Edit this
+ * food** opens the catalog entry itself (app/food-new.tsx, `id`), which is how
+ * a product cached wrong before this round is put right.
+ *
+ * ## A heal that lands late (2026-10-21 review)
+ *
+ * The background re-read can land after the sheet has moved on. It keeps the
+ * portion the user chose (`portionAfterHeal`) rather than resetting it; it is
+ * aborted the moment **Edit this food** is tapped (the edit's own Save is a
+ * compare-and-swap, and restarts it on return if the row is still OFF's); and
+ * when it lands after an Add of that food, one quiet line says the item just
+ * added used the old figures, with the meal a tap away. Holding Add until the
+ * re-read settles was the alternative and is refused: it would make a local
+ * hit wait on the network — up to the 10 s timeout on a stalled connection —
+ * which is the one thing the offline-first ladder promises it never does, to
+ * spare a rare case one line.
  */
 
 type Phase =
@@ -317,8 +334,10 @@ export function LabelRows({ food }: { food: FoodRow }) {
  * and devices never nest. No colour: an inconsistent label is a fact about the
  * data, not a biological state, so it takes no signal hue and no accent.
  *
- * The doubtful line is asked of the ROW too (`energyLooksWrong`), so a food
- * cached before this round, opened offline, still says so.
+ * With a fresh reading, its own verdict is the one shown: it was judged with
+ * what only the reading knows (alcohol, polyols, both columns). Without one —
+ * a cached food opened offline — the ROW is asked (`energyLooksWrong`,
+ * `drinkLooksPerServing`), so a food cached before this round still says so.
  */
 export function LabelNotes({
   food,
@@ -330,7 +349,7 @@ export function LabelNotes({
   healed: boolean;
 }) {
   const lines: string[] = [];
-  if (label?.doubtful || energyLooksWrong(food)) {
+  if (label ? label.doubtful : energyLooksWrong(food) || drinkLooksPerServing(food)) {
     lines.push(`Label data looks inconsistent — check per 100 ${food.basis}.`);
   }
   if (healed) lines.push('Updated from Open Food Facts just now — the saved figures were different.');
@@ -458,12 +477,25 @@ export default function BarcodeScanScreen() {
     setPhase({ kind: 'portion', food, fromOff, label });
   };
 
-  // The phase as last rendered, for the background re-read below to ask
-  // whether the sheet it would update is still the one on screen.
+  // The phase and the portion as last rendered, for the background re-read
+  // below to ask whether the sheet it would update is still the one on screen,
+  // and what portion it holds.
   const phaseRef = useRef(phase);
+  const portionRef = useRef({ mode, qty, amountText });
   useEffect(() => {
     phaseRef.current = phase;
+    portionRef.current = { mode, qty, amountText };
   });
+  // The re-reads in flight, by food id — so Edit this food can abort its own.
+  const refreshes = useRef(new Map<string, AbortController>());
+  // A re-read aborted for an edit, to restart on return if the row is still OFF's.
+  const refreshPaused = useRef<string | null>(null);
+  // The meal each food was last added to this session — a heal that lands
+  // after the Add says so (see the header).
+  const addedTo = useRef(new Map<string, string>());
+  // The food whose scan joined a nearby meal, for the join's Undo to remap.
+  const joinedFood = useRef<string | null>(null);
+  const [staleAdd, setStaleAdd] = useState<{ name: string; mealId: string } | null>(null);
 
   /**
    * A local hit that is still Open Food Facts' own is re-read in the
@@ -472,34 +504,50 @@ export default function BarcodeScanScreen() {
    * exactly what it did before. When OFF now says something different, the
    * cached row is healed (`refreshOffFood`, which never touches a row the user
    * edited) and, if the sheet is still on that food, it is redrawn from the
-   * healed row and says so. Something already added keeps its own snapshot.
+   * healed row — keeping the portion chosen (`portionAfterHeal`) — and says so.
+   * Something already added keeps its own snapshot, and is named (header).
    */
   const refreshFromOff = async (food: FoodRow) => {
     if (food.source !== 'openfoodfacts' || !food.barcode) return;
+    refreshes.current.get(food.id)?.abort();
     const controller = new AbortController();
+    refreshes.current.set(food.id, controller);
     const timeout = setTimeout(() => controller.abort(), 10000);
     try {
       const off = await lookupOffProduct(food.barcode, offFetch, controller.signal);
+      // Aborted (Edit this food, a newer re-read, the timeout) after the
+      // response was already in hand: drop it all the same.
+      if (controller.signal.aborted) return;
       if (!off || off.kind !== 'food') return;
       const healed = refreshOffFood(getDb(), food.id, off.food);
+      const added = addedTo.current.get(food.id);
+      if (healed && added !== undefined) setStaleAdd({ name: healed.name, mealId: added });
       const current = phaseRef.current;
       if (current.kind !== 'portion' || current.food.id !== food.id) return;
       if (healed) {
-        if (healed.serving_amount != null) {
-          setMode('serving');
-          setQty(1);
-          setAmountText(fmtQty(healed.serving_amount));
-        } else {
-          setMode('amount');
-          setAmountText('100');
-        }
+        const next = portionAfterHeal(current.food, healed, portionRef.current);
+        setMode(next.mode);
+        setQty(next.qty);
+        setAmountText(next.amountText);
       }
       setPhase({ ...current, food: healed ?? current.food, label: off.label, healed: !!healed });
     } catch {
       // Offline, or OFF unreachable: the cached row stands, as it always did.
     } finally {
       clearTimeout(timeout);
+      if (refreshes.current.get(food.id) === controller) refreshes.current.delete(food.id);
     }
+  };
+
+  /** Edit this food: the re-read in flight for it stops here, so it cannot
+   *  heal the row under the open form (whose Save would refuse anyway). */
+  const editFood = (food: FoodRow) => {
+    const inFlight = refreshes.current.get(food.id);
+    if (inFlight) {
+      inFlight.abort();
+      refreshPaused.current = food.id;
+    }
+    router.push({ pathname: '/food-new', params: { id: food.id } });
   };
 
   /**
@@ -512,11 +560,16 @@ export default function BarcodeScanScreen() {
     useCallback(() => {
       if (phase.kind !== 'portion') return;
       const fresh = getFood(getDb(), phase.food.id);
+      const paused = refreshPaused.current === phase.food.id;
+      refreshPaused.current = null;
       if (!fresh) {
         scan.current.busy = false;
         setPhase({ kind: 'scanning' });
         return;
       }
+      // Back unsaved from an edit that stopped a re-read: the row is still
+      // OFF's, so the re-read starts again.
+      if (paused) void refreshFromOff(fresh);
       // Unchanged (the common case, and every re-run this effect causes).
       if (fresh.updated_at === phase.food.updated_at) return;
       if (fresh.serving_amount != null) {
@@ -527,7 +580,8 @@ export default function BarcodeScanScreen() {
         setMode('amount');
         setAmountText('100');
       }
-      setPhase({ ...phase, food: fresh });
+      // The reading's notes described figures that are no longer these.
+      setPhase({ ...phase, food: fresh, label: null, healed: false });
     }, [phase])
   );
 
@@ -565,8 +619,10 @@ export default function BarcodeScanScreen() {
         });
         return;
       }
-      // Figures that cannot all be true are not cached — the reason is said,
-      // and the manual form opens with the name OFF did give.
+      // Figures that cannot be PLACED — per serving with no serving to read
+      // them against, or dividing past the food itself — are not cached: the
+      // reason is said, and the manual form opens with the name OFF did give.
+      // Figures that merely disagree are cached and marked doubtful.
       if (off.kind === 'refused') {
         setPhase({
           kind: 'notfound',
@@ -626,6 +682,7 @@ export default function BarcodeScanScreen() {
     try {
       if (targetMealId !== null) {
         addMealItem(db, targetMealId, item);
+        addedTo.current.set(food.id, targetMealId);
       } else {
         const now = new Date();
         const name = mealNameForProduct(food, daypartName(now));
@@ -642,6 +699,8 @@ export default function BarcodeScanScreen() {
         setJoined(join);
         setTargetMealId(join ? join.keptId : created);
         setCreatedName(join ? null : name);
+        addedTo.current.set(food.id, join ? join.keptId : created);
+        joinedFood.current = join ? food.id : null;
       }
       setAdded((n) => n + 1);
       resumeScanning();
@@ -695,6 +754,12 @@ export default function BarcodeScanScreen() {
     if (done && joined) {
       setTargetMealId(joined.createdId);
       setCreatedName(joined.createdName);
+      // The joined scan's item is back in the meal it made; a late heal of
+      // that food names that meal.
+      const foodId = joinedFood.current;
+      if (foodId !== null && addedTo.current.get(foodId) === joined.keptId) {
+        addedTo.current.set(foodId, joined.createdId);
+      }
     }
     setJoined(null);
   };
@@ -751,6 +816,26 @@ export default function BarcodeScanScreen() {
         </Text>
       ) : null}
       {joinUndo ? <UndoRow offer={joinUndo} onUndo={undoJoin} first /> : null}
+      {/* A heal that landed after an Add of that food: the item keeps the old
+          figures (a snapshot, as after any catalog edit), and this says so —
+          quiet serif, no accent; the meal is where it is put right. */}
+      {staleAdd ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Open the meal with ${staleAdd.name}`}
+          onPress={() => {
+            const { mealId: id } = staleAdd;
+            setStaleAdd(null);
+            router.push({ pathname: '/meal-detail', params: { id } });
+          }}
+          className="mt-1.5 min-h-[44px] flex-row items-center gap-3 active:opacity-60">
+          <Text className="flex-1 font-serif text-[12px] leading-5 text-ink-muted">
+            The {staleAdd.name} just added used its old figures — Open Food Facts has since
+            corrected them. Open the meal to fix it.
+          </Text>
+          <Ionicons name="chevron-forward" size={16} color={palette.inkMuted} />
+        </Pressable>
+      ) : null}
 
       {/* Camera / permission — only while actively scanning. */}
       {phase.kind === 'scanning' ? (
@@ -970,9 +1055,7 @@ export default function BarcodeScanScreen() {
                 icon="create-outline"
                 label="Edit this food"
                 accessibilityLabel={`Edit ${phase.food.name} in the catalog`}
-                onPress={() =>
-                  router.push({ pathname: '/food-new', params: { id: phase.food.id } })
-                }
+                onPress={() => editFood(phase.food)}
               />
             </Block>
           </View>

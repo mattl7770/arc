@@ -32,6 +32,7 @@ import {
   microsText,
   numText,
   readFoodForm,
+  switchEntryBasis,
 } from '@/lib/nutrition/food-form';
 import { MICROS } from '@/lib/nutrition/micros';
 import type { FoodRow } from '@/lib/nutrition/types';
@@ -69,6 +70,13 @@ import type { WebSearchSummary } from '@/lib/ai/web-search';
  *   printed (food-form.ts), and Save is inert until something changes. An
  *   edited Open Food Facts entry becomes the user's (`updateFood`), so a later
  *   re-fetch never overwrites the correction.
+ * - **Save is a compare-and-swap** against the row as it opened. A scan's
+ *   background re-read can heal the row while this form is open; saving would
+ *   then write the stale figures back and claim the row. It refuses instead,
+ *   in a sentence, and the reopened form shows the healed figures.
+ * - **The basis chip converts.** Per 100 ↔ per serving rewrites every figure
+ *   field by the serving's size (food-form.ts `switchEntryBasis`), so a number
+ *   on screen never silently changes what it is per.
  *
  * ## Micros are typed now
  *
@@ -245,10 +253,30 @@ function FoodEntryForm({
       : { ...emptyFoodForm(params.name ?? ''), brand: params.brand ?? '' }
   );
   const [form, setForm] = useState<FoodForm>(opened);
-  const set = (patch: Partial<FoodForm>) => setForm((prev) => ({ ...prev, ...patch }));
-  const setMicro = (key: (typeof MICROS)[number]['key'], text: string) =>
+  /** Why the last basis tap or Save did nothing, in a sentence; null when
+   *  they did what they said. Any typing clears it — it described the form
+   *  as it was. */
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const set = (patch: Partial<FoodForm>) => {
+    setRefusal(null);
+    setForm((prev) => ({ ...prev, ...patch }));
+  };
+  const setMicro = (key: (typeof MICROS)[number]['key'], text: string) => {
+    setRefusal(null);
     setForm((prev) => ({ ...prev, micros: { ...prev.micros, [key]: text } }));
+  };
   const { unit, entryBasis } = form;
+  /** The basis chip converts the figures, so they keep meaning the same food
+   *  (`switchEntryBasis`); with no serving size to convert by, it says so. */
+  const chooseBasis = (next: FoodForm['entryBasis']) => {
+    const switched = switchEntryBasis(form, next, editing ? { food: editing } : undefined);
+    if (switched === null) {
+      setRefusal(`Fill in the serving ${unit} first — the figures are converted by it.`);
+      return;
+    }
+    setRefusal(null);
+    setForm(switched);
+  };
 
   // --- Describe it (C2) ----------------------------------------------------
   const [description, setDescription] = useState('');
@@ -338,8 +366,15 @@ function FoodEntryForm({
   const save = () => {
     if (!result.ok || !canSave) return;
     try {
-      if (editing) updateFood(getDb(), editing.id, result.food);
-      else createFood(getDb(), result.food);
+      if (editing) {
+        // Compare-and-swap against the row as it opened: a scan's background
+        // re-read may have healed it meanwhile, and the form's figures would
+        // put the stale ones back (updateFood).
+        if (!updateFood(getDb(), editing.id, result.food, editing)) {
+          setRefusal('This food changed while you were editing — reopen it.');
+          return;
+        }
+      } else createFood(getDb(), result.food);
       router.back();
     } catch (error) {
       // canSave gates the known cases; backstop so a write failure never
@@ -532,7 +567,7 @@ function FoodEntryForm({
               accessibilityRole="button"
               accessibilityLabel={`Enter figures ${label}`}
               accessibilityState={{ selected: entryBasis === key }}
-              onPress={() => set({ entryBasis: key })}
+              onPress={() => chooseBasis(key)}
               className={
                 entryBasis === key
                   ? 'min-h-[44px] items-center justify-center rounded-btn border border-ink bg-paper-hi px-4'
@@ -630,6 +665,11 @@ function FoodEntryForm({
         {problem ? (
           <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
             {problem}
+          </Text>
+        ) : null}
+        {refusal ? (
+          <Text className="mt-3 font-serif text-[13px] leading-5 text-ink-secondary">
+            {refusal}
           </Text>
         ) : null}
         {consequence && result.ok ? (

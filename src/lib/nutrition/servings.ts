@@ -12,6 +12,7 @@
  * is carried onto the item so it can be PRINTED, never so it can be converted —
  * there is no ml↔g factor here or anywhere else.
  */
+import { fmtQty } from './format';
 import {
   mergeMicros,
   type Micros,
@@ -168,4 +169,44 @@ export function rescaleLoggedItem(
     fiber_g: s(item.fiber_g),
     micros: serializeMicros(scaleMicros(parseMicros(item.micros), ratio)),
   };
+}
+
+/** A portion editor's state as the scanner holds it: a count of the food's
+ *  serving, or an amount typed in its unit. */
+export type PortionDraft = { mode: 'serving' | 'amount'; qty: number; amountText: string };
+
+/** The portion a sheet opens on for a food: one serving, else 100 of its unit. */
+export function defaultPortion(food: Pick<FoodRow, 'serving_amount'>): PortionDraft {
+  return food.serving_amount != null
+    ? { mode: 'serving', qty: 1, amountText: fmtQty(food.serving_amount) }
+    : { mode: 'amount', qty: 1, amountText: '100' };
+}
+
+/**
+ * The portion after a background heal redrew the food under it (2026-10-21
+ * review — the heal used to reset every sheet to one serving, losing a typed
+ * 330 or a "2 × serving"). What the user chose is kept, and only the amount it
+ * comes to is recomputed, unless the heal changed what the choice MEANS:
+ *
+ * - a count of servings survives while the serving is the same size in the
+ *   same unit — `2 ×` still reads `2 ×`, and its amount is the same;
+ * - a typed amount survives while the unit is the same — 330 ml is still
+ *   330 ml whatever the figures per 100 now say;
+ * - otherwise the sheet starts again from the healed food's own default, as a
+ *   fresh scan would: a count of a serving that changed size, or grams typed
+ *   for a food now measured in ml, would be a number about the old food.
+ */
+export function portionAfterHeal(
+  before: Pick<FoodRow, 'serving_amount' | 'basis'>,
+  after: Pick<FoodRow, 'serving_amount' | 'basis'>,
+  draft: PortionDraft
+): PortionDraft {
+  const sameUnit = before.basis === after.basis;
+  if (draft.mode === 'serving') {
+    if (sameUnit && after.serving_amount != null && after.serving_amount === before.serving_amount) {
+      return { ...draft, amountText: fmtQty(draft.qty * after.serving_amount) };
+    }
+    return defaultPortion(after);
+  }
+  return sameUnit ? draft : defaultPortion(after);
 }

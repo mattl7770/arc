@@ -206,6 +206,9 @@ export default function FoodSearchScreen() {
   const [base, setBase] = useState(readBase);
   const [expanded, setExpanded] = useState<Expanded | null>(null);
   const [added, setAdded] = useState(0);
+  // How many PICKS (one food, or one saved or past meal, however many items it
+  // carries) — what offers the name field. One saved meal is already named.
+  const [picks, setPicks] = useState(0);
   // The meal every add lands in: the pushed-for meal, or the one the first
   // from-scratch add creates. State because it's born mid-session.
   const [targetMealId, setTargetMealId] = useState<string | null>(mealId ?? null);
@@ -315,6 +318,7 @@ export default function FoodSearchScreen() {
             setCreatedName(join ? null : name);
           }
           setAdded((n) => n + items.length);
+          setPicks((n) => n + 1);
           setExpanded(null);
           runSearch('');
           setBase(readBase());
@@ -397,8 +401,10 @@ export default function FoodSearchScreen() {
     commitNameRef.current = commitName;
   });
   useEffect(() => () => commitNameRef.current(), []);
-  // Two foods in a meal this session made: the field is offered.
-  const nameable = offersScanMealName(createdName, added) ? createdName : null;
+  // Two picks into a meal this session made: the field is offered. Counted in
+  // picks, not items — a saved meal of three items is one pick, and keeps its
+  // own name (2026-10-21 review).
+  const nameable = offersScanMealName(createdName, picks) ? createdName : null;
 
   const stepQty = (delta: number) => {
     setExpanded((prev) => {

@@ -23,6 +23,7 @@
  *   not the place to invent one; the macros still sum, because kcal and grams
  *   of macronutrient are absolute for the portion whatever it is measured in.
  */
+import { fmtQty } from './format';
 import type { AmountUnit, MealItemWithServing } from './types';
 
 /** What a collapsed composite reads as — derived, never stored. */
@@ -166,6 +167,11 @@ export function planDishAmount(text: string | null, rolled: CompositeRollup): Di
   if (t === '') return { kind: 'invalid' };
   const n = Number(t);
   if (!Number.isFinite(n) || n <= 0 || n > 5000) return { kind: 'invalid' };
-  if (Math.abs(n - rolled.amount) < 1e-9) return { kind: 'none' };
+  // No change is judged against the amount AS THE FIELD PRINTS IT, so
+  // retyping what it shows is a no-op: parts that sum to 799.9999 print "800",
+  // and "800" must not scale them by 1.0000001.
+  if (Math.abs(n - rolled.amount) < 1e-9 || n === Number(fmtQty(rolled.amount))) {
+    return { kind: 'none' };
+  }
   return { kind: 'scale', amount: n, factor: n / rolled.amount };
 }

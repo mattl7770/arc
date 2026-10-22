@@ -78,9 +78,25 @@ export function createFood(db: Database, food: NewFood): string {
  * Coach starring a food rewrites it whole) leaves it OFF's. Every other source
  * is left as it is — an AI-described food stays `ai`, keeping its `est` mark,
  * because most of its numbers are still the model's.
+ *
+ * **Compare-and-swap, when `expected` is given (2026-10-21 review).** The edit
+ * screen passes the row as it OPENED. A scan's background re-read can heal the
+ * row while the form is open; writing the form then would put the stale
+ * figures back, flip the row to `user` and so block every later heal. So when
+ * the stored row's `updated_at` or contents are no longer `expected`'s — or the
+ * row is gone — nothing is written and this returns false; the screen says so
+ * and the user reopens it. Read and write are synchronous with nothing between
+ * them, so no other write can land in the gap. Without `expected` (the Coach,
+ * whose card carries its own staleness guard) it always writes.
  */
-export function updateFood(db: Database, id: string, food: NewFood): void {
+export function updateFood(db: Database, id: string, food: NewFood, expected?: FoodRow): boolean {
   const before = getFood(db, id);
+  if (
+    expected !== undefined &&
+    (!before || before.updated_at !== expected.updated_at || foodContentDiffers(before, expected))
+  ) {
+    return false;
+  }
   const claimed = before?.source === 'openfoodfacts' && foodContentDiffers(before, food);
   db.run(
     `UPDATE foods SET name = ?, name_norm = ?, brand = ?, barcode = ?, serving_name = ?,
@@ -106,6 +122,7 @@ export function updateFood(db: Database, id: string, food: NewFood): void {
       id,
     ]
   );
+  return true;
 }
 
 /** Whether `next` says anything a stored food does not: its name, brand,

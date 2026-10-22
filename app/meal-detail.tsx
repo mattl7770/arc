@@ -745,13 +745,16 @@ export default function MealDetailScreen() {
   };
 
   /** Write the whole dish's new amount: every part scaled by new / what they
-   *  sum to now, through `scaleCompositeItem` — the chips' own writer, so the
-   *  count of pieces moves with them as it does there. */
+   *  sum to now, through `scaleCompositeItem` — the chips' own writer — with
+   *  the count KEPT: a re-weighed pizza is still eight slices, each heavier
+   *  (`keepCount`; the chips, a share eaten, move it). */
   const saveDish = (parentId: string, rolled: CompositeRollup) => {
     if (!dishEdit || dishEdit.parentId !== parentId) return;
     const plan = planDishAmount(dishEdit.text, rolled);
     if (plan.kind === 'invalid' || plan.kind === 'unavailable') return;
-    if (plan.kind === 'scale') scaleCompositeItem(getDb(), parentId, plan.factor);
+    if (plan.kind === 'scale') {
+      scaleCompositeItem(getDb(), parentId, plan.factor, { keepCount: true });
+    }
     setDishEdit(null);
     reload();
   };
@@ -2036,9 +2039,10 @@ function CountSaveRow({
 /**
  * A LOGGED composite's whole amount, typed (owner, 2026-10-21: *"update gram
  * amount for a full 'pizza' after logged"*). The ½ ⅓ ¼ chips said "I ate a
- * share"; this says "it weighed this much" — the same act, by a number, and
- * through the same writer (`scaleCompositeItem`): every part scales by
- * new / the parts' sum now, so the headline and the parts keep agreeing. What
+ * share"; this says "it weighed this much" — through the same writer
+ * (`scaleCompositeItem`): every part scales by new / the parts' sum now, so the
+ * headline and the parts keep agreeing. Unlike a share, a re-weighing keeps
+ * the dish's count of pieces (`keepCount`): eight slices stay eight. What
  * Save will do is `planDishAmount`'s call, read here first and stated above
  * Save in future tense.
  *
@@ -2074,7 +2078,7 @@ export function DishAmountRow({
   const writes = plan.kind === 'scale';
   const note =
     plan.kind === 'scale'
-      ? `On save: every part scales by × ${plan.factor.toFixed(2)} — ${fmtQty(rolled.amount ?? 0)} ${rolled.unit} becomes ${fmtQty(plan.amount)} ${rolled.unit}.`
+      ? `On save: every part scales by × ${plan.factor.toFixed(2)} — ${fmtQty(rolled.amount ?? 0)} ${rolled.unit} becomes ${fmtQty(plan.amount)} ${rolled.unit}. A count of pieces stays as it is.`
       : plan.kind === 'invalid'
         ? 'An amount is more than 0 and at most 5,000.'
         : 'Type what the whole dish came to.';

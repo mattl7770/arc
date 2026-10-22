@@ -104,6 +104,109 @@ export function foodFormFromRow(food: FoodRow): FoodForm {
   };
 }
 
+/**
+ * The text a stored per-100 figure prints as on `basis`, with a serving of
+ * `serving` — what the field shows for a figure nobody has typed over.
+ */
+function storedText(stored: number | null | undefined, basis: EntryBasis, serving: number): string {
+  if (stored == null) return '';
+  return numText(basis === 'serving' ? (stored * serving) / 100 : stored);
+}
+
+/** The figure fields one basis chip governs: the macros, then each micro. */
+const MACRO_FIELDS = [
+  ['kcal', 'kcal_100g'],
+  ['protein', 'protein_g_100g'],
+  ['carbs', 'carbs_g_100g'],
+  ['fat', 'fat_g_100g'],
+  ['fiber', 'fiber_g_100g'],
+] as const;
+
+/**
+ * Tap the other entry-basis chip (2026-10-21 review). The fields hold figures
+ * on the CURRENT basis, and switching it without converting them would
+ * reinterpret every one — an edit opened per 100 ml, switched to per serving,
+ * would save 132.89 kcal as per 250 ml. So every figure is converted by the
+ * serving (per-100 × serving / 100, and back), micros included, and the
+ * numbers on screen keep meaning the same food.
+ *
+ * A field nobody has typed over (its text is still what the stored figure
+ * prints as on this basis) is converted from the STORED number, not its 2 dp
+ * text, so per 100 → per serving → per 100 lands on exactly the text it
+ * opened with, and Save writes the stored value back unchanged.
+ *
+ * Null when it cannot convert: figures are filled and there is no serving
+ * size above zero to convert them by. The screen says why and stays put.
+ */
+export function switchEntryBasis(
+  form: FoodForm,
+  next: EntryBasis,
+  original?: { food: FoodRow }
+): FoodForm | null {
+  if (next === form.entryBasis) return form;
+  const figureTexts = [
+    ...MACRO_FIELDS.map(([field]) => form[field]),
+    ...MICROS.map((m) => form.micros[m.key] ?? ''),
+  ];
+  const serving = toNumber(form.servingAmount);
+  if (serving === null || !Number.isFinite(serving) || serving <= 0) {
+    return figureTexts.every((t) => t.trim() === '') ? { ...form, entryBasis: next } : null;
+  }
+  const food = original && original.food.basis === form.unit ? original.food : undefined;
+  const storedMicros = parseMicros(food?.micros);
+  const convert = (text: string, stored: number | null | undefined): string => {
+    if (food && stored != null && text === storedText(stored, form.entryBasis, serving)) {
+      return storedText(stored, next, serving);
+    }
+    const t = text.trim();
+    if (t === '' || !validNumber(t)) return text;
+    const n = Number(t);
+    return numText(next === 'serving' ? (n * serving) / 100 : (n * 100) / serving);
+  };
+  const out: FoodForm = { ...form, entryBasis: next, micros: { ...form.micros } };
+  for (const [field, column] of MACRO_FIELDS) out[field] = convert(form[field], food?.[column]);
+  for (const m of MICROS) {
+    const text = form.micros[m.key];
+    if (text !== undefined) out.micros[m.key] = convert(text, storedMicros[m.key]);
+  }
+  return out;
+}
+
+/**
+ * The micros a Save writes: the stored payload with ONLY the shortlist's keys
+ * replaced by the form's. A key the form has no field for (`alcohol_g`, which
+ * Night out writes, and anything outside the vocabulary) passes through
+ * untouched, in its stored order — the Coach's edit already writes `micros`
+ * back as it read it, and the screen now agrees. Unchanged, the stored text
+ * itself is returned, so an untouched edit is no content change.
+ */
+function mergedMicros(storedJson: string | null | undefined, fromForm: Micros): string | null {
+  let stored: Record<string, unknown> = {};
+  if (storedJson) {
+    try {
+      const parsed: unknown = JSON.parse(storedJson);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        stored = parsed as Record<string, unknown>;
+      }
+    } catch {
+      stored = {};
+    }
+  }
+  const shortlist = new Set<string>(MICROS.map((m) => m.key));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(stored)) {
+    if (!shortlist.has(k)) out[k] = v;
+    else if (fromForm[k as MicroKey] !== undefined) out[k] = fromForm[k as MicroKey];
+  }
+  for (const m of MICROS) {
+    const v = fromForm[m.key];
+    if (v !== undefined && !(m.key in out)) out[m.key] = v;
+  }
+  if (Object.keys(out).length === 0) return null;
+  const json = JSON.stringify(out);
+  return storedJson && json === JSON.stringify(stored) ? storedJson : json;
+}
+
 function validNumber(text: string): boolean {
   const t = text.trim();
   if (t === '') return true;
@@ -160,12 +263,24 @@ export function readFoodForm(
   }
 
   const original = opts.original;
-  // Still per 100 of the unit it opened in: an untouched field is its stored value.
-  const verbatim =
-    original !== undefined && entryBasis === 'per100' && unit === original.food.basis;
+  // Still in the unit it opened in: an untouched field is its stored value. Per
+  // 100, untouched is the text it opened with; per serving, it is the text the
+  // chip printed from the stored figure (`switchEntryBasis`) for this serving.
+  const verbatim = original !== undefined && unit === original.food.basis;
   const factor = entryBasis === 'serving' && servingUsable ? 100 / serving : 1;
   const per100 = (text: string, opened: string | undefined, stored: number | null): number | null => {
-    if (verbatim && opened !== undefined && text === opened) return stored;
+    if (verbatim && entryBasis === 'per100' && opened !== undefined && text === opened) {
+      return stored;
+    }
+    if (
+      verbatim &&
+      entryBasis === 'serving' &&
+      servingUsable &&
+      stored !== null &&
+      text === storedText(stored, 'serving', serving)
+    ) {
+      return stored;
+    }
     const n = toNumber(text);
     if (n === null) return null;
     return entryBasis === 'serving' ? round2(n * factor) : n;
@@ -217,7 +332,8 @@ export function readFoodForm(
       carbs_g_100g: carbs,
       fat_g_100g: fat,
       fiber_g_100g: fiber,
-      micros: serializeMicros(micros),
+      // An edit keeps every key the form has no field for (`mergedMicros`).
+      micros: o ? mergedMicros(o.micros, micros) : serializeMicros(micros),
       source: opts.source,
     },
   };

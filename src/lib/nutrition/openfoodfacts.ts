@@ -36,12 +36,13 @@
  *    `_100g × serving / 100` (±10 %). If instead `_100g` ≈ `_serving` — the
  *    per-serving column typed into the per-100 one, exactly the case above —
  *    and the serving is not ~100, the per-100 figures are rebuilt from the
- *    per-serving ones. If neither fits, `_100g` is kept and the food is marked
+ *    per-serving ones — when the evidence holds (energy, or a majority, shows
+ *    the swap and no figure contradicts it: `crossCheck`). If neither fits, or
+ *    the columns are identical copies, `_100g` is kept and the food is marked
  *    DOUBTFUL, which the portion screen says out loud.
- * 2. **Energy is checked against the macros.** 4P + 4C + 9F more than 35 % from
- *    the stated kcal (on anything over 20 kcal) marks the food doubtful
- *    ({@link energyLooksWrong}, pure, so a cached row is checked the same way).
- *    Energy given only in kJ is read as kJ ÷ 4.184.
+ * 2. **Energy is checked against the macros**, alcohol and polyols included
+ *    where OFF records them ({@link energyLooksWrong}, pure, so a cached row is
+ *    checked the same way). Energy given only in kJ is read as kJ ÷ 4.184.
  * 3. **A figure missing per 100 is read per serving**, divided by the serving's
  *    size — only when that size is known in the food's own unit. A product
  *    with per-serving figures and no such serving is refused (manual entry,
@@ -283,55 +284,149 @@ const COMPARED: { key: string; slack: number }[] = [
 ];
 
 /**
- * What OFF's two sets of figures say about each other, given a known serving:
+ * What OFF's two sets of figures say about each other, given a known serving.
+ * Each compared figure present in both columns is CONSISTENT
+ * (`_serving ≈ _100g × q / 100`), SWAP-LIKE (`_100g ≈ _serving`, the serving
+ * not ~100), both (a small figure inside both slacks says nothing), or neither.
  *
- * - `consistent` — every compared figure has `_serving ≈ _100g × q / 100` (or
- *   there was nothing to compare);
- * - `swapped` — none disagrees outright, and at least one has `_100g ≈ _serving`
- *   where the serving is not ~100: the per-serving figures were typed into
- *   the per-100 column;
- * - `conflict` — anything else. Nothing here can say which number is wrong.
+ * - `consistent` — no figure is swap-like only (or there was nothing to compare);
+ * - `swapped` — the per-serving figures were typed into the per-100 column.
+ *   It takes evidence, not one small figure (2026-10-21 review: a 0.5 g
+ *   protein within 1 g of its serving figure rescaled a consistent oat drink):
+ *   NO figure may be consistent-only — a figure that agrees with the scaled
+ *   reading and not the swapped one vetoes the swap — and ENERGY itself must be
+ *   swap-like, or a strict majority of the figures present must be;
+ * - `ambiguous` — every figure is swap-like but the two columns are IDENTICAL,
+ *   figure for figure. OFF derives one column from the other, so identical
+ *   columns on a non-100 serving mean one was copied over the other, and
+ *   nothing says which: a 125 g pot at 97 kcal both ways is as likely 97 per
+ *   100 g as 97 per pot. Kept per 100, and doubtful. (The owner's chocolate
+ *   milk was two typings of the label's per-serving column — fat 18.4 beside
+ *   18.3 — which is the evidence a copy lacks.)
+ * - `conflict` — a figure fits neither reading, or a swap was vetoed. Nothing
+ *   here can say which number is wrong.
  */
 function crossCheck(
   nutriments: OffNutriments,
   serving: number
-): 'consistent' | 'swapped' | 'conflict' {
+): 'consistent' | 'swapped' | 'ambiguous' | 'conflict' {
   const near100 = Math.abs(serving - 100) <= 10;
-  let swapped = false;
+  let present = 0;
+  let swapOnly = 0;
+  let consistentOnly = 0;
+  let energySwapped = false;
+  let identical = true;
   for (const c of COMPARED) {
     const per100 = onBasis(nutriments, c.key, '100g');
     const perServing = onBasis(nutriments, c.key, 'serving');
     if (per100 == null || perServing == null) continue;
-    if (agrees((per100 * serving) / 100, perServing, c.slack)) continue;
-    if (!near100 && agrees(per100, perServing, c.slack)) {
-      swapped = true;
-      continue;
+    present++;
+    const consistent = agrees((per100 * serving) / 100, perServing, c.slack);
+    const swapLike = !near100 && agrees(per100, perServing, c.slack);
+    if (!consistent && !swapLike) return 'conflict';
+    if (per100 !== perServing) identical = false;
+    if (swapLike && !consistent) {
+      swapOnly++;
+      if (c.key === 'energy-kcal') energySwapped = true;
     }
-    return 'conflict';
+    if (consistent && !swapLike) consistentOnly++;
   }
-  return swapped ? 'swapped' : 'consistent';
+  if (swapOnly === 0) return 'consistent';
+  if (consistentOnly > 0) return 'conflict';
+  if (!energySwapped && swapOnly * 2 <= present) return 'conflict';
+  return identical ? 'ambiguous' : 'swapped';
+}
+
+/** Ethanol: 0.789 g per ml, 7 kcal per g — so 1 % vol is 5.523 kcal per 100 ml. */
+const KCAL_PER_ABV_POINT = 0.789 * 7;
+/** Sugar alcohols (polyols): 2.4 kcal per g, the EU labelling factor. */
+const KCAL_PER_G_POLYOL = 2.4;
+/** Fibre: 2 kcal per g, the EU labelling factor. */
+const KCAL_PER_G_FIBRE = 2;
+
+/** What else a label's energy can come from, when OFF says. */
+export type EnergyExtras = {
+  /** Alcohol, % vol (OFF's `alcohol_100g`). */
+  abv?: number | null;
+  /** Polyols, g per 100 (OFF's `polyols_100g`) — counted inside carbohydrate. */
+  polyols?: number | null;
+};
+
+/**
+ * Whether a food's energy disagrees with its own macros. Pure, on the stored
+ * per-100 columns, so a cached row is judged as a fresh read is. It only ever
+ * adds a line asking the user to check the label; it changes no number.
+ *
+ * The estimate is 4P + 4C + 9F, with what OFF can add (2026-10-21 review —
+ * every correct beer, wine, spirit and sugar-free sweet used to read
+ * "inconsistent"):
+ * - **alcohol** at 7 kcal/g × 0.789 g/ml × % vol, when `alcohol_100g` is known;
+ * - **polyols** at 2.4 kcal/g instead of carbohydrate's 4, when known (labels
+ *   count them inside carbohydrate);
+ * - **fibre** read both ways, because labels disagree: US carbohydrate includes
+ *   it, EU does not. The LOW estimate counts it inside carbohydrate at 2 kcal/g,
+ *   the HIGH one beside it at 2 kcal/g.
+ *
+ * Then, on anything over 20 kcal per 100 with all three macros recorded:
+ * - the macros OVER-shooting the label (even the low estimate more than 35 %
+ *   above it) is flagged — no unrecorded ingredient ADDS macros without energy;
+ * - the macros UNDER-shooting it (the high estimate more than 35 % below) is
+ *   flagged only when alcohol is KNOWN. Unknown alcohol is the commonest reason
+ *   a label's energy exceeds its macros (a vodka is 231 kcal with no macros at
+ *   all), so without it an under-shoot is not evidence.
+ * 35 % is the margin that was already here: macro rounding to whole grams and
+ * the general Atwater factors routinely put a correct label 10–20 % off.
+ */
+export function energyLooksWrong(
+  food: {
+    kcal_100g: number | null;
+    protein_g_100g: number | null;
+    carbs_g_100g: number | null;
+    fat_g_100g: number | null;
+    fiber_g_100g?: number | null;
+  },
+  extras: EnergyExtras = {}
+): boolean {
+  const { kcal_100g: kcal, protein_g_100g: p, carbs_g_100g: c, fat_g_100g: f } = food;
+  if (kcal == null || p == null || c == null || f == null || kcal <= 20) return false;
+  const abv = extras.abv != null && extras.abv >= 0 && extras.abv <= 100 ? extras.abv : null;
+  const polyols = extras.polyols != null ? Math.min(Math.max(extras.polyols, 0), c) : 0;
+  const fibre = food.fiber_g_100g != null ? Math.max(food.fiber_g_100g, 0) : 0;
+  const carbs4 = c - polyols; // the carbohydrate counted at 4 kcal/g
+  const base = 4 * p + 9 * f + KCAL_PER_G_POLYOL * polyols + (abv ?? 0) * KCAL_PER_ABV_POINT;
+  const low = base + 4 * Math.max(carbs4 - fibre, 0) + KCAL_PER_G_FIBRE * Math.min(fibre, carbs4);
+  const high = base + 4 * carbs4 + KCAL_PER_G_FIBRE * fibre;
+  if ((low - kcal) / kcal > 0.35) return true;
+  return abv !== null && (kcal - high) / kcal > 0.35;
 }
 
 /**
- * Whether a food's energy disagrees with its own macros: 4P + 4C + 9F more
- * than 35 % from the stated kcal, on anything over 20 kcal per 100, with all
- * three macros recorded. Pure, on the stored per-100 columns, so a cached row
- * is judged exactly as a fresh read is (the portion screen asks it of both).
+ * A drink whose per-100 figures read like one serving's (2026-10-21 review,
+ * the open question): measured in ml, a serving of at least 200 ml, more than
+ * 250 kcal per 100 ml, and no alcohol known. That is the shape of the owner's
+ * chocolate milk when OFF ITSELF holds the per-serving figures as per-100 and
+ * recomputes `_serving` from them — the two columns then agree, and the cross-
+ * check cannot see it (332 kcal "per 100 ml", 830 kcal a glass).
  *
- * Alcohol (7 kcal/g) and sugar alcohols are not in the formula, so a beer or a
- * sugar-free sweet can trip it. It only ever adds a line asking the user to
- * check the label; it changes no number.
+ * The serving guard is what keeps it honest. Cream (340–470 kcal per 100 ml),
+ * syrups (260–350) and oils (~820) clear the energy bar, but are served by the
+ * tablespoon, so they pass. What still clears every bar — a liqueur with no
+ * alcohol recorded, or a cream whose "serving" is the whole carton — is worth
+ * the label check the line asks for. It only SHOWS the existing doubtful line;
+ * it changes no number.
  */
-export function energyLooksWrong(food: {
-  kcal_100g: number | null;
-  protein_g_100g: number | null;
-  carbs_g_100g: number | null;
-  fat_g_100g: number | null;
-}): boolean {
-  const { kcal_100g: kcal, protein_g_100g: p, carbs_g_100g: c, fat_g_100g: f } = food;
-  if (kcal == null || p == null || c == null || f == null || kcal <= 20) return false;
-  const fromMacros = 4 * p + 4 * c + 9 * f;
-  return Math.abs(fromMacros - kcal) / kcal > 0.35;
+export function drinkLooksPerServing(
+  food: { basis: AmountUnit; kcal_100g: number | null; serving_amount: number | null },
+  abv: number | null = null
+): boolean {
+  return (
+    food.basis === 'ml' &&
+    abv === null &&
+    food.kcal_100g != null &&
+    food.kcal_100g > 250 &&
+    food.serving_amount != null &&
+    food.serving_amount >= 200
+  );
 }
 
 /** How the figures were read, for the scanner's review to say (2026-10-21). */
@@ -400,13 +495,20 @@ export function readOffProduct(response: unknown, barcode: string): OffRead | nu
 
   // THE CROSS-CHECK — only possible with a serving in the food's own unit.
   const check = q != null ? crossCheck(nutriments, q) : 'consistent';
+  // Alcohol, % vol — OFF's `alcohol_100g` is a strength, not a mass, so it is
+  // the same on either column and is never rescaled. Read only to judge the
+  // energy (`energyLooksWrong`); it is not stored.
+  const abvRaw = offNum(nutriments, 'alcohol_100g');
+  const abv = abvRaw != null && abvRaw <= 100 ? abvRaw : null;
 
   /**
    * One nutrient per 100 of the basis.
    * - normally OFF's `_100g`, else its `_serving` ÷ the serving (`derived`);
    * - when `rescale` (the columns were swapped): the `_serving` figure ÷ the
-   *   serving, else the `_100g` figure — which IS a per-serving figure — ÷ the
-   *   serving, by the same diagnosis.
+   *   serving. A figure with NO `_serving` (fibre, sodium and the micros, often)
+   *   is never divided (2026-10-21 review): the swap was diagnosed on the
+   *   compared figures, and nothing says this one was in the wrong column too,
+   *   so OFF's per-100 figure is kept as it is.
    * `unplaced` marks a per-serving figure with no serving to divide it by.
    */
   const read = (
@@ -415,9 +517,8 @@ export function readOffProduct(response: unknown, barcode: string): OffRead | nu
   ): { value: number | null; derived: boolean; unplaced: boolean } => {
     const per100 = onBasis(nutriments, key, '100g');
     const perServing = onBasis(nutriments, key, 'serving');
-    if (rescale && q != null) {
-      const v = perServing ?? per100;
-      return { value: v == null ? null : clean((v * 100) / q), derived: false, unplaced: false };
+    if (rescale && q != null && perServing != null) {
+      return { value: clean((perServing * 100) / q), derived: false, unplaced: false };
     }
     if (per100 != null) return { value: per100, derived: false, unplaced: false };
     if (perServing == null) return { value: null, derived: false, unplaced: false };
@@ -438,7 +539,7 @@ export function readOffProduct(response: unknown, barcode: string): OffRead | nu
     );
 
   let rescaled = check === 'swapped';
-  let doubtful = check === 'conflict';
+  let doubtful = check === 'conflict' || check === 'ambiguous';
   let figures = readAll(rescaled);
   // A rebuild that lands past the schema's bounds was the wrong diagnosis: keep
   // OFF's per-100 figures, and say they are doubtful.
@@ -533,12 +634,20 @@ export function readOffProduct(response: unknown, barcode: string): OffRead | nu
           : `Serving left off: ${serving.why}. Log it by ${basis === 'ml' ? 'millilitres' : 'grams'}.`,
       doubtful:
         doubtful ||
-        energyLooksWrong({
-          kcal_100g: food.kcal_100g ?? null,
-          protein_g_100g: food.protein_g_100g ?? null,
-          carbs_g_100g: food.carbs_g_100g ?? null,
-          fat_g_100g: food.fat_g_100g ?? null,
-        }),
+        energyLooksWrong(
+          {
+            kcal_100g: food.kcal_100g ?? null,
+            protein_g_100g: food.protein_g_100g ?? null,
+            carbs_g_100g: food.carbs_g_100g ?? null,
+            fat_g_100g: food.fat_g_100g ?? null,
+            fiber_g_100g: food.fiber_g_100g ?? null,
+          },
+          { abv, polyols: read('polyols', rescaled).value }
+        ) ||
+        drinkLooksPerServing(
+          { basis, kcal_100g: food.kcal_100g ?? null, serving_amount: q },
+          abv
+        ),
     },
   };
 }
