@@ -5,6 +5,13 @@ import { CoachTurnError } from '@/lib/ai/model-client';
 import { isWebSearchCall } from '@/lib/ai/web-search';
 import { humanizeToolName, isRetiredWriteName, toolByName } from '@/lib/ai/tools';
 import { claimsCompletedWrite } from '@/lib/ai/write-claim';
+import {
+  undoKeyFor,
+  undoOfferFor,
+  undoSavedAtOnce,
+  wasSavedAtOnce,
+  type UndoState,
+} from '@/lib/ai/write-gate';
 import type { CoachToolCall } from '@/lib/ai/types';
 import { usageCaption } from '@/lib/ai/cost';
 import { apiKeyStore } from '@/lib/ai/api-key-store';
@@ -16,6 +23,7 @@ import {
   getConversationSummary,
   getOrCreateActiveConversation,
   keepUnsentTail,
+  landedWriteCalls,
   landedWriteReceipts,
   listRecentMessages,
   markSupersededTurns,
@@ -54,6 +62,14 @@ export type CoachChatMessage = ChatMessage & {
    */
   writes?: string[];
   /**
+   * Beside each of {@link writes}, index for index: null for a write approved
+   * on a card, or how a write that SAVED AT ONCE stands (owner, 2026-10-21,
+   * write-gate.ts "Saving at once") — its Undo, if this session still holds
+   * one. Derived from the tool record plus the session's Undo ledger, never
+   * stored.
+   */
+  undos?: (SavedAtOnceView | null)[];
+  /**
    * The card lines of the writes the user DECLINED this turn — so a refused
    * card leaves the same trace in the thread an approved one does (2026-10-21).
    */
@@ -75,6 +91,18 @@ export type CoachChatMessage = ChatMessage & {
   notice?: string;
 };
 
+/**
+ * A write that saved at once, as its receipt line draws it. `key` is null and
+ * `state` is `'closed'` when the session that saved it has ended — the receipt
+ * stays, the Undo does not (write-gate.ts, "THE UNDO LEDGER").
+ */
+export type SavedAtOnceView = {
+  key: string | null;
+  state: UndoState | 'closed';
+  /** A refusal's sentence. */
+  note?: string;
+};
+
 /** A turn as it should be rendered — with the retry-superseded mark derived. */
 export type CoachChatView = CoachChatMessage & { superseded: boolean };
 
@@ -92,6 +120,11 @@ export type CoachChat = {
    */
   resolveWrite: (id: number, approved: boolean) => void;
   send: (text: string) => void;
+  /**
+   * Undo a write that saved at once, by its {@link SavedAtOnceView.key}: the
+   * row comes out through its own domain's delete, or the line says why not.
+   */
+  undo: (key: string) => void;
   /** Re-run the last user turn after an unfinished reply. */
   retry: () => void;
   /**
@@ -180,14 +213,39 @@ function landedWrites(toolCalls: CoachToolCall[]): string[] {
 function writeFidelity(
   content: string,
   toolCalls: CoachToolCall[]
-): { writes: string[]; declined: string[]; phantomWrite: boolean } {
+): {
+  writes: string[];
+  undos: (SavedAtOnceView | null)[];
+  declined: string[];
+  phantomWrite: boolean;
+} {
   const writes = landedWrites(toolCalls);
   const declinedAWrite = toolCalls.some((call) => isWriteTool(call.name) && call.declined === true);
   return {
     writes,
+    undos: savedAtOnceViews(toolCalls),
     declined: declinedWriteLines(toolCalls, humanizeToolName),
     phantomWrite: writes.length === 0 && !declinedAWrite && claimsCompletedWrite(content),
   };
+}
+
+/**
+ * Index for index with {@link landedWrites}: how each write that saved at
+ * once stands. Same filter (`landedWriteCalls`), so the two cannot misalign.
+ */
+function savedAtOnceViews(toolCalls: CoachToolCall[]): (SavedAtOnceView | null)[] {
+  return landedWriteCalls(toolCalls, isWriteTool).map((call) => {
+    if (!wasSavedAtOnce(call)) return null;
+    const key = undoKeyFor(call);
+    const offer = key ? undoOfferFor(key) : undefined;
+    if (!key || !offer) return { key: null, state: 'closed' };
+    return { key, state: offer.state, ...(offer.note ? { note: offer.note } : {}) };
+  });
+}
+
+/** `undos` as a message carries it: absent unless something saved at once. */
+function undosField(undos: (SavedAtOnceView | null)[]): { undos?: (SavedAtOnceView | null)[] } {
+  return undos.some((u) => u !== null) ? { undos } : {};
 }
 
 /**
@@ -205,7 +263,7 @@ function loadThread(conversationId: string): CoachChatMessage[] {
     .map((row) => {
       const calls = parseToolCalls(row.tool_calls);
       const tools = toolChips(calls);
-      const { writes, declined, phantomWrite } = writeFidelity(row.content, calls);
+      const { writes, undos, declined, phantomWrite } = writeFidelity(row.content, calls);
       return {
         id: row.id,
         role: row.role as ChatMessage['role'],
@@ -215,6 +273,7 @@ function loadThread(conversationId: string): CoachChatMessage[] {
         persisted: true,
         ...(tools.length > 0 ? { tools } : {}),
         ...(writes.length > 0 ? { writes } : {}),
+        ...undosField(undos),
         ...(declined.length > 0 ? { declined } : {}),
         ...(row.role === 'assistant' && phantomWrite ? { phantomWrite } : {}),
         // The raw record, kept so the NEXT turn can replay this turn's tool
@@ -377,7 +436,10 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // `ai_messages` row is a turn, and two assistant rows in a row are
           // what `markSupersededTurns` reads as a retried fragment.
           const content = result.transcript;
-          const { writes, declined, phantomWrite } = writeFidelity(content, result.toolCalls);
+          const { writes, undos, declined, phantomWrite } = writeFidelity(
+            content,
+            result.toolCalls
+          );
           const persisted = content.trim().length > 0 || result.toolCalls.length > 0;
           // What the turn cost, broken into cache writes / cache reads / output
           // (src/lib/ai/cost.ts). A single lump token total cannot distinguish a
@@ -405,6 +467,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
             persisted,
             ...(tools.length > 0 ? { tools } : {}),
             ...(writes.length > 0 ? { writes } : {}),
+            ...undosField(undos),
             ...(declined.length > 0 ? { declined } : {}),
             ...(phantomWrite ? { phantomWrite } : {}),
             ...(result.toolCalls.length > 0 ? { toolCalls: result.toolCalls } : {}),
@@ -432,7 +495,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
           // Retry appends alongside this row; it is never deleted.
           if (err instanceof CoachTurnError) {
             const tools = toolChips(err.toolCalls);
-            const { writes, declined, phantomWrite } = writeFidelity(
+            const { writes, undos, declined, phantomWrite } = writeFidelity(
               err.partialText,
               err.toolCalls
             );
@@ -455,6 +518,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
               // digest and the "Searched" lines both read it.
               toolCalls: err.toolCalls,
               ...(writes.length > 0 ? { writes } : {}),
+              ...undosField(undos),
               ...(declined.length > 0 ? { declined } : {}),
               ...(phantomWrite ? { phantomWrite } : {}),
             }));
@@ -554,6 +618,24 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
     setMessages(keepUnsentTail(loadThread(conversationId), messagesRef.current));
   }, [conversationId, setMessages]);
 
+  // THE UNDO of a write that saved at once (write-gate.ts). The ledger is the
+  // authority on how it stands, so every turn's lines are re-derived from it
+  // afterwards — the same derivation the live, failed and reload paths use —
+  // and whatever reads the record is told it changed.
+  const undo = useCallback(
+    (key: string) => {
+      void undoSavedAtOnce(getDb(), key).then(() => {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.toolCalls && m.undos ? { ...m, ...undosField(savedAtOnceViews(m.toolCalls)) } : m
+          )
+        );
+        onTurnComplete?.();
+      });
+    },
+    [onTurnComplete, setMessages]
+  );
+
   // Superseded is derived, never stored — the same adjacency rule the DB read
   // uses (markSupersededTurns), so the live thread and a reloaded one agree.
   const view = useMemo(() => markSupersededTurns(messages), [messages]);
@@ -565,6 +647,7 @@ export function useCoachChat(options: CoachChatOptions = {}): CoachChat {
     pendingWrite,
     resolveWrite,
     send,
+    undo,
     retry,
     reload,
   };

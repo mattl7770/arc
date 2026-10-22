@@ -18,7 +18,9 @@ import {
   toWireTools,
   type CoachToolContext,
 } from './tools';
-import { runGatedTool, type WriteConfirmation } from './write-gate';
+import { getSaveLogsAtOnce } from '@/lib/db/repositories/coach-autosave-setting';
+
+import { autoSaveTurn, runGatedTool, type WriteConfirmation } from './write-gate';
 import type { CoachTurnResult } from './types';
 
 /**
@@ -28,7 +30,9 @@ import type { CoachTurnResult } from './types';
  *   - REAL (a session key is set): the full agentic loop against the Messages
  *     API via src/lib/ai/model-client.ts — the model reads and writes the
  *     on-device database through the tool registry, with every write gated on
- *     user confirmation (options.confirmWrite).
+ *     user confirmation (options.confirmWrite) — except a simple log the user
+ *     stated, which saves at once with an Undo while Settings › Coach allows
+ *     it (write-gate.ts, "Saving at once").
  *   - MOCK (no key): the honest preview. It deliberately does NOT fake
  *     intelligence — a coach that confidently makes things up is worse than
  *     one that admits its wiring isn't finished.
@@ -55,7 +59,8 @@ export type StreamOptions = {
   signal?: AbortSignal;
   /**
    * Consequential-write gate: resolve true to run the tool, false to decline.
-   * When absent, every write is declined — reads never ask.
+   * When absent, every write is declined — reads never ask — and nothing
+   * saves at once either: a caller with no gate gets no writes at all.
    */
   confirmWrite?: (request: WriteConfirmation) => Promise<boolean>;
   /** Tool activity for the UI ("Reading metric series…"). */
@@ -115,6 +120,15 @@ export async function streamCoachReply(
   // on in Settings › Coach; read fresh or from a few minutes' memory, never
   // from the database. Never throws and times out on its own.
   const calendar = await calendarBlockFor(db, clock());
+  // SAVING AT ONCE (owner, 2026-10-21): the state the gate judges simple logs
+  // against — what he typed in THIS turn, and how many have saved. Only when
+  // the switch is on and the turn answers a message of his; otherwise every
+  // write goes to a card, exactly as before (write-gate.ts module note).
+  const latest = history[history.length - 1];
+  const autoSave =
+    options.confirmWrite && latest?.role === 'user' && getSaveLogsAtOnce(db)
+      ? autoSaveTurn(latest.content)
+      : undefined;
 
   const result = await runCoachTurn(
     {
@@ -190,13 +204,15 @@ export async function streamCoachReply(
         // ONE path, shared with an approved Coach proposal (proposals.ts), so a
         // tap on Home runs exactly what a tap in this thread runs. The rules
         // that path carries — a decline scoped to one call, a receipt minted
-        // only past `execute` — are documented there.
+        // only past `execute`, a simple log that saves at once — are
+        // documented there.
         return runGatedTool(
           db,
           tool,
           input as Record<string, unknown>,
           context,
-          options.confirmWrite
+          options.confirmWrite,
+          autoSave
         );
       },
     }

@@ -93,6 +93,8 @@ Every tool the model can call. **Read tools run freely; every write suspends the
 
 ### 2b. Shipped — write (confirmation-gated)
 
+> **Since 2026-10-21 five of these may save at once, with an Undo** — `log_metric`, `log_meal`, `log_symptom`, `log_capture`, `log_note`, and only for a log of the logical today whose every figure and word the user typed this turn. Everything else, and every write while the setting is off, keeps its card. See §5 "Simple logs save at once" and the ADR.
+
 | Tool | Input | Writes via | Confirmation line |
 | --- | --- | --- | --- |
 | `log_metric` | `metric`, `value`, `unit?`, `date?` | `logMetric` (registry-converted to canonical) | "Log weight 178 lb" |
@@ -425,13 +427,13 @@ The stored form is the rule, not the time: `coachNudges.checkin` is `'follow'`, 
 
 Enforced in code, not vibes:
 
-1. **Consequential writes are user-confirmed.** The loop suspends on any non-`readOnly` tool; the UI shows "Coach wants to: <summary>" with Approve/Decline (`PendingWriteCard`). Decline sends the model an explicit "user declined — do not retry" result (recorded `declined: true`, *not* an error). Unmount/abort resolves as declined. Nothing writes without a tap. Each approval is **nonce-bound** to the request it was shown — in a multi-write turn, a double-tap racing the next gate cannot approve the following write sight-unseen.
+1. **Consequential writes are user-confirmed** (one narrow exception since 2026-10-21: simple logs he states save at once, with an Undo — below). The loop suspends on any non-`readOnly` tool; the UI shows "Coach wants to: <summary>" with Approve/Decline (`PendingWriteCard`). Decline sends the model an explicit "user declined — do not retry" result (recorded `declined: true`, *not* an error). Unmount/abort resolves as declined. Nothing else writes without a tap. Each approval is **nonce-bound** to the request it was shown — in a multi-write turn, a double-tap racing the next gate cannot approve the following write sight-unseen.
 2. **Never fabricate data.** The system prompt requires tool reads before any data claim and mandates "you haven't logged X" over invention; empty tools return explicitly empty JSON (`stats: null`, "No lab results imported yet") rather than omitting fields a model might fill in. The insights numbers are computed, not generated.
 3. **Medical boundaries.** Prompt-enforced: never a doctor, no definitive diagnoses/dosing, flag what needs a clinician, show confidence, "based on your data + current evidence" framing. A model-level `refusal` stop reason is surfaced honestly, never retried.
 4. **Auditability.** The per-turn tool-call record persists in `ai_messages.tool_calls`; the UI shows which tools each reply used (chips under the bubble). A turn that fails *after* tools executed still persists its partial record (`CoachTurnError` carries it out), so an approved write is never untraceable — note that retrying such a turn can legitimately re-ask to log the same thing; the audit trail is what makes a duplicate visible. Full turn-idempotency is future work (flagged §9).
 5. **Key hygiene.** Session-only memory store; never persisted, never logged, never rendered back. UI copy says exactly this.
 6. **Bounded agency.** Max 8 model round-trips per turn (runaway-loop guard); `days` windows clamped ≤ 365; input validation ahead of every repository call.
-7. `⚑ MATT`: should *reads* ever be gated too (e.g. a visible "Coach read your labs" trail is enough?), and should some writes (log_note?) graduate to auto-approve once trust is established? Current stance: all writes gated, all reads free but visible.
+7. `⚑ MATT`: should *reads* ever be gated too (e.g. a visible "Coach read your labs" trail is enough?), and should some writes (log_note?) graduate to auto-approve once trust is established? Current stance: all reads free but visible; all writes gated except the simple logs below, which the owner graduated on 2026-10-21.
 
 ### What changed is reported by the RECORD, not by the reply (2026-08-14)
 
@@ -452,6 +454,17 @@ This is the worst failure the app has, because it is silent. The owner learns ab
 - **One prompt rule**, in the cached prefix: never report a change as done before its tool result arrives, and the app prints a receipt from the tool record.
 
 The prompt rule is the weakest of the four and is stated last on purpose. The receipt is what actually holds, because it is not advice.
+
+### Simple logs save at once, with Undo (2026-10-21 — the owner’s decision, against the recommendation)
+
+Owner: *simple logs the Coach makes for me in chat save at once, with an Undo — a weight, a supplement taken.* ADR "Simple logs save at once, with Undo" in `docs/decisions.md` is the decision of record; this is how it is built.
+
+- **Where the line is.** Each of `log_metric`, `log_meal`, `log_symptom`, `log_capture` and `log_note` carries an `autoApprove(input, db, context, turn)` predicate and an `undoDomain` (`captures`, or `meals` for a meal). The predicate is code: **the logical today** (no `date`, or today’s), **every figure his** (each number stored, in a field or inside the words, appears in his message this turn; an explicit unit too), **every word his** (each word of 3+ letters stored appears in his message), **no `time`**. A meal with the model’s macro estimate fails the figure rule and keeps its card; a meal in words, or with figures he typed, saves. The gate adds two rules of its own: at most **3 a turn** (`AUTO_SAVE_TURN_CAP`) and no repeat of the same call.
+- **Same gate, same receipt.** `runGatedTool` draws the card as always, then — only when the chat passed its turn state (`autoSaveTurn`, built in `coach-service.ts` from the latest user message while the setting is on and a gate is attached) — answers the gate itself for a qualifying call. `execute`, the receipt minted past it, the tool record, the phantom check and parity are untouched. The pass never passes a turn state, and `approveProposal` does not either, so **nothing the pass drafts ever saves at once**.
+- **The model is told in the result, not the prompt.** A saved-at-once result carries `savedAtOnce: "No card was shown… the user has an Undo under your reply."`. The static prompt’s "every write is shown to the user for approval" line was left alone so the cached prefix and the §6 ceilings did not move; the per-call result is the correction.
+- **The Undo.** Under the reply, beside the receipt (`src/components/coach/saved-at-once-line.tsx`). It removes exactly that row through `delete_record`’s domain delete — the Log tab’s `removeLogCapture` (Apple Health copy included) or the meal screen’s `deleteMealWithPhotos` — run through `runGatedTool` with a confirm that says yes only while the removal card drawn now equals the one drawn at the save. Edited since, or already gone: **Not undone**, with the reason, and nothing is removed. One Undo per row at a time, so a double tap cannot turn "Undone" into a refusal. The ledger is **in memory for the app session**: a slip is caught while the reply is on screen; after a restart the receipt stays and the row is undone on its own screen.
+- **The switch.** Settings › Coach › **Save simple logs at once**, on by default (`src/lib/db/repositories/coach-autosave-setting.ts`, the preferences blob, no migration). Off: every write goes back to a card.
+- **Tests.** `db/coach-autosave.test.mjs` drives the real `streamCoachReply` over a scripted wire; `db/screens-render.test.mjs` §45 draws the receipt in each state and the switch.
 
 ### The thread keeps the whole turn (2026-10-21)
 

@@ -10752,5 +10752,96 @@ console.log('\n48. The weekly review (2026-10-21) — Home’s “Your week”, 
   refute('home (week cleared)', render('home (week cleared)', HomeScreen), ['Your week']);
 }
 
+console.log('\n49. Simple logs save at once (owner, 2026-10-21) — the receipt with Undo, and its switch');
+{
+  const { SavedAtOnceLine } = await import('../src/components/coach/saved-at-once-line.tsx');
+  const { setSaveLogsAtOnce } = await import(
+    '../src/lib/db/repositories/coach-autosave-setting.ts'
+  );
+  const line = 'Log supplement: Creatine · 5 g';
+  const undos = [];
+  const onUndo = (key) => undos.push(key);
+
+  // OPEN: the receipt line in mono ink, and an Undo button that names it.
+  const open = render('saved-at-once (open)', SavedAtOnceLine, {}, {
+    line,
+    saved: { key: 'captures abc', state: 'open' },
+    onUndo,
+  });
+  expect('saved-at-once (open)', open, [line, '>Undo<', `aria-label="Undo: ${line}"`]);
+  refute('saved-at-once (open)', open, ['Undone', 'Not undone', 'pine', 'accent', 'signal-']);
+
+  // UNDONE: struck through, said in words, no button left to press.
+  const undone = render('saved-at-once (undone)', SavedAtOnceLine, {}, {
+    line,
+    saved: { key: 'captures abc', state: 'undone' },
+    onUndo,
+  });
+  expect('saved-at-once (undone)', undone, [line, 'Undone', 'line-through']);
+  refute('saved-at-once (undone)', undone, ['>Undo<']);
+
+  // REFUSED: the line stays, and why it was not removed.
+  const refused = render('saved-at-once (refused)', SavedAtOnceLine, {}, {
+    line,
+    saved: {
+      key: 'captures abc',
+      state: 'refused',
+      note: 'It changed after it was saved, so it was not removed. Change or remove it on its own screen.',
+    },
+    onUndo,
+  });
+  expect('saved-at-once (refused)', refused, [
+    line,
+    'Not undone. It changed after it was saved, so it was not removed.',
+  ]);
+  refute('saved-at-once (refused)', refused, ['>Undo<']);
+
+  // CLOSED: a session since; the receipt alone.
+  const closed = render('saved-at-once (closed)', SavedAtOnceLine, {}, {
+    line,
+    saved: { key: null, state: 'closed' },
+    onUndo,
+  });
+  expect('saved-at-once (closed)', closed, [line]);
+  refute('saved-at-once (closed)', closed, ['>Undo<', 'Undone', 'Not undone']);
+  undos.length === 0 ? ok('rendering never presses Undo') : bad('undo fired on render');
+
+  // WIRING, as source (MessageBubble imports the chat hook, whose model client
+  // a server render cannot load): the bubble draws this line beside each
+  // receipt that saved at once, and the thread hands it the hook's undo.
+  const bubbleSrc = readFileSync(
+    new URL('../src/components/coach/message-bubble.tsx', import.meta.url),
+    'utf8'
+  );
+  const coachTabSrc = readFileSync(new URL('../app/(tabs)/coach.tsx', import.meta.url), 'utf8');
+  bubbleSrc.includes('const saved = undos[index] ?? null;') &&
+  bubbleSrc.includes('<SavedAtOnceLine') &&
+  coachTabSrc.includes('onUndo={chat.undo}')
+    ? ok('the receipt under the bubble carries the Undo, wired to the chat hook')
+    : bad('saved-at-once wiring');
+
+  // The switch in Settings › Coach: ON on a fresh install, OFF when stored off.
+  const settings = render('settings-coach (save at once)', SettingsCoachScreen);
+  expect('settings-coach (save at once)', settings, [
+    'Save simple logs at once',
+    'A weight, a supplement, a note you tell the Coach · Undo under the reply',
+    'aria-label="Save simple logs at once"',
+    'always waits',
+  ]);
+  const onSwitch =
+    settings?.match(/<input[^>]*aria-label="Save simple logs at once"[^>]*>/)?.[0] ?? '';
+  /\schecked(=|\s|>)/.test(onSwitch)
+    ? ok('settings-coach: Save simple logs at once is ON by default (the owner’s answer)')
+    : bad('settings-coach: save-at-once switch not on by default', onSwitch);
+  setSaveLogsAtOnce(db, false);
+  const offSettings = render('settings-coach (save at once off)', SettingsCoachScreen);
+  const offSwitch =
+    offSettings?.match(/<input[^>]*aria-label="Save simple logs at once"[^>]*>/)?.[0] ?? '';
+  offSwitch && !/\schecked(=|\s|>)/.test(offSwitch)
+    ? ok('settings-coach: a stored OFF reads back as an OFF switch')
+    : bad('settings-coach: stored OFF did not render off', offSwitch);
+  setSaveLogsAtOnce(db, true);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

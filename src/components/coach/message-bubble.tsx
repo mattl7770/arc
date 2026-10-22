@@ -9,12 +9,15 @@ import { isRetryableOutcome, type CoachChatView } from '@/hooks/use-coach-chat';
 
 import { webSearchesOf } from '@/lib/ai/web-search';
 
+import { SavedAtOnceLine } from './saved-at-once-line';
 import { SearchedLines } from './searched-lines';
 import { TypingIndicator } from './typing-indicator';
 
 type Props = {
   message: CoachChatView;
   onRetry: () => void;
+  /** Undo a write that saved at once, by its key (use-coach-chat.ts `undo`). */
+  onUndo?: (key: string) => void;
 };
 
 /** The neutral status chip's word for each unfinished outcome. Whole strings. */
@@ -286,7 +289,7 @@ function turnDate(createdAt: number, now: Date = new Date()): TurnDate | null {
  * Both are neutral ink for the reason above. A phantom write is a workflow
  * fault, not a reading about the owner's body.
  */
-export function MessageBubble({ message, onRetry }: Props) {
+export function MessageBubble({ message, onRetry, onUndo }: Props) {
   const clock = turnClock(message.createdAt);
   // Null on today's turns, which is nearly all of them — see turnDate.
   const date = turnDate(message.createdAt);
@@ -321,6 +324,8 @@ export function MessageBubble({ message, onRetry }: Props) {
   const outcome = message.outcome ?? 'complete';
   const unfinished = !message.streaming && outcome !== 'complete';
   const writes = message.writes ?? [];
+  // Beside each receipt: null, or how a write that saved at once stands.
+  const undos = message.undos ?? [];
   // The load-bearing combination: the turn broke off, but writes already
   // committed. Silence here would let an approved change look like it never ran.
   const showWritesLanded = unfinished && writes.length > 0;
@@ -422,10 +427,26 @@ export function MessageBubble({ message, onRetry }: Props) {
             }
           </Text>
         ) : null}
+        {/* A cut-off turn's simple logs keep their Undo too. */}
+        {showWritesLanded
+          ? writes.map((line, index) => {
+              const saved = undos[index] ?? null;
+              return saved ? (
+                <SavedAtOnceLine
+                  key={`${line}-${index}`}
+                  line={line}
+                  saved={saved}
+                  onUndo={onUndo}
+                />
+              ) : null;
+            })
+          : null}
 
         {/*
           THE RECEIPT. Drawn from the turn's tool record — one line per write
           that actually executed, in the words the owner approved on the card.
+          A write that saved at once (no card, 2026-10-21) draws its line with
+          its Undo beside it (saved-at-once-line.tsx).
           A reply cannot produce one by describing a change, which is the whole
           point: prose is the model's, this is the database's.
         */}
@@ -434,13 +455,23 @@ export function MessageBubble({ message, onRetry }: Props) {
             <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
               Saved to your record
             </Text>
-            {writes.map((line, index) => (
-              <Text
-                key={`${line}-${index}`}
-                className="mt-0.5 font-mono text-[11px] leading-4 text-ink">
-                {line}
-              </Text>
-            ))}
+            {writes.map((line, index) => {
+              const saved = undos[index] ?? null;
+              return saved ? (
+                <SavedAtOnceLine
+                  key={`${line}-${index}`}
+                  line={line}
+                  saved={saved}
+                  onUndo={onUndo}
+                />
+              ) : (
+                <Text
+                  key={`${line}-${index}`}
+                  className="mt-0.5 font-mono text-[11px] leading-4 text-ink">
+                  {line}
+                </Text>
+              );
+            })}
           </View>
         ) : null}
 

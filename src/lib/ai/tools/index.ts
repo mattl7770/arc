@@ -15,7 +15,7 @@ import { RECORD_READ_TOOLS, RECORD_WRITE_TOOLS } from './record-tools';
 import { WRITE_TOOLS as BESPOKE_WRITE_TOOLS } from './write-tools';
 import type { CoachTool } from './types';
 
-export type { CoachTool, CoachToolContext, WriteKind, WriteMeta } from './types';
+export type { AutoSaveTurn, CoachTool, CoachToolContext, WriteKind, WriteMeta } from './types';
 export { DEFAULT_WRITE_META } from './types';
 export { UNREGISTERED_READ_TOOLS } from './read-tools';
 export { STUB_TOOLS } from './stubs';

@@ -1,5 +1,62 @@
 # Architecture Decision Records (ADR)
 
+## 2026-10-21 — Simple logs save at once, with Undo
+
+**Context.** Every Coach write has waited behind an approval card since the agentic loop shipped
+(CLAUDE.md §6, `docs/ai-coach.md` §5). The owner's direction (2026-10-21): *simple logs the Coach
+makes for him in chat save at once, with an Undo* — his examples, "a weight, a supplement taken".
+**This is the owner's decision, taken against the recommendation** (keep every write behind a
+card, and graduate trust by measurement later). It deliberately relaxes "cards before writes" for
+a narrow class, so the class is defined in code, in one place, and every other rail is kept.
+
+**Decision.**
+
+1. **The class.** Five tools declare a per-tool `autoApprove` predicate (`src/lib/ai/tools/
+   write-tools.ts`, "Saving at once"): `log_metric` (weight, body fat, waist, HRV, resting HR,
+   water), `log_capture` (a supplement, medication or therapy taken), `log_symptom`, `log_note`,
+   `log_meal`. A call saves at once only when **all** of these hold, judged by the gate in code —
+   never by the model, which never sees the predicate:
+   - **the logical today** — no `date`, or today's; a backdate keeps its card;
+   - **every figure is his** — each number the call stores (a value, a severity, a macro, a dose
+     inside a title) appears in the message he sent this turn; a unit is his too when one is
+     passed. A glass turned into 250 ml, a dose read off his protocol, a kilo figure converted to
+     pounds, a macro the model estimated: all go to the card;
+   - **every word is his** — each word of three letters or more in what is stored (a name, a
+     title, a note) appears in his message. "Took my stack" logged as "Magnesium" is the model's
+     inference and gets a card; a note in his words saves, a précis of them does not;
+   - **no `time`** — "this morning" → 08:00 is a figure he did not type;
+   - **not a batch** — at most 3 save at once in one turn, and a repeat of the same call does not.
+2. **Meals qualify, estimates do not.** A meal described in words with no figures, or with figures
+   he typed himself, is bookkeeping exactly like a supplement. A meal carrying the model's macro
+   estimate keeps its card: those numbers move the day's totals and every target read off them,
+   and the tool's own description already says to estimate only when asked. The figure rule draws
+   that line without a meal-specific special case.
+3. **Never at once:** edits, deletes, protocol or plan changes, statuses, reminders, experiments,
+   grocery or recipe writes, workouts, anything bulk, anything backdated, anything the model
+   inferred, and **anything the unattended pass drafts** — a proposal is approved by his tap
+   through `approveProposal`, which never passes the turn state the gate needs. A caller with no
+   confirmation gate gets no writes at all, at once or otherwise.
+4. **Same path.** The save runs `runGatedTool` (`src/lib/ai/write-gate.ts`): the card is still
+   drawn (it validates and becomes the receipt), `execute` is the same repository call a screen
+   makes, and the receipt is still minted only past it — so the ledger of what was written, the
+   phantom-write check and parity all hold unchanged. The result gains a `savedAtOnce` line telling
+   the model no card was shown and that he has an Undo. The cached system prompt and the tool
+   schemas are untouched, so the `db/coach-eval.test.mjs` §6 ceilings do not move.
+5. **The Undo** sits beside the receipt under the reply. It removes exactly that record through the
+   domain's own delete — `delete_record`'s path, the one the Log tab's × and the meal screen's
+   Delete run (Apple Health copy included) — via the same gate, which answers yes only while the
+   removal card drawn now matches the one drawn at the save. A row edited since, or already
+   removed, refuses and says so. **It lasts the app session**: an Undo is for a slip caught while
+   the reply is in front of him, so it lives in memory beside the thread; after a restart the
+   receipt stays without one and the row is undone where any row is, on its own screen.
+6. **The setting.** Settings › Coach › **Save simple logs at once**, **on** by the owner's default
+   (`preferences.coachSaveAtOnce.simpleLogs`, no migration). Off puts every write back behind a
+   card.
+
+**Revisit if** a saved-at-once row is ever one he did not mean (tighten the rules, or turn the
+default off), the per-turn cap bites a normal morning stack, or the Undo is used often enough to
+say the card was the better default.
+
 ## 2026-10-21 — Calendar context to the model
 
 **Context.** The chief-of-staff release, Track 2 item 7 (`docs/spikes/chief-of-staff-release.md`):

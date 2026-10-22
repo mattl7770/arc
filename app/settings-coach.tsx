@@ -24,6 +24,10 @@ import {
   getCalendarContextOn,
   setCalendarContextOn,
 } from '@/lib/db/repositories/calendar-setting';
+import {
+  getSaveLogsAtOnce,
+  setSaveLogsAtOnce,
+} from '@/lib/db/repositories/coach-autosave-setting';
 import { formatUsd, summarizeLedger } from '@/lib/ai/spend-ledger';
 import { readSpendLedger } from '@/lib/ai/spend-store';
 import { todayISODate } from '@/lib/db/date';
@@ -97,6 +101,15 @@ import { syncReminderNotifications } from '@/lib/notifications/reminders';
  * it. Access is re-checked whenever ARC comes back to the foreground, so a
  * change made in iOS Settings shows here at once (src/components/coach/
  * calendar-setting.tsx carries the sentences).
+ *
+ * ## Save simple logs at once (2026-10-21, docs/decisions.md "Simple logs save
+ * at once, with Undo")
+ *
+ * One switch, ON by the owner's own default: a simple log he states in chat (a
+ * weight, a supplement taken, a symptom, a note in his words, water, a meal in
+ * words) saves without a card, with an Undo under the reply. Off puts every
+ * write back behind a card. Stored in the preferences blob and read at the
+ * start of every chat turn (coach-autosave-setting.ts).
  *
  * ## Coach usage (2026-10-21)
  *
@@ -184,6 +197,7 @@ export default function SettingsCoachScreen() {
   const canSave = draft.trim().length > 0;
   const [nudges, saveNudges] = useNudgeSettings();
   const [calendarOn, calendarAccessNow, changeCalendar] = useCalendarSetting();
+  const [saveAtOnce, setSaveAtOnce] = useState(() => getSaveLogsAtOnce(getDb()));
   const router = useRouter();
   const spend = useSpendGlance();
 
@@ -386,6 +400,37 @@ export default function SettingsCoachScreen() {
             the Coach's own call. */}
         <View className="mt-4">
           <CalendarSetting on={calendarOn} access={calendarAccessNow} onChange={changeCalendar} />
+        </View>
+
+        {/* Save simple logs at once (2026-10-21): on by the owner's answer. A
+            ruled plate like Web search: a setting, a record. */}
+        <View className="mt-4">
+          <Block device="plate">
+            <View className="min-h-[44px] flex-row items-center gap-3 py-3">
+              <View className="flex-1">
+                <Text className="font-serif text-[15px] text-ink">Save simple logs at once</Text>
+                <Text className="mt-0.5 font-serif text-[12px] text-ink-muted">
+                  A weight, a supplement, a note you tell the Coach · Undo under the reply
+                </Text>
+              </View>
+              <Switch
+                accessibilityLabel="Save simple logs at once"
+                value={saveAtOnce}
+                onValueChange={(on) => setSaveAtOnce(setSaveLogsAtOnce(getDb(), on))}
+                trackColor={{ true: palette.ink, false: palette.hairlineStrong }}
+                ios_backgroundColor={palette.hairlineStrong}
+              />
+            </View>
+          </Block>
+        </View>
+        <View className="mt-4">
+          <Block device="margin">
+            <Text className="font-serif text-[11px] leading-4 text-ink-muted">
+              Only today&rsquo;s logs, in your own words and numbers. A figure the Coach estimated
+              or converted, a backdate, a change, a removal, a reminder or a protocol edit always
+              waits for your tap. Off: everything does.
+            </Text>
+          </Block>
         </View>
       </View>
 
