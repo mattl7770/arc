@@ -17,20 +17,27 @@ import type { Database } from '../database';
 // (exercise → workout-ingest → training-stats → exercise, 0054), and a stats
 // module reaching into a repository for a date helper was the wrong direction
 // regardless.
-import { formatLocalDate, localWeekRange, logicalDate } from '../date';
+import { formatLocalDate, localWeekRange, logicalDate, todayISODate } from '../date';
 import type { DateString } from '../types';
 import { exerciseLoadBases } from './exercise-catalog';
+import { REP_RANGE } from '@/lib/exercise/constants';
 import { e1rmForSet } from '@/lib/exercise/e1rm';
 import type { LoadBasis } from '@/lib/exercise/load-basis';
 import { asMeasures, type Measures } from '@/lib/exercise/measures';
 import {
+  candidateFromTyped,
   directionOf,
+  liveAdvanceOf,
+  overloadMarkOf,
   personalRecordsOf,
+  type OverloadReading,
+  type PhrasePart,
   type Trend,
   type TrendMetric,
 } from '@/lib/exercise/records';
 import type {
   E1rmPoint,
+  Mechanic,
   Muscle,
   MuscleLoad,
   MuscleRole,
@@ -38,6 +45,7 @@ import type {
   SetType,
 } from '@/lib/exercise/types';
 import type { SessionTopSet } from '@/lib/exercise/progression';
+import type { UnitPreferences } from '@/lib/user/types';
 
 const ROLE_WEIGHT: Record<MuscleRole, number> = { primary: 1, secondary: 0.5 };
 
@@ -128,6 +136,15 @@ function stronger(a: number[], b: number[]): boolean {
     if (x !== y) return x > y;
   }
   return false;
+}
+
+/** The strongest of `rows` by {@link setStrength}, the first on a tie; null when empty. */
+function bestSetOf<T extends SetRow>(rows: readonly T[], basis: LoadBasis | null): T | null {
+  let best: T | null = null;
+  for (const r of rows) {
+    if (!best || stronger(setStrength(r, basis), setStrength(best, basis))) best = r;
+  }
+  return best;
 }
 
 /**
@@ -322,34 +339,160 @@ export type TrainedExercise = {
   trend: Trend | null;
   /** Which per-session value {@link trend} was read from. */
   trendMetric: TrendMetric | null;
+  /**
+   * Progressing / Holding / Stalled (item 87) — what the row shows where the %
+   * token stood. Null with under three home sessions, nothing in 42 days, or a
+   * movement the mark does not read (assisted, distance, no reps).
+   */
+  overload: OverloadReading | null;
+};
+
+/** What the overload mark needs to know about a movement, from its catalog row. */
+export type OverloadSubject = {
+  measures: Measures;
+  loadBasis: LoadBasis | null;
+  mechanic: Mechanic | null;
 };
 
 /**
- * The latest top set and the direction of travel for one movement, from its
- * working sets (newest workout first) — the pure half of
- * {@link trainedExercises}, and the only place the hub's arrow is computed.
+ * One movement's overload mark from its working sets (newest workout first):
+ * every session's best set, the engine's ranking, read by `overloadMarkOf`
+ * over the engine's own rep range. The one assembly the hub, exercise detail
+ * and the Coach share, so the three cannot read one lift three ways.
+ */
+export function overloadMarkFrom(
+  rows: SetRow[],
+  subject: OverloadSubject,
+  today: DateString
+): OverloadReading | null {
+  return overloadMarkOf(
+    exerciseSessionTopsFrom(rows, Number.POSITIVE_INFINITY, subject.loadBasis),
+    {
+      measures: subject.measures,
+      basis: subject.loadBasis,
+      repRange: REP_RANGE[subject.mechanic ?? 'compound'],
+    },
+    today
+  );
+}
+
+/** A live logger block, as far as its Advanced line needs it (`DraftBlock`'s shape). */
+export type LiveAdvanceBlock = {
+  key: number;
+  exerciseId: string | null;
+  measures: Measures;
+  mechanic: Mechanic | null;
+  sets: readonly (Parameters<typeof candidateFromTyped>[0] & { key: number; done: boolean })[];
+};
+
+/**
+ * The live logger's Advanced lines (item 87), by block key: for each movement,
+ * the best DONE working set so far across every block of it (bench, row,
+ * bench is one session of bench), ranked as Finish will save it
+ * ({@link setStrength}), asked `liveAdvanceOf` against the logged history. The
+ * line is drawn on the block holding that set, once per movement. Nothing
+ * away (0055) or while editing a stored session: the line is a claim about
+ * right now, against the home baseline.
+ *
+ * `history` is each movement's logged sessions' best sets
+ * ({@link exerciseSessionTopsFrom}), read once by the screen; the live session
+ * is not in it (a draft until Finish).
+ */
+export function liveAdvanceLines(input: {
+  blocks: readonly LiveAdvanceBlock[];
+  history: ReadonlyMap<string, readonly SessionTopSet[]>;
+  bases: ReadonlyMap<string, LoadBasis | null>;
+  away: boolean;
+  editing: boolean;
+  units: UnitPreferences;
+  today: DateString;
+}): Map<number, PhrasePart[]> {
+  const out = new Map<number, PhrasePart[]>();
+  if (input.away || input.editing) return out;
+  const ids = new Set(input.blocks.flatMap((b) => (b.exerciseId == null ? [] : [b.exerciseId])));
+  for (const id of ids) {
+    const blocks = input.blocks.filter((b) => b.exerciseId === id);
+    const first = blocks[0]!;
+    const basis = input.bases.get(id) ?? null;
+    const rows = blocks.flatMap((b) =>
+      b.sets
+        .filter((s) => s.done && s.setType !== 'warmup')
+        .map((s) => {
+          const c = candidateFromTyped(s, input.units);
+          return {
+            blockKey: b.key,
+            workout_id: 'live',
+            date: input.today,
+            when_iso: '',
+            reps: c.reps,
+            weight_kg: c.weightKg,
+            rpe: c.rpe,
+            set_type: c.setType,
+            duration_sec: c.durationSec,
+            distance_m: c.distanceM,
+            away: 0 as const,
+          };
+        })
+    );
+    const best = bestSetOf(rows, basis);
+    if (!best) continue;
+    const parts = liveAdvanceOf(
+      {
+        date: input.today,
+        weightKg: best.weight_kg,
+        reps: best.reps,
+        rpe: best.rpe,
+        durationSec: best.duration_sec,
+        distanceM: best.distance_m,
+      },
+      input.history.get(id) ?? [],
+      {
+        measures: first.measures,
+        basis,
+        repRange: REP_RANGE[first.mechanic ?? 'compound'],
+      },
+      input.units
+    );
+    if (parts) out.set(best.blockKey, parts);
+  }
+  return out;
+}
+
+/**
+ * The latest top set, the direction of travel and the overload mark for one
+ * movement, from its working sets (newest workout first) — the pure half of
+ * {@link trainedExercises}, and the only place the hub row is computed.
  *
  * The direction is `directionOf` (src/lib/exercise/records.ts) — a lift's
  * e1RM, else its top weight (sets past the e1RM rep cap), else its most reps (a
  * pull-up logged at bodyweight); none for anything covering distance. It is
- * the SAME function exercise detail opens its Trend with, so the arrow on this
- * row and the chart it opens are always the same series.
+ * the SAME function exercise detail opens its Trend with, so the row's spoken
+ * direction and the chart it opens are always the same series. The row SHOWS
+ * the overload mark (item 87), which replaced the % token.
  */
 export function trainedExerciseFrom(
   rows: SetRow[],
-  measures: Measures,
-  basis: LoadBasis | null
-): Pick<TrainedExercise, 'latest' | 'trend' | 'trendMetric'> | null {
+  subject: OverloadSubject,
+  today: DateString
+): Pick<TrainedExercise, 'latest' | 'trend' | 'trendMetric' | 'overload'> | null {
+  const { measures, loadBasis: basis } = subject;
   const tops = exerciseSessionTopsFrom(rows, 1, basis);
   const latest = tops[tops.length - 1];
   if (!latest) return null;
   const direction = directionOf(rows, measures, basis);
+  const overload = overloadMarkFrom(rows, subject, today);
   return direction
-    ? { latest, trend: direction.trend, trendMetric: direction.metric }
-    : { latest, trend: null, trendMetric: null };
+    ? { latest, trend: direction.trend, trendMetric: direction.metric, overload }
+    : { latest, trend: null, trendMetric: null, overload };
 }
 
-/** How many of each movement's latest sessions the hub reads — the trend needs four home ones. */
+/**
+ * How many of each movement's latest sessions the hub reads. The trend needs
+ * four home ones; the overload mark is exact with five (the latest two
+ * sessions' advances, each against the three before it), so it can differ
+ * from detail's only when four or more of the eight were away sessions — the
+ * trend's own edge.
+ */
 const TRAINED_SESSIONS_READ = 8;
 
 /**
@@ -364,8 +507,13 @@ const TRAINED_SESSIONS_READ = 8;
  * keeps a hub focus cheap after years of history. Archived movements are
  * included — history outlives the catalog, and exercise-detail opens them.
  */
-export function trainedExercises(db: Database): TrainedExercise[] {
-  const rows = db.all<SetRow & { exercise_id: string; name: string; measures: string }>(
+export function trainedExercises(
+  db: Database,
+  today: DateString = todayISODate()
+): TrainedExercise[] {
+  const rows = db.all<
+    SetRow & { exercise_id: string; name: string; measures: string; mechanic: Mechanic | null }
+  >(
     `WITH ranked AS (
        SELECT s.exercise_id, s.workout_id, w.date, w.created_at AS when_iso, w.away,
               s.reps, s.weight_kg, s.rpe, s.set_type, s.duration_sec, s.distance_m, s.set_index,
@@ -377,7 +525,7 @@ export function trainedExercises(db: Database): TrainedExercise[] {
        JOIN workouts w ON w.id = s.workout_id
        WHERE s.exercise_id IS NOT NULL AND s.set_type != 'warmup'
      )
-     SELECT r.*, e.name, e.measures
+     SELECT r.*, e.name, e.measures, e.mechanic
      FROM ranked r
      JOIN exercises e ON e.id = r.exercise_id
      WHERE r.session_rank <= ?
@@ -394,11 +542,14 @@ export function trainedExercises(db: Database): TrainedExercise[] {
       )
       .map((r) => [r.id, r.n])
   );
-  const grouped = new Map<string, { name: string; measures: Measures; rows: SetRow[] }>();
+  const grouped = new Map<
+    string,
+    { name: string; measures: Measures; mechanic: Mechanic | null; rows: SetRow[] }
+  >();
   for (const r of rows) {
     let g = grouped.get(r.exercise_id);
     if (!g) {
-      g = { name: r.name, measures: asMeasures(r.measures), rows: [] };
+      g = { name: r.name, measures: asMeasures(r.measures), mechanic: r.mechanic, rows: [] };
       grouped.set(r.exercise_id, g);
     }
     g.rows.push(r);
@@ -409,7 +560,11 @@ export function trainedExercises(db: Database): TrainedExercise[] {
   // recently trained first.
   for (const [exerciseId, g] of grouped) {
     const basis = bases.get(exerciseId) ?? null;
-    const summary = trainedExerciseFrom(g.rows, g.measures, basis);
+    const summary = trainedExerciseFrom(
+      g.rows,
+      { measures: g.measures, loadBasis: basis, mechanic: g.mechanic },
+      today
+    );
     if (!summary) continue;
     out.push({
       exerciseId,

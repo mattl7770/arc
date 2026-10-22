@@ -11,13 +11,14 @@ import { StackHeader } from '@/components/ui/stack-header';
 import { getDb } from '@/lib/db/client';
 import { todayISODate } from '@/lib/db/date';
 import { getExercise, setExerciseLoadBasis } from '@/lib/db/repositories/exercise-catalog';
+import { progressionFor } from '@/lib/db/repositories/training-recommend';
 import {
   exerciseSessionTopsFrom,
   personalRecordsFrom,
   workingSets,
   type SetRow,
 } from '@/lib/db/repositories/training-stats';
-import { MUSCLE_LABEL } from '@/lib/exercise/constants';
+import { MUSCLE_LABEL, REP_RANGE } from '@/lib/exercise/constants';
 import { dayLabel, formatWeight, measuredSetLine, weightSpec } from '@/lib/exercise/format';
 import { resolveExerciseImage } from '@/lib/exercise/images.generated';
 import {
@@ -30,16 +31,22 @@ import {
 } from '@/lib/exercise/load-basis';
 import { measuresLabel } from '@/lib/exercise/measures';
 import {
+  advancedSessionIds,
   formatTrendValue,
+  OVERLOAD_MARK_LABEL,
+  overloadLineParts,
+  overloadMarkOf,
+  phraseText,
   recordCellsOf,
   recordKindsFor,
-  recordSessionIds,
   repMaxEmptyNote,
   repMaxesFrom,
   TREND_METRIC_LABEL,
   TREND_RANGE_LABEL,
   TREND_RANGE_WORDS,
   trendView,
+  type OverloadMark,
+  type OverloadReading,
   type PhrasePart,
   type RepMax,
   type TrendMetric,
@@ -48,6 +55,8 @@ import {
 } from '@/lib/exercise/records';
 import type { CatalogExercise, PersonalRecords } from '@/lib/exercise/types';
 import type { SessionTopSet } from '@/lib/exercise/progression';
+import type { SetTarget } from '@/lib/exercise/draft';
+import { setTargetOf, targetFigure } from '@/lib/exercise/set-hints';
 import type { UnitPreferences } from '@/lib/user/types';
 import { useUnitPreferences } from '@/hooks/use-unit-preferences';
 
@@ -99,8 +108,12 @@ type Detail = {
   prs: PersonalRecords;
   repMaxes: RepMax[];
   sessions: SessionTopSet[];
-  /** Workout ids of the sessions that set a record at the time. */
-  recordSessions: Set<string>;
+  /** Workout ids of the sessions that ADVANCED when they were logged (item 87). */
+  advancedSessions: Set<string>;
+  /** Progressing / Holding / Stalled, or null (`overloadMarkOf`). */
+  overload: OverloadReading | null;
+  /** The engine's next step for it — the Trend's "next:" — or undefined. */
+  target: SetTarget | undefined;
   sessionCount: number;
 };
 
@@ -123,7 +136,9 @@ function read(id: string | undefined): Detail {
     prs: EMPTY_PRS,
     repMaxes: [],
     sessions: [],
-    recordSessions: new Set(),
+    advancedSessions: new Set(),
+    overload: null,
+    target: undefined,
     sessionCount: 0,
   };
   if (!id) return empty;
@@ -134,16 +149,30 @@ function read(id: string | undefined): Detail {
   // The basis decides whether load records exist at all (none for an assisted
   // movement) and which set of a session is its top set.
   const basis = exercise?.loadBasis ?? null;
+  // Every session's best set, oldest first: the mark reads all of them, the
+  // History list the latest twenty.
+  const tops = exerciseSessionTopsFrom(rows, Number.POSITIVE_INFINITY, basis);
+  const repRange = REP_RANGE[exercise?.mechanic ?? 'compound'];
+  const movement = exercise ? { measures: exercise.measures, basis, repRange } : null;
+  let target: SetTarget | undefined;
+  if (exercise) {
+    try {
+      target = setTargetOf(progressionFor(db, exercise), repRange.high);
+    } catch (error) {
+      // A failed read costs the "next:" only.
+      console.warn('[exercise] progression read failed', error);
+    }
+  }
   return {
     exercise,
     rows,
     prs: personalRecordsFrom(rows, basis),
     repMaxes: repMaxesFrom(rows, basis),
     // newest-first for the history list
-    sessions: exerciseSessionTopsFrom(rows, HISTORY_LIMIT, basis).slice().reverse(),
-    recordSessions: exercise
-      ? recordSessionIds(rows, { measures: exercise.measures, basis: exercise.loadBasis })
-      : new Set(),
+    sessions: tops.slice(-HISTORY_LIMIT).reverse(),
+    advancedSessions: movement ? advancedSessionIds(tops, movement) : new Set(),
+    overload: movement ? overloadMarkOf(tops, movement, todayISODate()) : null,
+    target,
     sessionCount: new Set(rows.map((r) => r.workout_id)).size,
   };
 }
@@ -152,11 +181,15 @@ function read(id: string | undefined): Detail {
  * The Records grid's cells are `recordCellsOf` (src/lib/exercise/records.ts):
  * the records this movement HAS, from what it measures and what its weight
  * counts — not from which happen to be non-null, so a movement with no history
- * still shows the right em-dashes. They are the same list of kinds the live PR
- * stamp checks, so every record on the grid is one a set can stamp; until
+ * still shows the right em-dashes. They are the same list of kinds the record
+ * rule checks (`recordsBeaten`). The grid is a table of facts: since item 87 no
+ * set is stamped against it in the gym. Until
  * 2026-09-23 the screen chose its own cells, and a plank's grid carried a "Top
  * set" and a "Set volume" it could never fill.
  */
+
+/** The line heading the Trend: the mark, and its why (`overloadLineParts`). */
+export type OverloadLine = { mark: OverloadMark; parts: PhrasePart[] };
 
 /** A trend metric is a weight when its figures are in the logged load basis. */
 const WEIGHT_METRICS: ReadonlySet<TrendMetric> = new Set(['e1rm', 'top_weight', 'volume']);
@@ -171,7 +204,17 @@ export default function ExerciseDetailScreen() {
 
   const { units } = useUnitPreferences();
   const today = todayISODate();
-  const { exercise, rows, prs, repMaxes, sessions, recordSessions, sessionCount } = detail;
+  const {
+    exercise,
+    rows,
+    prs,
+    repMaxes,
+    sessions,
+    advancedSessions,
+    overload,
+    target,
+    sessionCount,
+  } = detail;
 
   const [choosingBasis, setChoosingBasis] = useState(false);
   // The Trend's two chip rows, each null until the owner picks. Until then the
@@ -226,6 +269,19 @@ export default function ExerciseDetailScreen() {
   const records = recordCellsOf(exercise.measures, basis, prs, sessionCount, units);
   const showRepMaxes = recordKindsFor(exercise.measures, basis).includes('rep_max');
   const photo = resolveExerciseImage(exercise.id);
+  // The line heading the Trend (item 87): the mark, then why, then the
+  // engine's next step on real plates — the logger's own grey figure.
+  const overloadLine: OverloadLine | null = overload
+    ? {
+        mark: overload.mark,
+        parts: overloadLineParts(
+          overload,
+          REP_RANGE[exercise.mechanic ?? 'compound'],
+          target ? targetFigure(target, units, basis) : null,
+          units
+        ),
+      }
+    : null;
 
   /**
    * Correct the basis (0062). Saved on the tap, like the away-gym chip: there is
@@ -398,6 +454,7 @@ export default function ExerciseDetailScreen() {
             view={view}
             units={units}
             basisNote={basisNote}
+            overload={overloadLine}
             onMetric={setMetricChoice}
             onRange={setRangeChoice}
           />
@@ -445,9 +502,10 @@ export default function ExerciseDetailScreen() {
           where the record stands. (The sweep of 2026-08-10 made the plate
           conditional; reverted the same day at the owner's instruction.)
 
-          A session that set a record AT THE TIME says PR — the live logger's
-          own rule, `recordSessionIds`, so the mark here is the stamp the owner
-          saw in the gym. */}
+          A session that ADVANCED when it was logged says so (item 87, which
+          replaced the PR mark): `advancedSessionIds`, the predicate behind the
+          mark above and the logger's Advanced line, so the gym and the history
+          agree. Never the first session, never an away one. */}
       <View className="mt-7">
         <Block device="plate">
           <SectionLabel label="History" note={basisNote} />
@@ -458,7 +516,7 @@ export default function ExerciseDetailScreen() {
           ) : (
             <View className="mt-1">
               {sessions.map((s, i) => {
-                const isRecord = s.workoutId != null && recordSessions.has(s.workoutId);
+                const advanced = s.workoutId != null && advancedSessions.has(s.workoutId);
                 return (
                   <View key={s.workoutId ?? `${s.date}-${i}`}>
                     <Divider first={i === 0} />
@@ -478,9 +536,9 @@ export default function ExerciseDetailScreen() {
                         )}
                         {s.rpe != null ? `  @${s.rpe}` : ''}
                       </Text>
-                      {isRecord ? (
+                      {advanced ? (
                         <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink-secondary">
-                          PR
+                          Advanced
                         </Text>
                       ) : null}
                       {/* A session logged elsewhere says so, in the label voice —
@@ -579,6 +637,7 @@ export function TrendField({
   view,
   units,
   basisNote,
+  overload = null,
   onMetric,
   onRange,
 }: {
@@ -586,6 +645,8 @@ export function TrendField({
   units: UnitPreferences;
   /** "kg · per hand" — shown for the metrics whose figures are weights. */
   basisNote: string | undefined;
+  /** The overload line that heads the field, or null when the lift has no mark. */
+  overload?: OverloadLine | null;
   onMetric: (metric: TrendMetric) => void;
   onRange: (range: TrendRange) => void;
 }) {
@@ -593,6 +654,29 @@ export function TrendField({
   return (
     <Block device="field">
       <SectionLabel label="Trend" note={WEIGHT_METRICS.has(metric) ? basisNote : undefined} />
+      {/* Whether the lift is moving (item 87): the mark in the label voice,
+          then why and the engine's next step — prose in the serif, figures in
+          mono. It heads the field because it is the reading the chart below
+          explains. Ink only: a statement about training, not biology. */}
+      {overload ? (
+        <Text
+          accessibilityLabel={`${OVERLOAD_MARK_LABEL[overload.mark]}. ${phraseText(overload.parts)}`}
+          className="mt-1 font-serif text-[12px] leading-5 text-ink-secondary">
+          <Text className="font-label text-[10px] font-semibold uppercase tracking-[1.2px] text-ink">
+            {OVERLOAD_MARK_LABEL[overload.mark]}
+          </Text>
+          {' · '}
+          {overload.parts.map((part, i) =>
+            part.measured ? (
+              <Text key={i} className="font-mono text-[11px]">
+                {part.text}
+              </Text>
+            ) : (
+              part.text
+            )
+          )}
+        </Text>
+      ) : null}
       {view.metrics.length > 1 ? (
         <View className="mt-2 flex-row flex-wrap gap-2">
           {view.metrics.map((m) =>

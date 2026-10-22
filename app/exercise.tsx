@@ -35,7 +35,7 @@ import {
   sessionDetail,
   sessionTitle,
 } from '@/lib/exercise/format';
-import { trendPhrase, trendToken } from '@/lib/exercise/records';
+import { OVERLOAD_MARK_LABEL, trendPhrase } from '@/lib/exercise/records';
 import { volumeAttention } from '@/lib/exercise/volume';
 import type { MuscleVolume, Recommendation, RoutineListItem } from '@/lib/exercise/types';
 import type { IngestedWorkout } from '@/lib/db/repositories/workout-ingest';
@@ -577,7 +577,7 @@ export default function ExerciseScreen() {
 
       {/*
         Exercises — every movement trained, most recently trained first, each
-        with the best set of its latest session and its direction of travel
+        with the best set of its latest session and its overload mark
         (owner, 2026-09-23: "trends, prs, etc for exercises (i.e. fitbod)").
         Each row opens that movement's records, trend and history, which until
         now were reachable only from the picker's records button or a block
@@ -585,9 +585,10 @@ export default function ExerciseScreen() {
 
         A **ruled plate**, in both states, like its neighbour: it is a record
         list. No accent — the screen's one accent is Train today — and no
-        signal colour on the direction: it is a fact about a lift, not a verdict
-        about the body. The latest set says what its weight counts ("per hand",
-        0062), because this is the one line where it appears with no heading
+        signal colour on the mark (Progressing / Holding / Stalled, item 87,
+        which replaced the % token): it is a fact about a lift, not a verdict
+        about the body. VoiceOver hears the mark and then the direction. The
+        latest set says what its weight counts ("per hand", 0062), because this is the one line where it appears with no heading
         above it. Six rows, then the rest on request; the tally is the whole
         count, so it is honest to print.
       */}
@@ -629,6 +630,8 @@ export default function ExerciseScreen() {
                           x.lastDate,
                           today
                         )}: ${line}.${
+                          x.overload ? ` ${OVERLOAD_MARK_LABEL[x.overload.mark]}.` : ''
+                        }${
                           x.trend ? ` ${trendPhrase(x.trend, { spoken: true })}.` : ''
                         } Open records and history.`}
                         onPress={() =>
@@ -649,9 +652,9 @@ export default function ExerciseScreen() {
                             {line}
                           </Text>
                         </View>
-                        {x.trend ? (
-                          <Text className="font-mono text-[11px] text-ink-secondary">
-                            {trendToken(x.trend)}
+                        {x.overload ? (
+                          <Text className="font-label text-[10px] uppercase tracking-[1px] text-ink-secondary">
+                            {OVERLOAD_MARK_LABEL[x.overload.mark]}
                           </Text>
                         ) : null}
                         <Ionicons name="chevron-forward" size={15} color={palette.inkMuted} />

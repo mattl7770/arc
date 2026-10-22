@@ -3,12 +3,23 @@
  *
  * Dynamic double progression (docs/exercise-subapp.md §4.3): hold the load until
  * the top of the rep range is reached, then add the smallest sensible jump and
- * reset to the bottom. A run of sessions with no strength gain and reps stuck
- * below the top triggers a deload suggestion (StrongLifts' 3-stall rule). The
- * engine returns a raw kg target + an action; the screen renders the number in
- * the user's unit and snaps it to real plates.
+ * reset to the bottom. A run of sessions with no new best and reps stuck below
+ * the top triggers a deload suggestion (StrongLifts' 3-stall rule). The engine
+ * returns a raw kg target + an action; the screen renders the number in the
+ * user's unit and snaps it to real plates.
+ *
+ * ## One stall rule, two readers (item 87, 2026-10-21)
+ *
+ * "Did this session advance?" ({@link sessionAdvanced}) and "is the lift
+ * stalled?" ({@link isStalled}) live here, and both the engine's deload branch
+ * and the overload mark (`overloadMarkOf`, src/lib/exercise/records.ts) ask
+ * them, so a lift marked **Stalled** is exactly a lift the engine deloads
+ * (docs/spikes/pr-vs-overload.md). The old test was "did any of the last three
+ * sessions beat the one before it", which a zig-zag (7, 6, 7 reps at one load)
+ * passes forever while getting nowhere: the rebound beat its dip. An advance
+ * has to beat EACH of the up-to-three sessions before it, a new high-water mark.
  */
-import { DELOAD_FRACTION, STALL_SESSIONS } from './constants';
+import { ADVANCE_E1RM_PCT, ADVANCE_WINDOW, DELOAD_FRACTION, STALL_SESSIONS } from './constants';
 import { epley, effectiveReps } from './e1rm';
 import type { ProgressionSuggestion } from './types';
 
@@ -25,7 +36,7 @@ import type { ProgressionSuggestion } from './types';
 export type SessionTopSet = {
   /**
    * The session this was the best of — how the detail screen's history joins
-   * a row to the PR mark (`recordSessionIds`). Optional: the engine below never
+   * a row to its ADVANCED mark (`advancedSessionIds`). Optional: the engine below never
    * reads it, and a hand-built fixture has no workout to name.
    */
   workoutId?: string;
@@ -52,10 +63,107 @@ export type ProgressionInput = {
   incrementKg: number;
 };
 
-/** A comparable "strength" for a set: e1RM when loaded, else the raw load. */
-function setStrength(s: SessionTopSet): number {
+/**
+ * A comparable "strength" for a set: the effort-adjusted e1RM (Epley on reps +
+ * RIR). Zero without a load or a rep count; a bodyweight set is judged on its
+ * reps, which {@link advanceRule} compares directly.
+ */
+export function sessionStrength(s: SessionTopSet): number {
   if (s.weightKg == null || s.reps == null) return 0;
   return epley(s.weightKg, effectiveReps(s.reps, s.rpe));
+}
+
+/** Two loads closer than this are the same plates (a kg/lb round trip drifts). */
+const LOAD_EPS = 0.01;
+const EPS = 1e-6;
+
+type RepRange = { low: number; high: number };
+
+/**
+ * The sessions the stall rule compares: home only (0055), with reps, and with
+ * a load unless the movement is done for reps alone. `repsOnly` is the mark's
+ * case for a push-up, or a pull-up never logged with added weight; the engine
+ * never passes it, because it has no load step to offer such a movement.
+ */
+export function comparableSessions(
+  sessions: readonly SessionTopSet[],
+  repsOnly = false
+): SessionTopSet[] {
+  return sessions.filter(
+    (s) => s.away !== true && s.reps != null && (repsOnly || s.weightKg != null)
+  );
+}
+
+/**
+ * Which rule makes `a` beat `b`, or null when it does not
+ * (docs/spikes/pr-vs-overload.md, "The mark, defined"). A missing load is
+ * zero, so a movement done for reps alone is judged by rule 2 alone.
+ *
+ *   1. **More load, held in range**: the double-progression jump. Its e1RM
+ *      usually drops (reps reset to the bottom), and it is still an advance.
+ *   2. **More reps at the same load**, without a lower effort-adjusted e1RM: a
+ *      grinder at RPE 10 does not out-rank a clean set at RPE 7.
+ *   3. **e1RM up by at least {@link ADVANCE_E1RM_PCT}%**: a lighter load for
+ *      many more reps, or the same set at a lower RPE.
+ */
+export function advanceRule(
+  a: SessionTopSet,
+  b: SessionTopSet,
+  repRange: RepRange
+): 1 | 2 | 3 | null {
+  const aw = a.weightKg ?? 0;
+  const bw = b.weightKg ?? 0;
+  const ar = a.reps ?? 0;
+  const br = b.reps ?? 0;
+  const as = sessionStrength(a);
+  const bs = sessionStrength(b);
+  if (aw > bw + LOAD_EPS && ar >= repRange.low) return 1;
+  if (Math.abs(aw - bw) <= LOAD_EPS && ar > br && as >= bs - EPS) return 2;
+  if (bs > 0 && as >= bs * (1 + ADVANCE_E1RM_PCT / 100) - EPS) return 3;
+  return null;
+}
+
+/**
+ * Whether `latest` advanced on the sessions before it (oldest to newest): it
+ * beats EACH of the last {@link ADVANCE_WINDOW} of them. With nothing before
+ * it, it did: the first session is the first best. "Each of three" is what
+ * stops a rebound counting: 7, 6, 7 beats the 6 and not the first 7.
+ */
+export function sessionAdvanced(
+  latest: SessionTopSet,
+  before: readonly SessionTopSet[],
+  repRange: RepRange
+): boolean {
+  return before.slice(-ADVANCE_WINDOW).every((b) => advanceRule(latest, b, repRange) != null);
+}
+
+/** Per session, oldest to newest: whether it advanced on the ones before it. */
+export function advancedFlags(sessions: readonly SessionTopSet[], repRange: RepRange): boolean[] {
+  return sessions.map((s, i) => sessionAdvanced(s, sessions.slice(0, i), repRange));
+}
+
+/**
+ * Sessions since the last one that advanced: 0 when the latest did. The first
+ * session always advanced, so this is at most `sessions.length - 1` (and 0 for
+ * no sessions at all).
+ */
+export function sinceBestOf(sessions: readonly SessionTopSet[], repRange: RepRange): number {
+  const flags = advancedFlags(sessions, repRange);
+  return flags.length === 0 ? 0 : flags.length - 1 - flags.lastIndexOf(true);
+}
+
+/**
+ * THE stall rule: the engine's deload and the mark's **Stalled**, one
+ * predicate. At least {@link STALL_SESSIONS} comparable sessions, no new best
+ * in the last `STALL_SESSIONS - 1` of them, and every one of the last
+ * `STALL_SESSIONS` below the top of the range. A lift that reached the top
+ * recently is not stalled: its next step is a load jump. Pass
+ * {@link comparableSessions}.
+ */
+export function isStalled(sessions: readonly SessionTopSet[], repRange: RepRange): boolean {
+  if (sessions.length < STALL_SESSIONS) return false;
+  const belowTop = sessions.slice(-STALL_SESSIONS).every((s) => (s.reps ?? 0) < repRange.high);
+  return belowTop && sinceBestOf(sessions, repRange) >= STALL_SESSIONS - 1;
 }
 
 /**
@@ -80,9 +188,7 @@ function setStrength(s: SessionTopSet): number {
  */
 export function suggestProgression(input: ProgressionInput): ProgressionSuggestion {
   const { repRange, incrementKg } = input;
-  const loaded = input.sessions.filter(
-    (s) => s.weightKg != null && s.reps != null && s.away !== true
-  );
+  const loaded = comparableSessions(input.sessions);
 
   if (loaded.length === 0) {
     return {
@@ -108,21 +214,16 @@ export function suggestProgression(input: ProgressionInput): ProgressionSuggesti
     };
   }
 
-  // Stall: no strength gain across the last few sessions and still short of the
-  // top of the range → back off and rebuild.
-  if (loaded.length >= STALL_SESSIONS) {
-    const recent = loaded.slice(-STALL_SESSIONS);
-    const strengths = recent.map(setStrength);
-    const improved = strengths.some((v, i) => i > 0 && v > strengths[i - 1]! + 1e-6);
-    const belowTop = recent.every((s) => (s.reps as number) < repRange.high);
-    if (!improved && belowTop) {
-      return {
-        kind: 'deload',
-        targetWeightKg: lastWeight * (1 - DELOAD_FRACTION),
-        targetReps: repRange.low,
-        note: `Stalled ${STALL_SESSIONS} sessions — drop ~${Math.round(DELOAD_FRACTION * 100)}% and rebuild.`,
-      };
-    }
+  // Stall: no new best lately and still short of the top of the range → back
+  // off and rebuild. `isStalled` is the mark's Stalled too, so the two cannot
+  // disagree (item 87); a zig-zag at one load now lands here.
+  if (isStalled(loaded, repRange)) {
+    return {
+      kind: 'deload',
+      targetWeightKg: lastWeight * (1 - DELOAD_FRACTION),
+      targetReps: repRange.low,
+      note: `Stalled ${STALL_SESSIONS} sessions — drop ~${Math.round(DELOAD_FRACTION * 100)}% and rebuild.`,
+    };
   }
 
   // Otherwise hold the load and chase one more rep toward the top.

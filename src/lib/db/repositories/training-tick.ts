@@ -10,6 +10,12 @@
  * > saved workout ticks it; a different session goes to the next open Training
  * > row that doesn't name a different workout, or ticks nothing.
  *
+ * And his amendment (2026-10-21, after the first build put the question to
+ * him): **a row named after the finished workout wins over the earliest open
+ * row.** Finishing Push Day at 08:00 with *Zone 2 (07:00)* and *Push Day
+ * (18:00)* open ticks Push Day; any other session still takes the earliest
+ * open row that names no workout.
+ *
  * ## The definitions, each the one the rest of the app already uses
  *
  * - **A Training row** is a row Home labels TRAINING: `toMissionItem(row)
@@ -134,8 +140,9 @@ export function trainingRowFor(
 }
 
 /**
- * Every open Training row this session MAY tick, in Home's order: the first is
- * {@link trainingRowFor}'s. The whole list is what a named tick (the Coach's
+ * Every open Training row this session MAY tick, best first: the rows named
+ * after its own saved workout, then the unnamed ones, each in Home's order.
+ * The first is {@link trainingRowFor}'s. The whole list is what a named tick (the Coach's
  * card, fix3) checks its row against past the gate.
  */
 function eligibleTrainingRows(
@@ -158,13 +165,20 @@ function eligibleTrainingRows(
     named.set(key, ids);
   }
 
-  return training.flatMap((row) => {
+  // A row named for THIS session's workout comes first (owner, 2026-10-21:
+  // the named row wins over the earliest open one); then the unnamed rows,
+  // each group in Home's order. A row named for a different workout is never
+  // eligible.
+  const own: { id: string; title: string }[] = [];
+  const unnamed: { id: string; title: string }[] = [];
+  for (const row of training) {
     const names = named.get(nameKey(row.title));
-    // An unnamed row takes any session; a named one only its own workout.
-    return names === undefined || (session.routineId !== null && names.has(session.routineId))
-      ? [{ id: row.id, title: row.title }]
-      : [];
-  });
+    if (names === undefined) unnamed.push({ id: row.id, title: row.title });
+    else if (session.routineId !== null && names.has(session.routineId)) {
+      own.push({ id: row.id, title: row.title });
+    }
+  }
+  return [...own, ...unnamed];
 }
 
 /**
@@ -191,7 +205,8 @@ function eligibleTrainingRows(
  * NAMED its row: the approval covered that row and no other. `null` (the card
  * named none) ticks nothing; an id ticks that row only while it is still an
  * open Training row this session may tick, and otherwise nothing. Left out,
- * the earliest such row ticks, which is every finish path that has no card.
+ * the first such row ticks (its own named row, else the earliest unnamed one),
+ * which is every finish path that has no card.
  */
 export function tickTrainingForWorkout(
   db: Database,

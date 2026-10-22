@@ -13,7 +13,8 @@ import { countActiveMemories, listMemories } from '@/lib/db/repositories/coach-m
 import { biomarkerSeries } from '@/lib/db/repositories/labs';
 import { latestBody } from '@/lib/db/repositories/body';
 import { buildRecommendation } from '@/lib/db/repositories/training-recommend';
-import { exerciseLoadBases } from '@/lib/db/repositories/exercise-catalog';
+import { exerciseLoadBases, getExercise } from '@/lib/db/repositories/exercise-catalog';
+import { overloadMarkFrom, workingSets } from '@/lib/db/repositories/training-stats';
 import { openStatuses } from '@/lib/db/repositories/statuses';
 import { activeExperiments, recentlyConcluded } from '@/lib/db/repositories/experiments';
 import { weekSummary } from '@/lib/db/repositories/exercise';
@@ -1919,20 +1920,40 @@ const getTrainingRecommendation: CoachTool = {
       db,
       'exercises' in recommendation ? recommendation.exercises.map((e) => e.exerciseId) : []
     );
+    // Whether each lift is moving (item 87): Progressing / Holding / Stalled
+    // and the home sessions since its last new best, the same reading the
+    // Train hub row and exercise detail show. Payload, not schema, so the §6
+    // ceilings do not move; omitted where the mark reads nothing (under three
+    // home sessions, none in 42 days, assisted, distance, no reps). The model
+    // decides what a stall means; this only says one happened. A failed read
+    // drops the mark for that lift, never the recommendation.
+    const today = todayISODate(context.now);
+    const overloadOf = (exerciseId: string) => {
+      try {
+        const ex = getExercise(db, exerciseId);
+        return ex ? overloadMarkFrom(workingSets(db, exerciseId), ex, today) : null;
+      } catch {
+        return null;
+      }
+    };
     const exercises =
       'exercises' in recommendation
-        ? recommendation.exercises.map((e) => ({
-            name: e.name,
-            freshness: e.freshness,
-            sets: e.targetSets ?? null,
-            ...(bases.get(e.exerciseId) != null ? { loadBasis: bases.get(e.exerciseId) } : {}),
-            target: {
-              kind: e.suggestion.kind,
-              weight: fmtTarget(e.suggestion.targetWeightKg),
-              reps: e.suggestion.targetReps,
-              note: e.suggestion.note,
-            },
-          }))
+        ? recommendation.exercises.map((e) => {
+            const overload = overloadOf(e.exerciseId);
+            return {
+              name: e.name,
+              freshness: e.freshness,
+              sets: e.targetSets ?? null,
+              ...(bases.get(e.exerciseId) != null ? { loadBasis: bases.get(e.exerciseId) } : {}),
+              ...(overload ? { mark: overload.mark, sinceBest: overload.sinceBest } : {}),
+              target: {
+                kind: e.suggestion.kind,
+                weight: fmtTarget(e.suggestion.targetWeightKg),
+                reps: e.suggestion.targetReps,
+                note: e.suggestion.note,
+              },
+            };
+          })
         : undefined;
 
     return json({

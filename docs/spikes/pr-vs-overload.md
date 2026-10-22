@@ -1,6 +1,6 @@
 # PR stamps vs a progressive-overload mark
 
-**Item 87.** Status: **STUDY** (2026-10-21). To be built after the owner reads it.
+**Item 87.** Status: **DECIDED and BUILT** (2026-10-21). The owner chose **option C**, answered **Q1 no** and **Q2 yes**, and put the per-set mark (appendix) at **not now**. As built: `docs/exercise-subapp.md` §20. The study below is kept as written; where the build differs, a note says so.
 
 Owner's note, verbatim: *"idea study: swap prs for progressive overload indication"*.
 
@@ -101,7 +101,7 @@ Four sessions at 50 kg × 6–7. Today, S4's rebound "improves" on S3, so the en
 | S3 | 100 × 7, 7, 7 | 100 × 7 @ 8 | 130.0 | — | Stalled |
 | S4 | 100 × 8, 8, 8, 7 | 100 × 8 @ 8 | 133.3 | **session volume, session reps** | **Stalled** |
 
-The fourth set buys two PR stamps on a lift that has not moved in four sessions. The mark measures the best set, because that is what the engine progresses. Volume progression is real, and it stays visible where it is measured: the Trend's Volume chip and the weekly-volume ledger.
+The fourth set buys two PR stamps on a lift that has not moved in four sessions. *(Build note: ARC keeps "most reps in a session" only for a movement with no load, so on a loaded RDL the stamp was session volume alone; the point stands.)* The mark measures the best set, because that is what the engine progresses. Volume progression is real, and it stays visible where it is measured: the Trend's Volume chip and the weekly-volume ledger.
 
 ## Where the mark would appear
 
@@ -122,23 +122,23 @@ The fourth set buys two PR stamps on a lift that has not moved in four sessions.
 | **B. Remove PRs entirely** | The Records grid goes too. Losing all-time bests as a reference is a real loss for a decades-long log. |
 | **C. Swap the signals, keep the reference** | The mark replaces the live PR stamp, the history PR mark and the hub %. The **Records grid stays** on exercise detail as a table of facts. The self-review's e1RM record line stays, since it is retrospective and rare. |
 
-**Recommendation: C.** It is the owner's "swap" applied to the signals while keeping the record. It also makes the mark and the engine one rule, which closes the zig-zag hole that neither PRs nor the arrow can see.
+**Decided: C** (owner, 2026-10-21). **Recommendation: C.** It is the owner's "swap" applied to the signals while keeping the record. It also makes the mark and the engine one rule, which closes the zig-zag hole that neither PRs nor the arrow can see.
 
 **Size:** M, about 2 days.
 
-- A pure `overloadMark` in `records.ts`.
+- A pure `overloadMark` in `records.ts`. *(Built as `overloadMarkOf`; the predicate is `advanceRule` / `sessionAdvanced` / `isStalled` in `progression.ts`.)*
 - The shared predicate in `progression.ts`, with headless tests built from these three examples.
 - The four surfaces above.
 - The `kindsBeating` and grid code stay, minus the two stamp call sites.
 
 ## Questions for the owner
 
-**Q1. In the gym, should a set that beats your all-time best e1RM still say so, beside the "Advanced" line?**
+**Q1. In the gym, should a set that beats your all-time best e1RM still say so, beside the "Advanced" line?** *Answered: no.*
 
 - **Recommended: no.** The best is one tap away in Records.
 - A second stamp brings back the two-verdict problem.
 
-**Q2. May the deload suggestion change so that "Stalled" and "deload" always agree?**
+**Q2. May the deload suggestion change so that "Stalled" and "deload" always agree?** *Answered: yes.*
 
 - **Recommended: yes.** This means a zig-zag such as 7, 6, 7 at one load now earns a deload, where it currently earns "add a rep".
 
@@ -155,4 +155,4 @@ The agent that built the per-set targets (65) studied the same item independentl
 
 It needs no new data: the target is already on the row (`src/lib/exercise/set-hints.ts`). It sits beside the session mark above rather than replacing it: the session mark says whether the lift is moving, the per-set mark whether today is going to plan. That study also suggested trimming the live PR line to the three strength records (best e1RM, heaviest, rep max at a weight) rather than removing it; option C above removes the live stamp outright and keeps every record in the Records grid.
 
-The risk it names: a mark on every working set may read as nagging mid-set, and ▽ on a set cut short on purpose may feel like a verdict. Marks are ink, never signal colour. **Recommendation:** not now; build the session mark (option C), use the targets on the phone, and add the per-set mark only if the targets prove useful.
+The risk it names: a mark on every working set may read as nagging mid-set, and ▽ on a set cut short on purpose may feel like a verdict. Marks are ink, never signal colour. **Recommendation:** not now; build the session mark (option C), use the targets on the phone, and add the per-set mark only if the targets prove useful. *Decided: not now* (owner, 2026-10-21).

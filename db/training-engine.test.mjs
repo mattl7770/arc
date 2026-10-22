@@ -23,6 +23,8 @@ import {
   exerciseSessionTops,
   exerciseSessionTopsFrom,
   lastSessionSets,
+  liveAdvanceLines,
+  overloadMarkFrom,
   personalRecords,
   recentMuscleLoads,
   trainedExercises,
@@ -36,27 +38,28 @@ import {
   setExerciseLoadBasis,
 } from '../src/lib/db/repositories/exercise-catalog.ts';
 import {
+  advancedSessionIds,
+  advanceParts,
   candidateFromTyped,
   defaultTrendMetric,
   defaultTrendRange,
   directionOf,
   e1rmRecordOf,
   inTrendRange,
+  liveAdvanceOf,
+  overloadLineParts,
+  overloadMarkOf,
   phraseText,
   primaryTrendMetric,
-  prSummary,
-  prSummaryParts,
   rangeTrendOf,
   rangeTrendPhrase,
   rangeTrendPhraseParts,
   recordCellsFor,
   recordKindsFor,
-  recordSessionIds,
   recordsBeaten,
   repMaxEmptyNote,
   repMaxesFrom,
   sessionSeriesFrom,
-  stampFor,
   TREND_RANGES,
   TREND_SESSION_LIMIT,
   trendEmptyNote,
@@ -72,6 +75,7 @@ import {
   trendView,
 } from '../src/lib/exercise/records.ts';
 import { measuredSetLine } from '../src/lib/exercise/format.ts';
+import { setTargetOf, targetFigure } from '../src/lib/exercise/set-hints.ts';
 import { DEFAULT_UNIT_PREFERENCES } from '../src/lib/user/types.ts';
 import { buildRecommendation } from '../src/lib/db/repositories/training-recommend.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
@@ -95,7 +99,13 @@ import {
   meanFreshness,
   muscleFreshness,
 } from '../src/lib/exercise/freshness.ts';
-import { suggestProgression } from '../src/lib/exercise/progression.ts';
+import {
+  advanceRule,
+  isStalled,
+  sessionAdvanced,
+  sinceBestOf,
+  suggestProgression,
+} from '../src/lib/exercise/progression.ts';
 import { recommendToday } from '../src/lib/exercise/recommend.ts';
 
 let pass = 0;
@@ -1152,12 +1162,6 @@ console.log('10. records, best at each rep count, and the PR rule (2026-09-23)')
   beat(cand(5, 110)) === 'e1rm,weight,rep_max'
     ? ok('5 × 110 beats the e1RM, the heaviest and the best at 5 reps')
     : bad('5×110', beat(cand(5, 110)));
-  prSummary([{ index: 1, reps: 5, kinds: ['e1rm', 'weight', 'rep_max'] }]) ===
-  'Set 1: best e1RM, heaviest'
-    ? ok(
-        '…and reads "Set 1: best e1RM, heaviest" — the heaviest set is its rep count’s best already'
-      )
-    : bad('summary dedupe');
   beat(cand(8, 95)) === 'rep_max,set_volume'
     ? ok('8 × 95 is a best-at-8 and the best set volume (760 > 720) — no e1RM, not the heaviest')
     : bad('8×95', beat(cand(8, 95)));
@@ -1194,14 +1198,6 @@ console.log('10. records, best at each rep count, and the PR rule (2026-09-23)')
     ? ok('a loaded lift with the weight left blank scores no "most reps" — that is a typo')
     : bad('blank weight reps', beat(cand(20, null)));
 
-  // --- the same rule, after the fact: the history's PR mark -----------------
-  const marked = recordSessionIds(rows, { measures: 'reps,load', basis: 'total' });
-  marked.has(benchIds[1]) && marked.has(benchIds[3]) && !marked.has(benchIds[0])
-    ? ok('history marks the sessions that set a record then — never the first one')
-    : bad('record sessions', JSON.stringify([...marked]));
-  !marked.has(benchIds[2])
-    ? ok('…and never the away session, whose 120 is still the biggest number there')
-    : bad('away session marked');
   exerciseSessionTopsFrom(rows).every((t) => typeof t.workoutId === 'string')
     ? ok('every history row carries the workout id its mark is keyed on')
     : bad('workoutId on tops');
@@ -1282,22 +1278,6 @@ console.log('10. records, best at each rep count, and the PR rule (2026-09-23)')
           beat(cand(null, null, { durationSec: 2200, distanceM: 6000 }), [], runCtx, runRows),
         ].join(' | ')
       );
-
-  prSummary([
-    { index: 2, reps: 8, kinds: ['rep_max'] },
-    { index: 3, reps: 1, kinds: ['rep_max'] },
-    { index: 4, reps: 8, kinds: [] },
-  ]) === 'Set 2: best at 8 reps · Set 3: best single' &&
-  prSummary([{ index: 1, reps: 5, kinds: [] }]) === null
-    ? ok('prSummary: "Set 2: best at 8 reps · Set 3: best single", null when nothing was beaten')
-    : bad('summary', prSummary([{ index: 2, reps: 8, kinds: ['rep_max'] }]));
-  // The voice rule: a why-line is serif, and only its figures are mono — the
-  // parts say which is which, so the screen never sets the words in mono.
-  const parts = prSummaryParts([{ index: 4, reps: 5, kinds: ['rep_max', 'session_volume'] }]);
-  JSON.stringify(parts.filter((p) => p.measured).map((p) => p.text)) === '["4","5 reps"]' &&
-  phraseText(parts) === 'Set 4: best at 5 reps, best session volume'
-    ? ok('the PR line marks only its figures ("4", "5 reps") as measured — the words are prose')
-    : bad('pr parts', JSON.stringify(parts));
 
   // --- every record on the grid is one a set can stamp ----------------------
   const combos = [
@@ -1653,66 +1633,10 @@ console.log('13. review fixes: one direction, assisted ranking, the live stamp a
     ? ok('…and no e1RM "record" for the report either')
     : bad('assisted report record');
 
-  // --- the live stamp, from the logger's own state ---------------------------
+  // --- two bench sessions, for the report's record --------------------------
   log('2026-07-01', [s('barbell-bench-press', 5, 100)]);
   log('2026-07-05', [s('barbell-bench-press', 5, 105)]);
   const history = workingSets(db, 'barbell-bench-press');
-  const typed = (key, weight, reps, extra = {}) => ({
-    key,
-    weight: String(weight),
-    reps: String(reps),
-    rpe: '',
-    time: '',
-    distance: '',
-    setType: 'normal',
-    done: true,
-    pr: false,
-    ...extra,
-  });
-  // bench → row → bench: one session of bench, split across two blocks.
-  const blocks = [
-    { key: 1, exerciseId: 'barbell-bench-press', measures: 'reps,load', sets: [typed(11, 110, 5)] },
-    { key: 2, exerciseId: 'barbell-row', measures: 'reps,load', sets: [typed(21, 80, 8)] },
-    { key: 3, exerciseId: 'barbell-bench-press', measures: 'reps,load', sets: [typed(31, 110, 5)] },
-  ];
-  const stamp = (set, over = {}) =>
-    stampFor({
-      set,
-      exerciseId: 'barbell-bench-press',
-      measures: 'reps,load',
-      blocks,
-      history,
-      basis: 'total',
-      away: false,
-      editing: false,
-      units: kg,
-      ...over,
-    }).join(',');
-  const firstBlockOnly = blocks.map((b) =>
-    b.key === 3 ? { ...b, sets: b.sets.map((x) => ({ ...x, done: false })) } : b
-  );
-  stamp(blocks[0].sets[0], { blocks: firstBlockOnly }) ===
-  'e1rm,weight,rep_max,set_volume,session_volume'
-    ? ok('ticking 5 × 110 in the first bench block stamps e1RM, heaviest and the rest')
-    : bad('first block stamp', stamp(blocks[0].sets[0], { blocks: firstBlockOnly }));
-  stamp(blocks[2].sets[0]) === ''
-    ? ok('the SAME 5 × 110 in the second bench block stamps nothing — the first block already set it')
-    : bad('second block re-stamped', stamp(blocks[2].sets[0]));
-  stamp(blocks[0].sets[0], { blocks: firstBlockOnly, away: true }) === '' &&
-  stamp(blocks[0].sets[0], { blocks: firstBlockOnly, editing: true }) === '' &&
-  stamp(blocks[0].sets[0], { blocks: firstBlockOnly, basis: 'assisted' }) === '' &&
-  stamp(blocks[0].sets[0], { blocks: firstBlockOnly, exerciseId: null }) === ''
-    ? ok('no stamp away, none while editing a past session, none for assisted or a free-text block')
-    : bad('stamp refusals');
-  // A done set whose numbers change is asked again, as it now reads.
-  const edited = (patch) => stamp({ ...blocks[0].sets[0], ...patch }, { blocks: firstBlockOnly });
-  edited({ weight: '1100' }).startsWith('e1rm,weight') &&
-  !edited({ reps: '6' }).includes('rep_max') &&
-  edited({ weight: '100' }) === '' &&
-  edited({ setType: 'warmup' }) === ''
-    ? ok('a corrected set is re-asked: 100 kg holds no record, 6 reps is no "best at 6", a warmup none')
-    : bad('restamp', [edited({ weight: '100' }), edited({ reps: '6' })].join(' | '));
-
   // --- the report asks the same rule ----------------------------------------
   const benchRecord = e1rmRecordOf(history, { measures: 'reps,load', basis: 'total' });
   benchRecord && benchRecord.date === '2026-07-05' && near(benchRecord.e1rmKg, 122.5, 0.01)
@@ -2042,6 +1966,349 @@ console.log('14. range chips on the Trend: 1M · 3M · 1Y · All (owner, 2026-09
   trendExtent(pts([40, 0]), TODAY) === 'Aug 16 – Today · 2 sessions'
     ? ok('the extent line: none under two points; the hub’s day words, no year inside this one')
     : bad('extent', `${trendExtent(pts([3, 1]), TODAY)} | ${trendExtent(pts([40, 0]), TODAY)}`);
+}
+
+console.log('15. item 87 — the overload mark, and one stall rule for the mark and the deload');
+{
+  // docs/spikes/pr-vs-overload.md, "Three worked examples". Epley on reps +
+  // RIR, the engine's own strength. Every lift here is a compound: 6–10.
+  const TODAY = '2026-10-21';
+  const R = { low: 6, high: 10 };
+  const kg = { ...DEFAULT_UNIT_PREFERENCES, weight: 'kg' };
+  const lift = { measures: 'reps,load', basis: 'total', repRange: R };
+  const top = (i, weightKg, reps, rpe, extra = {}) => ({
+    workoutId: `w${i}`,
+    date: shiftISODate(TODAY, -3 * (10 - i)),
+    weightKg,
+    reps,
+    rpe,
+    ...extra,
+  });
+  const mark = (sessions, movement = lift, today = TODAY) =>
+    overloadMarkOf(sessions, movement, today);
+  const engine = (sessions) =>
+    suggestProgression({ sessions, repRange: R, incrementKg: 2.5 / 2.2046226218 });
+
+  // --- 1. Bench press: the load jump ------------------------------------------
+  const bench = [
+    top(1, 80, 8, 8),
+    top(2, 80, 9, 8),
+    top(3, 80, 10, 8.5),
+    top(4, 82.5, 6, 8),
+    top(5, 82.5, 7, 8),
+  ];
+  mark(bench.slice(0, 2)) === null
+    ? ok('bench: two sessions are too few for a mark')
+    : bad('two sessions', JSON.stringify(mark(bench.slice(0, 2))));
+  mark(bench.slice(0, 3))?.mark === 'progressing' &&
+  mark(bench.slice(0, 4))?.mark === 'progressing' &&
+  mark(bench)?.mark === 'progressing'
+    ? ok('bench: S3, S4 and S5 all read Progressing')
+    : bad('bench marks', JSON.stringify([3, 4, 5].map((n) => mark(bench.slice(0, n))?.mark)));
+  const s4 = bench[3];
+  advanceRule(s4, bench[2], R) === 1 &&
+  advanceRule(s4, bench[1], R) === 1 &&
+  advanceRule(s4, bench[0], R) === 1 &&
+  sessionAdvanced(s4, bench.slice(0, 3), R)
+    ? ok('bench S4 (82.5 × 6) advances by rule 1 on each of the three before it')
+    : bad('rule 1');
+  // The arrow the mark replaces: S4's e1RM is down on the mean of the three before it.
+  const e = (t) => t.weightKg * (1 + (t.reps + 10 - t.rpe) / 30);
+  const arrow = trendOf(
+    bench.slice(0, 4).map((t) => ({ workoutId: t.workoutId, date: t.date, value: e(t) }))
+  );
+  arrow?.direction === 'down' && Math.round(arrow.changePct) === -4
+    ? ok('…on the very session the old hub token read −4%')
+    : bad('arrow', JSON.stringify(arrow));
+  advanceRule(bench[4], bench[3], R) === 2 &&
+  phraseText(advanceParts(bench[4], bench[3], R, kg)) === '+1 rep at 82.5 kg' &&
+  phraseText(advanceParts(s4, bench[2], R, kg)) === '+2.5 kg for 6 reps'
+    ? ok('bench: S5 is "+1 rep at 82.5 kg" (rule 2), S4 "+2.5 kg for 6 reps" (rule 1)')
+    : bad('advance words', phraseText(advanceParts(bench[4], bench[3], R, kg) ?? []));
+  const benchNext = engine(bench);
+  benchNext.kind === 'hold' &&
+  near(benchNext.targetWeightKg, 82.5, 0.01) &&
+  benchNext.targetReps === 8
+    ? ok('…and the engine agrees throughout: at S5 its target is 82.5 × 8')
+    : bad('bench engine', JSON.stringify(benchNext));
+  phraseText(overloadLineParts(mark(bench), R, { weightKg: 82.5, reps: 8 }, kg)) ===
+  'last session +1 rep at 82.5 kg · next: 82.5 kg × 8'
+    ? ok('detail’s line: "Progressing · last session +1 rep at 82.5 kg · next: 82.5 kg × 8"')
+    : bad('progressing line', phraseText(overloadLineParts(mark(bench), R, null, kg)));
+  const benchAdvanced = advancedSessionIds(bench, lift);
+  [...benchAdvanced].sort().join() === 'w2,w3,w4,w5'
+    ? ok('History marks S2–S5 ADVANCED, never the first session')
+    : bad('advanced ids', [...benchAdvanced].join());
+
+  // --- 2. Overhead press: the zig-zag stall -----------------------------------
+  const ohp = [top(1, 50, 7, 9), top(2, 50, 7, 9.5), top(3, 50, 6, 9), top(4, 50, 7, 9.5)];
+  const at3 = mark(ohp.slice(0, 3));
+  const at4 = mark(ohp);
+  at3?.mark === 'stalled' && at3.sinceBest === 2 && at4?.mark === 'stalled' && at4.sinceBest === 3
+    ? ok('ohp: Stalled at S3 (2 since the best) and at S4 (3 since)')
+    : bad('ohp marks', JSON.stringify([at3, at4]));
+  advanceRule(ohp[3], ohp[2], R) === 2 && advanceRule(ohp[3], ohp[1], R) === null
+    ? ok('…S4’s rebound beats S3 and not S2: a rebound is not a new best')
+    : bad('rebound');
+  // The old rule: "any of the last three beat the one before it" — 62.5 > 61.7.
+  const strengths = ohp.slice(-3).map(e);
+  const oldImproved = strengths.some((v, i) => i > 0 && v > strengths[i - 1] + 1e-6);
+  const ohpNext = engine(ohp);
+  oldImproved &&
+  ohpNext.kind === 'deload' &&
+  near(ohpNext.targetWeightKg, 45, 0.01) &&
+  ohpNext.targetReps === 6
+    ? ok('THE CHANGE: the zig-zag now deloads to 45 × 6, where the old rule held 50 × 8')
+    : bad('zig-zag deload', JSON.stringify(ohpNext));
+  const ohpTarget = setTargetOf(ohpNext, R.high);
+  phraseText(overloadLineParts(at4, R, targetFigure(ohpTarget, kg, 'total'), kg)) ===
+  'no new best in 3 sessions · next: 45 kg × 6'
+    ? ok('detail’s line: "Stalled · no new best in 3 sessions · next: 45 kg × 6"')
+    : bad('stalled line', phraseText(overloadLineParts(at4, R, null, kg)));
+  advancedSessionIds(ohp, lift).size === 0
+    ? ok('History marks none of the four ADVANCED')
+    : bad('ohp advanced');
+
+  // --- 3. Romanian deadlift: a PR while stalled -------------------------------
+  const rdl = [top(1, 100, 8, 8), top(2, 100, 8, 8.5), top(3, 100, 7, 8), top(4, 100, 8, 8)];
+  const rdlMark = mark(rdl);
+  rdlMark?.mark === 'stalled' && rdlMark.sinceBest === 3
+    ? ok('rdl: S4 is Stalled, 3 sessions since the best')
+    : bad('rdl mark', JSON.stringify(rdlMark));
+  advanceRule(rdl[3], rdl[1], R) === 3 &&
+  advanceRule(rdl[3], rdl[2], R) === 2 &&
+  advanceRule(rdl[3], rdl[0], R) === null
+    ? ok('…S4 beats S2 by rule 3 (+1.3%) and S3 by rule 2, but only equals S1: no advance')
+    : bad('rdl rules');
+  // The PR rule this replaced stamps S4 for its volume. (The spike's table also
+  // lists session reps, a record ARC keeps only for a movement with no load.)
+  const rdlRows = [
+    [3, [7, 7, 7]],
+    [2, [8, 7, 7]],
+    [1, [8, 8, 7]],
+  ].flatMap(([i, reps]) =>
+    reps.map((r) => ({
+      workout_id: `w${i}`,
+      date: rdl[i - 1].date,
+      reps: r,
+      weight_kg: 100,
+      rpe: null,
+      set_type: 'normal',
+      duration_sec: null,
+      distance_m: null,
+      away: 0,
+    }))
+  );
+  const rdlSet = (reps) => ({
+    weightKg: 100,
+    reps,
+    rpe: null,
+    setType: 'normal',
+    durationSec: null,
+    distanceM: null,
+  });
+  recordsBeaten(rdlSet(8), rdlRows, [rdlSet(8), rdlSet(8)], {
+    away: false,
+    measures: 'reps,load',
+    basis: 'total',
+  }).join() === 'session_volume'
+    ? ok(
+        '…while the PR rule would have stamped a session-volume PR on the same lift: two verdicts, retired'
+      )
+    : bad(
+        'rdl PR',
+        recordsBeaten(rdlSet(8), rdlRows, [rdlSet(8), rdlSet(8)], {
+          away: false,
+          measures: 'reps,load',
+          basis: 'total',
+        }).join()
+      );
+
+  // --- the shared predicate: Stalled is exactly the engine's deload ---------
+  const disagree = [];
+  for (const [name, series] of [
+    ['bench', bench],
+    ['ohp', ohp],
+    ['rdl', rdl],
+  ]) {
+    for (let n = 1; n <= series.length; n++) {
+      const prefix = series.slice(0, n);
+      const stalled = mark(prefix)?.mark === 'stalled';
+      if (stalled !== (engine(prefix).kind === 'deload') || stalled !== isStalled(prefix, R)) {
+        disagree.push(`${name}@${n}`);
+      }
+    }
+  }
+  disagree.length === 0
+    ? ok('on every prefix of all three examples, Stalled ⇔ the engine deloads ⇔ isStalled')
+    : bad('mark and engine disagree', disagree.join());
+  // The second change rule 1 makes: the old rule deloaded on the session of a
+  // load jump (no e1RM gain across 80 × 9, 80 × 9, 82.5 × 6). It is an advance.
+  const jump = [top(1, 80, 9, null), top(2, 80, 9, null), top(3, 82.5, 6, null)];
+  engine(jump).kind === 'hold' && mark(jump)?.mark === 'progressing'
+    ? ok('a load jump held in range is Progressing, and the engine holds rather than deloading it')
+    : bad('jump', JSON.stringify([engine(jump), mark(jump)]));
+
+  // --- holding --------------------------------------------------------------
+  const flat = [top(1, 80, 8, null), top(2, 80, 9, null), top(3, 80, 9, null)];
+  const h1 = mark(flat);
+  h1?.mark === 'holding' &&
+  h1.sinceBest === 1 &&
+  phraseText(overloadLineParts(h1, R, null, kg)) === 'no new best last session'
+    ? ok('Holding: one session since the best — "no new best last session"')
+    : bad('holding 1', JSON.stringify(h1));
+  const topped = [
+    top(1, 80, 8, null),
+    top(2, 80, 10, 10),
+    top(3, 80, 9, null),
+    top(4, 80, 9, null),
+  ];
+  const h2 = mark(topped);
+  h2?.mark === 'holding' && h2.sinceBest === 2 && engine(topped).kind === 'hold'
+    ? ok('Holding, not Stalled, two since the best when one of the last three reached the top')
+    : bad('holding at top', JSON.stringify([h2, engine(topped)]));
+
+  // --- the three rules' edges -----------------------------------------------
+  advanceRule(top(2, 80, 9, 10), top(1, 80, 8, 7), R) === null
+    ? ok('rule 2 refuses a grinder: 80 × 9 @ 10 does not out-rank 80 × 8 @ 7')
+    : bad('grinder');
+  advanceRule(top(2, 82.5, 5, 8), top(1, 80, 10, 9), R) === null
+    ? ok('rule 1 needs the reps in range: 82.5 × 5 after 80 × 10 is no advance')
+    : bad('rule 1 below range');
+  const lighter = advanceRule(top(2, 70, 14, 8), top(1, 80, 6, 8), R);
+  lighter === 3 &&
+  phraseText(advanceParts(top(2, 70, 14, 8), top(1, 80, 6, 8), R, kg)) === 'e1RM +6%'
+    ? ok('rule 3: a lighter load for many more reps is "e1RM +6%"')
+    : bad('rule 3', String(lighter));
+  advanceRule(top(2, 100, 8, 8), top(1, 100, 8, 8), R) === null
+    ? ok('the same set again is not an advance')
+    : bad('equal set');
+
+  // --- when there is no mark ------------------------------------------------
+  mark(ohp, lift, shiftISODate(ohp[3].date, 42))?.mark === 'stalled' &&
+  mark(ohp, lift, shiftISODate(ohp[3].date, 43)) === null
+    ? ok('a mark 42 days after the last session; none at 43')
+    : bad('stale window');
+  mark(ohp, { ...lift, basis: 'assisted' }) === null &&
+  mark(ohp, { ...lift, measures: 'reps,load,distance' }) === null &&
+  mark(ohp, { ...lift, measures: 'time' }) === null
+    ? ok('no mark for an assisted movement, anything covering distance, or a hold with no reps')
+    : bad('excluded movements');
+  const withAway = [...ohp, top(5, 60, 10, 7, { away: true })];
+  const awayMark = mark(withAway);
+  awayMark?.mark === 'stalled' && awayMark.sinceBest === 3 && engine(withAway).kind === 'deload'
+    ? ok('an away session after the stall changes nothing: still Stalled, still a deload')
+    : bad('away', JSON.stringify(awayMark));
+
+  // --- reps alone: rule 2 with the load at zero ------------------------------
+  const body = { measures: 'reps,load', basis: 'bodyweight_plus', repRange: R };
+  const pull = (i, reps) => top(i, null, reps, null);
+  mark([pull(1, 6), pull(2, 7), pull(3, 8)], body)?.mark === 'progressing' &&
+  mark([pull(1, 8), pull(2, 9), pull(3, 8), pull(4, 8)], body)?.mark === 'stalled'
+    ? ok(
+        'a pull-up never logged with added weight is read on reps: 6 · 7 · 8 Progressing, 8 · 9 · 8 · 8 Stalled'
+      )
+    : bad('reps-only');
+  phraseText(advanceParts(pull(2, 9), pull(1, 7), R, kg)) === '+2 reps'
+    ? ok('…and its advance reads "+2 reps"')
+    : bad('reps-only words');
+
+  // --- the live logger's line -----------------------------------------------
+  const history = bench.slice(0, 4);
+  const live = (w, r, rpe) => ({ date: TODAY, weightKg: w, reps: r, rpe });
+  phraseText(liveAdvanceOf(live(82.5, 7, 8), history, lift, kg) ?? []) === '+1 rep at 82.5 kg' &&
+  liveAdvanceOf(live(82.5, 6, 8), history, lift, kg) === null &&
+  liveAdvanceOf(live(82.5, 7, 8), [], lift, kg) === null &&
+  liveAdvanceOf(live(null, 7, 8), history, lift, kg) === null &&
+  liveAdvanceOf(live(82.5, 7, 8), history, { ...lift, basis: 'assisted' }, kg) === null
+    ? ok(
+        'live: 82.5 × 7 is "+1 rep at 82.5 kg"; the same 82.5 × 6, no history, a blank load, assisted: nothing'
+      )
+    : bad('live advance', phraseText(liveAdvanceOf(live(82.5, 7, 8), history, lift, kg) ?? []));
+  const typed = (key, weight, reps, rpe, extra = {}) => ({
+    key,
+    weight: String(weight),
+    reps: String(reps),
+    rpe: String(rpe),
+    time: '',
+    distance: '',
+    setType: 'normal',
+    done: true,
+    ...extra,
+  });
+  const blocks = [
+    {
+      key: 1,
+      exerciseId: 'bench',
+      measures: 'reps,load',
+      mechanic: 'compound',
+      sets: [typed(11, 82.5, 6, 8), typed(12, 100, 10, 5, { setType: 'warmup' })],
+    },
+    {
+      key: 2,
+      exerciseId: 'row',
+      measures: 'reps,load',
+      mechanic: 'compound',
+      sets: [typed(21, 70, 8, 8)],
+    },
+    {
+      key: 3,
+      exerciseId: 'bench',
+      measures: 'reps,load',
+      mechanic: 'compound',
+      sets: [typed(31, 82.5, 7, 8), typed(32, 90, 8, 8, { done: false })],
+    },
+  ];
+  const lines = (over = {}) =>
+    liveAdvanceLines({
+      blocks,
+      history: new Map([['bench', history]]),
+      bases: new Map([['bench', 'total']]),
+      away: false,
+      editing: false,
+      units: kg,
+      today: TODAY,
+      ...over,
+    });
+  const drawn = lines();
+  [...drawn.keys()].join() === '3' && phraseText(drawn.get(3)) === '+1 rep at 82.5 kg'
+    ? ok(
+        'bench → row → bench: one line, on the block holding the best set; a warm-up and an open set are not it; the row has no history'
+      )
+    : bad('live lines', JSON.stringify([...drawn.entries()]));
+  lines({ away: true }).size === 0 && lines({ editing: true }).size === 0
+    ? ok('…and no line away, or while editing a stored session')
+    : bad('live lines refused');
+
+  // --- through the database: the hub row, the shared assembly ---------------
+  const { db, raw } = freshDb();
+  const press = (reps, rpe) => ({
+    exercise: 'Overhead Press',
+    exerciseId: 'overhead-press',
+    reps,
+    weightKg: 50,
+    rpe,
+  });
+  for (const t of ohp) {
+    logAt(db, raw, `${t.date}T17:00:00.000Z`, t.date, 'A', 'strength', [
+      press(t.reps, t.rpe),
+      press(t.reps - 1, t.rpe),
+    ]);
+  }
+  const row = trainedExercises(db, TODAY).find((x) => x.exerciseId === 'overhead-press');
+  const ex = getExercise(db, 'overhead-press');
+  const fromRows = overloadMarkFrom(workingSets(db, 'overhead-press'), ex, TODAY);
+  row?.overload?.mark === 'stalled' &&
+  row.overload.sinceBest === 3 &&
+  fromRows?.mark === 'stalled' &&
+  suggestProgression({
+    sessions: exerciseSessionTops(db, 'overhead-press'),
+    repRange: R,
+    incrementKg: 1,
+  }).kind === 'deload'
+    ? ok('logged: the hub row, the shared assembly and the engine all read the zig-zag as a stall')
+    : bad('db stall', JSON.stringify([row?.overload, fromRows]));
+  sinceBestOf([], R) === 0 ? ok('sinceBestOf of nothing is 0') : bad('empty sinceBest');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
