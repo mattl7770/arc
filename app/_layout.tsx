@@ -179,7 +179,16 @@ export default function RootLayout() {
   //    which deliberately DOES ride the iCloud device backup
   //    (docs/backups-subapp.md).
   useEffect(() => {
-    void apiKeyStore.hydrate();
+    // The cold-start estimate drain waits for the key (2026-10-21 review): the
+    // drain's model calls read the mirror hydrate() fills from the Keychain, so
+    // a drain started before it resolves failed every row as no_key and the
+    // meal said "needs an API key" on a phone that has one. hydrate() swallows
+    // its own failures; the second handler still drains if it ever rejects (the
+    // rows then wait as no_key, honestly).
+    void apiKeyStore.hydrate().then(
+      () => runEstimateQueueDrain(getDb()),
+      () => runEstimateQueueDrain(getDb())
+    );
     // And the Garmin Personal API key (docs/wearables-subapp.md §26). The
     // runner below wakes when it lands, so a cold start syncs once it is read.
     void garminKeyStore.hydrate();
@@ -213,7 +222,6 @@ export default function RootLayout() {
     // tolerance. The foreground listener below stays immediate — by then the
     // app is idle-resumed, not racing to first paint.
     const backupTimer = setTimeout(() => void autoBackupIfDue(getDb()), 4000);
-    void runEstimateQueueDrain(getDb());
     // The timezone observer, and what a zone change has to re-anchor (0060).
     //
     // Registered HERE, above the health sync, and with its own subscription

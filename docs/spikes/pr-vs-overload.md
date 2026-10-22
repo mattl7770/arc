@@ -65,7 +65,7 @@ Movements with reps and no load use rule 2 alone, with load equal at zero.
 
 **Stalled must mean exactly when the engine deloads.** The build therefore replaces the engine's `improved` test (`progression.ts:115-117`) with this advanced/`sinceBest` predicate: one exported function, two callers. **That changes behaviour.** Zig-zag stalls will now get a deload suggestion where they currently get "add a rep" (open question 2).
 
-## Three worked examples
+## Three worked examples (and a fourth, after a deload)
 
 The numbers were computed with Epley on reps + RIR, which is ARC's own formula.
 
@@ -102,6 +102,17 @@ Four sessions at 50 kg × 6–7. Today, S4's rebound "improves" on S3, so the en
 | S4 | 100 × 8, 8, 8, 7 | 100 × 8 @ 8 | 133.3 | **session volume, session reps** | **Stalled** |
 
 The fourth set buys two PR stamps on a lift that has not moved in four sessions. *(Build note: ARC keeps "most reps in a session" only for a movement with no load, so on a loaded RDL the stamp was session volume alone; the point stands.)* The mark measures the best set, because that is what the engine progresses. Volume progression is real, and it stays visible where it is measured: the Trend's Volume chip and the weekly-volume ledger.
+
+**4. Squat, 6–10. After the deload (added by the 2026-10-21 review, built).**
+
+| Session | Best set | Mark | Engine, as first built | Engine now |
+|---|---|---|---|---|
+| S1–S3 | 100 × 6 @ 9, three times | Stalled at S3 | deload 90 × 6 | deload 90 × 6 |
+| S4 | 90 × 6 @ 8 | **Holding** (no new best in 3 sessions) | **deload 81 × 6** | hold 90 × 7 |
+| S5 | 90 × 7 @ 8 | **Progressing** (rule 2) | **deload 81 × 6** | hold 90 × 8 |
+| S6 | 90 × 8 @ 8 | **Progressing** (rule 2) | **deload 81 × 6** | hold 90 × 9 |
+
+As first built, every rebuild session was compared with the heavier 100s, so none advanced and the lift read Stalled while he added a rep a session. Now a load drop of at least 5% (`LOAD_DROP_FRACTION`, half the deload) starts a **block** (`blockStart`, `progression.ts`): the drop session is judged against what it dropped from (a deload is no advance; a lighter load for clearly more, rule 3, still is), and every session after it only against its own block. Stalled needs three sessions in the current block, so a rebuild that stalls on its own (90 × 6 three times) deloads again, to 81.
 
 ## Where the mark would appear
 

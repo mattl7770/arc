@@ -121,9 +121,51 @@ export function queueNewMealEstimate(
  * Queue a plain-English revision of a meal that already exists. No placeholder:
  * the meal keeps the items it has, which stay correct and countable until the
  * correction can actually be made.
+ *
+ * ## A correction to a meal still waiting on its estimate (2026-10-21 review)
+ *
+ * One row per meal, so a revision queued over a waiting photo or text estimate
+ * used to REPLACE it: kind 'revise', file name gone, and the sweep then deleted
+ * the photo as an orphan. Now the correction is FOLDED into that request's
+ * words, below what was already there, and the kind and the file stay: the
+ * estimate, when it is made, is made with the correction. Attempts reset, since
+ * it is a new request (a parked one is sent again). Over a queued revision the
+ * newer correction still replaces the older, as it always did.
  */
 export function queueMealRevision(db: Database, mealId: string, instruction: string): string {
-  return insertPending(db, mealId, { kind: 'revise', description: instruction });
+  let id = '';
+  db.transaction(() => {
+    const queued = pendingEstimateForMeal(db, mealId);
+    if (queued && queued.kind !== 'revise') {
+      const before = queued.description?.trim() ?? '';
+      db.run(
+        'UPDATE pending_estimates SET description = ?, attempts = 0, last_error = NULL WHERE id = ?',
+        [before === '' ? instruction : `${before}\n${instruction}`, queued.id]
+      );
+      id = queued.id;
+      return;
+    }
+    id = insertPending(db, mealId, { kind: 'revise', description: instruction });
+  });
+  return id;
+}
+
+/**
+ * Is `now` (the meal's row as it stands) still the request `sent` was? The
+ * drain's question when a reply lands: same row, same kind, same words, same
+ * file. Anything else and the reply answers a request nobody is making.
+ */
+export function samePendingRequest(
+  now: PendingEstimateRow | undefined,
+  sent: PendingEstimateRow
+): boolean {
+  return (
+    now != null &&
+    now.id === sent.id &&
+    now.kind === sent.kind &&
+    now.description === sent.description &&
+    now.file_name === sent.file_name
+  );
 }
 
 /** The queue, oldest first — the order the drainer works in, so a meal logged
@@ -237,4 +279,18 @@ export function retryPendingEstimate(db: Database, mealId: string): boolean {
  *  covers it if that fails. */
 export function deletePendingEstimate(db: Database, id: string): void {
   db.run('DELETE FROM pending_estimates WHERE id = ?', [id]);
+}
+
+/**
+ * Drop the entry only if it is still exactly the request `sent` was (the
+ * drain's clear, after a reply). Returns whether it went: a correction folded
+ * in or queued meanwhile keeps its row, and its file.
+ */
+export function deletePendingEstimateIfUnchanged(db: Database, sent: PendingEstimateRow): boolean {
+  db.run(
+    `DELETE FROM pending_estimates
+     WHERE id = ? AND kind = ? AND description IS ? AND file_name IS ?`,
+    [sent.id, sent.kind, sent.description, sent.file_name]
+  );
+  return db.get<{ id: string }>('SELECT id FROM pending_estimates WHERE id = ?', [sent.id]) == null;
 }

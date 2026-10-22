@@ -20,7 +20,8 @@
  *     no key, an abort. The row keeps its place and is tried again on the next
  *     drain, for free. `attempts` does not move.
  *   - RETRY — a transient failure that may have reached the model: a stream
- *     that died mid-reply, a 5xx, a 529 overloaded. `attempts` goes up by one
+ *     that died mid-reply, a 5xx, a 529 overloaded, a 429 rate limit (it lifts
+ *     by itself; until the 2026-10-21 review it parked). `attempts` goes up by one
  *     and the row waits {@link QUEUE_BACKOFF_MS} by ELAPSED TIME (from
  *     `updated_at`, which the row's trigger stamps on every write) before it is
  *     sent again — so opening the app ten times in a minute sends it once.
@@ -67,9 +68,9 @@ export const QUEUE_FAILURE_CODES = [
   // RETRY: transient, counted, backed off.
   'interrupted',
   'server',
+  'rate_limited',
   // PARK: the same request will fail the same way.
   'auth',
-  'rate_limited',
   'rejected',
   'unreadable',
   'refused',
@@ -137,7 +138,7 @@ function parkedSentence(code: QueueFailureCode | null): string {
     case 'auth':
       return 'Anthropic did not accept the API key, so the estimate was not made. Check the key in Settings › Coach.';
     case 'rate_limited':
-      return 'Anthropic turned the request away on a rate or credit limit, so the estimate was not made.';
+      return `Anthropic turned the request away on a rate limit ${QUEUE_MAX_ATTEMPTS} times, so ARC stopped retrying.`;
     case 'rejected':
       return 'Anthropic rejected the request, so the estimate was not made.';
     case 'unreadable':
@@ -176,7 +177,7 @@ export function pendingEstimateStatus(
       sentence: 'Waiting for an API key. Add one in Settings › Coach and the estimate is made.',
     };
   }
-  if (code === 'interrupted' || code === 'server') {
+  if (code === 'interrupted' || code === 'server' || code === 'rate_limited') {
     return {
       parked: false,
       code,

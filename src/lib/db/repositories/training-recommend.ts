@@ -52,6 +52,9 @@ const WEIGHT_BASED = new Set([
  * this same answer (src/lib/exercise/set-hints.ts) — one engine, read by the
  * Train-today card, the Coach and the set rows alike.
  */
+/** How many recent home sessions the progression engine is handed. */
+const ENGINE_SESSIONS = 12;
+
 export function progressionFor(db: Database, ex: CatalogExercise): ProgressionSuggestion {
   const mechanic = ex.mechanic ?? 'compound';
   const repRange = REP_RANGE[mechanic];
@@ -74,8 +77,15 @@ export function progressionFor(db: Database, ex: CatalogExercise): ProgressionSu
       note: 'Take assistance off as the reps allow.',
     };
   }
+  // The engine's window is its last ENGINE_SESSIONS HOME sessions: away ones
+  // are dropped BEFORE the window is cut (2026-10-21 review), so a run of away
+  // sessions cannot push a real stall out of it. The overload mark reads every
+  // home session, and the stall rule reads only the tail of the series, so the
+  // two answer one question over one series: Stalled is still the deload.
   return suggestProgression({
-    sessions: exerciseSessionTops(db, ex.id),
+    sessions: exerciseSessionTops(db, ex.id, Number.POSITIVE_INFINITY)
+      .filter((s) => s.away !== true)
+      .slice(-ENGINE_SESSIONS),
     repRange,
     incrementKg: progressionIncrementKg(ex.movementPattern, ex.mechanic),
   });

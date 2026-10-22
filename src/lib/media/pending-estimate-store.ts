@@ -26,10 +26,12 @@
 import type { Database } from '@/lib/db/database';
 import {
   deletePendingEstimate,
+  deletePendingEstimateIfUnchanged,
   pendingEstimateFileNames,
 } from '@/lib/db/repositories/pending-estimates';
 import { heldFiles } from '@/lib/media/held-files';
 import { nativeStoreIn, photoFileName, type PhotoFileStore } from '@/lib/media/photo-file-store';
+import type { PendingEstimateRow } from '@/lib/nutrition/types';
 
 export type { PhotoFileStore };
 
@@ -122,4 +124,19 @@ export function clearPendingEstimate(
 ): void {
   deletePendingEstimate(db, pending.id);
   removePendingEstimatePhoto(pending.file_name, store);
+}
+
+/**
+ * The drain's teardown after a reply: drop the entry and its file only if the
+ * row is still the request that was answered (`deletePendingEstimateIfUnchanged`).
+ * A row that changed keeps its file, which it still names.
+ */
+export function clearPendingEstimateIfUnchanged(
+  db: Database,
+  sent: PendingEstimateRow,
+  store: PhotoFileStore | null = nativePendingEstimateStore()
+): boolean {
+  if (!deletePendingEstimateIfUnchanged(db, sent)) return false;
+  removePendingEstimatePhoto(sent.file_name, store);
+  return true;
 }

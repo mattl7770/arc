@@ -77,7 +77,10 @@ import {
 import { measuredSetLine } from '../src/lib/exercise/format.ts';
 import { setTargetOf, targetFigure } from '../src/lib/exercise/set-hints.ts';
 import { DEFAULT_UNIT_PREFERENCES } from '../src/lib/user/types.ts';
-import { buildRecommendation } from '../src/lib/db/repositories/training-recommend.ts';
+import {
+  buildRecommendation,
+  progressionFor,
+} from '../src/lib/db/repositories/training-recommend.ts';
 import { upsertWearableRows } from '../src/lib/db/repositories/wearables.ts';
 import {
   ingestedMuscleLoads,
@@ -101,6 +104,7 @@ import {
 } from '../src/lib/exercise/freshness.ts';
 import {
   advanceRule,
+  blockStart,
   isStalled,
   sessionAdvanced,
   sinceBestOf,
@@ -2309,6 +2313,118 @@ console.log('15. item 87 — the overload mark, and one stall rule for the mark 
     ? ok('logged: the hub row, the shared assembly and the engine all read the zig-zag as a stall')
     : bad('db stall', JSON.stringify([row?.overload, fromRows]));
   sinceBestOf([], R) === 0 ? ok('sinceBestOf of nothing is 0') : bad('empty sinceBest');
+}
+
+console.log('16. after a deload the rebuild is compared with itself (2026-10-21 review)');
+{
+  // The review's repro: three flat 100 × 6 sessions deload to 90, and he then
+  // adds a rep a session at 90. Compared with the heavier 100s, every rebuild
+  // session read as no new best: the engine answered "deload 81 × 6" three
+  // times and the mark read Stalled while he was progressing.
+  const TODAY = '2026-10-21';
+  const R = { low: 6, high: 10 };
+  const lift = { measures: 'reps,load', basis: 'total', repRange: R };
+  const top = (i, weightKg, reps, rpe) => ({
+    workoutId: `d${i}`,
+    date: shiftISODate(TODAY, -2 * (10 - i)),
+    weightKg,
+    reps,
+    rpe,
+  });
+  const engine = (sessions) => suggestProgression({ sessions, repRange: R, incrementKg: 2.5 });
+  const series = [
+    top(1, 100, 6, 9),
+    top(2, 100, 6, 9),
+    top(3, 100, 6, 9),
+    top(4, 90, 6, 8),
+    top(5, 90, 7, 8),
+    top(6, 90, 8, 8),
+  ];
+  const at = (n) => engine(series.slice(0, n));
+  const markAt = (n) => overloadMarkOf(series.slice(0, n), lift, TODAY);
+  at(3).kind === 'deload' && near(at(3).targetWeightKg, 90, 0.01)
+    ? ok('the flat stall still deloads to 90 × 6')
+    : bad('stall', JSON.stringify(at(3)));
+  const holds = [4, 5, 6].map((n) => [at(n).kind, at(n).targetWeightKg, at(n).targetReps]);
+  JSON.stringify(holds) === JSON.stringify([
+    ['hold', 90, 7],
+    ['hold', 90, 8],
+    ['hold', 90, 9],
+  ])
+    ? ok('90 × 6, 90 × 7, 90 × 8 each hold the load and chase a rep, not "deload 81 × 6"')
+    : bad('rebuild engine', JSON.stringify(holds));
+  markAt(4)?.mark === 'holding' &&
+  markAt(5)?.mark === 'progressing' &&
+  markAt(5)?.sinceBest === 0 &&
+  markAt(6)?.mark === 'progressing' &&
+  markAt(6)?.sinceBest === 0
+    ? ok('the mark: Holding on the deload session, then Progressing at 90 × 7 and 90 × 8')
+    : bad('rebuild mark', JSON.stringify([4, 5, 6].map((n) => markAt(n))));
+  blockStart(series) === 3 && blockStart(series.slice(0, 3)) === 0
+    ? ok('blockStart is the deload session (a ≥5% drop), 0 with none')
+    : bad('blockStart', blockStart(series));
+  !sessionAdvanced(series[3], series.slice(0, 3), R) &&
+  sessionAdvanced(series[4], series.slice(0, 4), R) &&
+  sessionAdvanced(top(4, 90, 12, 8), series.slice(0, 3), R)
+    ? ok('the deload itself is no advance; 90 × 7 beats it; a lighter load for clearly more (90 × 12) still is')
+    : bad('drop judged');
+  const ids = advancedSessionIds(series, lift);
+  ids.has('d5') && ids.has('d6') && !ids.has('d4')
+    ? ok('History marks 90 × 7 and 90 × 8 ADVANCED, and not the deload')
+    : bad('history', JSON.stringify([...ids]));
+  const disagree = [];
+  for (let n = 1; n <= series.length; n++) {
+    const prefix = series.slice(0, n);
+    const stalled = overloadMarkOf(prefix, lift, TODAY)?.mark === 'stalled';
+    if (stalled !== (engine(prefix).kind === 'deload') || stalled !== isStalled(prefix, R)) {
+      disagree.push(n);
+    }
+  }
+  disagree.length === 0
+    ? ok('on every prefix, Stalled ⇔ the engine deloads ⇔ isStalled')
+    : bad('rebuild disagreement', disagree.join());
+  // The rebuild still stalls on its own: three flat sessions at 90 deload again.
+  const flatRebuild = [...series.slice(0, 4), top(5, 90, 6, 8), top(6, 90, 6, 8)];
+  engine(flatRebuild).kind === 'deload' &&
+  near(engine(flatRebuild).targetWeightKg, 81, 0.01) &&
+  overloadMarkOf(flatRebuild, lift, TODAY)?.mark === 'stalled'
+    ? ok('a rebuild that stalls for three sessions of its own deloads again, to 81 × 6')
+    : bad('rebuild stall', JSON.stringify(engine(flatRebuild)));
+  // A small drop (plate rounding, a kg/lb round trip) is not a new block.
+  blockStart([top(1, 100, 6, 9), top(2, 97.5, 6, 9), top(3, 97.5, 6, 9)]) === 0
+    ? ok('a 2.5% drop does not start a block')
+    : bad('small drop');
+}
+
+console.log('17. the engine and the mark read the same home series (2026-10-21 review)');
+{
+  // The engine used to take the last 12 sessions and then drop the away ones,
+  // while the mark reads every home session. Ten away sessions after a real
+  // stall left the engine two home sessions (no stall: hold) while the mark
+  // read three (Stalled).
+  const { db, raw } = freshDb();
+  const TODAY = todayISODate();
+  const press = (reps, weightKg) => ({
+    exercise: 'Overhead Press',
+    exerciseId: 'overhead-press',
+    reps,
+    weightKg,
+    rpe: 9,
+  });
+  for (const d of [-40, -38, -36]) {
+    const date = shiftISODate(TODAY, d);
+    logAt(db, raw, `${date}T17:00:00.000Z`, date, 'Home', 'strength', [press(6, 50)]);
+  }
+  for (let k = 0; k < 10; k++) {
+    const date = shiftISODate(TODAY, -34 + 2 * k);
+    logAt(db, raw, `${date}T17:00:00.000Z`, date, 'Away', 'strength', [press(6, 40)], true);
+  }
+  const ex = getExercise(db, 'overhead-press');
+  const mark = overloadMarkFrom(workingSets(db, 'overhead-press'), ex, TODAY);
+  const next = progressionFor(db, ex);
+  mark?.mark === 'stalled' && next.kind === 'deload' && near(next.targetWeightKg, 45, 0.01)
+    ? ok('ten away sessions after a stall: the mark reads Stalled and the engine deloads 50 → 45')
+    : bad('engine window', JSON.stringify([mark?.mark, next]));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
