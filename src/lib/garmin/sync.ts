@@ -196,6 +196,11 @@ export type GarminSyncState = {
    * refused backfill chunk is. Cleared when the endpoint serves its window.
    */
   refused: Partial<Record<GarminEndpoint, string>>;
+  /**
+   * Why the last pass stopped with `error`, in fixed words plus an HTTP status
+   * ({@link failureDetail}) — never a response body. Null after a clean pass.
+   */
+  lastError: string | null;
 };
 
 export function emptyGarminState(): GarminSyncState {
@@ -210,8 +215,27 @@ export function emptyGarminState(): GarminSyncState {
     backfill: {},
     skipped: [],
     refused: {},
+    lastError: null,
   };
 }
+
+/**
+ * What a pass that stopped with `error` tells the owner. Built from the error's
+ * class and status only: Garmin's own words never reach the screen, because a
+ * body can echo a header.
+ */
+export function failureDetail(error: unknown): string {
+  if (error instanceof GarminTokenError) {
+    if (error.reason === 'unreadable') return `Garmin's token reply was unreadable (HTTP ${error.status})`;
+    if (error.reason === 'redirect') return `Garmin redirected the token request (HTTP ${error.status})`;
+    return `Garmin would not issue a token (HTTP ${error.status})`;
+  }
+  const name = error instanceof Error && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : 'unknown';
+  return `Unexpected error (${name})`;
+}
+
+/** The detail for a pass whose rows would not save. */
+export const SAVE_FAILED_DETAIL = 'Could not save what Garmin sent';
 
 const STATUSES: readonly GarminStatus[] = [
   'never',
@@ -235,6 +259,7 @@ export function readGarminState(db: Database): GarminSyncState {
   state.rejectedAt = str(r.rejectedAt);
   state.backoffUntil = str(r.backoffUntil);
   state.keyExpiresAt = str(r.keyExpiresAt);
+  state.lastError = str(r.lastError);
   if (typeof r.status === 'string' && (STATUSES as readonly string[]).includes(r.status)) {
     state.status = r.status as GarminStatus;
   }
@@ -394,6 +419,8 @@ export type GarminPassResult = {
   requests: number;
   /** For `backoff`: when the next automatic pass may run. */
   backoffUntil: string | null;
+  /** For `error`: why, in {@link failureDetail}'s words. */
+  detail?: string;
 };
 
 /**
@@ -428,6 +455,7 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
   let recentReached = 0;
   let stop: 'rejected' | 'backoff' | 'offline' | 'error' | null = null;
   let retryAfterMs: number | null = null;
+  let detail: string | null = null;
 
   for (const step of steps) {
     // Disconnected, or a different key pasted, while this pass was out: stop
@@ -446,13 +474,19 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
         stop = 'backoff';
         retryAfterMs = error.retryAfterMs;
       } else if (error instanceof GarminNetworkError) stop = 'offline';
-      else if (error instanceof GarminTokenError) stop = 'error';
+      else if (error instanceof GarminTokenError) {
+        stop = 'error';
+        detail = failureDetail(error);
+      }
       else if (error instanceof GarminRequestError) {
         if (!skipped.includes(step.endpoint)) skipped.push(step.endpoint);
         // A refused RECENT window is not coverage: that endpoint asks for it
         // again next pass (see `refused`), while the others move on.
         if (step.kind === 'recent') refused[step.endpoint] = step.from;
-      } else stop = 'error';
+      } else {
+        stop = 'error';
+        detail = failureDetail(error);
+      }
       if (stop !== null) break;
     }
     // Served, or refused by that endpoint alone (named in `skipped`, shown in
@@ -474,6 +508,7 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
     rowsWritten = writeRows(db, rows);
   } catch {
     stop = 'error';
+    detail = SAVE_FAILED_DETAIL;
     written = false;
   }
 
@@ -486,6 +521,7 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
       rowsWritten,
       requests: session.requestsMade(),
       backoffUntil: null,
+      ...(detail !== null ? { detail } : {}),
     };
   }
 
@@ -511,11 +547,13 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
     next.backoffStep = state.backoffStep + 1;
   } else if (stop === 'offline' || stop === 'error') {
     next.status = stop;
+    next.lastError = stop === 'error' ? detail : state.lastError;
   } else {
     next.status = 'ok';
     next.rejectedAt = null;
     next.backoffUntil = null;
     next.backoffStep = 0;
+    next.lastError = null;
   }
   writeGarminState(db, next);
 
@@ -524,6 +562,7 @@ export async function runGarminPass(db: Database, deps: GarminSyncDeps): Promise
     rowsWritten,
     requests: session.requestsMade(),
     backoffUntil,
+    ...(detail !== null ? { detail } : {}),
   };
 }
 

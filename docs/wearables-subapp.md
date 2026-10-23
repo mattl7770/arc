@@ -2572,6 +2572,14 @@ will never arrive" without the unofficial API the 2026-09 spikes weighed. ADR: d
   `access_token` / `accessToken` / `token` / `jwt` and `expires_in` / `expiresIn`, and a bare JWT;
   expiry comes from the JWT's own `exp` first. A field naming the key's own expiry is kept for
   Settings when present. **The first real mint settles which shape it is** (§26.8).
+- **Ask as Garmin's own client asks (2026-10-23).** The first device pass ended "Sync failed".
+  Garmin's reference client (`github.com/garmin/connect-personal-api-python`, `auth.py`) mints
+  with `Accept: */*` and reads the reply as a bare JWT in text; ARC had sent
+  `Accept: application/json`. The mint now sends `*/*`; reads keep `application/json`, as the
+  reference client's do. And a pass that stops with `error` now says why — "Garmin would not issue
+  a token (HTTP 406)", "…token reply was unreadable (HTTP 200)", "Could not save what Garmin sent",
+  or "Unexpected error (<class>)" — on Sync now's line and in the stored state (`lastError`), built
+  from the error's class and status only, never a body (`failureDetail`, `db/garmin.test.mjs` §10c).
 
 ### 26.2 Where the code is
 

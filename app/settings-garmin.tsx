@@ -11,6 +11,7 @@ import { getDb } from '@/lib/db/client';
 import { clockFromISO } from '@/lib/db/date';
 import {
   disconnectGarmin,
+  failureDetail,
   saveGarminKey,
   syncGarminNow,
   type GarminEndpoint,
@@ -84,7 +85,9 @@ function statusLine(hasKey: boolean, state: GarminSyncState, now: Date): string 
       : 'The last try could not reach Garmin.';
   }
   if (state.status === 'error') {
-    return 'The last pass could not finish. ARC tries again the next time it opens.';
+    return state.lastError
+      ? `The last pass could not finish: ${state.lastError}. ARC tries again the next time it opens.`
+      : 'The last pass could not finish. ARC tries again the next time it opens.';
   }
   return state.lastSyncedAt ? `Last synced ${fmtInstant(state.lastSyncedAt)}` : 'Not synced yet';
 }
@@ -127,7 +130,7 @@ function resultLine(result: GarminPassResult): string {
     case 'offline':
       return 'Could not reach Garmin';
     case 'error':
-      return 'Sync failed';
+      return result.detail ? `Sync failed · ${result.detail}` : 'Sync failed';
   }
 }
 
@@ -146,7 +149,7 @@ export default function SettingsGarminScreen() {
     setNote(null);
     void syncGarminNow(getDb()).then(
       (result) => setNote(resultLine(result)),
-      () => setNote('Sync failed')
+      (error: unknown) => setNote(`Sync failed · ${failureDetail(error)}`)
     );
   };
 
@@ -154,7 +157,7 @@ export default function SettingsGarminScreen() {
     setNote(null);
     void syncGarminNow(getDb()).then(
       (result) => setNote(resultLine(result)),
-      () => setNote('Sync failed')
+      (error: unknown) => setNote(`Sync failed · ${failureDetail(error)}`)
     );
   };
 
