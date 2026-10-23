@@ -157,10 +157,13 @@ export class GarminNetworkError extends Error {
  */
 export class GarminTokenError extends Error {
   readonly status: number;
-  constructor(status: number) {
+  /** Which way it failed — shown to the owner, so a failure names itself. */
+  readonly reason: 'status' | 'unreadable' | 'redirect';
+  constructor(status: number, reason: 'status' | 'unreadable' | 'redirect' = 'status') {
     super(`Garmin's token reply could not be used (HTTP ${status})`);
     this.name = 'GarminTokenError';
     this.status = status;
+    this.reason = reason;
   }
 }
 
@@ -407,11 +410,14 @@ export function openGarminSession(options: GarminSessionOptions): GarminSession 
       : null;
 
   const mint = async (): Promise<TokenCache> => {
+    // `Accept: */*`, exactly as Garmin's reference client sends it: the reply
+    // is a bare JWT in plain text, not JSON, so asking for JSON only invites a
+    // 406 (on-device "Sync failed", 2026-10-23).
     const response = await send(GARMIN_TOKEN_URL, 'POST', {
       Authorization: `ApiKey ${options.key}`,
-      Accept: 'application/json',
+      Accept: '*/*',
     });
-    if (response.redirected) throw new GarminTokenError(response.status);
+    if (response.redirected) throw new GarminTokenError(response.status, 'redirect');
     if (response.status === 401 || response.status === 403) {
       forgetGarminToken();
       throw new GarminRejectedError(response.status);
@@ -420,7 +426,7 @@ export function openGarminSession(options: GarminSessionOptions): GarminSession 
       throw backoffOrNull(response) ?? new GarminTokenError(response.status);
     }
     const parsed = parseTokenResponse(response.text, now());
-    if (parsed === null) throw new GarminTokenError(response.status);
+    if (parsed === null) throw new GarminTokenError(response.status, 'unreadable');
     cached = { ...parsed, mintedFrom: options.key, mintedAt: now() };
     return cached;
   };

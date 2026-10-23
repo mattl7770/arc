@@ -23,6 +23,7 @@ import {
   GARMIN_SYNC_KEY,
   getSyncStateValue,
   pickDailyMetric,
+  setSyncStateValue,
   upsertWearableRows,
 } from '../src/lib/db/repositories/wearables.ts';
 import { shiftISODate } from '../src/lib/db/date.ts';
@@ -62,12 +63,14 @@ import {
   backoffDelayMs,
   disconnectGarmin,
   emptyGarminState,
+  failureDetail,
   garminLink,
   isGarminSyncRunning,
   planGarminPass,
   readGarminState,
   recentWindow,
   runGarminPass,
+  SAVE_FAILED_DETAIL,
   saveGarminKey,
   shouldAutoSyncGarmin,
   startGarminPass,
@@ -1322,6 +1325,81 @@ console.log('10b. a write that fails, and a refused recent window, move no cover
     'a refusal older than 31 days is stepped over — the window never grows past the cap',
     capped[0]
   );
+}
+
+// ---------------------------------------------------------------------------
+console.log('10c. the mint asks as Garmin’s own client does, and a failure names itself');
+{
+  // 2026-10-23, on device: "Sync failed" with no way to tell which step. The
+  // mint now sends Accept: */* (Garmin's reference client; the reply is a
+  // bare JWT in text), and an error pass carries a detail in fixed words.
+  const { db: mdb } = freshDb();
+  let t = NOON.getTime();
+  forgetGarminToken();
+  const plain = fakeGarmin(
+    () => t,
+    (url) => (url === GARMIN_TOKEN_URL ? { status: 200, body: jwt(t + 24 * 3600_000) + '\n' } : null)
+  );
+  const r0 = await runGarminPass(mdb, deps(plain, () => t));
+  const mintCall = plain.calls.find((c) => c.url === GARMIN_TOKEN_URL);
+  check(
+    mintCall?.init.method === 'POST' &&
+      mintCall.init.headers.Accept === '*/*' &&
+      mintCall.init.headers.Authorization === `ApiKey ${KEY}`,
+    'the mint is a POST with Accept: */* and the ApiKey header, as Garmin’s client sends it',
+    mintCall?.init
+  );
+  check(
+    plain.calls.filter((c) => c.url !== GARMIN_TOKEN_URL).every((c) => c.init.headers.Accept === 'application/json'),
+    'reads still ask for JSON'
+  );
+  check(r0.outcome === 'synced' && r0.detail === undefined, 'a bare-JWT text reply mints and the pass syncs', r0);
+
+  const ECHO = 'ECHOED-BODY-gpk_TEST_ONLY';
+  const failing = (status, body) => {
+    forgetGarminToken();
+    return fakeGarmin(() => t, (url) => (url === GARMIN_TOKEN_URL ? { status, body } : null));
+  };
+  t += 20 * 60_000;
+  const r406 = await runGarminPass(mdb, deps(failing(406, ECHO), () => t));
+  const s406 = readGarminState(mdb);
+  check(
+    r406.outcome === 'error' &&
+      r406.detail === 'Garmin would not issue a token (HTTP 406)' &&
+      s406.status === 'error' &&
+      s406.lastError === r406.detail,
+    'a 406 at the mint: error, and both the result and the stored state say which step and which status',
+    { r406, lastError: s406.lastError }
+  );
+  check(
+    !JSON.stringify(s406).includes('ECHOED') && !String(r406.detail).includes('ECHOED'),
+    'Garmin’s reply body never reaches the detail or the state'
+  );
+  t += 20 * 60_000;
+  const rBad = await runGarminPass(mdb, deps(failing(200, '<html>maintenance</html>'), () => t));
+  check(
+    rBad.detail === "Garmin's token reply was unreadable (HTTP 200)",
+    'a 200 whose body is not a token says "unreadable"',
+    rBad
+  );
+  check(
+    failureDetail(new TypeError('x')) === 'Unexpected error (TypeError)' &&
+      failureDetail({ name: '<script>' }) === 'Unexpected error (unknown)' &&
+      SAVE_FAILED_DETAIL === 'Could not save what Garmin sent',
+    'anything else is named by its class only; a save that fails has its own words'
+  );
+  t += 20 * 60_000;
+  forgetGarminToken();
+  const rOk = await runGarminPass(mdb, deps(fakeGarmin(() => t), () => t));
+  check(
+    rOk.outcome === 'synced' && readGarminState(mdb).lastError === null,
+    'a clean pass clears the stored failure'
+  );
+  const legacy = { ...emptyGarminState() };
+  delete legacy.lastError;
+  const { db: ldb } = freshDb();
+  setSyncStateValue(ldb, GARMIN_SYNC_KEY, { ...legacy, status: 'error' });
+  check(readGarminState(ldb).lastError === null, 'a state written before this field reads as no detail');
 }
 
 // ---------------------------------------------------------------------------
